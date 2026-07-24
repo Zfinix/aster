@@ -1,0 +1,22 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+paper/
+
+# Local
+_archive/
+.buildcache/
+.mcp.json

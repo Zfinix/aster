@@ -1,0 +1,43 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command you ran and, if possible, a minimal diff.
+      placeholder: |
+        git diff HEAD~1 > /tmp/change.diff
+        cargo run -p aster-harness --example run_review -- /tmp/change.diff
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and provider
+      description: e.g. openai/gpt-4o-mini via OpenRouter
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Output of `git rev-parse --short HEAD` or the release tag.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste any error output. This is rendered as code, no backticks needed.
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,37 @@
+diff --git a/src/handlers.rs b/src/handlers.rs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/handlers.rs
+@@ -0,0 +1,31 @@
++use std::collections::HashMap;
++
++pub fn lookup_user(db: &Db, id: &str) -> User {
++    let q = format!("SELECT * FROM users WHERE id = '{}'", id);
++    db.query(&q).unwrap()
++}
++
++pub fn sum_prefix(xs: &[i64], n: usize) -> i64 {
++    let mut total = 0;
++    for i in 0..=n {
++        total += xs[i];
++    }
++    total
++}
++
++pub fn transfer(store: &Store, from: u32, to: u32, amt: u64) {
++    let bal = store.balance(from);
++    if bal >= amt {
++        store.debit(from, amt);
++        store.credit(to, amt);
++    }
++}
++
++pub fn save_config(path: &str, data: &str) {
++    let f = std::fs::File::create(path).unwrap();
++    let _ = write_all(&f, data.as_bytes());
++}
++
++pub fn is_authorized(user: &User) -> bool {
++    user.is_admin || true
++}

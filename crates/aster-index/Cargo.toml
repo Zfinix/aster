@@ -1,0 +1,17 @@
+[package]
+name = "aster-index"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "aster_index"
+path = "src/lib.rs"
+
+[dependencies]
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+grep = "0.4.1"
+ignore = "0.4.28"
