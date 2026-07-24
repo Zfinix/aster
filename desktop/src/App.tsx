@@ -33,7 +33,7 @@ import { DiffPanel } from "./components/DiffPanel";
 import { HomeView, ThreadView } from "./components/views";
 import type { ComposerBinding } from "./components/Composer";
 import { Composer } from "./components/Composer";
-import { DotsIcon } from "./components/icons";
+import { DotsIcon, SidebarIcon } from "./components/icons";
 
 type View = "home" | "thread";
 
@@ -321,51 +321,59 @@ function App() {
     [updateReviewData],
   );
 
-  const onReview = useCallback(async () => {
-    if (!opts.repoPath || busy) return;
-    unlistenRef.current?.();
+  // The review body, parameterized on the opts to run. Callers that just
+  // changed a source (e.g. attaching a diff) pass the updated opts directly,
+  // since a `setOpts` in the same tick would not be visible here yet.
+  const startReview = useCallback(
+    async (reviewOpts: ReviewOpts) => {
+      if (!reviewOpts.repoPath || busy) return;
+      unlistenRef.current?.();
 
-    const text = prompt.trim();
-    const isNew = activeId == null;
-    const convoId = activeId ?? nextId();
-    const reviewId = nextId();
+      const text = prompt.trim();
+      const isNew = activeId == null;
+      const convoId = activeId ?? nextId();
+      const reviewId = nextId();
 
-    const newTurns: Turn[] = [];
-    if (text) newTurns.push({ id: nextId(), role: "user", text });
-    newTurns.push({ id: reviewId, role: "review", data: emptyReview() });
+      const newTurns: Turn[] = [];
+      if (text) newTurns.push({ id: nextId(), role: "user", text });
+      newTurns.push({ id: reviewId, role: "review", data: emptyReview() });
 
-    setConversations((cs) =>
-      isNew
-        ? [
-            {
-              id: convoId,
-              title: text || `Review ${repoNameOf(opts.repoPath)}`,
-              repoName: repoNameOf(opts.repoPath),
-              repoPath: opts.repoPath,
-              whenLabel: "now",
-              turns: newTurns,
-            },
-            ...cs,
-          ]
-        : cs.map((c) => (c.id === convoId ? { ...c, turns: [...c.turns, ...newTurns] } : c)),
-    );
-    setActiveId(convoId);
-    setView("thread");
-    setPrompt("");
-    setBusy(true);
-    setReviewing(true);
-    activeReviewRef.current = { convoId, turnId: reviewId };
+      setConversations((cs) =>
+        isNew
+          ? [
+              {
+                id: convoId,
+                title: text || `Review ${repoNameOf(reviewOpts.repoPath)}`,
+                repoName: repoNameOf(reviewOpts.repoPath),
+                repoPath: reviewOpts.repoPath,
+                whenLabel: "now",
+                turns: newTurns,
+              },
+              ...cs,
+            ]
+          : cs.map((c) => (c.id === convoId ? { ...c, turns: [...c.turns, ...newTurns] } : c)),
+      );
+      setActiveId(convoId);
+      setView("thread");
+      setPrompt("");
+      setBusy(true);
+      setReviewing(true);
+      activeReviewRef.current = { convoId, turnId: reviewId };
 
-    unlistenRef.current = await runReview(
-      { ...opts, model },
-      {
-        onEvent: handleEvent,
-        onLog: () => {},
-        onError: (msg) => finalizeReview("error", msg),
-        onDone: () => finalizeReview("done"),
-      },
-    );
-  }, [opts, busy, activeId, prompt, model, handleEvent, finalizeReview]);
+      unlistenRef.current = await runReview(
+        { ...reviewOpts, model },
+        {
+          onEvent: handleEvent,
+          onLog: () => {},
+          onError: (msg) => finalizeReview("error", msg),
+          onDone: () => finalizeReview("done"),
+        },
+      );
+    },
+    [busy, activeId, prompt, model, handleEvent, finalizeReview],
+  );
+
+  const onReview = useCallback(() => startReview(opts), [startReview, opts]);
 
   /* ---- repo / source / model pickers ---- */
 
@@ -387,11 +395,16 @@ function App() {
 
   const onAttach = useCallback(async () => {
     const picked = await pickDiff();
-    if (picked) {
-      setOpts({ sourceKind: "diff", sourceValue: picked });
-      toast(`Reviewing ${picked.split("/").pop()} on next run`);
+    if (!picked) return;
+    const next: ReviewOpts = { ...opts, sourceKind: "diff", sourceValue: picked };
+    setOpts({ sourceKind: "diff", sourceValue: picked });
+    if (next.repoPath && !busy) {
+      toast(`Reviewing ${picked.split("/").pop()}`);
+      startReview(next);
+    } else {
+      toast(`Attached ${picked.split("/").pop()} — pick a repo, then Review`);
     }
-  }, [toast]);
+  }, [opts, busy, toast, startReview]);
 
   const onModel = useCallback((value: string) => {
     localStorage.setItem("aster.model", value);
@@ -416,6 +429,15 @@ function App() {
   const activeFiles = activeConvo ? (latestReview(activeConvo)?.files ?? []) : [];
   const activeFindings = activeConvo ? (latestReview(activeConvo)?.findings ?? []) : [];
   const [showDiff, setShowDiff] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => localStorage.getItem("sidebar-collapsed") !== "1",
+  );
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((open) => {
+      localStorage.setItem("sidebar-collapsed", open ? "1" : "0");
+      return !open;
+    });
+  }, []);
 
   const onDeleteThread = useCallback(() => {
     if (!activeId) return;
@@ -487,7 +509,7 @@ function App() {
   );
 
   return (
-    <div className="shell">
+    <div className={`shell ${sidebarOpen ? "" : "side-collapsed"}`}>
       <AppSidebar
         conversations={conversations}
         activeId={activeId}
@@ -500,6 +522,7 @@ function App() {
           setActiveId(id);
           setView("thread");
         }}
+        onCollapse={toggleSidebar}
         theme={theme}
         setTheme={setTheme}
         minConfidence={opts.minConfidence}
@@ -513,6 +536,16 @@ function App() {
       <div className="center">
         {view === "thread" && activeConvo ? (
           <header className="c-head" data-tauri-drag-region>
+            {!sidebarOpen && (
+              <button
+                className="ghost-icon side-reopen"
+                aria-label="Expand sidebar"
+                title="Expand sidebar"
+                onClick={toggleSidebar}
+              >
+                <SidebarIcon />
+              </button>
+            )}
             <span className="c-title">{activeConvo.title}</span>
             <span className="c-sub">
               {activeConvo.repoName} · {activeConvo.whenLabel}
@@ -539,6 +572,16 @@ function App() {
           </header>
         ) : (
           <header className="c-head" data-tauri-drag-region>
+            {!sidebarOpen && (
+              <button
+                className="ghost-icon side-reopen"
+                aria-label="Expand sidebar"
+                title="Expand sidebar"
+                onClick={toggleSidebar}
+              >
+                <SidebarIcon />
+              </button>
+            )}
             <span className="grow" />
           </header>
         )}

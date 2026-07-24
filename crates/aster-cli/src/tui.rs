@@ -163,7 +163,7 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
         app.set_usage(usage_handle.usage_snapshot());
         app.tick();
 
-        if !app.finished && task.is_finished() {
+        if response.is_none() && task.is_finished() {
             match (&mut task).await {
                 Ok(Ok(resp)) => {
                     app.set_report_context(&resp);
@@ -1047,6 +1047,43 @@ fn severity_chip(severity: &str) -> Span<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aster_models::{Finding, ReviewReport};
+
+    fn finding(title: &str) -> Finding {
+        Finding {
+            file_path: "src/handlers.rs".into(),
+            line: 4,
+            start_line: None,
+            side: None,
+            severity: "critical".into(),
+            category: "security".into(),
+            title: title.into(),
+            description: "desc".into(),
+            suggestion: "fix it".into(),
+            code_snippet: None,
+            confidence: Some(0.97),
+        }
+    }
+
+    #[test]
+    fn review_tui_chat_carries_findings_into_messages() {
+        // Regression: the review's findings must reach the follow-up chat. The
+        // pipeline's Done event marks the app finished, so context capture must
+        // not be gated on `finished`.
+        let mut app = App::new(0.0);
+        let report = ReviewReport::new(
+            "summary".into(),
+            vec![finding("SQL Injection vulnerability")],
+            vec![],
+        );
+        app.set_report_context(&report);
+        let msgs = app.build_chat("how do i fix it");
+        assert!(
+            msgs.iter()
+                .any(|m| m.content.contains("SQL Injection vulnerability")),
+            "chat messages must include the review findings as context"
+        );
+    }
 
     #[test]
     fn chat_command_model_switches_client_and_app() {

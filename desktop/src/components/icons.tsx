@@ -77,9 +77,22 @@ export const ListIcon = ({ size = 15 }: P) => (
   </svg>
 );
 
+export const SidebarIcon = ({ size = 15 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+    <rect x="2" y="2.5" width="12" height="11" rx="2" />
+    <line x1="6.5" y1="2.5" x2="6.5" y2="13.5" />
+  </svg>
+);
+
 export const ExpandIcon = ({ size = 14 }: P) => (
   <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <path d="M9.5 2.5 H13.5 V6.5 M13.5 2.5 L9 7 M6.5 13.5 H2.5 V9.5 M2.5 13.5 L7 9" />
+  </svg>
+);
+
+export const CloseIcon = ({ size = 15 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+    <path d="M4 4 L12 12 M12 4 L4 12" />
   </svg>
 );
 

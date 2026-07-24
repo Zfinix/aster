@@ -20,6 +20,8 @@
     "motion": "^11.11.17",
     "react": "^19",
     "react-dom": "^19",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-variants": "^3.2.2"
   },
   "devDependencies": {
