@@ -1,0 +1,37 @@
+# Aster review config. Copy to `aster.yaml` in your repo root (or
+# ~/.config/aster/aster.yaml for a global default). Every field is optional.
+#
+# Precedence: CLI flags > shell env > this file > built-in defaults.
+# API keys are NEVER read from this file — use ASTER_API_KEY or `aster login`.
+
+review:
+  # Models (any OpenAI-compatible provider). `model` is the fallback used for a
+  # stage that has no explicit override.
+  model: openai/gpt-4o-mini
+  base_url: https://openrouter.ai/api/v1
+  hypothesis_model: deepseek/deepseek-v4-flash   # cheap, high-recall
+  verify_model: anthropic/claude-sonnet-5        # independent adversarial verify
+
+  # Drop findings below this confidence (0.0-1.0).
+  min_confidence: 0.6
+
+  # Cap the diff size sent to the model.
+  max_diff_bytes: 200000
+
+  # Static-analysis backends whose findings also flow through verification.
+  # Available: semgrep (needs `semgrep`/`opengrep` on PATH), ast-grep (needs
+  # `ast-grep`/`sg` on PATH; point ASTER_ASTGREP_RULES at a rule file).
+  analyzers: []            # e.g. [ast-grep] or [semgrep, ast-grep]
+
+  # Bias the hypothesis pass toward these defect classes.
+  focus_areas:
+    - correctness
+    - security
+
+  # Which files to review. `include` empty = everything except `exclude`.
+  include: []              # e.g. ["src/**/*.rs", "**/*.ts"]
+  exclude:
+    - "target/**"
+    - "node_modules/**"
+    - "**/*.lock"
+    - "**/*.min.js"

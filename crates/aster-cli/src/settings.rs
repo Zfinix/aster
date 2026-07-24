@@ -1,0 +1,163 @@
+//! Optional review config, `aster.yaml`. Loaded from the repo root, falling back
+//! to `~/.config/aster/aster.yaml`. Only knobs Aster actually enforces live here;
+//! API keys never do (use the env or `aster login`).
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::Deserialize;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Settings {
+    pub review: Review,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Review {
+    /// Fallback model when a stage override is unset.
+    pub model: Option<String>,
+    /// OpenAI-compatible endpoint.
+    pub base_url: Option<String>,
+    pub hypothesis_model: Option<String>,
+    pub verify_model: Option<String>,
+    /// Drop findings below this confidence (0.0-1.0).
+    pub min_confidence: Option<f32>,
+    pub max_diff_bytes: Option<usize>,
+    /// Static analyzer backends, e.g. ["semgrep"].
+    pub analyzers: Vec<String>,
+    /// Path (relative to the repo root) to an ast-grep rule YAML file whose
+    /// rules feed the `ast-grep` backend.
+    pub astgrep_rules: Option<String>,
+    /// Defect classes to bias the hypothesis pass toward.
+    pub focus_areas: Vec<String>,
+    /// Globs of files to review. Empty = everything (minus `exclude`).
+    pub include: Vec<String>,
+    /// Globs of files to never review.
+    pub exclude: Vec<String>,
+}
+
+impl Settings {
+    /// Load `aster.yaml` from `repo_root`, else the global config dir, else
+    /// defaults. A malformed file is a hard error.
+    pub fn load(repo_root: Option<&Path>) -> Result<Self> {
+        if let Some(root) = repo_root {
+            for name in ["aster.yaml", "aster.yml", ".aster.yaml"] {
+                let path = root.join(name);
+                if path.exists() {
+                    return parse(&path);
+                }
+            }
+        }
+        if let Some(global) = dirs::config_dir().map(|d| d.join("aster/aster.yaml"))
+            && global.exists()
+        {
+            return parse(&global);
+        }
+        Ok(Self::default())
+    }
+}
+
+fn parse(path: &Path) -> Result<Settings> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_yaml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Compiled include/exclude matcher for file paths.
+pub struct PathFilter {
+    include: Option<GlobSet>,
+    exclude: GlobSet,
+}
+
+/// Generated/vendored files always excluded, on top of the user's `exclude`.
+const DEFAULT_EXCLUDE: &[&str] = &[
+    "**/*.lock",
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/composer.lock",
+    "**/Gemfile.lock",
+    "**/Cargo.lock",
+    "**/Pipfile.lock",
+    "**/poetry.lock",
+    "**/requirements.txt",
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.min.css.map",
+    "**/*.min.js.map",
+    "**/*.map",
+    "**/*.snap",
+    "**/dist/**",
+    "**/build/**",
+    "**/out/**",
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/.git/**",
+    "**/.hg/**",
+    "**/.svn/**",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/*.class",
+    "**/target/**",
+    "**/*.pyc",
+];
+
+impl PathFilter {
+    /// `include` empty means everything. `exclude` is unioned with [`DEFAULT_EXCLUDE`].
+    pub fn new(include: &[String], exclude: &[String]) -> Result<Self> {
+        let mut excludes: Vec<String> = DEFAULT_EXCLUDE.iter().map(|s| s.to_string()).collect();
+        excludes.extend(exclude.iter().cloned());
+        Ok(Self {
+            include: if include.is_empty() {
+                None
+            } else {
+                Some(build(include)?)
+            },
+            exclude: build(&excludes)?,
+        })
+    }
+
+    /// True when a path should be reviewed: matches `include` (or include is
+    /// empty) and matches no `exclude`.
+    pub fn allows(&self, path: &str) -> bool {
+        if self.exclude.is_match(path) {
+            return false;
+        }
+        match &self.include {
+            Some(set) => set.is_match(path),
+            None => true,
+        }
+    }
+}
+
+fn build(patterns: &[String]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for p in patterns {
+        builder.add(Glob::new(p).with_context(|| format!("invalid glob: {p}"))?);
+    }
+    builder.build().context("building glob set")
+}
+
+/// Keep only the per-file sections of a unified diff whose target path passes `filter`.
+pub fn filter_diff(diff: &str, filter: &PathFilter) -> String {
+    let mut out = String::new();
+    let mut keep = true;
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            keep = rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|b| b.strip_prefix("b/"))
+                .map(|path| filter.allows(path))
+                .unwrap_or(true);
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}

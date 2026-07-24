@@ -1,0 +1,36 @@
+{
+  "name": "Aster",
+  "version": "0.1.0",
+  "description": "Desktop app for the aster AI code reviewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:vite": "vite",
+    "build:vite": "tsc --noEmit && vite build",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icon": "tauri icon src-tauri/icons/source-icon.png",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@heroui/react": "^3.2.2",
+    "@heroui/styles": "^3.2.2",
+    "@phosphor-icons/react": "^2.1.7",
+    "@tauri-apps/api": "^2",
+    "motion": "^11.11.17",
+    "react": "^19",
+    "react-dom": "^19",
+    "tailwind-variants": "^3.2.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4.3.4",
+    "puppeteer-core": "^25.3.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}

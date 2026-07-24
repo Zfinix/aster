@@ -1,0 +1,20 @@
+[package]
+name = "aster-analyzers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "aster_analyzers"
+path = "src/lib.rs"
+
+[dependencies]
+aster-models = { path = "../aster-models" }
+anyhow = { workspace = true }
+# ast-grep embedded in-process (pins the workspace to tree-sitter 0.26).
+ast-grep-core = "0.44"
+ast-grep-config = "0.44"
+ast-grep-language = "0.44"
+serde = { workspace = true }
+serde_json = { workspace = true }
+which = "7"

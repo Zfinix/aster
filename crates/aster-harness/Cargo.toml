@@ -1,0 +1,25 @@
+[package]
+name = "aster-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+futures-util = "0.3"
+ignore = "0.4.28"
+aster-models = { path = "../aster-models" }
+aster-index = { path = "../aster-index" }
+aster-analyzers = { path = "../aster-analyzers" }
+aster-ai = { path = "../aster-ai" }
+symbol-extractor = { path = "../symbol-extractor" }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { workspace = true }
+dotenvy = "0.15"
+wiremock = "0.6"
