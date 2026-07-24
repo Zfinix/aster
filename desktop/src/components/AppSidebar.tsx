@@ -6,7 +6,7 @@ import type { AuthStatus } from "../lib/aster";
 import { severityOf, SEV_RANK } from "../lib/severity";
 import { useToast, type Theme } from "./chrome";
 import { Mark } from "./Mark";
-import { EditIcon, FolderIcon, GearIcon, LayersIcon } from "./icons";
+import { EditIcon, FolderIcon, GearIcon, LayersIcon, SidebarIcon } from "./icons";
 
 const SEV_COLOR: Record<Severity, string> = {
   critical: "var(--red)",
@@ -33,6 +33,7 @@ interface Props {
   activeId: string | null;
   onNewReview: () => void;
   onOpen: (id: string) => void;
+  onCollapse: () => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
   minConfidence: number;
@@ -62,6 +63,15 @@ export function AppSidebar(props: Props) {
       <div className="side-top" data-tauri-drag-region>
         <Mark px={1.6} interactive />
         <span className="name">Aster</span>
+        <span className="grow" />
+        <button
+          className="ghost-icon"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+          onClick={props.onCollapse}
+        >
+          <SidebarIcon />
+        </button>
       </div>
 
       <button className="side-item" onClick={props.onNewReview}>
@@ -189,38 +199,47 @@ function SettingsFoot({
       {open && (
         <div className="settings-menu" role="menu" aria-label="Settings">
           <div className="settings-section">
-            <div className="menu-label">Provider</div>
-            <div className="menu-row">
-              <span>API key</span>
+            <div className="menu-head">
+              <span className="menu-label">Provider</span>
               <span
-                className="val"
-                style={{ color: auth?.hasKey ? "var(--green)" : "var(--red)" }}
+                className="menu-pill"
+                data-on={auth?.hasKey ? "true" : "false"}
               >
-                {auth?.hasKey ? "configured" : "not set"}
+                <span className="menu-pill-dot" />
+                {auth?.hasKey ? "Configured" : "Not set"}
               </span>
             </div>
-            <input
-              ref={keyRef}
-              className="menu-input"
-              type="password"
-              spellCheck={false}
-              placeholder={auth?.hasKey ? "replace key…" : "ASTER_API_KEY"}
-            />
-            <input
-              ref={modelRef}
-              className="menu-input"
-              spellCheck={false}
-              defaultValue={auth?.model ?? ""}
-              placeholder="model · openai/gpt-4o-mini"
-            />
-            <input
-              ref={baseUrlRef}
-              className="menu-input"
-              spellCheck={false}
-              defaultValue={auth?.baseUrl ?? ""}
-              placeholder="base url · OpenRouter default"
-            />
-            <button className="btn btn-line menu-save" onClick={saveProviderFields}>
+            <label className="menu-field">
+              <span className="menu-field-label">API key</span>
+              <input
+                ref={keyRef}
+                className="menu-input"
+                type="password"
+                spellCheck={false}
+                placeholder={auth?.hasKey ? "Replace key…" : "ASTER_API_KEY"}
+              />
+            </label>
+            <label className="menu-field">
+              <span className="menu-field-label">Model</span>
+              <input
+                ref={modelRef}
+                className="menu-input"
+                spellCheck={false}
+                defaultValue={auth?.model ?? ""}
+                placeholder="openai/gpt-4o-mini"
+              />
+            </label>
+            <label className="menu-field">
+              <span className="menu-field-label">Base URL</span>
+              <input
+                ref={baseUrlRef}
+                className="menu-input"
+                spellCheck={false}
+                defaultValue={auth?.baseUrl ?? ""}
+                placeholder="OpenRouter default"
+              />
+            </label>
+            <button className="btn btn-primary menu-save" onClick={saveProviderFields}>
               Save
             </button>
           </div>
@@ -254,8 +273,11 @@ function SettingsFoot({
           </div>
           <div className="settings-section">
             <div className="menu-label">Analyzers</div>
-            <div className="menu-row">
-              <span>ast-grep</span>
+            <div className="menu-toggle" data-on={analyzers.includes("ast-grep")}>
+              <div className="menu-toggle-text">
+                <span className="menu-toggle-name">ast-grep</span>
+                <span className="menu-toggle-sub">Structural pattern matching</span>
+              </div>
               <Switch
                 size="sm"
                 isSelected={analyzers.includes("ast-grep")}
@@ -269,8 +291,11 @@ function SettingsFoot({
                 </Switch.Content>
               </Switch>
             </div>
-            <div className="menu-row">
-              <span>semgrep</span>
+            <div className="menu-toggle" data-on={analyzers.includes("semgrep")}>
+              <div className="menu-toggle-text">
+                <span className="menu-toggle-name">semgrep</span>
+                <span className="menu-toggle-sub">Rule-based static analysis</span>
+              </div>
               <Switch
                 size="sm"
                 isSelected={analyzers.includes("semgrep")}

@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   latestReview,
   type Conversation,
@@ -175,15 +177,69 @@ function TurnView({
         </div>
       );
     }
-    return (
-      <div className="a-text" style={turn.error ? { color: "var(--red)" } : undefined}>
-        {turn.text.split("\n\n").map((p, i) => (
-          <p key={i}>{p}</p>
-        ))}
-      </div>
-    );
+    return <AssistantText id={turn.id} text={turn.text} error={turn.error} />;
   }
   return <ReviewTurn data={turn.data} onOpenDiff={onOpenDiff} onRetry={onRetry} />;
+}
+
+// Turn ids whose reply has already been typed out, so re-renders and thread
+// switches show the full text instead of re-animating.
+const typedTurns = new Set<string>();
+
+/** An assistant reply that types itself out on first appearance, then renders
+ *  as normal markdown. Skips the animation for errors, replies already seen,
+ *  and users who prefer reduced motion. */
+function AssistantText({
+  id,
+  text,
+  error,
+}: {
+  id: string;
+  text: string;
+  error?: boolean;
+}) {
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const animate = !error && !reduceMotion && !typedTurns.has(id);
+  const [shown, setShown] = useState(animate ? 0 : text.length);
+
+  useEffect(() => {
+    typedTurns.add(id);
+    if (!animate) {
+      setShown(text.length);
+      return;
+    }
+    // Scale speed to length so short replies feel deliberate and long ones
+    // don't drag: a whole reply reveals in ~2s, clamped to a readable rate.
+    const cps = Math.min(700, Math.max(220, text.length / 2));
+    let raf = 0;
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = now - last;
+      last = now;
+      setShown((s) => {
+        const next = Math.min(text.length, s + (dt * cps) / 1000);
+        if (next < text.length) raf = requestAnimationFrame(step);
+        return next;
+      });
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const done = shown >= text.length;
+  const visible = done ? text : text.slice(0, Math.floor(shown));
+
+  return (
+    <div
+      className={`a-text md${done ? "" : " typing"}`}
+      style={error ? { color: "var(--red)" } : undefined}
+    >
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{visible}</ReactMarkdown>
+    </div>
+  );
 }
 
 function ReviewTurn({
@@ -253,10 +309,10 @@ function ReviewTurn({
                 const sev = severityOf(f.severity);
                 return (
                   <li key={i}>
-                    <span className={`sev ${SEV_CLS[sev]}`}>{SEV_LABEL[sev]}</span>
-                    <span className="li-text">
-                      <b>{f.title}</b>
-                      {f.description ? `, ${clause(f.description)} ` : " "}
+                    <b className="li-title">{f.title}</b>
+                    {f.description && <span className="li-desc">{clause(f.description)}</span>}
+                    <span className="li-meta">
+                      <span className={`sev ${SEV_CLS[sev]}`}>{SEV_LABEL[sev]}</span>
                       <span className="li-loc">
                         {f.file_path.split("/").pop()}:{f.line}
                       </span>

@@ -761,12 +761,11 @@ fn salvage_candidates(json: &str) -> Option<CandidateList> {
             }
             '}' => {
                 depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    if let Some(start) = object_start.take() {
-                        if let Ok(c) = serde_json::from_str::<Candidate>(&json[start..=pos]) {
-                            candidates.push(c);
-                        }
-                    }
+                if depth == 0
+                    && let Some(start) = object_start.take()
+                    && let Ok(c) = serde_json::from_str::<Candidate>(&json[start..=pos])
+                {
+                    candidates.push(c);
                 }
             }
             ']' if depth == 0 => break,

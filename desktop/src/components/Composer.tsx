@@ -229,7 +229,6 @@ function ModelMenu({
       >
         <span className="pill model-pill">
           <span>{modelShort(model)}</span>
-          <span className="chev">▾</span>
         </span>
       </button>
       {open && (

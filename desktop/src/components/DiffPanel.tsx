@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DiffFile, Finding, Severity } from "../lib/types";
 import { severityOf, SEV_LABEL } from "../lib/severity";
 import { fileKey } from "../lib/diff";
@@ -16,6 +16,53 @@ const SEV_CLS: Record<Severity, string> = {
 };
 
 const SIGN: Record<string, string> = { add: "+", del: "-", ctx: "", hunk: "" };
+
+const PANEL_MIN = 420;
+const PANEL_STORE = "rpanel-width";
+
+function clampWidth(px: number) {
+  const max = Math.max(PANEL_MIN, window.innerWidth - 360);
+  return Math.min(max, Math.max(PANEL_MIN, px));
+}
+
+function usePanelWidth() {
+  const [width, setWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(PANEL_STORE));
+    return saved ? clampWidth(saved) : Math.round(window.innerWidth * 0.46);
+  });
+  const [resizing, setResizing] = useState(false);
+  const frame = useRef(0);
+
+  const onResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    setResizing(true);
+    const move = (ev: PointerEvent) => {
+      cancelAnimationFrame(frame.current);
+      frame.current = requestAnimationFrame(() =>
+        setWidth(clampWidth(window.innerWidth - ev.clientX)),
+      );
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setResizing(false);
+      setWidth((w) => {
+        localStorage.setItem(PANEL_STORE, String(w));
+        return w;
+      });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setWidth((w) => clampWidth(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  return { width, onResizeStart, resizing };
+}
 
 function anchorFindings(file: DiffFile, findings: Finding[]) {
   const byRow = new Map<number, Finding[]>();
@@ -51,6 +98,8 @@ export function DiffPanel({
   const adds = files.reduce((n, f) => n + f.additions, 0);
   const dels = files.reduce((n, f) => n + f.deletions, 0);
 
+  const { width, onResizeStart, resizing } = usePanelWidth();
+
   // Collapse state for every file, lifted so the header can toggle them all.
   // null = the default layout: first file open, the rest collapsed.
   const keys = useMemo(() => files.map(fileKey), [files]);
@@ -67,7 +116,14 @@ export function DiffPanel({
   const toggleAll = () => setClosed(new Set(allCollapsed ? [] : keys));
 
   return (
-    <aside className="rpanel">
+    <aside className={`rpanel ${resizing ? "resizing" : ""}`} style={{ width }}>
+      <div
+        className="rpanel-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize diff panel"
+        onPointerDown={onResizeStart}
+      />
       <header className="r-head">
         <button
           className={`r-title ${allCollapsed ? "collapsed" : ""}`}
