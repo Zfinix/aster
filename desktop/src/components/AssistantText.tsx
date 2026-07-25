@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
@@ -11,12 +12,14 @@ const shikiTheme: Parameters<typeof Streamdown>[0]["shikiTheme"] = [
   "github-light",
   "github-dark",
 ];
+const plugins = { code };
 
-/** An assistant reply that types itself out on first appearance, then renders
- *  as normal markdown. Skips the animation for errors, replies already seen,
- *  and users who prefer reduced motion. Streamdown handles the streaming: it
- *  parses the still-incomplete markdown gracefully and defers Shiki/Mermaid on
- *  unclosed fences. */
+/** An assistant reply. On first appearance it fades itself in word by word via
+ *  Streamdown's own animation, then renders as static markdown. The whole text
+ *  is handed to Streamdown at once (Shiki highlights complete code immediately);
+ *  we no longer re-parse a growing substring every frame, which was the source
+ *  of the streaming stutter. Skips animation for errors, replies already seen,
+ *  and reduced-motion. */
 export function AssistantText({
   id,
   text,
@@ -30,49 +33,36 @@ export function AssistantText({
     typeof window !== "undefined" &&
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   const animate = !error && !reduceMotion && !typedTurns.has(id);
-  const [shown, setShown] = useState(animate ? 0 : text.length);
+
+  // Drive the caret + deferred highlighting only for the reveal window, then
+  // settle into a static render. Duration scales with length, clamped readable.
+  const [animating, setAnimating] = useState(animate);
+  const timer = useRef<number>(0);
 
   useEffect(() => {
     typedTurns.add(id);
-    if (!animate) {
-      setShown(text.length);
-      return;
-    }
-    // Scale speed to length so short replies feel deliberate and long ones
-    // don't drag: a whole reply reveals in ~2s, clamped to a readable rate.
-    const cps = Math.min(700, Math.max(220, text.length / 2));
-    let raf = 0;
-    let last = performance.now();
-    const step = (now: number) => {
-      const dt = now - last;
-      last = now;
-      setShown((s) => {
-        const next = Math.min(text.length, s + (dt * cps) / 1000);
-        if (next < text.length) raf = requestAnimationFrame(step);
-        return next;
-      });
-    };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    if (!animate) return;
+    const ms = Math.min(2600, Math.max(600, text.length * 6));
+    timer.current = window.setTimeout(() => setAnimating(false), ms);
+    return () => window.clearTimeout(timer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const done = shown >= text.length;
-  const visible = done ? text : text.slice(0, Math.floor(shown));
-
   return (
     <div
-      className={`a-text md${done ? "" : " typing"}`}
+      className={`a-text md${animating ? " typing" : ""}`}
       style={error ? { color: "var(--red)" } : undefined}
     >
       <Streamdown
-        parseIncompleteMarkdown
-        isAnimating={!done}
+        plugins={plugins}
         shikiTheme={shikiTheme}
+        animated={animate ? { animation: "fadeIn", sep: "word", stagger: 14 } : false}
+        isAnimating={animating}
+        parseIncompleteMarkdown={false}
         remarkPlugins={[remarkMath]}
         rehypePlugins={[rehypeKatex]}
       >
-        {visible}
+        {text}
       </Streamdown>
     </div>
   );

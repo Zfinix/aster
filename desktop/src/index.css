@@ -1246,10 +1246,12 @@ h1 {
    own Tailwind-utility styling; only nudge font sizing here (no color/bg) so we
    don't fight its light/dark token classes. */
 .a-text.md pre code {
-  font-size: 12.5px;
+  font-family: var(--mono);
+  font-size: 11px;
   line-height: 1.6;
 }
 .a-text.md :not(pre) > code {
+  font-family: var(--mono);
   font-size: 0.86em;
 }
 .a-text.md blockquote {
@@ -1952,7 +1954,7 @@ td.sign {
   color: var(--faint);
 }
 td.code {
-  padding: 0 12px 0 4px;
+  padding: 0 10px 0 4px;
   white-space: pre-wrap;
   word-break: break-word;
   width: 100%;
@@ -2020,16 +2022,41 @@ html[data-theme="light"] .inline-comment {
   gap: 9px;
   padding: 9px 13px;
   border-bottom: 1px solid var(--line);
+  width: 100%;
+  cursor: pointer;
+}
+.inline-comment.collapsed .ic-head {
+  border-bottom: 0;
 }
 .ic-head .who {
   font-size: 12.5px;
   font-weight: 560;
 }
+.ic-head-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--text);
+}
+.ic-spacer {
+  flex: 1;
+}
 .ic-head .conf {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--faint);
-  margin-left: auto;
+}
+.ic-chev {
+  color: var(--faint);
+  font-size: 10px;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.inline-comment.collapsed .ic-chev {
+  transform: rotate(-90deg);
 }
 .ic-body {
   padding: 11px 13px 13px;

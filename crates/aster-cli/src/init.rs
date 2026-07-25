@@ -156,13 +156,21 @@ pub fn run(args: InitArgs) -> Result<()> {
     let interactive = !args.yes && io::stdin().is_terminal() && io::stdout().is_terminal();
     if !interactive {
         let d = default_provider(&providers);
-        emit(write_yaml(&yaml_path, &d.base_url, &d.example_model, args.force)?, false)?;
+        emit(
+            write_yaml(&yaml_path, &d.base_url, &d.example_model, args.force)?,
+            false,
+        )?;
         finish_plain(args.global);
         return Ok(());
     }
 
     set_theme(AsterTheme);
-    intro(Style::new().color256(ORANGE_256).bold().apply_to(" ✳ aster init "))?;
+    intro(
+        Style::new()
+            .color256(ORANGE_256)
+            .bold()
+            .apply_to(" ✳ aster init "),
+    )?;
 
     let Some((base_url, model, key)) = wizard(&providers)? else {
         outro_cancel("Cancelled. Nothing was written.")?;
@@ -243,7 +251,11 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
         return Ok(None);
     };
 
-    Ok(Some((base_url.trim().to_string(), model.trim().to_string(), Some(key))))
+    Ok(Some((
+        base_url.trim().to_string(),
+        model.trim().to_string(),
+        Some(key),
+    )))
 }
 
 /// Map a cliclack prompt result to `Option`: `Interrupted` (Esc / Ctrl+C) means
@@ -285,19 +297,22 @@ fn finish_plain(global: bool) {
 /// of git (true for a repo `.env`, false for the global config dir).
 fn store_key(env_path: &Path, key: &str, gitignore: bool) -> Result<Note> {
     if env_has_key(env_path, "ASTER_API_KEY") {
-        return Ok(Note::Info("ASTER_API_KEY already set in .env · leaving it".into()));
+        return Ok(Note::Info(
+            "ASTER_API_KEY already set in .env · leaving it".into(),
+        ));
     }
     if let Some(parent) = env_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     append_line(env_path, &format!("ASTER_API_KEY={key}"))
         .with_context(|| format!("writing {}", env_path.display()))?;
-    if gitignore
-        && let Some(dir) = env_path.parent()
-    {
+    if gitignore && let Some(dir) = env_path.parent() {
         ensure_gitignored(dir, ".env")?;
     }
-    Ok(Note::Success(format!("Stored key in {}", display(env_path))))
+    Ok(Note::Success(format!(
+        "Stored key in {}",
+        display(env_path)
+    )))
 }
 
 fn write_yaml(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
@@ -345,7 +360,8 @@ fn env_has_key(env_path: &Path, key: &str) -> bool {
     };
     text.lines().any(|l| {
         let l = l.trim_start();
-        l.strip_prefix(key).is_some_and(|rest| rest.starts_with('='))
+        l.strip_prefix(key)
+            .is_some_and(|rest| rest.starts_with('='))
     })
 }
 
