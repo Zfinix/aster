@@ -1,19 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DiffFile, Finding, Severity } from "../lib/types";
+import type { DiffFile, Finding } from "../lib/types";
 import { severityOf, SEV_LABEL } from "../lib/severity";
+import { SEV_CLS, SEV_ICON } from "../lib/review-format";
 import { fileKey } from "../lib/diff";
-import { matchFile } from "../lib/match";
+import { matchFile, findingKey } from "../lib/match";
 import { useToast } from "./chrome";
 import { Mark } from "./Mark";
 import { ExpandIcon } from "./icons";
-
-const SEV_CLS: Record<Severity, string> = {
-  critical: "crit",
-  high: "high",
-  medium: "med",
-  low: "low",
-  info: "info",
-};
 
 const SIGN: Record<string, string> = { add: "+", del: "-", ctx: "", hunk: "" };
 
@@ -85,12 +78,14 @@ function anchorFindings(file: DiffFile, findings: Finding[]) {
 export function DiffPanel({
   files,
   findings,
+  focus,
   onReverify,
   onApplyFix,
   onClose,
 }: {
   files: DiffFile[];
   findings: Finding[];
+  focus: { key: string; nonce: number } | null;
   onReverify: () => void;
   onApplyFix: (finding: Finding) => Promise<boolean>;
   onClose: () => void;
@@ -115,6 +110,34 @@ export function DiffPanel({
   };
   const toggleAll = () => setClosed(new Set(allCollapsed ? [] : keys));
 
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!focus) return;
+    const target = findings.find((f) => findingKey(f) === focus.key);
+    if (!target) return;
+    const fileIdx = files.findIndex((f) => matchFile(target, fileKey(f)));
+    if (fileIdx >= 0) {
+      setClosed((prev) => {
+        const next = new Set(prev ?? new Set(keys.slice(1)));
+        next.delete(keys[fileIdx]);
+        return next;
+      });
+    }
+    const raf = requestAnimationFrame(() => {
+      const el = bodyRef.current?.querySelector<HTMLElement>(
+        `[data-fkey="${CSS.escape(focus.key)}"]`,
+      );
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.remove("flash");
+      void el.offsetWidth;
+      el.classList.add("flash");
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
+
   return (
     <aside className={`rpanel ${resizing ? "resizing" : ""}`} style={{ width }}>
       <div
@@ -124,7 +147,7 @@ export function DiffPanel({
         aria-label="Resize diff panel"
         onPointerDown={onResizeStart}
       />
-      <header className="r-head">
+      <header className="r-head" data-tauri-drag-region>
         <button
           className={`r-title ${allCollapsed ? "collapsed" : ""}`}
           aria-expanded={!allCollapsed}
@@ -133,11 +156,15 @@ export function DiffPanel({
         >
           <span className="f-chev">▾</span>
           All changes
-          <span className="mono" style={{ fontSize: 11.5, color: "var(--faint)" }}>
-            <span className="plus">+{adds}</span> <span className="minus">-{dels}</span>
+          <span
+            className="mono"
+            style={{ fontSize: 11.5, color: "var(--faint)" }}
+          >
+            <span className="plus">+{adds}</span>{" "}
+            <span className="minus">-{dels}</span>
           </span>
         </button>
-        <span className="grow" />
+        <span className="grow" data-tauri-drag-region />
         <button
           className="btn btn-line"
           style={{ fontSize: 12, padding: "5px 13px" }}
@@ -145,11 +172,15 @@ export function DiffPanel({
         >
           Re-verify
         </button>
-        <button className="ghost-icon" aria-label="Close diff panel" onClick={onClose}>
+        <button
+          className="ghost-icon"
+          aria-label="Close diff panel"
+          onClick={onClose}
+        >
           <ExpandIcon />
         </button>
       </header>
-      <div className="r-body">
+      <div className="r-body" ref={bodyRef}>
         {files.map((file, i) => (
           <FileBlock
             key={keys[i]}
@@ -185,7 +216,11 @@ function FileBlock({
 
   return (
     <div className={`file ${collapsed ? "collapsed" : ""}`}>
-      <button className="file-head" aria-expanded={!collapsed} onClick={onToggle}>
+      <button
+        className="file-head"
+        aria-expanded={!collapsed}
+        onClick={onToggle}
+      >
         <span className="f-chev">▾</span>
         <span className="fname">{file.newPath || file.oldPath}</span>
         {file.status === "added" && <span className="ftag">new file</span>}
@@ -207,7 +242,12 @@ function FileBlock({
                 );
               }
               return (
-                <RowGroup key={i} line={line} findings={rowFindings} onApplyFix={onApplyFix} />
+                <RowGroup
+                  key={i}
+                  line={line}
+                  findings={rowFindings}
+                  onApplyFix={onApplyFix}
+                />
               );
             })}
             {orphans.map((f, i) => (
@@ -295,11 +335,17 @@ function InlineComment({
   }
 
   return (
-    <div className="inline-comment">
+    <div className="inline-comment" data-fkey={findingKey(finding)}>
       <div className="ic-head">
         <Mark px={1.3} />
         <span className="who">Aster</span>
-        <span className={`sev ${SEV_CLS[sev]}`}>{SEV_LABEL[sev]}</span>
+        <span className={`sev ${SEV_CLS[sev]}`}>
+          {(() => {
+            const Icon = SEV_ICON[sev];
+            return <Icon />;
+          })()}
+          {SEV_LABEL[sev]}
+        </span>
         {conf && <span className="conf">{conf}</span>}
       </div>
       <div className="ic-body">
@@ -309,7 +355,11 @@ function InlineComment({
           <div className="ic-sugg">{finding.suggestion}</div>
         )}
         <div className="ic-actions">
-          <button className="btn btn-line" disabled={fixing} onClick={runFix}>
+          <button
+            className="btn btn-success"
+            disabled={fixing}
+            onClick={runFix}
+          >
             {fixing ? "Fixing…" : "Apply fix"}
           </button>
           <button className="btn btn-line" onClick={copySuggestion}>

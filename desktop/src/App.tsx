@@ -14,6 +14,7 @@ import {
 } from "./lib/aster";
 import { parseUnifiedDiff } from "./lib/diff";
 import type { Finding, ReviewOpts, SourceKind, StreamEvent } from "./lib/types";
+import { findingKey } from "./lib/match";
 import {
   DEFAULT_MODEL,
   RESEARCH_MODELS,
@@ -30,12 +31,48 @@ import { severityOf } from "./lib/severity";
 import { Dropdown, ToastProvider, useTheme, useToast } from "./components/chrome";
 import { AppSidebar } from "./components/AppSidebar";
 import { DiffPanel } from "./components/DiffPanel";
-import { HomeView, ThreadView } from "./components/views";
+import { HomeView } from "./views/HomeView";
+import { ThreadView } from "./views/ThreadView";
 import type { ComposerBinding } from "./components/Composer";
 import { Composer } from "./components/Composer";
 import { DotsIcon, SidebarIcon } from "./components/icons";
+import { Mark } from "./components/Mark";
 
 type View = "home" | "thread";
+
+const INSTALL_CMD = "cargo install --path crates/aster-cli";
+
+function InstallPrompt() {
+  const toast = useToast();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(INSTALL_CMD);
+      toast("Command copied");
+    } catch {
+      toast("Copy failed");
+    }
+  };
+  return (
+    <div className="install-scrim">
+      <div className="install-card" role="alertdialog" aria-label="Aster CLI required">
+        <Mark px={2} />
+        <h2 className="install-title">Aster CLI not found</h2>
+        <p className="install-body">
+          The desktop app runs reviews through the <code>aster</code> command-line
+          binary. Install it, then relaunch Aster.
+        </p>
+        <button className="install-cmd" onClick={copy} title="Copy to clipboard">
+          <span className="install-prompt-glyph">$</span>
+          <code>{INSTALL_CMD}</code>
+          <span className="install-copy">Copy</span>
+        </button>
+        <p className="install-hint">
+          Already installed elsewhere? Set <code>ASTER_BIN</code> to its path.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 /** A review turn's contribution to the chat context: the actual findings, so
  *  the agent can answer follow-ups about them ("why is finding 2 critical?"). */
@@ -120,7 +157,10 @@ function App() {
     repoPath: "",
     sourceKind: "working",
     sourceValue: null,
-    minConfidence: 0,
+    minConfidence: (() => {
+      const v = Number(localStorage.getItem("aster.minConfidence"));
+      return Number.isFinite(v) ? v : 0;
+    })(),
     noIndex: false,
     model: null,
     apiKey: null,
@@ -143,6 +183,11 @@ function App() {
       localStorage.setItem("aster.analyzers", JSON.stringify(analyzers));
       return { ...o, analyzers };
     });
+  }, []);
+
+  const onSetConfidence = useCallback((v: number) => {
+    localStorage.setItem("aster.minConfidence", String(v));
+    setOptsState((o) => ({ ...o, minConfidence: v }));
   }, []);
 
   const [model, setModel] = useState(
@@ -429,6 +474,17 @@ function App() {
   const activeFiles = activeConvo ? (latestReview(activeConvo)?.files ?? []) : [];
   const activeFindings = activeConvo ? (latestReview(activeConvo)?.findings ?? []) : [];
   const [showDiff, setShowDiff] = useState(true);
+  const [focusFinding, setFocusFinding] = useState<{
+    key: string;
+    nonce: number;
+  } | null>(null);
+  const onFocusFinding = useCallback((finding: Finding) => {
+    setShowDiff(true);
+    setFocusFinding((prev) => ({
+      key: findingKey(finding),
+      nonce: (prev?.nonce ?? 0) + 1,
+    }));
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => localStorage.getItem("sidebar-collapsed") !== "1",
   );
@@ -526,7 +582,11 @@ function App() {
         theme={theme}
         setTheme={setTheme}
         minConfidence={opts.minConfidence}
+        onSetConfidence={onSetConfidence}
         model={model}
+        models={models}
+        onModel={onModel}
+        onAddModel={onAddModel}
         analyzers={opts.analyzers}
         onToggleAnalyzer={onToggleAnalyzer}
         auth={auth}
@@ -546,8 +606,8 @@ function App() {
                 <SidebarIcon />
               </button>
             )}
-            <span className="c-title">{activeConvo.title}</span>
-            <span className="c-sub">
+            <span className="c-title" data-tauri-drag-region>{activeConvo.title}</span>
+            <span className="c-sub" data-tauri-drag-region>
               {activeConvo.repoName} · {activeConvo.whenLabel}
             </span>
             <Dropdown
@@ -560,7 +620,7 @@ function App() {
               onSelect={(v) => v === "delete" && onDeleteThread()}
               direction="down"
             />
-            <span className="grow" />
+            <span className="grow" data-tauri-drag-region />
             {activeFiles.length > 0 && !showDiff && (
               <button className="btn btn-ghost" onClick={() => setShowDiff(true)}>
                 Show diff
@@ -582,7 +642,7 @@ function App() {
                 <SidebarIcon />
               </button>
             )}
-            <span className="grow" />
+            <span className="grow" data-tauri-drag-region />
           </header>
         )}
 
@@ -601,6 +661,7 @@ function App() {
             <ThreadView
               conversation={activeConvo}
               onOpenDiff={() => setShowDiff((s) => !s)}
+              onFocusFinding={onFocusFinding}
               onRetry={onReview}
             />
           )}
@@ -617,17 +678,14 @@ function App() {
         <DiffPanel
           files={activeFiles}
           findings={activeFindings}
+          focus={focusFinding}
           onReverify={onReview}
           onApplyFix={onApplyFix}
           onClose={() => setShowDiff(false)}
         />
       )}
 
-      {!binPath && (
-        <div className="app-toast show" style={{ background: "var(--red)", color: "#fff" }}>
-          aster binary not found
-        </div>
-      )}
+      {!binPath && <InstallPrompt />}
     </div>
   );
 }

@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { Switch } from "@heroui/react";
-import { latestReview, modelShort, type Conversation } from "../lib/session";
+import { latestReview, type Conversation } from "../lib/session";
+import { ModelMenu } from "./ModelMenu";
 import type { Severity } from "../lib/types";
 import type { AuthStatus } from "../lib/aster";
 import { severityOf, SEV_RANK } from "../lib/severity";
 import { useToast, type Theme } from "./chrome";
 import { Mark } from "./Mark";
-import { EditIcon, FolderIcon, GearIcon, LayersIcon, SidebarIcon } from "./icons";
+import { CloseIcon, EditIcon, FolderIcon, GearIcon, LayersIcon, MoonIcon, SidebarIcon, SunIcon } from "./icons";
+
+const CONFIDENCE_STEPS = [0, 0.25, 0.5, 0.75] as const;
 
 const SEV_COLOR: Record<Severity, string> = {
   critical: "var(--red)",
@@ -37,7 +41,11 @@ interface Props {
   theme: Theme;
   setTheme: (t: Theme) => void;
   minConfidence: number;
+  onSetConfidence: (v: number) => void;
   model: string;
+  models: string[];
+  onModel: (value: string) => void;
+  onAddModel: (value: string) => void;
   analyzers: string[];
   onToggleAnalyzer: (name: string, on: boolean) => void;
   auth: AuthStatus | null;
@@ -62,8 +70,8 @@ export function AppSidebar(props: Props) {
     <aside className="side">
       <div className="side-top" data-tauri-drag-region>
         <Mark px={1.6} interactive />
-        <span className="name">Aster</span>
-        <span className="grow" />
+        <span className="name" data-tauri-drag-region>Aster</span>
+        <span className="grow" data-tauri-drag-region />
         <button
           className="ghost-icon"
           aria-label="Collapse sidebar"
@@ -122,7 +130,11 @@ export function AppSidebar(props: Props) {
         theme={theme}
         setTheme={setTheme}
         minConfidence={minConfidence}
+        onSetConfidence={props.onSetConfidence}
         model={model}
+        models={props.models}
+        onModel={props.onModel}
+        onAddModel={props.onAddModel}
         analyzers={props.analyzers}
         onToggleAnalyzer={props.onToggleAnalyzer}
         auth={props.auth}
@@ -138,7 +150,11 @@ function SettingsFoot({
   theme,
   setTheme,
   minConfidence,
+  onSetConfidence,
   model,
+  models,
+  onModel,
+  onAddModel,
   analyzers,
   onToggleAnalyzer,
   auth,
@@ -149,7 +165,11 @@ function SettingsFoot({
   theme: Theme;
   setTheme: (t: Theme) => void;
   minConfidence: number;
+  onSetConfidence: (v: number) => void;
   model: string;
+  models: string[];
+  onModel: (value: string) => void;
+  onAddModel: (value: string) => void;
   analyzers: string[];
   onToggleAnalyzer: (name: string, on: boolean) => void;
   auth: AuthStatus | null;
@@ -164,6 +184,11 @@ function SettingsFoot({
   const keyRef = useRef<HTMLInputElement>(null);
   const modelRef = useRef<HTMLInputElement>(null);
   const baseUrlRef = useRef<HTMLInputElement>(null);
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
 
   const saveProviderFields = async () => {
     const apiKey = keyRef.current?.value.trim();
@@ -178,18 +203,18 @@ function SettingsFoot({
 
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
     };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open, setOpen]);
 
   return (
     <div className="side-foot" ref={ref}>
       <button
         className="ghost-icon"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title="Settings"
         onClick={() => setOpen(!open)}
@@ -197,15 +222,41 @@ function SettingsFoot({
         <GearIcon />
       </button>
       {open && (
-        <div className="settings-menu" role="menu" aria-label="Settings">
+        <div
+          className="settings-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setOpen(false);
+          }}
+        >
+        <div className="settings-menu" role="dialog" aria-modal="true" aria-label="Settings">
+          <div className="settings-title">
+            <div className="settings-title-main">
+              <Mark px={1.5} />
+              <div className="settings-title-text">
+                <span className="settings-title-name">Settings</span>
+                <span className="settings-title-sub">
+                  Provider, appearance &amp; analyzers
+                </span>
+              </div>
+            </div>
+            <button
+              className="ghost-icon"
+              aria-label="Close settings"
+              title="Close"
+              onClick={() => setOpen(false)}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+          <div className="settings-grid">
+          <div className="settings-col">
           <div className="settings-section">
-            <div className="menu-head">
+            <div className="menu-headline">
               <span className="menu-label">Provider</span>
               <span
-                className="menu-pill"
+                className="menu-status"
                 data-on={auth?.hasKey ? "true" : "false"}
               >
-                <span className="menu-pill-dot" />
                 {auth?.hasKey ? "Configured" : "Not set"}
               </span>
             </div>
@@ -239,9 +290,11 @@ function SettingsFoot({
                 placeholder="OpenRouter default"
               />
             </label>
-            <button className="btn btn-primary menu-save" onClick={saveProviderFields}>
-              Save
-            </button>
+            <div className="menu-save-row">
+              <button className="btn btn-primary menu-save" onClick={saveProviderFields}>
+                Save
+              </button>
+            </div>
           </div>
           <div className="settings-section">
             <div className="menu-label">Appearance</div>
@@ -250,25 +303,55 @@ function SettingsFoot({
                 aria-pressed={theme === "light"}
                 onClick={() => setTheme("light")}
               >
+                <SunIcon size={14} />
                 Light
               </button>
               <button
                 aria-pressed={theme === "dark"}
                 onClick={() => setTheme("dark")}
               >
+                <MoonIcon size={14} />
                 Dark
               </button>
             </div>
           </div>
+          </div>
+          <div className="settings-col">
           <div className="settings-section">
             <div className="menu-label">Pipeline</div>
             <div className="menu-row">
               <span>Model</span>
-              <span className="val">{modelShort(model)}</span>
+              <ModelMenu
+                model={model}
+                models={models}
+                onModel={onModel}
+                onAddModel={onAddModel}
+                direction="down"
+              />
             </div>
-            <div className="menu-row">
-              <span>Confidence gate</span>
-              <span className="val">{minConfidence.toFixed(2)}</span>
+            <div className="menu-slider">
+              <div className="menu-slider-head">
+                <span>Confidence gate</span>
+                <span className="val">{minConfidence.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                className="conf-slider"
+                min={0}
+                max={0.95}
+                step={0.05}
+                value={minConfidence}
+                onChange={(e) => onSetConfidence(Number(e.target.value))}
+                style={{
+                  ["--pct" as string]: `${(minConfidence / 0.95) * 100}%`,
+                }}
+                aria-label="Confidence gate"
+              />
+              <div className="menu-slider-ticks" aria-hidden="true">
+                {CONFIDENCE_STEPS.map((v) => (
+                  <span key={v}>{v.toFixed(2)}</span>
+                ))}
+              </div>
             </div>
           </div>
           <div className="settings-section">
@@ -310,6 +393,13 @@ function SettingsFoot({
               </Switch>
             </div>
           </div>
+          </div>
+          </div>
+          <div className="settings-foot">
+            <Mark px={1.1} />
+            <span>Aster{version ? ` v${version}` : ""}</span>
+          </div>
+        </div>
         </div>
       )}
       <div className="side-avatar" />
