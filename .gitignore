@@ -15,6 +15,7 @@ Cargo.lock.orig
 .vscode/
 .DS_Store
 paper/
+web/
 
 # Local
 _archive/

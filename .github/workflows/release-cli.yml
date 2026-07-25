@@ -1,0 +1,102 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. cli-v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#cli-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p aster-cli --bin aster --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        id: pkg
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          DIR="aster-${VERSION}-${TARGET}"
+          ASSET="${DIR}.tar.gz"
+          mkdir "$DIR"
+          cp "target/${TARGET}/release/aster" "$DIR/"
+          tar -czf "$ASSET" "$DIR"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$ASSET" | awk '{print $1}' > "$ASSET.sha256"
+          else
+            sha256sum "$ASSET" | awk '{print $1}' > "$ASSET.sha256"
+          fi
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        id: pkg_win
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $target = "${{ matrix.target }}"
+          $dir = "aster-$version-$target"
+          $asset = "$dir.zip"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "target/$target/release/aster.exe" "$dir/"
+          Compress-Archive -Path $dir -DestinationPath $asset -Force
+          (Get-FileHash -Algorithm SHA256 $asset).Hash.ToLower() | Out-File -NoNewline -Encoding ascii "$asset.sha256"
+          "asset=$asset" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: |
+            ${{ steps.pkg.outputs.asset }}${{ steps.pkg_win.outputs.asset }}
+            ${{ steps.pkg.outputs.asset }}${{ steps.pkg_win.outputs.asset }}.sha256

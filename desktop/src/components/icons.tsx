@@ -96,6 +96,47 @@ export const CloseIcon = ({ size = 15 }: P) => (
   </svg>
 );
 
+export const SunIcon = ({ size = 15 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+    <circle cx="8" cy="8" r="3" />
+    <path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" />
+  </svg>
+);
+
+export const MoonIcon = ({ size = 15 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M13.5 9.3A5.6 5.6 0 0 1 6.7 2.5 5.6 5.6 0 1 0 13.5 9.3Z" />
+  </svg>
+);
+
+const sevSvg = (n: number) => ({ width: n, height: n, viewBox: "0 0 16 16", fill: "currentColor" });
+
+export const SevCriticalIcon = ({ size = 11 }: P) => (
+  <svg {...sevSvg(size)}>
+    <path d="M5.2 1 H10.8 L15 5.2 V10.8 L10.8 15 H5.2 L1 10.8 V5.2 Z" />
+  </svg>
+);
+export const SevHighIcon = ({ size = 11 }: P) => (
+  <svg {...sevSvg(size)}>
+    <path d="M8 1.6 L15 14 H1 Z" />
+  </svg>
+);
+export const SevMediumIcon = ({ size = 11 }: P) => (
+  <svg {...sevSvg(size)}>
+    <path d="M8 1 L15 8 L8 15 L1 8 Z" />
+  </svg>
+);
+export const SevLowIcon = ({ size = 11 }: P) => (
+  <svg {...sevSvg(size)}>
+    <circle cx="8" cy="8" r="5.6" />
+  </svg>
+);
+export const SevInfoIcon = ({ size = 11 }: P) => (
+  <svg {...sevSvg(size)}>
+    <rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2.6" />
+  </svg>
+);
+
 export const GearIcon = ({ size = 16 }: P) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3" />

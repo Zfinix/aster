@@ -61,9 +61,9 @@ API="https://api.github.com/repos/${REPO}/releases"
 
 if [ "$VERSION" = "latest" ]; then
   info "Resolving latest CLI release"
-  TAG="$(curl -fsSL "${API}/latest" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  TAG="$(curl -fsSL "${API}?per_page=100" | sed -n 's/.*"tag_name":[[:space:]]*"\(cli-v[^"]*\)".*/\1/p' | head -n1)"
   if [ -z "$TAG" ]; then
-    err "could not resolve latest release from ${API}/latest"
+    err "could not resolve latest CLI release from ${API}"
     exit 1
   fi
 else
