@@ -420,14 +420,14 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         // Show the mark only when there's room; fall back to a compact header.
-        let banner = area.width >= 42 && area.height >= 16;
+        let banner = area.width >= 42 && area.height >= 15;
         // The chat input appears once the review finishes.
         let show_input = self.finished;
 
         let mut constraints = Vec::new();
         if banner {
             constraints.push(Constraint::Length(1));
-            constraints.push(Constraint::Length(5));
+            constraints.push(Constraint::Length(4));
         }
         constraints.push(Constraint::Length(1));
         constraints.push(Constraint::Min(0));
