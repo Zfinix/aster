@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.instalog.aster.desktop",
   "build": {
-    "beforeDevCommand": "bun run dev:vite",
+    "beforeDevCommand": "bun run sidecar && bun run dev:vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build:vite",
+    "beforeBuildCommand": "bun run sidecar && bun run build:vite",
     "frontendDist": "../dist"
   },
   "app": {
@@ -30,6 +30,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/aster-cli"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,5 +39,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3NUMzNzg4MzgzQUZENjkKUldScC9UbzRpRGRjTndsTCswOGdKWmJtL1pYd2VKRjBmZUhWVlRVMXlVQnl5SFAwaG5DSkxXRWYK",
+      "endpoints": [
+        "https://github.com/Zfinix/aster/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

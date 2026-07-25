@@ -7,6 +7,7 @@
   "scripts": {
     "dev:vite": "vite",
     "build:vite": "tsc --noEmit && vite build",
+    "sidecar": "bun scripts/prepare-sidecar.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
     "icon": "tauri icon src-tauri/icons/source-icon.png",
@@ -18,6 +19,8 @@
     "@phosphor-icons/react": "^2.1.7",
     "@streamdown/code": "^1.1.1",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "katex": "^0.18.1",
     "motion": "^11.11.17",
     "react": "^19",

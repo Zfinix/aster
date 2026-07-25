@@ -37,6 +37,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 ```
 
+To catch the fmt and clippy failures before you commit, enable the shared
+pre-commit hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It runs `cargo fmt --all --check` and clippy on staged Rust changes. Bypass a
+single commit with `SKIP_HOOKS=1 git commit ...`, or skip just clippy with
+`SKIP_CLIPPY=1`.
+
 ## Guidelines
 
 - **Match the surrounding style.** Read the crate you are touching and follow
