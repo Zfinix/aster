@@ -540,6 +540,29 @@ textarea:focus-visible {
   font-weight: 500;
   color: var(--faint);
 }
+.settings-foot .grow {
+  flex: 1;
+}
+.update-note {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--faint);
+}
+.update-btn {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.update-btn:hover {
+  background: var(--hover);
+  border-color: var(--faint);
+}
 @media (max-width: 640px) {
   .settings-menu {
     width: 400px;
@@ -1249,6 +1272,16 @@ h1 {
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.6;
+}
+/* Tighten Streamdown's code body: less padding before the gutter, and a
+   smaller, snugger line-number column (defaults are p-4 / w-6 / mr-4 / 13px). */
+.a-text.md div:has(> pre) {
+  padding: 11px 13px;
+}
+.a-text.md pre code > span::before {
+  width: 1.4rem;
+  margin-right: 9px;
+  font-size: 11px;
 }
 .a-text.md :not(pre) > code {
   font-family: var(--mono);

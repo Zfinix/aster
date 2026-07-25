@@ -299,17 +299,35 @@ fn save_provider(
     write_provider(&p)
 }
 
-/// The command used to spawn the CLI. Prefers an explicit override, then a
-/// freshly built workspace binary, and finally `aster` on PATH.
+/// The command used to spawn the CLI. Prefers an explicit override, then the
+/// sidecar bundled inside the app, then a freshly built workspace binary, and
+/// finally `aster` on PATH.
 fn resolve_bin() -> String {
     if let Ok(p) = std::env::var("ASTER_BIN") {
         if !p.is_empty() {
             return p;
         }
     }
-    find_workspace_bin()
+    find_sidecar_bin()
+        .or_else(find_workspace_bin)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "aster".to_string())
+}
+
+/// The CLI shipped alongside the app as a Tauri `externalBin`. In a packaged
+/// build it sits next to the app executable, named `aster-cli` (deliberately
+/// distinct from the `Aster` app binary so the two never collide on a
+/// case-insensitive filesystem). Returns `None` in dev, where no sidecar is
+/// placed beside the dev binary and `find_workspace_bin` takes over.
+fn find_sidecar_bin() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let name = if cfg!(windows) {
+        "aster-cli.exe"
+    } else {
+        "aster-cli"
+    };
+    let cand = dir.join(name);
+    cand.is_file().then_some(cand)
 }
 
 /// A concrete binary on disk, if one exists next to the workspace. Picks the
@@ -513,8 +531,16 @@ async fn run_review(app: AppHandle, opts: ReviewOpts) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .invoke_handler(tauri::generate_handler![
             startup_info,
             pick_repo,

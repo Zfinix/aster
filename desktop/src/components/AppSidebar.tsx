@@ -7,6 +7,8 @@ import type { Severity } from "../lib/types";
 import type { AuthStatus } from "../lib/aster";
 import { severityOf, SEV_RANK } from "../lib/severity";
 import { useToast, type Theme } from "./chrome";
+import { checkForUpdate, installUpdate, type UpdateStage } from "../lib/updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { Mark } from "./Mark";
 import { CloseIcon, EditIcon, FolderIcon, GearIcon, LayersIcon, MoonIcon, SidebarIcon, SunIcon } from "./icons";
 
@@ -185,10 +187,36 @@ function SettingsFoot({
   const modelRef = useRef<HTMLInputElement>(null);
   const baseUrlRef = useRef<HTMLInputElement>(null);
   const [version, setVersion] = useState("");
+  const [update, setUpdate] = useState<UpdateStage>({ kind: "idle" });
+  const pending = useRef<Update | null>(null);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
   }, []);
+
+  const onCheckUpdate = async () => {
+    setUpdate({ kind: "checking" });
+    try {
+      const found = await checkForUpdate();
+      if (!found) {
+        setUpdate({ kind: "none" });
+        return;
+      }
+      pending.current = found;
+      setUpdate({ kind: "available", version: found.version, notes: found.body });
+    } catch (e) {
+      setUpdate({ kind: "error", message: String(e) });
+    }
+  };
+
+  const onInstallUpdate = async () => {
+    if (!pending.current) return;
+    try {
+      await installUpdate(pending.current, setUpdate);
+    } catch (e) {
+      setUpdate({ kind: "error", message: String(e) });
+    }
+  };
 
   const saveProviderFields = async () => {
     const apiKey = keyRef.current?.value.trim();
@@ -398,6 +426,12 @@ function SettingsFoot({
           <div className="settings-foot">
             <Mark px={1.1} />
             <span>Aster{version ? ` v${version}` : ""}</span>
+            <span className="grow" />
+            <UpdateControl
+              stage={update}
+              onCheck={onCheckUpdate}
+              onInstall={onInstallUpdate}
+            />
           </div>
         </div>
         </div>
@@ -405,4 +439,51 @@ function SettingsFoot({
       <div className="side-avatar" />
     </div>
   );
+}
+
+function UpdateControl({
+  stage,
+  onCheck,
+  onInstall,
+}: {
+  stage: UpdateStage;
+  onCheck: () => void;
+  onInstall: () => void;
+}) {
+  switch (stage.kind) {
+    case "checking":
+      return <span className="update-note">Checking…</span>;
+    case "none":
+      return <span className="update-note">Up to date</span>;
+    case "available":
+      return (
+        <button className="update-btn" onClick={onInstall}>
+          Update to v{stage.version}
+        </button>
+      );
+    case "downloading": {
+      const pct = stage.total
+        ? Math.round((stage.done / stage.total) * 100)
+        : null;
+      return (
+        <span className="update-note">
+          Downloading{pct !== null ? ` ${pct}%` : "…"}
+        </span>
+      );
+    }
+    case "ready":
+      return <span className="update-note">Restarting…</span>;
+    case "error":
+      return (
+        <button className="update-btn" onClick={onCheck} title={stage.message}>
+          Retry
+        </button>
+      );
+    default:
+      return (
+        <button className="update-btn" onClick={onCheck}>
+          Check for updates
+        </button>
+      );
+  }
 }

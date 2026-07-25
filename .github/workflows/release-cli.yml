@@ -101,8 +101,17 @@ jobs:
             ${{ steps.pkg.outputs.asset }}${{ steps.pkg_win.outputs.asset }}
             ${{ steps.pkg.outputs.asset }}${{ steps.pkg_win.outputs.asset }}.sha256
 
+      - name: Upload CLI binary for the desktop sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/aster${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+          retention-days: 1
+
   desktop:
     name: desktop ${{ matrix.target }}
+    needs: build
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -141,6 +150,20 @@ jobs:
           workspaces: desktop/src-tauri
           key: desktop-${{ matrix.target }}
 
+      - name: Download prebuilt CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: desktop/.sidecar
+
+      - name: Point sidecar at the prebuilt CLI
+        id: sidecar
+        shell: bash
+        run: |
+          BIN="$GITHUB_WORKSPACE/desktop/.sidecar/aster"
+          [ "$RUNNER_OS" = "Windows" ] && BIN="$BIN.exe"
+          echo "ASTER_CLI_BIN=$BIN" >> "$GITHUB_ENV"
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -163,6 +186,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: desktop
           tagName: ${{ steps.ver.outputs.tag }}
