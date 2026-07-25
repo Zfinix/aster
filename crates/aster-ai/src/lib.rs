@@ -236,6 +236,11 @@ impl AiClient {
         }
     }
 
+    /// The configured OpenAI-compatible endpoint (trailing slash trimmed).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     pub fn usage_snapshot(&self) -> UsageSnapshot {
         let prompt = self.usage.prompt_tokens.load(Ordering::Relaxed);
         let completion = self.usage.completion_tokens.load(Ordering::Relaxed);

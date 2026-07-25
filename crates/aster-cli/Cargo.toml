@@ -22,10 +22,13 @@ dotenvy = "0.15"
 dirs = "6.0"
 ratatui = "0.29"
 serde_yaml = "0.9"
-globset = "0.4"
+globset = { workspace = true }
 tempfile = "3"
 open = "5"
 
 aster-ai = { path = "../aster-ai" }
 aster-harness = { path = "../aster-harness" }
 aster-models = { path = "../aster-models" }
+aster-policy = { path = "../aster-policy" }
+cliclack = "0.5.5"
+console = "0.16"

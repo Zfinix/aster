@@ -12,6 +12,7 @@ use serde::Deserialize;
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub review: Review,
+    pub permissions: aster_policy::PermissionsConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -160,4 +161,55 @@ pub fn filter_diff(diff: &str, filter: &PathFilter) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aster_policy::{Action, Decision, Policy};
+
+    #[test]
+    fn permissions_absent_defaults_to_permissive_edits() {
+        let s: Settings = serde_yaml::from_str("review: {}").expect("parse");
+        let p = Policy::compile(&s.permissions).expect("compile");
+        // Non-protected edits still allowed by default (backward compatible).
+        assert_eq!(
+            p.evaluate(&Action::Edit {
+                path: "src/main.rs"
+            }),
+            Decision::Allow
+        );
+        // But default protected + secret rules are on.
+        assert!(matches!(
+            p.evaluate(&Action::Edit {
+                path: ".git/hooks/pre-commit"
+            }),
+            Decision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn permissions_block_parses_and_compiles() {
+        let yaml = "\
+permissions:
+  mode: ask
+  deny: [\"**/*.pem\"]
+  allow: [\"src/**\"]
+";
+        let s: Settings = serde_yaml::from_str(yaml).expect("parse permissions block");
+        let p = Policy::compile(&s.permissions).expect("compile");
+        assert!(matches!(
+            p.evaluate(&Action::Edit {
+                path: "certs/key.pem"
+            }),
+            Decision::Deny { .. }
+        ));
+        // Ask mode falls through to a prompt for unmatched paths.
+        assert!(matches!(
+            p.evaluate(&Action::Edit {
+                path: "docs/readme.md"
+            }),
+            Decision::Prompt { .. }
+        ));
+    }
 }

@@ -6,6 +6,7 @@ mod config;
 mod edits;
 mod fix;
 mod git;
+mod init;
 mod github;
 mod provider;
 mod review;
@@ -30,13 +31,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set up Aster in this repo: pick a provider, write aster.yaml, store your key.
+    Init(init::InitArgs),
     /// Link a GitHub account via device flow (opens your browser).
     Login,
     /// Remove the stored GitHub token.
     Logout,
     /// Review a diff: the current branch, an explicit range, a file, or a PR.
     Review(review::ReviewArgs),
-    /// Ask Aster a question (one-shot chat with the review-agent persona).
+    /// Chat with the review agent (interactive TUI by default; --print for one-shot).
     Chat(chat::ChatArgs),
     /// Apply model-generated fixes for review findings (dry-run by default).
     Fix(fix::FixArgs),
@@ -45,14 +48,22 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
-    let command = Cli::parse().command;
+    if let Some(global) = dirs::config_dir().map(|d| d.join("aster/.env")) {
+        let _ = dotenvy::from_path(&global);
+    }
 
-    let tui_mode = matches!(&command, Command::Review(a) if a.tui);
+    let command = Cli::parse().command;
+    // Interactive chat runs a full-screen TUI, so its logs must go to a file, not
+    // stderr; only the one-shot chat path streams logs.
+    let chat_tui = matches!(&command, Command::Chat(a) if a.is_interactive());
+    let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui;
     let stream_mode = matches!(&command, Command::Review(a) if a.stream)
-        || matches!(&command, Command::Chat(_) | Command::Fix(_));
+        || matches!(&command, Command::Fix(_))
+        || matches!(&command, Command::Chat(a) if !a.is_interactive());
     init_tracing(tui_mode, stream_mode);
 
     match command {
+        Command::Init(args) => init::run(args),
         Command::Login => auth::login().await,
         Command::Logout => config::clear_token(),
         Command::Review(args) => review::run(args).await,

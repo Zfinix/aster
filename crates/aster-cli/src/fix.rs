@@ -10,6 +10,7 @@ use std::{env, fs, io};
 use anyhow::{Context, Result, bail};
 use aster_ai::AiClient;
 use aster_models::Finding;
+use aster_policy::{Action, Decision, Policy};
 use clap::Args;
 use serde::Serialize;
 
@@ -53,7 +54,7 @@ struct FixResult {
     file_path: String,
     line: i32,
     title: String,
-    /// "applied" | "preview" | "cannot_fix" | "error"
+    /// "applied" | "preview" | "cannot_fix" | "blocked" | "error"
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -71,6 +72,7 @@ pub async fn run(args: FixArgs) -> Result<()> {
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
     let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model);
+    let policy = Policy::compile(&settings.permissions)?;
 
     let findings = read_findings(&args.findings_json)?;
     if findings.is_empty() {
@@ -79,7 +81,7 @@ pub async fn run(args: FixArgs) -> Result<()> {
 
     let mut results = Vec::with_capacity(findings.len());
     for finding in &findings {
-        let result = fix_one(&client, &repo_root, finding, args.apply).await;
+        let result = fix_one(&client, &repo_root, &policy, finding, args.apply).await;
         if !args.json {
             print_result(&result);
         }
@@ -113,7 +115,13 @@ fn read_findings(source: &str) -> Result<Vec<Finding>> {
         .context("parsing --findings-json: expected a JSON array of finding objects")
 }
 
-async fn fix_one(client: &AiClient, repo_root: &Path, finding: &Finding, apply: bool) -> FixResult {
+async fn fix_one(
+    client: &AiClient,
+    repo_root: &Path,
+    policy: &Policy,
+    finding: &Finding,
+    apply: bool,
+) -> FixResult {
     let base = FixResult {
         file_path: finding.file_path.clone(),
         line: finding.line,
@@ -122,7 +130,7 @@ async fn fix_one(client: &AiClient, repo_root: &Path, finding: &Finding, apply: 
         reason: None,
         patch: None,
     };
-    match try_fix(client, repo_root, finding, apply).await {
+    match try_fix(client, repo_root, policy, finding, apply).await {
         Ok(result) => result,
         Err(e) => FixResult {
             reason: Some(format!("{e:#}")),
@@ -134,6 +142,7 @@ async fn fix_one(client: &AiClient, repo_root: &Path, finding: &Finding, apply: 
 async fn try_fix(
     client: &AiClient,
     repo_root: &Path,
+    policy: &Policy,
     finding: &Finding,
     apply: bool,
 ) -> Result<FixResult> {
@@ -170,6 +179,22 @@ async fn try_fix(
     }
 
     if apply {
+        // `fix` is a batch, non-interactive command: an edit that needs approval
+        // (mode `ask`) or is denied is reported as blocked rather than written.
+        if let Decision::Deny { reason } | Decision::Prompt { preview: reason } =
+            policy.evaluate(&Action::Edit {
+                path: &finding.file_path,
+            })
+        {
+            return Ok(FixResult {
+                file_path: finding.file_path.clone(),
+                line: finding.line,
+                title: finding.title.clone(),
+                status: "blocked".into(),
+                reason: Some(reason),
+                patch: Some(patch),
+            });
+        }
         fs::write(&path, &updated).with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(FixResult {
@@ -232,6 +257,7 @@ fn print_result(r: &FixResult) {
         "applied" => ("✓ applied", GREEN),
         "preview" => ("± preview", DIM),
         "cannot_fix" => ("∅ cannot fix", DIM),
+        "blocked" => ("⊘ blocked", RED),
         _ => ("✗ error", RED),
     };
     println!(

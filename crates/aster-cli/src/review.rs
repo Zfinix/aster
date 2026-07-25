@@ -383,6 +383,8 @@ const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+/// Brand orange, matching the desktop app's `--accent` (#f2764f).
+const ORANGE: &str = "\x1b[38;2;242;118;79m";
 
 async fn run_streaming(job: Job, min_confidence: f32) -> Result<ReviewReport> {
     // Concurrent verify streams interleave into noise; stream raw tokens only
@@ -401,7 +403,7 @@ async fn run_streaming(job: Job, min_confidence: f32) -> Result<ReviewReport> {
                 if !*at_line_start {
                     let _ = writeln!(err);
                 }
-                let _ = writeln!(err, "{CYAN}▶ {name}{RESET}");
+                let _ = writeln!(err, "{ORANGE}▶ {name}{RESET}");
                 *stage = None;
                 *at_line_start = true;
             }
@@ -559,7 +561,7 @@ fn print_findings(summary: &str, findings: &[Finding]) {
     let dot = if count == 0 {
         paint(GREEN, "✓")
     } else {
-        paint(CYAN, "✳")
+        paint(ORANGE, "✳")
     };
     println!();
     println!("  {dot} {}", paint(BOLD, summary));
