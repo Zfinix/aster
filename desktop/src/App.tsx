@@ -626,9 +626,6 @@ function App() {
                 Show diff
               </button>
             )}
-            <button className="btn btn-primary" onClick={onFixBrief}>
-              Fix brief
-            </button>
           </header>
         ) : (
           <header className="c-head" data-tauri-drag-region>
@@ -681,6 +678,7 @@ function App() {
           focus={focusFinding}
           onReverify={onReview}
           onApplyFix={onApplyFix}
+          onFixBrief={onFixBrief}
           onClose={() => setShowDiff(false)}
         />
       )}

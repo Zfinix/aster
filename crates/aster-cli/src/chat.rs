@@ -6,15 +6,30 @@
 
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
 use aster_ai::{AiClient, ChatMessage};
+use aster_policy::{Action, Decision, Policy};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::edits::{self, EditBlock};
+
+/// A pending edit awaiting user confirmation in the TUI. Sent from the agent
+/// task to the UI loop, which renders it and replies through `respond`.
+pub(crate) struct ApprovalRequest {
+    pub preview: String,
+    pub respond: oneshot::Sender<bool>,
+}
+
+/// The channel an interactive front-end (the TUI) hands the agent so `ask` mode
+/// can prompt. Headless callers pass `None`, which turns every prompt into a
+/// denial.
+pub(crate) type ApprovalSender = mpsc::Sender<ApprovalRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f32 = 0.4;
@@ -57,15 +72,30 @@ pub struct ChatArgs {
     #[arg(long)]
     no_tools: bool,
 
-    /// Open an interactive chat TUI in the terminal. The optional PROMPT seeds
-    /// the first question.
-    #[arg(long, conflicts_with_all = ["messages_json", "json", "no_tools"])]
+    /// Open the interactive chat TUI (now the default in a terminal). The
+    /// optional PROMPT seeds the first question. Kept for explicitness.
+    #[arg(long, conflicts_with_all = ["messages_json", "json", "no_tools", "print"])]
     tui: bool,
+
+    /// Answer once and print plain text, instead of opening the interactive TUI.
+    /// The default when stdout is piped; pass it to force one-shot in a terminal.
+    #[arg(long, short = 'p', conflicts_with_all = ["messages_json", "json"])]
+    print: bool,
 
     /// Emit {"reply": "...", "edits": [...], "usage": {...}} as one JSON
     /// object on stdout.
     #[arg(long)]
     json: bool,
+}
+
+impl ChatArgs {
+    /// True when chat should open the interactive TUI: a real terminal on both
+    /// ends and no flag asking for one-shot or scriptable output (`--print`,
+    /// `--json`, `--no-tools`, `--messages-json`, or a pipe).
+    pub fn is_interactive(&self) -> bool {
+        let one_shot = self.print || self.json || self.no_tools || self.messages_json.is_some();
+        !one_shot && io::stdout().is_terminal() && io::stdin().is_terminal()
+    }
 }
 
 #[derive(Deserialize)]
@@ -80,12 +110,14 @@ pub async fn run(args: ChatArgs) -> Result<()> {
 
     let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model);
+    let policy = Arc::new(Policy::compile(&settings.permissions)?);
 
-    // Interactive TUI: only when stdout is a real terminal, so piped/CI runs
-    // still get the one-shot behavior.
-    if args.tui && io::stdout().is_terminal() {
+    // Chat is interactive by default: open the multi-turn TUI whenever we're on
+    // a real terminal and nothing asked for one-shot output.
+    if args.is_interactive() {
         let seed = args.prompt.clone();
-        return crate::tui::run_chat(client, repo_root, args.allow_edits, seed).await;
+        let perms = settings.permissions.clone();
+        return crate::tui::run_chat(client, repo_root, args.allow_edits, perms, seed).await;
     }
 
     let history = read_history(&args)?;
@@ -100,7 +132,16 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             .complete_messages(&messages, CHAT_TEMPERATURE)
             .await?
     } else {
-        agent_loop(&client, &repo_root, &history, args.allow_edits, &mut edited).await?
+        agent_loop(
+            &client,
+            &repo_root,
+            &history,
+            args.allow_edits,
+            &policy,
+            None,
+            &mut edited,
+        )
+        .await?
     };
 
     if args.json {
@@ -174,20 +215,34 @@ pub(crate) async fn agent_turn(
     repo_root: PathBuf,
     history: Vec<ChatMessage>,
     allow_edits: bool,
+    policy: Arc<Policy>,
+    approver: Option<ApprovalSender>,
 ) -> Result<(String, Vec<String>)> {
     let mut edited = Vec::new();
-    let reply = agent_loop(&client, &repo_root, &history, allow_edits, &mut edited).await?;
+    let reply = agent_loop(
+        &client,
+        &repo_root,
+        &history,
+        allow_edits,
+        &policy,
+        approver.as_ref(),
+        &mut edited,
+    )
+    .await?;
     Ok((reply, edited))
 }
 
 /// Drive the model's tool calls until it answers in plain text (or the round
 /// cap trips). Tool failures are returned to the model as tool results, so it
 /// can retry with more context instead of dying.
+#[allow(clippy::too_many_arguments)]
 async fn agent_loop(
     client: &AiClient,
     repo_root: &Path,
     history: &[ChatMessage],
     allow_edits: bool,
+    policy: &Policy,
+    approver: Option<&ApprovalSender>,
     edited: &mut Vec<String>,
 ) -> Result<String> {
     let mut wire: Vec<Value> = vec![json!({
@@ -236,10 +291,13 @@ async fn agent_loop(
             let result = exec_tool(
                 repo_root,
                 allow_edits,
+                policy,
+                approver,
                 &call.function.name,
                 &call.function.arguments,
                 edited,
-            );
+            )
+            .await;
             tracing::debug!(tool = %call.function.name, "tool call executed");
             wire.push(json!({
                 "role": "tool",
@@ -337,9 +395,12 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
 
 /// Execute one tool call. Failures come back as plain text so the model can
 /// react (retry with more context, pick another file) instead of dying.
-fn exec_tool(
+#[allow(clippy::too_many_arguments)]
+async fn exec_tool(
     repo_root: &Path,
     allow_edits: bool,
+    policy: &Policy,
+    approver: Option<&ApprovalSender>,
     name: &str,
     arguments: &str,
     edited: &mut Vec<String>,
@@ -354,6 +415,7 @@ fn exec_tool(
         "read_file" => str_arg("path")
             .context("read_file needs a `path`")
             .and_then(|path| {
+                deny_secret_read(policy, &path)?;
                 read_numbered(
                     repo_root,
                     &path,
@@ -364,14 +426,29 @@ fn exec_tool(
         "list_files" => list_files(repo_root, str_arg("dir").as_deref().unwrap_or("")),
         "search_files" => str_arg("query")
             .context("search_files needs a `query`")
-            .and_then(|q| search_files(repo_root, &q, str_arg("dir").as_deref().unwrap_or(""))),
+            .and_then(|q| {
+                search_files(
+                    repo_root,
+                    policy,
+                    &q,
+                    str_arg("dir").as_deref().unwrap_or(""),
+                )
+            }),
         "edit_file" if !allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),
-        "edit_file" => edit_file(repo_root, &args, edited),
+        "edit_file" => edit_file(repo_root, policy, approver, &args, edited).await,
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     };
     result.unwrap_or_else(|e| format!("error: {e:#}"))
+}
+
+/// Refuse a read of a secret file per policy.
+fn deny_secret_read(policy: &Policy, path: &str) -> Result<()> {
+    if let Decision::Deny { reason } = policy.evaluate(&Action::Read { path }) {
+        bail!("{reason}");
+    }
+    Ok(())
 }
 
 fn read_numbered(
@@ -432,7 +509,7 @@ fn list_files(repo_root: &Path, dir: &str) -> Result<String> {
     Ok(entries.join("\n"))
 }
 
-fn search_files(repo_root: &Path, query: &str, dir: &str) -> Result<String> {
+fn search_files(repo_root: &Path, policy: &Policy, query: &str, dir: &str) -> Result<String> {
     if query.trim().is_empty() {
         bail!("empty search query");
     }
@@ -460,14 +537,21 @@ fn search_files(repo_root: &Path, query: &str, dir: &str) -> Result<String> {
                 }
                 continue;
             }
-            let Ok(content) = fs::read_to_string(&path) else {
-                continue;
-            };
             let rel = path
                 .strip_prefix(repo_root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
+            // Never surface secret-file contents in search results.
+            if matches!(
+                policy.evaluate(&Action::Read { path: &rel }),
+                Decision::Deny { .. }
+            ) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
             for (no, line) in content.lines().enumerate() {
                 if line.to_lowercase().contains(&needle) {
                     hits.push(format!("{rel}:{}: {}", no + 1, truncate(line.trim(), 240)));
@@ -487,7 +571,13 @@ fn search_files(repo_root: &Path, query: &str, dir: &str) -> Result<String> {
     Ok(hits.join("\n"))
 }
 
-fn edit_file(repo_root: &Path, args: &Value, edited: &mut Vec<String>) -> Result<String> {
+async fn edit_file(
+    repo_root: &Path,
+    policy: &Policy,
+    approver: Option<&ApprovalSender>,
+    args: &Value,
+    edited: &mut Vec<String>,
+) -> Result<String> {
     let path = args["path"].as_str().context("edit_file needs a `path`")?;
     let block = EditBlock {
         search: args["search"]
@@ -501,11 +591,39 @@ fn edit_file(repo_root: &Path, args: &Value, edited: &mut Vec<String>) -> Result
     };
     let (resolved, content) = edits::read_repo_file(repo_root, path)?;
     let updated = edits::apply_block(&content, &block)?;
+
+    match policy.evaluate(&Action::Edit { path }) {
+        Decision::Allow => {}
+        Decision::Deny { reason } => bail!("edit blocked by policy: {reason}"),
+        Decision::Prompt { .. } => {
+            let preview = format!("edit {path}:\n{}", edits::preview(&block));
+            if !request_approval(approver, preview).await {
+                bail!(
+                    "edit needs user approval (permissions mode is `ask`); \
+                     it was rejected or no interactive approver is available"
+                );
+            }
+        }
+    }
+
     fs::write(&resolved, &updated).with_context(|| format!("writing {}", resolved.display()))?;
     if !edited.iter().any(|p| p == path) {
         edited.push(path.to_string());
     }
     Ok(format!("edited {path}:\n{}", edits::preview(&block)))
+}
+
+/// Ask the interactive front-end to approve a pending edit. Returns false when
+/// there is no approver (headless) or the user rejects.
+async fn request_approval(approver: Option<&ApprovalSender>, preview: String) -> bool {
+    let Some(tx) = approver else {
+        return false;
+    };
+    let (respond, rx) = oneshot::channel();
+    if tx.send(ApprovalRequest { preview, respond }).await.is_err() {
+        return false;
+    }
+    rx.await.unwrap_or(false)
 }
 
 fn truncate(text: &str, max: usize) -> String {

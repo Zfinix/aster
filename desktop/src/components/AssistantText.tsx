@@ -1,14 +1,22 @@
 import { useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Streamdown } from "streamdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 // Turn ids whose reply has already been typed out, so re-renders and thread
 // switches show the full text instead of re-animating.
 const typedTurns = new Set<string>();
 
+const shikiTheme: Parameters<typeof Streamdown>[0]["shikiTheme"] = [
+  "github-light",
+  "github-dark",
+];
+
 /** An assistant reply that types itself out on first appearance, then renders
  *  as normal markdown. Skips the animation for errors, replies already seen,
- *  and users who prefer reduced motion. */
+ *  and users who prefer reduced motion. Streamdown handles the streaming: it
+ *  parses the still-incomplete markdown gracefully and defers Shiki/Mermaid on
+ *  unclosed fences. */
 export function AssistantText({
   id,
   text,
@@ -57,7 +65,15 @@ export function AssistantText({
       className={`a-text md${done ? "" : " typing"}`}
       style={error ? { color: "var(--red)" } : undefined}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{visible}</ReactMarkdown>
+      <Streamdown
+        parseIncompleteMarkdown
+        isAnimating={!done}
+        shikiTheme={shikiTheme}
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+      >
+        {visible}
+      </Streamdown>
     </div>
   );
 }

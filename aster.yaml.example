@@ -35,3 +35,12 @@ review:
     - "node_modules/**"
     - "**/*.lock"
     - "**/*.min.js"
+
+# Edit/read permissions for `aster chat --allow-edits` and `aster fix --apply`.
+permissions:
+  mode: auto              # auto | ask | deny  (ask prompts in the TUI; denies when headless)
+  allow: []               # globs always writable, e.g. ["src/**"]
+  deny: []                # globs never writable, e.g. ["**/*.pem"]
+  protected: []           # extra always-blocked write globs (unioned with defaults)
+  secret_read: []         # extra never-readable globs (unioned with defaults)
+  use_default_protected: true   # block writes to .git/**, .github/workflows/**, hooks; block secret reads

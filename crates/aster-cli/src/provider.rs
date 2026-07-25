@@ -21,7 +21,7 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
         env_non_empty("ASTER_API_KEY").or_else(|| env_non_empty("OPEN_ROUTER_API_KEY"))
     else {
         bail!(
-            "no API key found; set ASTER_API_KEY (or OPEN_ROUTER_API_KEY) in your shell or the repo's .env (copy .env.example to get started)"
+            "no API key found. Run `aster init` to set one up, or set ASTER_API_KEY (or OPEN_ROUTER_API_KEY) in your shell or the repo's .env"
         );
     };
     let base_url = env_or("ASTER_BASE_URL", review.base_url.as_deref())

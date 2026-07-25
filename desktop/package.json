@@ -17,11 +17,14 @@
     "@heroui/styles": "^3.2.2",
     "@phosphor-icons/react": "^2.1.7",
     "@tauri-apps/api": "^2",
+    "katex": "^0.18.1",
     "motion": "^11.11.17",
     "react": "^19",
     "react-dom": "^19",
-    "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
+    "streamdown": "^2.5.0",
+    "sugar-high": "^1.2.1",
     "tailwind-variants": "^3.2.2"
   },
   "devDependencies": {

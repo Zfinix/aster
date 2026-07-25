@@ -4,6 +4,7 @@ import { severityOf, SEV_LABEL } from "../lib/severity";
 import { SEV_CLS, SEV_ICON } from "../lib/review-format";
 import { fileKey } from "../lib/diff";
 import { matchFile, findingKey } from "../lib/match";
+import { highlightCached } from "../lib/highlight";
 import { useToast } from "./chrome";
 import { Mark } from "./Mark";
 import { ExpandIcon } from "./icons";
@@ -81,6 +82,7 @@ export function DiffPanel({
   focus,
   onReverify,
   onApplyFix,
+  onFixBrief,
   onClose,
 }: {
   files: DiffFile[];
@@ -88,6 +90,7 @@ export function DiffPanel({
   focus: { key: string; nonce: number } | null;
   onReverify: () => void;
   onApplyFix: (finding: Finding) => Promise<boolean>;
+  onFixBrief: () => void;
   onClose: () => void;
 }) {
   const adds = files.reduce((n, f) => n + f.additions, 0);
@@ -191,6 +194,17 @@ export function DiffPanel({
             onApplyFix={onApplyFix}
           />
         ))}
+        {findings.length > 0 && (
+          <div className="r-brief">
+            <span className="r-brief-label">
+              {findings.length} finding{findings.length > 1 ? "s" : ""} ready to
+              hand off
+            </span>
+            <button className="btn btn-primary" onClick={onFixBrief}>
+              Copy fix brief
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -279,7 +293,10 @@ function RowGroup({
         <td className="ln">{line.oldNo ?? ""}</td>
         <td className="ln">{line.newNo ?? ""}</td>
         <td className="sign">{SIGN[line.kind]}</td>
-        <td className="code">{line.text || " "}</td>
+        <td
+          className="code"
+          dangerouslySetInnerHTML={{ __html: highlightCached(line.text || " ") }}
+        />
       </tr>
       {findings?.map((f, i) => (
         <tr key={i} className="comment">

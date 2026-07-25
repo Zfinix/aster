@@ -1,5 +1,30 @@
 @import "tailwindcss";
 @import "@heroui/styles";
+@import "streamdown/styles.css";
+@import "katex/dist/katex.min.css";
+
+/* Let Tailwind generate the utility classes Streamdown's compiled JS relies on. */
+@source "../node_modules/streamdown/dist/*.js";
+
+/* This app toggles dark mode via html[data-theme="dark"], not the `.dark` class
+   Tailwind assumes. Streamdown's dark styling (and its Shiki dark color/bg swap)
+   rides the `dark:` variant, so bind that variant to our attribute or code
+   renders dark-on-dark in dark mode. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Streamdown styles its markdown with shadcn-token utilities (bg-background,
+   text-muted-foreground, border-border, …). Map those to the app palette so its
+   output follows our theme and switches with light/dark. `inline` keeps the var
+   reference live at runtime rather than snapshotting the value. */
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-muted: var(--raise);
+  --color-muted-foreground: var(--dim);
+  --color-border: var(--line);
+  --color-primary: var(--primary-bg);
+  --color-primary-foreground: var(--primary-fg);
+}
 
 /* Official Inter 4.x variable fonts, vendored from rsms.me (bundled by Vite,
    no network dependency). */
@@ -18,9 +43,26 @@
   src: url("./assets/fonts/InterVariable-Italic.woff2") format("woff2");
 }
 
+/* JetBrains Mono variable, vendored from @fontsource-variable/jetbrains-mono
+   (OFL, bundled by Vite, no network dependency). */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+}
+
 :root {
   --sans: "InterVariable", -apple-system, BlinkMacSystemFont, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --coral: #f2764f;
   --rose: #ef5a6f;
   --amber: #f7c15c;
@@ -80,8 +122,18 @@ html[data-theme="dark"] {
   --warning-foreground: #000000;
   --danger: #f85149;
   --danger-foreground: #ffffff;
-  --focus: #f2764f;
+  --focus: color-mix(in srgb, var(--coral) 55%, transparent);
   --radius: 0.5rem;
+
+  --sh-keyword: #f2764f;
+  --sh-string: #3fb950;
+  --sh-comment: #5c5c5c;
+  --sh-class: #f7c15c;
+  --sh-entity: #d67bd6;
+  --sh-property: #ef5a6f;
+  --sh-jsxliterals: #ef5a6f;
+  --sh-sign: #8f8f8f;
+  --sh-identifier: #fcfcfc;
 }
 
 html[data-theme="light"] {
@@ -124,8 +176,18 @@ html[data-theme="light"] {
   --warning-foreground: #000000;
   --danger: #f85149;
   --danger-foreground: #ffffff;
-  --focus: #f2764f;
+  --focus: color-mix(in srgb, var(--coral) 50%, transparent);
   --radius: 0.5rem;
+
+  --sh-keyword: #d1451f;
+  --sh-string: #1a7f37;
+  --sh-comment: #a3a3a3;
+  --sh-class: #b3831c;
+  --sh-entity: #9333a8;
+  --sh-property: #c62a45;
+  --sh-jsxliterals: #c62a45;
+  --sh-sign: #6e6e6e;
+  --sh-identifier: #0a0a0a;
 }
 
 /* Tailwind's preflight already resets margin/padding/box-sizing in the `base`
@@ -855,6 +917,9 @@ h1 {
   width: 100%;
   max-width: 720px;
   margin-top: 42px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .home-work .h-label {
   font-size: 11px;
@@ -862,16 +927,27 @@ h1 {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--faint);
-  padding: 0 4px 6px;
+  padding: 0 12px;
+  margin-bottom: 8px;
 }
 .h-row {
   width: 100%;
+  height: auto;
+  min-height: 0;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 14px 4px;
-  border-bottom: 1px solid var(--line);
+  padding: 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  opacity: 0.7;
   transition: opacity 0.12s;
+}
+.h-row:hover {
+  opacity: 1;
 }
 .h-row:hover .h-title {
   color: var(--coral);
@@ -1166,28 +1242,15 @@ h1 {
 .a-text.md h3 {
   font-size: 14.5px;
 }
-.a-text.md code {
-  font-family: var(--mono);
-  font-size: 0.88em;
-  background: var(--code-bg);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 1px 5px;
-}
-.a-text.md pre {
-  margin: 10px 0;
-  padding: 12px 14px;
-  background: var(--code-bg);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow-x: auto;
-}
+/* Code (inline + fenced), tables, and their chrome are owned by Streamdown's
+   own Tailwind-utility styling; only nudge font sizing here (no color/bg) so we
+   don't fight its light/dark token classes. */
 .a-text.md pre code {
-  background: none;
-  border: 0;
-  padding: 0;
   font-size: 12.5px;
   line-height: 1.6;
+}
+.a-text.md :not(pre) > code {
+  font-size: 0.86em;
 }
 .a-text.md blockquote {
   margin: 10px 0;
@@ -1792,6 +1855,20 @@ html[data-theme="light"] .dd {
   overflow-y: auto;
   padding: 0 18px 30px;
 }
+.r-brief {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 11px;
+  margin-top: 26px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+.r-brief-label {
+  font-size: 12.5px;
+  color: var(--dim);
+}
 
 .file {
   border: 1px solid var(--line);
@@ -1851,6 +1928,7 @@ html[data-theme="light"] .dd {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--mono);
+  font-variant-ligatures: none;
   font-size: 12px;
   line-height: 1.75;
 }
