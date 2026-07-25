@@ -684,7 +684,10 @@ fn draw_input_box(
     spinner: usize,
     placeholder: &str,
 ) {
-    let prompt = Span::styled("❯ ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+    let prompt = Span::styled(
+        "❯ ",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    );
     let (line, border) = if thinking {
         (
             Line::from(vec![
@@ -1353,8 +1356,12 @@ impl ChatApp {
             "  Getting started",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )));
-        lines.push(dim("  • Ask about a file, a diff, or anything in this repo"));
-        lines.push(dim("  • Type  /  to browse commands (model, edits, clear…)"));
+        lines.push(dim(
+            "  • Ask about a file, a diff, or anything in this repo",
+        ));
+        lines.push(dim(
+            "  • Type  /  to browse commands (model, edits, clear…)",
+        ));
         lines
     }
 

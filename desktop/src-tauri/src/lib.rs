@@ -324,11 +324,7 @@ fn find_workspace_bin() -> Option<PathBuf> {
         .iter()
         .map(|p| root.join("target").join(p).join("aster"))
         .filter(|c| c.is_file())
-        .max_by_key(|c| {
-            std::fs::metadata(c)
-                .and_then(|m| m.modified())
-                .ok()
-        })
+        .max_by_key(|c| std::fs::metadata(c).and_then(|m| m.modified()).ok())
 }
 
 fn default_repo() -> Option<String> {
@@ -409,12 +405,7 @@ async fn pick_repo(app: AppHandle) -> Option<String> {
 /// Prepend the common install locations so those tools resolve.
 fn augmented_path() -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
-    let extras = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-    ];
+    let extras = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
     let mut parts: Vec<String> = extras.iter().map(|s| s.to_string()).collect();
     for p in existing.split(':').filter(|p| !p.is_empty()) {
         if !parts.iter().any(|e| e == p) {

@@ -16,6 +16,7 @@ Cargo.lock.orig
 .DS_Store
 paper/
 web/
+.githooks/
 
 # Local
 _archive/

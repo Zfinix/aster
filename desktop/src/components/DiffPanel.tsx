@@ -318,6 +318,7 @@ function InlineComment({
 }) {
   const toast = useToast();
   const [resolved, setResolved] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [fixing, setFixing] = useState(false);
   const sev = severityOf(finding.severity);
   const conf =
@@ -352,8 +353,16 @@ function InlineComment({
   }
 
   return (
-    <div className="inline-comment" data-fkey={findingKey(finding)}>
-      <div className="ic-head">
+    <div
+      className={`inline-comment ${collapsed ? "collapsed" : ""}`}
+      data-fkey={findingKey(finding)}
+    >
+      <button
+        className="ic-head"
+        aria-expanded={!collapsed}
+        title={collapsed ? "Expand finding" : "Collapse finding"}
+        onClick={() => setCollapsed((c) => !c)}
+      >
         <Mark px={1.3} />
         <span className="who">Aster</span>
         <span className={`sev ${SEV_CLS[sev]}`}>
@@ -363,30 +372,35 @@ function InlineComment({
           })()}
           {SEV_LABEL[sev]}
         </span>
+        {collapsed && <span className="ic-head-title">{finding.title}</span>}
+        <span className="ic-spacer" />
         {conf && <span className="conf">{conf}</span>}
-      </div>
-      <div className="ic-body">
-        <div className="ic-title">{finding.title}</div>
-        <p className="ic-text">{finding.description}</p>
-        {finding.suggestion && (
-          <div className="ic-sugg">{finding.suggestion}</div>
-        )}
-        <div className="ic-actions">
-          <button
-            className="btn btn-success"
-            disabled={fixing}
-            onClick={runFix}
-          >
-            {fixing ? "Fixing…" : "Apply fix"}
-          </button>
-          <button className="btn btn-line" onClick={copySuggestion}>
-            Copy fix
-          </button>
-          <button className="btn btn-line" onClick={() => setResolved(true)}>
-            Resolve
-          </button>
+        <span className="ic-chev">▾</span>
+      </button>
+      {!collapsed && (
+        <div className="ic-body">
+          <div className="ic-title">{finding.title}</div>
+          <p className="ic-text">{finding.description}</p>
+          {finding.suggestion && (
+            <div className="ic-sugg">{finding.suggestion}</div>
+          )}
+          <div className="ic-actions">
+            <button
+              className="btn btn-success"
+              disabled={fixing}
+              onClick={runFix}
+            >
+              {fixing ? "Fixing…" : "Apply fix"}
+            </button>
+            <button className="btn btn-line" onClick={copySuggestion}>
+              Copy fix
+            </button>
+            <button className="btn btn-line" onClick={() => setResolved(true)}>
+              Resolve
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
