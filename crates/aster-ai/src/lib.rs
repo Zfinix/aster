@@ -329,9 +329,21 @@ impl AiClient {
         tools: Vec<serde_json::Value>,
         temperature: f32,
     ) -> Result<AssistantMessage> {
+        let model = self.model.clone();
+        self.complete_tools_with(&model, messages, tools, temperature)
+            .await
+    }
+
+    pub async fn complete_tools_with(
+        &self,
+        model: &str,
+        messages: Vec<serde_json::Value>,
+        tools: Vec<serde_json::Value>,
+        temperature: f32,
+    ) -> Result<AssistantMessage> {
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
         let request = ToolChatRequest {
-            model: self.model.clone(),
+            model: model.to_string(),
             temperature: Some(temperature),
             messages,
             tools,
