@@ -10,6 +10,7 @@ members = [
     "crates/aster-policy",
     "crates/aster-persist",
     "crates/aster-skills",
+    "crates/aster-agents",
     "crates/aster-cli",
 ]
 
