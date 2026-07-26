@@ -170,13 +170,9 @@ impl SqliteCodeIndex {
     }
 
     pub async fn symbols_in_file(&self, path: &str) -> anyhow::Result<Vec<SymbolHit>> {
-        // Match on the normalized path first, then fall back to a suffix match so
-        // a relative candidate path (`crates/x.rs`) still resolves against an
-        // index that stored a differently-rooted path. Bounded to keep a
-        // generated/huge file from returning every symbol row.
+        // Suffix fallback lets a relative candidate resolve against a differently-rooted stored path.
         let norm = normalize_path(path);
-        // Escape LIKE metacharacters so a literal `_` or `%` in a filename does
-        // not act as a wildcard and match an unrelated file.
+        // Escape LIKE metacharacters so a literal `_`/`%` in a filename isn't a wildcard.
         let suffix = format!("%/{}", escape_like(&norm));
         let rows = sqlx::query_as::<_, SymbolHit>(
             "SELECT s.name AS name, s.kind AS kind, f.path AS path,
@@ -217,13 +213,11 @@ async fn set_meta(
     Ok(())
 }
 
-/// Normalize a path key to forward slashes with any leading `./` stripped, so
-/// index writes and lookups agree regardless of platform separators.
+/// Forward slashes, leading `./` stripped, so writes and lookups agree across platforms.
 pub fn normalize_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
-/// Escape SQL LIKE metacharacters (`\`, `%`, `_`) for use with `ESCAPE '\'`.
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")

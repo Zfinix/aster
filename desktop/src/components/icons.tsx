@@ -17,6 +17,12 @@ export const EyeIcon = ({ size }: P) => (
   </svg>
 );
 
+export const ChatIcon = ({ size = 15 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2.5 4.5 A2 2 0 0 1 4.5 2.5 H11.5 A2 2 0 0 1 13.5 4.5 V9.5 A2 2 0 0 1 11.5 11.5 H6 L3 13.5 V11.5 A2 2 0 0 1 2.5 9.5 Z" />
+  </svg>
+);
+
 export const LayersIcon = ({ size }: P) => (
   <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <path d="M8 1.8 L14 5 L8 8.2 L2 5 Z" />
@@ -28,6 +34,12 @@ export const LayersIcon = ({ size }: P) => (
 export const FolderIcon = ({ size = 14 }: P) => (
   <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <path d="M1.5 4 A1.5 1.5 0 0 1 3 2.5 H6 L7.5 4 H13 A1.5 1.5 0 0 1 14.5 5.5 V12 A1.5 1.5 0 0 1 13 13.5 H3 A1.5 1.5 0 0 1 1.5 12 Z" />
+  </svg>
+);
+
+export const ChevronIcon = ({ size = 12 }: P) => (
+  <svg {...s(size)} className="chev" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 6 L8 10 L12 6" />
   </svg>
 );
 
@@ -57,6 +69,13 @@ export const AttachIcon = ({ size = 15 }: P) => (
 export const SendIcon = ({ size = 14 }: P) => (
   <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
     <path d="M8 13 V3 M4 7 L8 3 L12 7" />
+  </svg>
+);
+
+export const CopyIcon = ({ size = 13 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+    <rect x="5.5" y="5.5" width="8" height="8" rx="1.6" />
+    <path d="M10.5 5.5 V4 A1.5 1.5 0 0 0 9 2.5 H4 A1.5 1.5 0 0 0 2.5 4 V9 A1.5 1.5 0 0 0 4 10.5 H5.5" />
   </svg>
 );
 

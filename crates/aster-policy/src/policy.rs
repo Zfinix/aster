@@ -8,8 +8,8 @@ use crate::config::PermissionsConfig;
 use crate::decision::{Decision, Mode};
 use crate::defaults::{PROTECTED, SECRET_READ};
 
-/// A compiled, immutable set of rules. Cheap to share (`Arc`) across the tool
-/// loop. Pure: [`Policy::evaluate`] never touches disk.
+/// A compiled, immutable set of rules. [`Policy::evaluate`] is pure and never
+/// touches disk.
 pub struct Policy {
     mode: Mode,
     protected: GlobSet,
@@ -19,8 +19,8 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Build a policy from user config, unioning the built-in protected and
-    /// secret lists unless `use_default_protected` is false.
+    /// Unions the built-in protected and secret lists unless
+    /// `use_default_protected` is false.
     pub fn compile(cfg: &PermissionsConfig) -> Result<Policy> {
         let protected = if cfg.use_default_protected {
             union(PROTECTED, &cfg.protected)
@@ -41,8 +41,7 @@ impl Policy {
         })
     }
 
-    /// A no-op policy matching pre-policy behavior: auto edits, nothing
-    /// protected, no secret reads blocked.
+    /// A no-op policy: auto edits, nothing protected, no secret reads blocked.
     pub fn permissive() -> Policy {
         Policy {
             mode: Mode::Auto,
@@ -53,8 +52,7 @@ impl Policy {
         }
     }
 
-    /// Decide what to do with `action`. `path` must be repo-relative and already
-    /// validated against escape by the caller.
+    /// `path` must be repo-relative and already validated against escape by the caller.
     pub fn evaluate(&self, action: &Action) -> Decision {
         match action {
             Action::Edit { path } => self.evaluate_edit(path),

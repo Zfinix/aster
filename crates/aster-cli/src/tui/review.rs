@@ -1,5 +1,4 @@
-//! The live review TUI: [`App`] renders each review step as it lands, and
-//! [`run`] drives the render loop, then hands off to a follow-up chat.
+//! Live review TUI: renders each step as it lands, then hands off to chat.
 
 use std::sync;
 use std::time::{Duration, Instant};
@@ -21,12 +20,10 @@ use super::summary::print_summary;
 use super::{ACCENT, SPINNER};
 use crate::review::{Job, execute};
 
-/// The review-agent persona, shared with `aster chat` and the desktop app.
 const AGENT_PROMPT: &str = include_str!("../../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f32 = 0.4;
 
-/// Findings from the just-finished review, formatted as ground truth the chat
-/// agent can answer follow-ups from. Mirrors the desktop's review context.
+/// Findings formatted as ground truth the chat agent answers follow-ups from.
 fn review_context(report: &ReviewReport, min_confidence: f32) -> String {
     let findings: Vec<_> = report
         .findings
@@ -66,22 +63,18 @@ fn review_context(report: &ReviewReport, min_confidence: f32) -> String {
 
 pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
     let (tx, rx) = sync::mpsc::channel::<Progress>();
-    // Usage counters are Arc-shared, so this clone reflects live token spend as
-    // the moved-in client works.
+    // Arc-shared usage counters: this clone reflects live token spend.
     let usage_handle = job.ai_client.clone();
     let mut task = tokio::spawn(async move { execute(job, &Some(tx)).await });
 
-    // Guarantees the terminal leaves raw/alt-screen mode on every exit path:
-    // normal return, an early `?` IO error in the render loop, or a panic.
+    // Restores the terminal on every exit path: normal return, early `?`, panic.
     let guard = TuiGuard::install();
 
     let mut terminal = ratatui::init();
     let mut app = App::new(min_confidence);
-    // Kept so results can be reprinted to the real terminal after the TUI's
-    // alternate screen is torn down — otherwise quitting erases everything.
+    // Kept so results can be reprinted once the alternate screen is torn down.
     let mut response: Option<ReviewReport> = None;
-    // The chat client shares usage counters with the review client, so its
-    // spend rolls into the same footer meter.
+    // Shares usage counters with the review client, into the same footer meter.
     let chat_client = usage_handle.clone();
     let mut chat_task: Option<tokio::task::JoinHandle<Result<String>>> = None;
 
@@ -93,7 +86,6 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            // Ctrl+C always exits, mid-review or mid-chat.
             let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('c'));
             if ctrl_c {
@@ -116,8 +108,6 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
             }
 
             if !app.finished {
-                // During the review the log is read-only; q or Esc cancels, and
-                // the arrows scroll the log.
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         task.abort();
@@ -128,7 +118,6 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
                     _ => {}
                 }
             } else {
-                // After the review the footer becomes a chat input.
                 match key.code {
                     KeyCode::Esc => break Ok(()),
                     KeyCode::Up => app.scroll = app.scroll.saturating_add(1),
@@ -184,8 +173,7 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
         }
     };
 
-    // Restore before printing so the summary lands on the normal screen, not
-    // the alternate screen that is about to be torn down.
+    // Restore before printing so the summary lands on the normal screen.
     drop(guard);
     if let Some(resp) = &response {
         print_summary(resp, min_confidence);
@@ -199,29 +187,21 @@ struct App {
     spinner: usize,
     finished: bool,
     found: usize,
-    /// Chars streamed from the model in the current phase — shown live so a long
-    /// call reads as working, not hung.
     stream_chars: usize,
-    /// Total chars streamed across the whole review, used for a live token
-    /// counter that climbs continuously (like a streaming token meter) rather
-    /// than jumping only when a request's real usage lands.
+    /// Chars streamed across the whole review; drives a continuously climbing
+    /// token meter rather than one that jumps only when real usage lands.
     total_stream_chars: usize,
     started: Instant,
-    /// Frozen wall-clock at completion so the header timer stops counting once
-    /// the review is done.
+    /// Frozen at completion so the header timer stops once the review is done.
     elapsed: Option<Duration>,
-    /// Token spend so far, polled from the shared client each frame.
     usage: Option<aster_ai::UsageSnapshot>,
     min_confidence: f32,
-    /// Chat: current input line, in-flight flag, conversation history, and the
-    /// review context the agent answers from. Enabled once the review finishes.
     input: String,
     chatting: bool,
     chat_msgs: Vec<ChatMessage>,
     ctx: Option<String>,
-    /// Lines scrolled up from the bottom; `0` follows the live stream. Clamped to
-    /// the scrollable range each frame in `draw`, and left alone as new lines
-    /// stream in so reading back is never yanked to the bottom.
+    /// Lines scrolled up from the bottom; `0` follows the live stream. Clamped in
+    /// `draw`, left alone as lines stream in so reading back is never yanked down.
     scroll: u16,
 }
 
@@ -257,14 +237,12 @@ impl App {
         }
     }
 
-    /// Capture the review's findings as chat context once it completes.
     fn set_report_context(&mut self, report: &ReviewReport) {
         self.ctx = Some(review_context(report, self.min_confidence));
     }
 
-    /// The messages for one chat turn: persona, review context, prior turns,
-    /// then the new question. The user message is recorded so the next turn
-    /// carries it forward.
+    /// One chat turn: persona, review context, prior turns, then the new
+    /// question. Records the user message so the next turn carries it forward.
     fn build_chat(&mut self, text: &str) -> Vec<ChatMessage> {
         let mut msgs = vec![ChatMessage {
             role: "system".into(),
@@ -320,7 +298,6 @@ impl App {
         )));
     }
 
-    /// Elapsed time, frozen once the review finishes.
     fn elapsed(&self) -> Duration {
         self.elapsed.unwrap_or_else(|| self.started.elapsed())
     }
@@ -345,8 +322,7 @@ impl App {
                 ]));
             }
             Progress::Token { delta, .. } => {
-                // Don't dump raw tokens into the step log, but count them so the
-                // header shows live motion during a long model call.
+                // Count tokens for the header meter without dumping them in the log.
                 let n = delta.chars().count();
                 self.stream_chars += n;
                 self.total_stream_chars += n;
@@ -420,14 +396,13 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         // Show the mark only when there's room; fall back to a compact header.
-        let banner = area.width >= 42 && area.height >= 15;
-        // The chat input appears once the review finishes.
+        let banner = area.width >= 42 && area.height >= 16;
         let show_input = self.finished;
 
         let mut constraints = Vec::new();
         if banner {
             constraints.push(Constraint::Length(1));
-            constraints.push(Constraint::Length(4));
+            constraints.push(Constraint::Length(5));
         }
         constraints.push(Constraint::Length(1));
         constraints.push(Constraint::Min(0));
@@ -457,8 +432,6 @@ impl App {
 
         self.draw_header(frame, status, !banner);
 
-        // No border around the log; the lines just flow, with a single space of
-        // left padding to breathe.
         let visible = body.height as usize;
         let max_scroll = self.lines.len().saturating_sub(visible) as u16;
         self.scroll = self.scroll.min(max_scroll);
@@ -477,8 +450,6 @@ impl App {
         self.draw_footer(frame, footer);
     }
 
-    /// The chat input box: a rounded field that shows a placeholder, the typed
-    /// text with a caret, or a "thinking" spinner while a reply is in flight.
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
         draw_input_box(
             frame,
@@ -518,8 +489,7 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        // Live token meter that climbs continuously as content streams, so a
-        // long model call visibly progresses. ~4 chars per token.
+        // Continuously climbing meter so a long call visibly progresses. ~4 chars/token.
         if !self.finished && self.total_stream_chars > 0 {
             spans.push(Span::styled(
                 format!("  ▸ {} tokens", human_count(self.total_stream_chars / 4)),
@@ -562,8 +532,7 @@ impl App {
         );
     }
 
-    /// Context (input) and output token spend, with cost when priced. Input
-    /// tokens are the context length fed to the model.
+    /// Input and output token spend, with cost when priced.
     fn usage_label(&self) -> String {
         let Some(u) = self.usage.filter(|u| u.total_tokens > 0) else {
             return String::new();
@@ -604,9 +573,7 @@ mod tests {
 
     #[test]
     fn review_tui_chat_carries_findings_into_messages() {
-        // Regression: the review's findings must reach the follow-up chat. The
-        // pipeline's Done event marks the app finished, so context capture must
-        // not be gated on `finished`.
+        // Regression: findings must reach chat; context capture must not be gated on `finished`.
         let mut app = App::new(0.0);
         let report = ReviewReport::new(
             "summary".into(),

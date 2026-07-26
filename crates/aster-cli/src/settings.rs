@@ -1,6 +1,4 @@
-//! Optional review config, `aster.yaml`. Loaded from the repo root, falling back
-//! to `~/.config/aster/aster.yaml`. Only knobs Aster actually enforces live here;
-//! API keys never do (use the env or `aster login`).
+//! Review config (`aster.yaml`), loaded from the repo root or `~/.config/aster/`.
 
 use std::path::Path;
 
@@ -29,8 +27,7 @@ pub struct Review {
     pub max_diff_bytes: Option<usize>,
     /// Static analyzer backends, e.g. ["semgrep"].
     pub analyzers: Vec<String>,
-    /// Path (relative to the repo root) to an ast-grep rule YAML file whose
-    /// rules feed the `ast-grep` backend.
+    /// Repo-relative path to an ast-grep rule YAML for the `ast-grep` backend.
     pub astgrep_rules: Option<String>,
     /// Defect classes to bias the hypothesis pass toward.
     pub focus_areas: Vec<String>,
@@ -41,8 +38,7 @@ pub struct Review {
 }
 
 impl Settings {
-    /// Load `aster.yaml` from `repo_root`, else the global config dir, else
-    /// defaults. A malformed file is a hard error.
+    /// Load from `repo_root`, else the global config dir, else defaults. Malformed files error.
     pub fn load(repo_root: Option<&Path>) -> Result<Self> {
         if let Some(root) = repo_root {
             for name in ["aster.yaml", "aster.yml", ".aster.yaml"] {
@@ -107,7 +103,7 @@ const DEFAULT_EXCLUDE: &[&str] = &[
 ];
 
 impl PathFilter {
-    /// `include` empty means everything. `exclude` is unioned with [`DEFAULT_EXCLUDE`].
+    /// Empty `include` means everything. `exclude` is unioned with [`DEFAULT_EXCLUDE`].
     pub fn new(include: &[String], exclude: &[String]) -> Result<Self> {
         let mut excludes: Vec<String> = DEFAULT_EXCLUDE.iter().map(|s| s.to_string()).collect();
         excludes.extend(exclude.iter().cloned());
@@ -121,8 +117,7 @@ impl PathFilter {
         })
     }
 
-    /// True when a path should be reviewed: matches `include` (or include is
-    /// empty) and matches no `exclude`.
+    /// True when a path matches `include` (or include is empty) and no `exclude`.
     pub fn allows(&self, path: &str) -> bool {
         if self.exclude.is_match(path) {
             return false;
@@ -172,14 +167,12 @@ mod tests {
     fn permissions_absent_defaults_to_permissive_edits() {
         let s: Settings = serde_yaml::from_str("review: {}").expect("parse");
         let p = Policy::compile(&s.permissions).expect("compile");
-        // Non-protected edits still allowed by default (backward compatible).
         assert_eq!(
             p.evaluate(&Action::Edit {
                 path: "src/main.rs"
             }),
             Decision::Allow
         );
-        // But default protected + secret rules are on.
         assert!(matches!(
             p.evaluate(&Action::Edit {
                 path: ".git/hooks/pre-commit"

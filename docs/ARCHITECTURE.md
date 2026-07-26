@@ -29,7 +29,12 @@ crates/
   aster-analyzers/   runtime-selectable static backends: semgrep/ast-grep (CLI)
   symbol-extractor/  tree-sitter-tags symbol extraction (14 languages)
   aster-harness/     the review core: hypothesize → retrieve → verify → shape
+  aster-persist/     filesystem-first chat transcripts + memory (see MEMORY.md)
+  aster-skills/      filesystem-based agent skills: SKILL.md discovery + on-demand load
 ```
+
+Chat sessions and durable memory are documented separately in
+[`MEMORY.md`](./MEMORY.md).
 
 ### Dependency graph
 

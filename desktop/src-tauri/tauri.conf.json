@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "dev.instalog.aster.desktop",
   "build": {
-    "beforeDevCommand": "bun run sidecar && bun run dev:vite",
+    "beforeDevCommand": "bun run cli:debug && bun run dev:vite",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "bun run sidecar && bun run build:vite",
     "frontendDist": "../dist"

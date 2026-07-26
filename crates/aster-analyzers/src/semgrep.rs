@@ -6,8 +6,7 @@ use serde_json::Value;
 use crate::Analyzer;
 use crate::models::{Finding, Severity};
 
-/// Semgrep / opengrep. Semgrep is a Python tool with no Rust library, so it
-/// must shell out; ast-grep is the other subprocess backend.
+/// Semgrep / opengrep; no Rust library, so it shells out.
 pub struct Semgrep;
 
 const BINARIES: [&str; 2] = ["opengrep", "semgrep"];

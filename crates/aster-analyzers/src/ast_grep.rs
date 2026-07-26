@@ -7,8 +7,7 @@ use aster_models::Language;
 use crate::Analyzer;
 use crate::models::{Finding, Severity};
 
-/// Embedded ast-grep (no `sg` binary). Rules come from the YAML passed at
-/// construction, else the file named by `ASTER_ASTGREP_RULES`.
+/// Embedded ast-grep; rules from the YAML passed in, else `ASTER_ASTGREP_RULES`.
 #[derive(Default)]
 pub struct AstGrep {
     rules_yaml: Option<String>,

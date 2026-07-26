@@ -10,6 +10,7 @@ export type ComposerBinding = Omit<Props, "variant">;
 
 interface Props {
   variant: "home" | "foot";
+  intent?: "review" | "chat";
   prompt: string;
   setPrompt: (s: string) => void;
   onAsk: () => void;
@@ -32,6 +33,7 @@ interface Props {
 export function Composer(props: Props) {
   const {
     variant,
+    intent = "review",
     prompt,
     setPrompt,
     onAsk,
@@ -50,8 +52,8 @@ export function Composer(props: Props) {
     onAddModel,
     onAttach,
   } = props;
-  const ref = useRef<HTMLTextAreaElement>(null);
 
+  const ref = useRef<HTMLTextAreaElement>(null);
   const canAsk = !!prompt.trim() && !busy;
 
   useEffect(() => {
@@ -98,9 +100,11 @@ export function Composer(props: Props) {
           rows={1}
           spellCheck={false}
           placeholder={
-            variant === "home"
-              ? "Ask Aster anything (Enter), or set a focus and hit Review"
-              : "Ask a follow-up (Enter), or run another review"
+            variant === "foot"
+              ? "Ask a follow-up, or run another review"
+              : intent === "chat"
+                ? "Ask Aster anything"
+                : "Set a focus and hit Review, or ask anything"
           }
           aria-label="Message Aster"
           onChange={(e) => setPrompt(e.target.value)}
@@ -112,11 +116,15 @@ export function Composer(props: Props) {
             {plusMenu}
             {modelPill}
             <span className="spacer" />
-            <Button className="btn btn-ghost" isDisabled={!canAsk} onPress={onAsk}>
+            <Button
+              className={intent === "chat" ? "btn btn-primary" : "btn btn-ghost"}
+              isDisabled={!canAsk}
+              onPress={onAsk}
+            >
               Ask
             </Button>
             <Button
-              className="btn btn-primary"
+              className={intent === "chat" ? "btn btn-ghost" : "btn btn-primary"}
               isDisabled={!canReview || busy}
               onPress={onReview}
             >

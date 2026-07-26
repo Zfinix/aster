@@ -29,11 +29,9 @@ struct StartupInfo {
     bin_path: Option<String>,
 }
 
-/// Persisted provider settings for the LLM. aster resolves these from the
-/// environment (`ASTER_API_KEY` / `ASTER_BASE_URL` / `ASTER_MODEL`); we store
-/// them once, next to the CLI's own `credentials.json`, and inject them as env
-/// when spawning the CLI. That keeps one source of truth instead of relying on
-/// a per-repo `.env` a launched app can't see.
+/// Persisted provider settings, injected as env (`ASTER_API_KEY` / `ASTER_BASE_URL`
+/// / `ASTER_MODEL`) when spawning the CLI, since a launched app can't see a repo
+/// `.env`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Provider {
     api_key: Option<String>,
@@ -148,9 +146,8 @@ struct ChatMessage {
     content: String,
 }
 
-/// Spawn an `aster` subcommand with the repo as cwd, write `payload` to its
-/// stdin, and return its parsed stdout JSON. Shared by `chat` and `apply_fix`
-/// so both surface errors the same way.
+/// Spawn an `aster` subcommand with the repo as cwd, write `payload` to stdin,
+/// and return its parsed stdout JSON. Shared by `chat` and `apply_fix`.
 async fn run_aster_json(
     cli_args: &[&str],
     repo_path: Option<&str>,
@@ -212,20 +209,23 @@ struct ChatReply {
     edits: Vec<String>,
 }
 
-/// A single-shot conversational reply from Aster, governed by the agent skill.
-/// Spawns `aster chat` with the repo as cwd so provider resolution (repo
-/// `.env`, env, aster.yaml, stored settings) is identical to `run_review`.
-/// The agent may read/search the repo; with `allow_edits` it may change it.
+/// Spawns `aster chat` with the repo as cwd so provider resolution matches
+/// `run_review`. The agent may read/search; with `allow_edits` it may edit.
 #[tauri::command]
 async fn chat(
     messages: Vec<ChatMessage>,
     repo_path: Option<String>,
     model: Option<String>,
     allow_edits: Option<bool>,
+    session: Option<String>,
 ) -> Result<ChatReply, String> {
     let mut args = vec!["chat", "--messages-json", "-", "--json"];
     if allow_edits.unwrap_or(false) {
         args.push("--allow-edits");
+    }
+    if let Some(session) = session.as_deref().filter(|s| !s.is_empty()) {
+        args.push("--session");
+        args.push(session);
     }
     let payload = serde_json::to_vec(&messages).map_err(|e| e.to_string())?;
     let v = run_aster_json(&args, repo_path.as_deref(), model, payload).await?;
@@ -266,6 +266,48 @@ async fn apply_fix(
 }
 
 #[tauri::command]
+async fn list_sessions(repo_path: Option<String>) -> Result<serde_json::Value, String> {
+    run_aster_json(
+        &["sessions", "list", "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn show_session(id: String, repo_path: Option<String>) -> Result<serde_json::Value, String> {
+    run_aster_json(
+        &["sessions", "show", &id, "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn memory_list() -> Result<serde_json::Value, String> {
+    run_aster_json(&["memory", "list", "--json"], None, None, Vec::new()).await
+}
+
+/// Save a durable fact. With `title` it writes a named block; otherwise it
+/// appends to project memory.
+#[tauri::command]
+async fn memory_add(text: String, title: Option<String>) -> Result<serde_json::Value, String> {
+    let mut args: Vec<String> = vec!["memory".into(), "add".into(), "--json".into()];
+    if let Some(title) = &title {
+        args.push("--title".into());
+        args.push(title.clone());
+    }
+    args.push("--".into());
+    args.push(text);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_aster_json(&refs, None, None, Vec::new()).await
+}
+
+#[tauri::command]
 fn auth_status() -> AuthStatus {
     let p = load_provider();
     let env_key = std::env::var("ASTER_API_KEY")
@@ -299,26 +341,28 @@ fn save_provider(
     write_provider(&p)
 }
 
-/// The command used to spawn the CLI. Prefers an explicit override, then the
-/// sidecar bundled inside the app, then a freshly built workspace binary, and
-/// finally `aster` on PATH.
+/// `ASTER_BIN` always wins. A dev build runs the workspace CLI (never the sidecar,
+/// which dev doesn't stage); a release build uses the bundled sidecar, then PATH.
 fn resolve_bin() -> String {
     if let Ok(p) = std::env::var("ASTER_BIN") {
         if !p.is_empty() {
             return p;
         }
     }
+    if cfg!(debug_assertions) {
+        if let Some(p) = workspace_bin("debug").or_else(|| workspace_bin("release")) {
+            return p.to_string_lossy().into_owned();
+        }
+    }
     find_sidecar_bin()
-        .or_else(find_workspace_bin)
+        .or_else(|| workspace_bin("release"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "aster".to_string())
 }
 
-/// The CLI shipped alongside the app as a Tauri `externalBin`. In a packaged
-/// build it sits next to the app executable, named `aster-cli` (deliberately
+/// The bundled Tauri `externalBin`, next to the app executable. Named `aster-cli`,
 /// distinct from the `Aster` app binary so the two never collide on a
-/// case-insensitive filesystem). Returns `None` in dev, where no sidecar is
-/// placed beside the dev binary and `find_workspace_bin` takes over.
+/// case-insensitive filesystem. `None` in dev, where no sidecar is staged.
 fn find_sidecar_bin() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let name = if cfg!(windows) {
@@ -330,19 +374,15 @@ fn find_sidecar_bin() -> Option<PathBuf> {
     cand.is_file().then_some(cand)
 }
 
-/// A concrete binary on disk, if one exists next to the workspace. Picks the
-/// **most recently built** of release/debug, not a fixed profile order: a stale
-/// release build otherwise shadows a fresh debug one and runs old CLI args.
-fn find_workspace_bin() -> Option<PathBuf> {
+/// The workspace CLI at `target/<profile>/aster`. Selected by explicit profile,
+/// not mtime, so dev always runs current source instead of guessing.
+fn workspace_bin(profile: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()?
         .parent()?
         .to_path_buf();
-    ["release", "debug"]
-        .iter()
-        .map(|p| root.join("target").join(p).join("aster"))
-        .filter(|c| c.is_file())
-        .max_by_key(|c| std::fs::metadata(c).and_then(|m| m.modified()).ok())
+    let cand = root.join("target").join(profile).join("aster");
+    cand.is_file().then_some(cand)
 }
 
 fn default_repo() -> Option<String> {
@@ -382,7 +422,7 @@ fn strip_ansi(input: &str) -> String {
 fn startup_info() -> StartupInfo {
     StartupInfo {
         default_repo: default_repo(),
-        bin_path: find_workspace_bin().map(|p| p.to_string_lossy().into_owned()),
+        bin_path: Some(resolve_bin()),
     }
 }
 
@@ -549,7 +589,11 @@ pub fn run() {
             auth_status,
             save_provider,
             chat,
-            apply_fix
+            apply_fix,
+            list_sessions,
+            show_session,
+            memory_list,
+            memory_add
         ])
         .run(tauri::generate_context!())
         .expect("error while running aster desktop");

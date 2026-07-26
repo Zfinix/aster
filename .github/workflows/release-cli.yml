@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build (e.g. cli-v0.1.0)'
+        description: 'Release tag to build (e.g. cli-v0.2.0)'
         required: true
 
 permissions:
@@ -30,9 +30,9 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-26
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-26
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
@@ -118,10 +118,10 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-26
             args: --target aarch64-apple-darwin
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-26
             args: --target x86_64-apple-darwin
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04

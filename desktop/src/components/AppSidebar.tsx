@@ -1,44 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { Switch } from "@heroui/react";
-import { latestReview, type Conversation } from "../lib/session";
+import { type Conversation } from "../lib/session";
 import { ModelMenu } from "./ModelMenu";
-import type { Severity } from "../lib/types";
 import type { AuthStatus } from "../lib/aster";
-import { severityOf, SEV_RANK } from "../lib/severity";
 import { useToast, type Theme } from "./chrome";
 import { checkForUpdate, installUpdate, type UpdateStage } from "../lib/updater";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { Mark } from "./Mark";
-import { CloseIcon, EditIcon, FolderIcon, GearIcon, LayersIcon, MoonIcon, SidebarIcon, SunIcon } from "./icons";
+import { ReviewRow } from "./ReviewRow";
+import { ChatIcon, ChevronIcon, CloseIcon, EditIcon, FolderIcon, GearIcon, MoonIcon, SidebarIcon, SunIcon } from "./icons";
 
 const CONFIDENCE_STEPS = [0, 0.25, 0.5, 0.75] as const;
 
-const SEV_COLOR: Record<Severity, string> = {
-  critical: "var(--red)",
-  high: "var(--coral)",
-  medium: "var(--amber)",
-  low: "#7aa2f7",
-  info: "var(--faint)",
-};
-
-function dotColor(c: Conversation): string {
-  const review = latestReview(c);
-  if (!review) return "var(--faint)";
-  if (review.findings.length) {
-    const top = review.findings
-      .map((f) => severityOf(f.severity))
-      .sort((a, b) => SEV_RANK[a] - SEV_RANK[b])[0];
-    return SEV_COLOR[top];
-  }
-  return review.status === "done" ? "var(--green)" : "var(--faint)";
-}
+const COLLAPSED_KEY = "aster.collapsedRepos";
 
 interface Props {
   conversations: Conversation[];
   activeId: string | null;
+  onNewChat: () => void;
   onNewReview: () => void;
   onOpen: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
+  onRerun: (id: string) => void;
+  onCopyBrief: (id: string) => void;
   onCollapse: () => void;
   theme: Theme;
   setTheme: (t: Theme) => void;
@@ -62,6 +48,21 @@ export function AppSidebar(props: Props) {
   const { conversations, activeId, onOpen, theme, setTheme, minConfidence, model } =
     props;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]"));
+    } catch {
+      return new Set();
+    }
+  });
+
+  const toggleGroup = (repo: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(repo) ? next.delete(repo) : next.add(repo);
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      return next;
+    });
 
   const groups = new Map<string, Conversation[]>();
   for (const c of conversations) {
@@ -84,19 +85,16 @@ export function AppSidebar(props: Props) {
         </button>
       </div>
 
+      <button className="side-item" onClick={props.onNewChat}>
+        <ChatIcon />
+        New chat
+      </button>
       <button className="side-item" onClick={props.onNewReview}>
         <EditIcon />
         New review
       </button>
-      <button
-        className="side-item"
-        onClick={() => setSettingsOpen(true)}
-      >
-        <LayersIcon />
-        Analyzers
-      </button>
 
-      <div className="side-label">Reviews</div>
+      <div className="side-label">Recent</div>
 
       <div className="side-scroll">
         {conversations.length === 0 && (
@@ -104,26 +102,37 @@ export function AppSidebar(props: Props) {
             No reviews yet.
           </div>
         )}
-        {[...groups.entries()].map(([repo, list]) => (
-          <div key={repo}>
-            <div className="proj">
-              <FolderIcon />
-              {repo}
-            </div>
-            {list.map((c) => (
+        {[...groups.entries()].map(([repo, list]) => {
+          const isCollapsed = collapsed.has(repo);
+          return (
+            <div key={repo} className="proj-group">
               <button
-                key={c.id}
-                className="thread"
-                data-active={c.id === activeId}
-                onClick={() => onOpen(c.id)}
+                className="proj"
+                data-collapsed={isCollapsed}
+                onClick={() => toggleGroup(repo)}
+                aria-expanded={!isCollapsed}
               >
-                <span className="t-dot" style={{ background: dotColor(c) }} />
-                <span className="t-name">{c.title || "Working tree review"}</span>
-                <span className="t-meta">{c.whenLabel}</span>
+                <ChevronIcon />
+                <FolderIcon />
+                <span className="proj-name">{repo}</span>
+                <span className="proj-count">{list.length}</span>
               </button>
-            ))}
-          </div>
-        ))}
+              {!isCollapsed &&
+                list.map((c) => (
+                  <ReviewRow
+                    key={c.id}
+                    convo={c}
+                    active={c.id === activeId}
+                    onOpen={() => onOpen(c.id)}
+                    onRename={(title) => props.onRename(c.id, title)}
+                    onDelete={() => props.onDelete(c.id)}
+                    onRerun={() => props.onRerun(c.id)}
+                    onCopyBrief={() => props.onCopyBrief(c.id)}
+                  />
+                ))}
+            </div>
+          );
+        })}
       </div>
 
       <SettingsFoot

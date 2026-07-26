@@ -1,10 +1,7 @@
 #![forbid(unsafe_code)]
-//! Minimal, provider-agnostic chat client for Aster.
-//!
-//! Talks to any OpenAI-compatible `/chat/completions` endpoint (OpenRouter,
-//! Groq, OpenAI, together, local llama.cpp, ...). This is the whole "bring your
-//! own model" story: point `ASTER_BASE_URL` / `ASTER_API_KEY` / `ASTER_MODEL`
-//! at anything that speaks the OpenAI schema.
+//! Provider-agnostic chat client for any OpenAI-compatible `/chat/completions`
+//! endpoint. Point `ASTER_BASE_URL` / `ASTER_API_KEY` / `ASTER_MODEL` at anything
+//! that speaks the OpenAI schema.
 
 use std::env;
 use std::sync::Arc;
@@ -29,47 +26,39 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_DEADLINE_SECS: u64 = 180;
-// Assumed $/million tokens when no explicit pricing is configured, so a cost is
-// always shown. Defaults to a cheap-tier model (roughly gpt-4o-mini); override
-// with ASTER_PRICE_PROMPT_PER_M / ASTER_PRICE_COMPLETION_PER_M for accuracy.
+// Assumed $/million tokens (roughly gpt-4o-mini) when no pricing is configured;
+// override with ASTER_PRICE_PROMPT_PER_M / ASTER_PRICE_COMPLETION_PER_M.
 const DEFAULT_PRICE_PROMPT_PER_M: f64 = 0.15;
 const DEFAULT_PRICE_COMPLETION_PER_M: f64 = 0.60;
 
-/// Running token totals across every call this client has made. Shared behind an
-/// `Arc` so cloned clients (and the `Arc<AiClient>` the harness holds) all report
-/// against the same counters.
+/// Running token totals, shared behind an `Arc` so cloned clients report against
+/// the same counters.
 #[derive(Default)]
 struct UsageCounter {
     prompt_tokens: AtomicU64,
     completion_tokens: AtomicU64,
     requests: AtomicU64,
-    // Set when any request's tokens were estimated (provider returned no usage),
-    // so the snapshot can be labeled honestly.
+    // Set when any request's tokens were estimated, so the snapshot is labeled honestly.
     estimated: std::sync::atomic::AtomicBool,
 }
 
-/// Rough token estimate from character count when a provider omits usage. ~4
-/// chars per token is the common heuristic; deliberately approximate.
+/// Rough token estimate from char count (~4 chars/token) when a provider omits usage.
 fn estimate_tokens(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
 }
 
-/// A point-in-time view of token spend, with an optional dollar estimate when
-/// per-million pricing is configured.
+/// A point-in-time view of token spend.
 #[derive(Debug, Clone, Copy)]
 pub struct UsageSnapshot {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub requests: u64,
-    /// Always populated. Uses configured pricing when available, else a default
-    /// cheap-tier assumption (see `cost_is_estimate`).
+    /// Always populated; uses configured pricing when available, else a default.
     pub estimated_cost_usd: Option<f64>,
-    /// True when the cost uses default (assumed) pricing or estimated tokens, so
-    /// callers can mark it approximate.
+    /// True when the cost uses default pricing or estimated tokens.
     pub cost_is_estimate: bool,
-    /// True if any token count was estimated because the provider returned no
-    /// usage. Callers should present the totals as approximate.
+    /// True if any token count was estimated because the provider returned no usage.
     pub estimated: bool,
 }
 
@@ -80,8 +69,6 @@ pub struct AiClient {
     api_key: String,
     pub model: String,
     usage: Arc<UsageCounter>,
-    // Optional per-million-token pricing for a dollar estimate. None = tokens
-    // only, never a fabricated cost.
     price_prompt_per_m: Option<f64>,
     price_completion_per_m: Option<f64>,
     seed: Option<u64>,
@@ -105,12 +92,8 @@ impl AiClient {
         )
     }
 
-    /// Build from env: `ASTER_API_KEY` (required), `ASTER_BASE_URL`
-    /// (default OpenRouter), `ASTER_MODEL` (default a cheap capable model).
-    ///
-    /// Resilience knobs: `ASTER_TIMEOUT_SECS` (overall request timeout, default
-    /// 120) and `ASTER_MAX_RETRIES` (retry attempts on transient failures,
-    /// default 3).
+    /// Build from env: `ASTER_API_KEY` (required), `ASTER_BASE_URL`, `ASTER_MODEL`,
+    /// `ASTER_TIMEOUT_SECS`, `ASTER_MAX_RETRIES`.
     pub fn from_env() -> Result<Self> {
         let api_key = env::var("ASTER_API_KEY")
             .or_else(|_| env::var("OPEN_ROUTER_API_KEY"))
@@ -236,7 +219,6 @@ impl AiClient {
         }
     }
 
-    /// The configured OpenAI-compatible endpoint (trailing slash trimmed).
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -379,13 +361,9 @@ impl AiClient {
         Ok(message)
     }
 
-    /// Streaming completion against a specific model. `on_token` is called with
-    /// each content delta as it arrives; the full accumulated text is returned.
-    ///
-    /// Parsing stays lenient: we assume SSE (`data: {...}` lines). An
-    /// OpenAI-compatible endpoint that ignores `stream` and yields no deltas is
-    /// handled here by transparently falling back to a non-streaming
-    /// `complete_with` call.
+    /// Streaming completion. `on_token` is called with each content delta; the
+    /// full accumulated text is returned. Assumes SSE (`data: {...}` lines) and
+    /// falls back to a non-streaming call when the endpoint yields no deltas.
     pub async fn complete_stream_with(
         &self,
         model: &str,
@@ -402,16 +380,15 @@ impl AiClient {
 
         let mut acc = String::new();
         let mut usage: Option<Usage> = None;
-        // Accumulate raw bytes and split lines on the byte buffer so a multibyte
-        // codepoint straddling two network chunks is never decoded until whole.
+        // Split lines on the byte buffer so a multibyte codepoint straddling two
+        // network chunks is never decoded until whole.
         let mut buf: Vec<u8> = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.context("reading stream chunk")?;
             buf.extend_from_slice(&bytes);
 
-            // SSE frames are newline-delimited; process every complete line and
-            // keep the trailing partial bytes in `buf` for the next chunk.
+            // Keep trailing partial bytes for the next chunk.
             while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
                 let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
                 let line = String::from_utf8_lossy(&line_bytes[..nl]);
@@ -442,10 +419,8 @@ impl AiClient {
             }
         }
 
-        // Some OpenAI-compatible endpoints ignore `stream` and return an empty
-        // (or non-SSE) body. Rather than failing, fall back to a single
-        // non-streaming call, which carries its own retry/timeout handling (and
-        // records its own usage).
+        // Some endpoints ignore `stream` and return an empty body; fall back to a
+        // non-streaming call (which records its own usage).
         if acc.is_empty() {
             tracing::debug!(
                 model,
@@ -457,11 +432,8 @@ impl AiClient {
         Ok(acc)
     }
 
-    /// POST a chat request and return the response for the caller to consume.
-    ///
-    /// Transient failures (network errors, HTTP 429, and 5xx) are retried with
-    /// exponential backoff by the retry middleware; a non-success status that
-    /// survives the retries fails here with the response body.
+    /// POST a chat request. Transient failures are retried by the middleware; a
+    /// non-success status that survives fails here with the response body.
     async fn send_with_retry<R: serde::Serialize>(
         &self,
         request: &R,

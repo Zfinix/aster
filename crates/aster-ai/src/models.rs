@@ -8,20 +8,15 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
-    /// Ask OpenAI-compatible providers to emit a final usage chunk on streamed
-    /// responses. Ignored by providers that do not support it.
+    /// Requests a final usage chunk on streamed responses; ignored where unsupported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
-    /// Fixed sampling seed. With `temperature: 0` this makes output reproducible
-    /// on providers that honor it; ignored elsewhere.
+    /// With `temperature: 0`, makes output reproducible on providers that honor it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
-    /// Upper bound on generated tokens, so a pathological run can't stream
-    /// unbounded and blow up latency.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// Reasoning-token control for thinking models (OpenRouter shape). Bounds the
-    /// hidden reasoning that otherwise makes latency wildly variable.
+    /// Reasoning-token control for thinking models (OpenRouter shape).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
 }
@@ -31,8 +26,7 @@ pub struct StreamOptions {
     pub include_usage: bool,
 }
 
-/// Reasoning-effort control. `effort` is "low"/"medium"/"high"; `enabled: false`
-/// turns reasoning off entirely. Providers without reasoning ignore the field.
+/// `effort` is "low"/"medium"/"high"; `enabled: false` turns reasoning off.
 #[derive(Serialize)]
 pub struct Reasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,9 +48,9 @@ pub struct ChatResponse {
     pub usage: Option<Usage>,
 }
 
-/// A chat request that can carry tool definitions and tool-call turns.
-/// Messages are raw JSON objects because assistant/tool turns have shapes
-/// (`tool_calls`, `tool_call_id`) the plain [`ChatMessage`] does not model.
+/// Chat request carrying tool definitions and tool-call turns. Messages are raw
+/// JSON because tool turns have shapes (`tool_calls`, `tool_call_id`) that
+/// [`ChatMessage`] does not model.
 #[derive(Serialize)]
 pub struct ToolChatRequest {
     pub model: String,
@@ -102,8 +96,7 @@ pub struct ToolCall {
     pub function: ToolCallFunction,
 }
 
-/// The function invocation inside a tool call; `arguments` is a JSON string,
-/// as the OpenAI schema specifies.
+/// `arguments` is a JSON string, per the OpenAI schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallFunction {
     pub name: String,
@@ -115,7 +108,6 @@ pub struct ChatChoice {
     pub message: ChatMessage,
 }
 
-/// Token counts as reported by the provider.
 #[derive(Deserialize, Default, Clone, Copy)]
 pub struct Usage {
     #[serde(default)]
@@ -124,7 +116,6 @@ pub struct Usage {
     pub completion_tokens: u64,
 }
 
-/// One server-sent chunk from a streaming `/chat/completions` response.
 #[derive(Deserialize)]
 pub struct ChatStreamChunk {
     #[serde(default)]

@@ -59,6 +59,7 @@ export interface DropdownOption {
   value: string;
   label: ReactNode;
   hint?: string;
+  danger?: boolean;
 }
 
 /** A small, outside-click-aware menu anchored to a trigger. */
@@ -116,6 +117,7 @@ export function Dropdown({
               type="button"
               role="menuitem"
               data-active={value === o.value}
+              data-danger={o.danger || undefined}
               onClick={() => {
                 onSelect(o.value);
                 setOpen(false);

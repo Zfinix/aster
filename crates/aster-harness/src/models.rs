@@ -20,13 +20,9 @@ pub struct HarnessConfig {
     pub analyzers: Vec<String>,
     /// ast-grep rule YAML content (not a path).
     pub astgrep_rules: Option<String>,
-    /// Max concurrent verifications (model call is I/O-bound).
     pub verify_concurrency: usize,
-    /// Optional defect class focus (e.g., "security").
     pub focus_areas: Vec<String>,
-    /// Minimum verifier confidence required to keep finding.
     pub min_confidence: f32,
-    /// Evidence byte cap per candidate for verifier.
     pub max_evidence_bytes: usize,
 }
 
@@ -47,7 +43,6 @@ impl Default for HarnessConfig {
     }
 }
 
-/// Where a candidate came from: a model hypothesis or a static analyzer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CandidateSource {
