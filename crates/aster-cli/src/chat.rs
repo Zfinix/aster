@@ -1,8 +1,4 @@
-//! `aster chat`: a conversational turn with the review-agent persona, plus an
-//! agentic tool loop (read, list, search, and optionally edit files in the
-//! repo). Provider resolution is identical to `aster review` (cwd `.env` via
-//! dotenvy, env, `aster.yaml`, defaults), so chat works anywhere a review
-//! works. The desktop app drives this with `--messages-json - --json`.
+//! `aster chat`: a conversational turn with an agentic read/list/search/edit tool loop.
 
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -11,6 +7,7 @@ use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
 use aster_ai::{AiClient, ChatMessage};
+use aster_persist::{MessageEvent, Store, SummaryEvent, TranscriptEvent};
 use aster_policy::{Action, Decision, Policy};
 use clap::Args;
 use serde::Deserialize;
@@ -18,29 +15,109 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::edits::{self, EditBlock};
+use crate::persist::Recorder;
 
-/// A pending edit awaiting user confirmation in the TUI. Sent from the agent
-/// task to the UI loop, which renders it and replies through `respond`.
+/// Persistence handles threaded through a chat turn: the live append handle for
+/// this session's transcript, and the store used to read and write memory.
+#[derive(Default, Clone)]
+pub(crate) struct SessionCtx {
+    pub recorder: Option<Recorder>,
+    pub store: Option<Store>,
+    pub skills: Arc<aster_skills::SkillSet>,
+}
+
+impl SessionCtx {
+    fn record(&self, event: MessageEvent) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        match recorder.lock() {
+            Ok(mut writer) => {
+                if let Err(e) = writer.append_message(event) {
+                    tracing::warn!("failed to record transcript event: {e:#}");
+                }
+            }
+            Err(e) => tracing::warn!("transcript writer lock poisoned: {e}"),
+        }
+    }
+
+    fn record_summary(&self, content: &str, replaces_through: usize) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        if let Ok(mut writer) = recorder.lock()
+            && let Err(e) = writer.append(&TranscriptEvent::Summary(SummaryEvent::new(
+                content,
+                replaces_through,
+            )))
+        {
+            tracing::warn!("failed to record summary event: {e:#}");
+        }
+    }
+
+    fn memory_context(&self) -> Option<String> {
+        let store = self.store.as_ref()?;
+        match store.memory().load_context() {
+            Ok(ctx) if !ctx.trim().is_empty() => Some(ctx),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!("failed to load memory context: {e:#}");
+                None
+            }
+        }
+    }
+}
+
+/// Discover skills from the project (`.aster/skills`) and user-global
+/// (`<config>/aster/skills`) roots, project taking precedence on name collision.
+pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
+    let mut roots = vec![repo_root.join(".aster").join("skills")];
+    match crate::persist::home() {
+        Ok(home) => roots.push(home.join("skills")),
+        Err(e) => tracing::debug!("no global skills root: {e:#}"),
+    }
+    Arc::new(aster_skills::SkillSet::discover(&roots))
+}
+
+/// The agent persona plus the memory block, when any facts are stored.
+fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
+    let mut prompt = String::from(AGENT_SYSTEM_PROMPT);
+    if tools {
+        prompt.push_str(TOOLS_PROMPT);
+        if let Some(index) = ctx.skills.render_index() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&index);
+        }
+    }
+    if let Some(memory) = ctx.memory_context() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&memory);
+    }
+    prompt
+}
+
+/// A pending edit the agent task sends to the UI loop, which replies through `respond`.
 pub(crate) struct ApprovalRequest {
     pub preview: String,
     pub respond: oneshot::Sender<bool>,
 }
 
-/// The channel an interactive front-end (the TUI) hands the agent so `ask` mode
-/// can prompt. Headless callers pass `None`, which turns every prompt into a
-/// denial.
+/// Channel for `ask` mode prompts; headless callers pass `None`, denying every prompt.
 pub(crate) type ApprovalSender = mpsc::Sender<ApprovalRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f32 = 0.4;
-/// Hard stop for the tool loop, so a confused model cannot spin forever.
+/// Hard stop so a confused model cannot spin forever.
 const MAX_TOOL_ROUNDS: usize = 12;
-/// Caps on tool output, so one fat file cannot blow the context.
+/// Caps tool output so one fat file cannot blow the context.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
 const MAX_SEARCH_HITS: usize = 80;
 const MAX_LIST_ENTRIES: usize = 200;
+/// Total history size (chars) above which older turns are folded into a summary.
+const COMPACT_BUDGET_CHARS: usize = 48_000;
+/// Recent turns kept verbatim when compacting; everything older is summarized.
+const COMPACT_KEEP_TAIL: usize = 6;
 
-/// Appended to the persona when the tool loop is active.
 const TOOLS_PROMPT: &str = "\n\n## Tools\n\n\
 You can inspect the repository with `read_file`, `list_files`, and \
 `search_files`, and change it with `edit_file` when it is available. Ground \
@@ -54,6 +131,15 @@ pub struct ChatArgs {
     /// One-shot question, e.g. `aster chat "why is finding 2 critical?"`.
     #[arg(value_name = "PROMPT", conflicts_with = "messages_json")]
     prompt: Option<String>,
+
+    /// Continue this repo's most recent session, seeding its prior history.
+    #[arg(long = "continue", conflicts_with = "messages_json")]
+    continue_session: bool,
+
+    /// Persist this turn into a session by id. Alone it also seeds the session's
+    /// prior history; with --messages-json (the caller owns history) it only records.
+    #[arg(long, value_name = "ID")]
+    session: Option<String>,
 
     /// Read a JSON array of {"role","content"} messages from PATH, or `-` for
     /// stdin. Roles: "user" | "assistant" | "system". For editors and UIs.
@@ -72,26 +158,21 @@ pub struct ChatArgs {
     #[arg(long)]
     no_tools: bool,
 
-    /// Open the interactive chat TUI (now the default in a terminal). The
-    /// optional PROMPT seeds the first question. Kept for explicitness.
+    /// Open the interactive chat TUI (default in a terminal). Optional PROMPT seeds the first question.
     #[arg(long, conflicts_with_all = ["messages_json", "json", "no_tools", "print"])]
     tui: bool,
 
-    /// Answer once and print plain text, instead of opening the interactive TUI.
-    /// The default when stdout is piped; pass it to force one-shot in a terminal.
+    /// Answer once and print plain text instead of opening the TUI (default when piped).
     #[arg(long, short = 'p', conflicts_with_all = ["messages_json", "json"])]
     print: bool,
 
-    /// Emit {"reply": "...", "edits": [...], "usage": {...}} as one JSON
-    /// object on stdout.
+    /// Emit {"reply", "edits", "usage"} as one JSON object on stdout.
     #[arg(long)]
     json: bool,
 }
 
 impl ChatArgs {
-    /// True when chat should open the interactive TUI: a real terminal on both
-    /// ends and no flag asking for one-shot or scriptable output (`--print`,
-    /// `--json`, `--no-tools`, `--messages-json`, or a pipe).
+    /// True when both ends are a real terminal and no flag forced one-shot output.
     pub fn is_interactive(&self) -> bool {
         let one_shot = self.print || self.json || self.no_tools || self.messages_json.is_some();
         !one_shot && io::stdout().is_terminal() && io::stdin().is_terminal()
@@ -112,25 +193,41 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model);
     let policy = Arc::new(Policy::compile(&settings.permissions)?);
 
-    // Chat is interactive by default: open the multi-turn TUI whenever we're on
-    // a real terminal and nothing asked for one-shot output.
     if args.is_interactive() {
         let seed = args.prompt.clone();
         let perms = settings.permissions.clone();
         return crate::tui::run_chat(client, repo_root, args.allow_edits, perms, seed).await;
     }
 
-    let history = read_history(&args)?;
+    let new_turns = read_history(&args)?;
+    let store = crate::persist::store().ok();
+    let (recorder, prior) =
+        resolve_headless_session(store.as_ref(), &repo_root, &args, &client.model)?;
+    let ctx = SessionCtx {
+        recorder,
+        store,
+        skills: discover_skills(&repo_root),
+    };
+    // Record only the new user turn. On the wire path `new_turns` is the full
+    // replayed history, whose earlier turns were recorded on previous calls.
+    if let Some(last) = new_turns.last().filter(|m| m.role == "user") {
+        ctx.record(MessageEvent::user(last.content.clone()));
+    }
+    let mut history = prior;
+    history.extend(new_turns);
+
     let mut edited: Vec<String> = Vec::new();
     let reply = if args.no_tools {
         let mut messages = vec![ChatMessage {
             role: "system".into(),
-            content: AGENT_SYSTEM_PROMPT.into(),
+            content: system_prompt(&ctx, false),
         }];
         messages.extend(history);
-        client
+        let reply = client
             .complete_messages(&messages, CHAT_TEMPERATURE)
-            .await?
+            .await?;
+        ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+        reply
     } else {
         agent_loop(
             &client,
@@ -140,8 +237,10 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             &policy,
             None,
             &mut edited,
+            &ctx,
         )
         .await?
+        .0
     };
 
     if args.json {
@@ -169,8 +268,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     Ok(())
 }
 
-/// The conversation to send, minus the system prompt: either the positional
-/// prompt as a single user message, or the full `--messages-json` history.
+/// The conversation to send, minus the system prompt.
 fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
     if let Some(path) = args.messages_json.as_deref() {
         let raw = if path == "-" {
@@ -208,8 +306,62 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
     }
 }
 
-/// One full agentic turn, owning its inputs so it can be spawned as a task
-/// (the chat TUI drives it this way). Returns the reply and the files edited.
+/// Resolve the session a headless turn records into, and the prior history to
+/// prepend. The `--messages-json` wire path (desktop replays it) records nothing.
+/// Otherwise a session is opened: `--session`/`--continue` resume an existing one,
+/// a bare prompt starts a fresh one so it is resumable later.
+fn resolve_headless_session(
+    store: Option<&Store>,
+    repo_root: &Path,
+    args: &ChatArgs,
+    model: &str,
+) -> Result<(Option<Recorder>, Vec<ChatMessage>)> {
+    let Some(store) = store else {
+        return Ok((None, Vec::new()));
+    };
+
+    // The wire path (desktop replays full history) owns its history, so it only
+    // records into a named session and never seeds prior turns.
+    if args.messages_json.is_some() {
+        let Some(id) = &args.session else {
+            return Ok((None, Vec::new()));
+        };
+        let writer = store.session_writer_for(repo_root, id, repo_root, Some(model.to_string()))?;
+        return Ok((Some(recorder(writer)), Vec::new()));
+    }
+
+    let base = if let Some(id) = &args.session {
+        Some(
+            store
+                .resume(repo_root, id)
+                .with_context(|| format!("no session {id:?} for this repo"))?,
+        )
+    } else if args.continue_session {
+        store.latest(repo_root)?
+    } else {
+        None
+    };
+
+    let (prior, writer) = match base {
+        Some(transcript) => {
+            let prior = transcript.to_chat_messages();
+            let writer = store.resume_writer(repo_root, &transcript.meta.id)?;
+            (prior, writer)
+        }
+        None => (
+            Vec::new(),
+            store.new_session(repo_root, repo_root, Some(model.to_string()))?,
+        ),
+    };
+    Ok((Some(recorder(writer)), prior))
+}
+
+fn recorder(writer: aster_persist::SessionWriter) -> Recorder {
+    std::sync::Arc::new(std::sync::Mutex::new(writer))
+}
+
+/// One full agentic turn owning its inputs so it can be spawned as a task.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn agent_turn(
     client: AiClient,
     repo_root: PathBuf,
@@ -217,9 +369,10 @@ pub(crate) async fn agent_turn(
     allow_edits: bool,
     policy: Arc<Policy>,
     approver: Option<ApprovalSender>,
-) -> Result<(String, Vec<String>)> {
+    ctx: SessionCtx,
+) -> Result<(String, Vec<String>, Option<Vec<ChatMessage>>)> {
     let mut edited = Vec::new();
-    let reply = agent_loop(
+    let (reply, compacted) = agent_loop(
         &client,
         &repo_root,
         &history,
@@ -227,14 +380,14 @@ pub(crate) async fn agent_turn(
         &policy,
         approver.as_ref(),
         &mut edited,
+        &ctx,
     )
     .await?;
-    Ok((reply, edited))
+    Ok((reply, edited, compacted))
 }
 
-/// Drive the model's tool calls until it answers in plain text (or the round
-/// cap trips). Tool failures are returned to the model as tool results, so it
-/// can retry with more context instead of dying.
+/// Drive the model's tool calls until it answers in plain text or the round cap trips.
+/// Tool failures return to the model as tool results so it can retry instead of dying.
 #[allow(clippy::too_many_arguments)]
 async fn agent_loop(
     client: &AiClient,
@@ -244,12 +397,14 @@ async fn agent_loop(
     policy: &Policy,
     approver: Option<&ApprovalSender>,
     edited: &mut Vec<String>,
-) -> Result<String> {
+    ctx: &SessionCtx,
+) -> Result<(String, Option<Vec<ChatMessage>>)> {
+    let (history, compacted) = compact_if_needed(client, history, ctx).await?;
     let mut wire: Vec<Value> = vec![json!({
         "role": "system",
-        "content": format!("{AGENT_SYSTEM_PROMPT}{TOOLS_PROMPT}"),
+        "content": system_prompt(ctx, true),
     })];
-    for m in history {
+    for m in &history {
         wire.push(serde_json::to_value(m)?);
     }
     let tools = tool_defs(allow_edits);
@@ -260,28 +415,37 @@ async fn agent_loop(
             .await
         {
             Ok(msg) => msg,
-            // Some models reject tool definitions outright; degrade to plain
-            // chat instead of failing the turn. Only safe on the first round,
-            // before any tool turns entered the history.
+            // Some models reject tool definitions; degrade to plain chat. Only
+            // safe on round 0, before any tool turns entered the history.
             Err(e) if round == 0 && is_tool_unsupported(&e) => {
                 tracing::debug!("model rejected tools; falling back to plain chat: {e:#}");
                 let mut messages = vec![ChatMessage {
                     role: "system".into(),
-                    content: AGENT_SYSTEM_PROMPT.into(),
+                    content: system_prompt(ctx, false),
                 }];
                 messages.extend(history.iter().cloned());
-                return client.complete_messages(&messages, CHAT_TEMPERATURE).await;
+                let reply = client
+                    .complete_messages(&messages, CHAT_TEMPERATURE)
+                    .await?;
+                ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+                return Ok((reply, compacted));
             }
             Err(e) => return Err(e),
         };
 
         if msg.tool_calls.is_empty() {
-            return msg
+            let reply = msg
                 .content
                 .filter(|c| !c.trim().is_empty())
-                .context("model returned an empty reply");
+                .context("model returned an empty reply")?;
+            ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+            return Ok((reply, compacted));
         }
 
+        ctx.record(MessageEvent::assistant(
+            msg.content.clone(),
+            msg.tool_calls.clone(),
+        ));
         wire.push(json!({
             "role": "assistant",
             "content": msg.content,
@@ -296,13 +460,16 @@ async fn agent_loop(
                 &call.function.name,
                 &call.function.arguments,
                 edited,
+                ctx,
             )
             .await;
             tracing::debug!(tool = %call.function.name, "tool call executed");
+            let result = truncate(&result, MAX_TOOL_RESULT_CHARS);
+            ctx.record(MessageEvent::tool(&call.id, &result));
             wire.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "content": truncate(&result, MAX_TOOL_RESULT_CHARS),
+                "content": result,
             }));
         }
     }
@@ -315,9 +482,62 @@ async fn agent_loop(
     let msg = client
         .complete_tools(wire, Vec::new(), CHAT_TEMPERATURE)
         .await?;
-    msg.content
+    let reply = msg
+        .content
         .filter(|c| !c.trim().is_empty())
-        .context("model returned an empty reply after the tool-round limit")
+        .context("model returned an empty reply after the tool-round limit")?;
+    ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+    Ok((reply, compacted))
+}
+
+const COMPACT_PROMPT: &str = "You are compacting a conversation to fit a context \
+window. Summarize the exchange below into a compact brief the assistant can \
+continue from: the user's goals, the key decisions and facts established, the \
+files and code touched, and any open threads or next steps. Be specific and \
+terse. Do not add commentary or a preamble.";
+
+async fn compact_if_needed(
+    client: &AiClient,
+    history: &[ChatMessage],
+    ctx: &SessionCtx,
+) -> Result<(Vec<ChatMessage>, Option<Vec<ChatMessage>>)> {
+    let total: usize = history.iter().map(|m| m.content.len()).sum();
+    if total <= COMPACT_BUDGET_CHARS || history.len() <= COMPACT_KEEP_TAIL + 2 {
+        return Ok((history.to_vec(), None));
+    }
+
+    let split = history.len().saturating_sub(COMPACT_KEEP_TAIL);
+    let summary = summarize(client, &history[..split]).await?;
+    ctx.record_summary(&summary, split);
+
+    let mut compacted = Vec::with_capacity(COMPACT_KEEP_TAIL + 1);
+    compacted.push(ChatMessage {
+        role: "assistant".into(),
+        content: format!("Summary of earlier conversation:\n{summary}"),
+    });
+    compacted.extend(history[split..].iter().cloned());
+    Ok((compacted.clone(), Some(compacted)))
+}
+
+async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
+    let mut transcript = String::new();
+    for m in head {
+        transcript.push_str(&m.role);
+        transcript.push_str(": ");
+        transcript.push_str(&m.content);
+        transcript.push_str("\n\n");
+    }
+    let messages = vec![
+        ChatMessage {
+            role: "system".into(),
+            content: COMPACT_PROMPT.into(),
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: transcript,
+        },
+    ];
+    client.complete_messages(&messages, 0.2).await
 }
 
 fn is_tool_unsupported(e: &anyhow::Error) -> bool {
@@ -371,6 +591,49 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "remember",
+                "description": "Save a durable fact to memory so it survives across sessions. Use for lasting project facts, conventions, or user preferences the model should recall later. `title` creates a named memory block; without it the note is appended to project memory (ASTER.md).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "note": { "type": "string", "description": "The fact to remember, stated plainly" },
+                        "title": { "type": "string", "description": "Optional short name for a dedicated memory block" }
+                    },
+                    "required": ["note"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "recall",
+                "description": "Read a memory block's full contents by name. The system prompt lists recallable memory as name and description only; call this to load the full body of a block before relying on it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "The memory block name, as listed under Recallable memory" }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "read_skill",
+                "description": "Load a skill's full instructions by name. The system prompt lists skills as name and description only; call this to read a skill's body before following it, once a request matches its description.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "The skill name, as listed under Skills" }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
     ];
     if allow_edits {
         tools.push(json!({
@@ -393,8 +656,7 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
     tools
 }
 
-/// Execute one tool call. Failures come back as plain text so the model can
-/// react (retry with more context, pick another file) instead of dying.
+/// Execute one tool call. Failures come back as plain text so the model can react.
 #[allow(clippy::too_many_arguments)]
 async fn exec_tool(
     repo_root: &Path,
@@ -404,6 +666,7 @@ async fn exec_tool(
     name: &str,
     arguments: &str,
     edited: &mut Vec<String>,
+    ctx: &SessionCtx,
 ) -> String {
     let args: Value = match serde_json::from_str(arguments) {
         Ok(v) => v,
@@ -412,6 +675,15 @@ async fn exec_tool(
     let str_arg = |key: &str| args[key].as_str().map(str::to_string);
 
     let result = match name {
+        "remember" => str_arg("note")
+            .context("remember needs a `note`")
+            .and_then(|note| remember(ctx, str_arg("title").as_deref(), &note)),
+        "recall" => str_arg("name")
+            .context("recall needs a `name`")
+            .and_then(|name| recall(ctx, &name)),
+        "read_skill" => str_arg("name")
+            .context("read_skill needs a `name`")
+            .and_then(|name| read_skill(ctx, &name)),
         "read_file" => str_arg("path")
             .context("read_file needs a `path`")
             .and_then(|path| {
@@ -443,7 +715,40 @@ async fn exec_tool(
     result.unwrap_or_else(|e| format!("error: {e:#}"))
 }
 
-/// Refuse a read of a secret file per policy.
+fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String> {
+    let store = ctx
+        .store
+        .as_ref()
+        .context("memory is unavailable; no store is open")?;
+    let memory = store.memory();
+    match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(title) => {
+            memory.remember(title, note, note)?;
+            Ok(format!("remembered under \"{title}\""))
+        }
+        None => {
+            memory.append_project(note)?;
+            Ok("remembered in project memory".to_string())
+        }
+    }
+}
+
+fn recall(ctx: &SessionCtx, name: &str) -> Result<String> {
+    let store = ctx
+        .store
+        .as_ref()
+        .context("memory is unavailable; no store is open")?;
+    store.memory().read_block(name)
+}
+
+fn read_skill(ctx: &SessionCtx, name: &str) -> Result<String> {
+    let skill = ctx
+        .skills
+        .get(name)
+        .with_context(|| format!("no skill named {name:?}; check the Skills list"))?;
+    skill.load_body()
+}
+
 fn deny_secret_read(policy: &Policy, path: &str) -> Result<()> {
     if let Decision::Deny { reason } = policy.evaluate(&Action::Read { path }) {
         bail!("{reason}");
@@ -473,7 +778,7 @@ fn read_numbered(
     Ok(body)
 }
 
-/// Directories never worth walking: mirrors the review path filter's defaults.
+/// Directories never worth walking; mirrors the review path filter's defaults.
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "target",
@@ -613,8 +918,7 @@ async fn edit_file(
     Ok(format!("edited {path}:\n{}", edits::preview(&block)))
 }
 
-/// Ask the interactive front-end to approve a pending edit. Returns false when
-/// there is no approver (headless) or the user rejects.
+/// Ask the front-end to approve a pending edit; false when headless or rejected.
 async fn request_approval(approver: Option<&ApprovalSender>, preview: String) -> bool {
     let Some(tx) = approver else {
         return false;

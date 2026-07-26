@@ -1,7 +1,7 @@
 use std::panic;
 
-/// Restores the terminal and panic hook on drop, so no code path (early `?`,
-/// panic, or normal exit) can leave the shell in raw/alt-screen mode.
+/// Restores the terminal on drop so no code path (early `?`, panic, normal
+/// exit) leaves the shell in raw/alt-screen mode.
 pub(super) struct TuiGuard;
 
 impl TuiGuard {
@@ -18,8 +18,7 @@ impl TuiGuard {
 impl Drop for TuiGuard {
     fn drop(&mut self) {
         ratatui::restore();
-        // Drop our hook so a later, unrelated panic does not emit stray restore
-        // escape sequences to an already-restored terminal.
+        // Drop our hook so a later panic can't emit stray restore sequences.
         let _ = panic::take_hook();
     }
 }

@@ -1,12 +1,9 @@
-//! The standalone conversational agent TUI ([`ChatApp`]), driven from
-//! `aster chat --tui`. [`run_chat`] owns the render loop; each turn runs as a
-//! spawned task so the UI keeps animating while the model works.
-
 use std::sync;
 use std::time::Duration;
 
 use anyhow::Result;
 use aster_ai::{AiClient, ChatMessage};
+use aster_persist::{MessageEvent, Store};
 use aster_policy::{Mode, PermissionsConfig, Policy};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -19,14 +16,12 @@ use tokio::sync::mpsc;
 use super::guard::TuiGuard;
 use super::helpers::{dim, draw_input_box, human_count, mark_lines, short_path};
 use super::{ACCENT, SPINNER};
-use crate::chat::{ApprovalRequest, ApprovalSender};
+use crate::chat::{ApprovalRequest, ApprovalSender, SessionCtx};
+use crate::persist::Recorder;
 
-/// A spawned chat turn: the agent's reply plus the files it edited.
-type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>)>>;
+type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
 
-/// A standalone conversational chat TUI: the full agent (read/search, and edits
-/// when allowed), driven from `aster chat --tui`. Each turn runs as a spawned
-/// task so the UI keeps animating while the model works.
+/// Standalone conversational chat TUI, driven from `aster chat --tui`.
 pub async fn run_chat(
     mut client: AiClient,
     repo_root: std::path::PathBuf,
@@ -36,20 +31,16 @@ pub async fn run_chat(
 ) -> Result<()> {
     let guard = TuiGuard::install();
     let mut terminal = ratatui::init();
-    // Depth 1 is enough: the agent awaits each approval before proposing the next.
+    // Depth 1: the agent awaits each approval before proposing the next.
     let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(1);
     let endpoint = crate::init::provider_label(client.base_url());
     let cwd = short_path(&repo_root);
 
-    // Prebuild the ask/auto policies so `/edits` switches gating instantly; the
-    // config's deny/protected rules are preserved, only the fall-through changes.
     let policy_for = |mode: Mode| {
         let mut c = perms.clone();
         c.mode = mode;
         sync::Arc::new(Policy::compile(&c).unwrap_or_else(|_| Policy::permissive()))
     };
-    // Start from the config's stance: --allow-edits enables editing (ask, unless
-    // the config already opts into auto); without it, chat is read-only.
     let edit_mode = if !allow_edits {
         EditMode::Off
     } else if perms.mode == Mode::Auto {
@@ -66,6 +57,18 @@ pub async fn run_chat(
         endpoint,
         cwd,
     );
+    app.repo_root = repo_root.clone();
+    if let Ok(store) = crate::persist::store() {
+        match resume_or_new(&store, &repo_root, &client.model) {
+            Ok((recorder, seeded)) => {
+                app.recorder = Some(recorder);
+                app.load_history(seeded);
+            }
+            Err(e) => tracing::warn!("could not open session store: {e:#}"),
+        }
+        app.store = Some(store);
+    }
+
     let mut turn: Option<ChatTurn> = None;
 
     if let Some(seed) = seed.filter(|s| !s.trim().is_empty()) {
@@ -75,7 +78,6 @@ pub async fn run_chat(
     let outcome = loop {
         terminal.draw(|frame| app.draw(frame))?;
 
-        // Surface a pending edit approval (one at a time).
         if app.pending_approval.is_none()
             && let Ok(req) = approval_rx.try_recv()
         {
@@ -116,11 +118,9 @@ pub async fn run_chat(
             }
             let menu_open = !app.command_matches().is_empty();
             match key.code {
-                // Arrow keys and Tab drive the slash-command menu when it's open.
                 KeyCode::Up if menu_open => app.menu_move(-1),
                 KeyCode::Down if menu_open => app.menu_move(1),
                 KeyCode::Tab if menu_open => app.complete_command(),
-                // With the menu closed, the arrows scroll the conversation.
                 KeyCode::Up => app.scroll = app.scroll.saturating_add(1),
                 KeyCode::Down => app.scroll = app.scroll.saturating_sub(1),
                 KeyCode::PageUp => app.scroll = app.scroll.saturating_add(10),
@@ -128,8 +128,7 @@ pub async fn run_chat(
                 KeyCode::Home => app.scroll = u16::MAX,
                 KeyCode::End => app.scroll = 0,
                 KeyCode::Enter if turn.is_none() && !app.input.trim().is_empty() => {
-                    // A leading slash is a local command (e.g. /model), not a
-                    // message to the model.
+                    // A leading slash is a local command (e.g. /model), not a message.
                     if app.input.trim_start().starts_with('/') {
                         let cmd = app.command_to_run();
                         app.input.clear();
@@ -165,7 +164,7 @@ pub async fn run_chat(
 
         if turn.as_ref().is_some_and(|t| t.is_finished()) {
             match turn.take().expect("checked is_some").await {
-                Ok(Ok((reply, edited))) => app.push_reply(&reply, &edited),
+                Ok(Ok((reply, edited, compacted))) => app.push_reply(&reply, &edited, compacted),
                 Ok(Err(e)) => app.fail_turn(&format!("{e:#}")),
                 Err(e) => app.fail_turn(&format!("chat failed: {e}")),
             }
@@ -177,15 +176,28 @@ pub async fn run_chat(
     outcome
 }
 
-/// How the agent's file edits are gated in chat, cycled with `/edits`. Maps onto
-/// the permission [`Mode`]: Ask/Auto also decide whether each write prompts.
+/// Continue the repo's most recent session, or start a fresh one. Returns the
+/// live transcript handle and the prior user/assistant turns to seed the view.
+fn resume_or_new(
+    store: &Store,
+    repo_root: &std::path::Path,
+    model: &str,
+) -> Result<(Recorder, Vec<ChatMessage>)> {
+    if let Some(prev) = store.latest(repo_root)? {
+        let messages = prev.to_chat_messages();
+        let writer = store.resume_writer(repo_root, &prev.meta.id)?;
+        Ok((sync::Arc::new(sync::Mutex::new(writer)), messages))
+    } else {
+        let writer = store.new_session(repo_root, repo_root, Some(model.to_string()))?;
+        Ok((sync::Arc::new(sync::Mutex::new(writer)), Vec::new()))
+    }
+}
+
+/// How file edits are gated in chat, cycled with `/edits`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EditMode {
-    /// No edit tool at all: read and search only.
     Off,
-    /// Edits are offered but every write asks for confirmation first.
     Ask,
-    /// Edits apply without asking (protected paths are still blocked).
     Auto,
 }
 
@@ -206,7 +218,6 @@ impl EditMode {
         }
     }
 
-    /// Cycle Off → Ask → Auto → Off.
     fn next(self) -> Self {
         match self {
             EditMode::Off => EditMode::Ask,
@@ -216,8 +227,8 @@ impl EditMode {
     }
 }
 
-/// A slash command surfaced in the chat menu. `takes_arg` decides whether Tab
-/// completes to `/name ` (ready for an argument) or `/name`.
+/// A slash command in the chat menu; `takes_arg` decides whether Tab completes
+/// to `/name ` or `/name`.
 struct ChatCommand {
     name: &'static str,
     takes_arg: bool,
@@ -258,34 +269,24 @@ struct ChatApp {
     thinking: bool,
     spinner: usize,
     usage: Option<aster_ai::UsageSnapshot>,
-    /// How edits are gated (off/ask/auto), cycled with `/edits`.
     edit_mode: EditMode,
-    /// The active model id, shown in the header and changed with `/model`.
     model: String,
-    /// Full conversation (user/assistant turns), carried forward each turn.
     history: Vec<ChatMessage>,
-    /// Prebuilt policies for ask/auto, so `/edits` switches gating with no rebuild.
+    store: Option<Store>,
+    recorder: Option<Recorder>,
+    repo_root: std::path::PathBuf,
     ask_policy: sync::Arc<Policy>,
     auto_policy: sync::Arc<Policy>,
-    /// Handed to each turn so `ask` mode can request confirmation.
     approval_tx: ApprovalSender,
-    /// An edit awaiting the user's y/n answer, if any.
     pending_approval: Option<ApprovalRequest>,
-    /// Highlighted row in the slash-command menu (when it is showing).
     menu_sel: usize,
-    /// Set by `/quit`, read by the event loop to break out.
     should_quit: bool,
-    /// Provider name (e.g. `OpenRouter`), shown on the welcome panel.
     endpoint: String,
-    /// Short working directory, shown on the welcome panel.
     cwd: String,
-    /// A transient one-line status in the footer (e.g. after `/edits`), cleared
-    /// on the next keystroke so it never disturbs the conversation view.
+    /// Transient footer status, cleared on the next keystroke.
     flash: Option<String>,
-    /// How many lines the view is scrolled up from the bottom. `0` follows the
-    /// latest output; higher pins the reader above it. Clamped to the scrollable
-    /// range each frame in `draw`, and left untouched as new output streams in so
-    /// reading history is never yanked back to the bottom.
+    /// Lines scrolled up from the bottom; `0` follows the latest output. Left
+    /// untouched as output streams in so reading history isn't yanked down.
     scroll: u16,
 }
 
@@ -308,6 +309,9 @@ impl ChatApp {
             edit_mode,
             model,
             history: Vec::new(),
+            store: None,
+            recorder: None,
+            repo_root: std::path::PathBuf::new(),
             ask_policy,
             auto_policy,
             approval_tx,
@@ -321,13 +325,11 @@ impl ChatApp {
         }
     }
 
-    /// True when the agent should be offered the edit tool this turn.
     fn edits_enabled(&self) -> bool {
         self.edit_mode != EditMode::Off
     }
 
-    /// The policy governing this turn's edits: `auto` applies writes directly,
-    /// everything else prompts through the approval channel.
+    /// `auto` applies writes directly; everything else prompts for approval.
     fn turn_policy(&self) -> sync::Arc<Policy> {
         match self.edit_mode {
             EditMode::Auto => self.auto_policy.clone(),
@@ -335,13 +337,12 @@ impl ChatApp {
         }
     }
 
-    /// The slash commands matching the current input, or empty when the menu
-    /// should not show (no leading `/`, or an argument is being typed).
+    /// Slash commands matching the current input; empty when the menu shouldn't
+    /// show (no leading `/`, or an argument is being typed).
     fn command_matches(&self) -> Vec<&'static ChatCommand> {
         let Some(rest) = self.input.strip_prefix('/') else {
             return Vec::new();
         };
-        // Once a space is typed the user is entering an argument, so hide the menu.
         if rest.contains(char::is_whitespace) {
             return Vec::new();
         }
@@ -351,7 +352,6 @@ impl ChatApp {
             .collect()
     }
 
-    /// The highlighted command in the menu, clamped to the current matches.
     fn selected_command(&self) -> Option<&'static ChatCommand> {
         let matches = self.command_matches();
         matches
@@ -369,16 +369,16 @@ impl ChatApp {
         self.menu_sel = (cur + delta).rem_euclid(len as isize) as usize;
     }
 
-    /// Complete the input to the highlighted command (Tab), adding a trailing
-    /// space when the command takes an argument.
+    /// Complete input to the highlighted command, with a trailing space when it
+    /// takes an argument.
     fn complete_command(&mut self) {
         if let Some(cmd) = self.selected_command() {
             self.input = format!("/{}{}", cmd.name, if cmd.takes_arg { " " } else { "" });
         }
     }
 
-    /// The command line to execute on Enter: an explicitly typed command with
-    /// args runs as-is; a bare prefix runs the highlighted menu entry.
+    /// Command to run on Enter: a typed command with args runs as-is; a bare
+    /// prefix runs the highlighted menu entry.
     fn command_to_run(&self) -> String {
         let rest = self.input.trim_start_matches('/').trim().to_string();
         if rest.contains(char::is_whitespace) {
@@ -389,7 +389,6 @@ impl ChatApp {
             .unwrap_or(rest)
     }
 
-    /// Show a pending edit and prompt for confirmation.
     fn begin_approval(&mut self, req: ApprovalRequest) {
         for line in req.preview.lines() {
             self.push_system(line);
@@ -398,7 +397,6 @@ impl ChatApp {
         self.pending_approval = Some(req);
     }
 
-    /// Answer the pending approval, replying to the waiting turn.
     fn resolve_approval(&mut self, approved: bool) {
         if let Some(req) = self.pending_approval.take() {
             let _ = req.respond.send(approved);
@@ -410,8 +408,7 @@ impl ChatApp {
         }
     }
 
-    /// Handle a `/`-prefixed input line. The model change takes effect on the
-    /// next turn, since each turn clones the client.
+    /// A model change takes effect next turn, since each turn clones the client.
     fn handle_command(&mut self, cmd: &str, client: &mut AiClient) {
         let mut parts = cmd.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or("");
@@ -433,6 +430,7 @@ impl ChatApp {
             "clear" | "c" => {
                 self.lines.clear();
                 self.history.clear();
+                self.start_new_session();
                 self.push_system("conversation cleared");
             }
             "help" | "h" => {
@@ -453,13 +451,13 @@ impl ChatApp {
         )));
     }
 
-    /// Record the question, then spawn the agent turn over the whole history.
     fn submit(&mut self, text: &str, client: &AiClient, repo_root: &std::path::Path) -> ChatTurn {
         self.push_user(text);
         self.history.push(ChatMessage {
             role: "user".into(),
             content: text.into(),
         });
+        self.record_user(text);
         self.thinking = true;
         let client = client.clone();
         let repo_root = repo_root.to_path_buf();
@@ -467,9 +465,64 @@ impl ChatApp {
         let allow_edits = self.edits_enabled();
         let policy = self.turn_policy();
         let approver = Some(self.approval_tx.clone());
+        let ctx = SessionCtx {
+            recorder: self.recorder.clone(),
+            store: self.store.clone(),
+            skills: crate::chat::discover_skills(&repo_root),
+        };
         tokio::spawn(async move {
-            crate::chat::agent_turn(client, repo_root, history, allow_edits, policy, approver).await
+            crate::chat::agent_turn(
+                client,
+                repo_root,
+                history,
+                allow_edits,
+                policy,
+                approver,
+                ctx,
+            )
+            .await
         })
+    }
+
+    fn record_user(&self, text: &str) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        if let Ok(mut writer) = recorder.lock()
+            && let Err(e) = writer.append_message(MessageEvent::user(text))
+        {
+            tracing::warn!("failed to record user turn: {e:#}");
+        }
+    }
+
+    /// Replay a resumed transcript into the view and in-memory history. The
+    /// assistant turns are already recorded on disk, so nothing is re-appended.
+    fn load_history(&mut self, messages: Vec<ChatMessage>) {
+        if messages.is_empty() {
+            return;
+        }
+        let turns = messages.iter().filter(|m| m.role == "user").count();
+        for m in &messages {
+            match m.role.as_str() {
+                "user" => self.push_user(&m.content),
+                "assistant" => self.render_assistant(&m.content),
+                _ => {}
+            }
+        }
+        self.history = messages;
+        self.push_system(&format!(
+            "resumed {turns} previous turn(s) · /clear to start fresh"
+        ));
+    }
+
+    fn start_new_session(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        match store.new_session(&self.repo_root, &self.repo_root, Some(self.model.clone())) {
+            Ok(writer) => self.recorder = Some(sync::Arc::new(sync::Mutex::new(writer))),
+            Err(e) => tracing::warn!("failed to start a new session: {e:#}"),
+        }
     }
 
     fn push_user(&mut self, text: &str) {
@@ -483,11 +536,25 @@ impl ChatApp {
         ]));
     }
 
-    fn push_reply(&mut self, reply: &str, edited: &[String]) {
+    fn push_reply(&mut self, reply: &str, edited: &[String], compacted: Option<Vec<ChatMessage>>) {
+        if let Some(compacted) = compacted {
+            self.history = compacted;
+            self.push_system("compacted earlier turns to save context");
+        }
         self.history.push(ChatMessage {
             role: "assistant".into(),
             content: reply.into(),
         });
+        self.render_assistant(reply);
+        for path in edited {
+            self.lines.push(Line::from(Span::styled(
+                format!("  ✎ edited {path}"),
+                Style::default().fg(ACCENT),
+            )));
+        }
+    }
+
+    fn render_assistant(&mut self, reply: &str) {
         self.lines.push(Line::from(""));
         for (i, l) in reply.lines().enumerate() {
             if i == 0 {
@@ -499,12 +566,6 @@ impl ChatApp {
                 self.lines.push(Line::from(Span::raw(l.to_string())));
             }
         }
-        for path in edited {
-            self.lines.push(Line::from(Span::styled(
-                format!("  ✎ edited {path}"),
-                Style::default().fg(ACCENT),
-            )));
-        }
     }
 
     fn push_error(&mut self, msg: &str) {
@@ -514,8 +575,8 @@ impl ChatApp {
         )));
     }
 
-    /// Show the error and drop the unanswered question from history, so a retry
-    /// resends just that question instead of stacking a duplicate user turn.
+    /// Drop the unanswered question from history so a retry resends it instead
+    /// of stacking a duplicate user turn.
     fn fail_turn(&mut self, msg: &str) {
         if self.history.last().is_some_and(|m| m.role == "user") {
             self.history.pop();
@@ -526,8 +587,6 @@ impl ChatApp {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        // No banner or header row: the welcome panel already carries the identity,
-        // so the conversation sits right at the top with minimal chrome.
         let rows = Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(3),
@@ -538,43 +597,48 @@ impl ChatApp {
         let input = rows[1];
         let footer = rows[2];
 
-        // Body: the conversation, or the welcome panel, both aligned to the top-left.
-        // No border around the output; the messages just flow, with a single space
-        // of left padding to breathe.
-        let visible = body.height as usize;
-        let content: Vec<Line> = if self.lines.is_empty() {
-            self.welcome_lines()
+        if self.lines.is_empty() {
+            self.draw_welcome(frame, body);
         } else {
-            self.lines.clone()
-        };
-        let max_scroll = content.len().saturating_sub(visible) as u16;
-        // Clamp so scrollback can't overshoot the content, and so it re-pins to
-        // the bottom as the range shrinks (e.g. after `/clear`).
-        self.scroll = self.scroll.min(max_scroll);
-        let scroll = max_scroll - self.scroll;
-        frame.render_widget(
-            Paragraph::new(content)
-                .block(Block::default().padding(Padding::horizontal(1)))
-                .wrap(Wrap { trim: false })
-                .scroll((scroll, 0)),
-            body,
-        );
+            let visible = body.height as usize;
+            let mut content = self.lines.clone();
+            if self.thinking {
+                content.push(Line::from(""));
+                content.push(Line::from(vec![
+                    Span::styled(
+                        format!("{} ", SPINNER[self.spinner]),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::styled("thinking…", Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+            let max_scroll = content.len().saturating_sub(visible) as u16;
+            // Re-pin to the bottom as the range shrinks (e.g. after `/clear`).
+            self.scroll = self.scroll.min(max_scroll);
+            let scroll = max_scroll - self.scroll;
+            frame.render_widget(
+                Paragraph::new(content)
+                    .block(Block::default().padding(Padding::horizontal(1)))
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll, 0)),
+                body,
+            );
+        }
 
         draw_input_box(
             frame,
             input,
             &self.input,
-            self.thinking,
+            false,
             self.spinner,
             "Message Aster…",
         );
 
-        // Slash-command menu floats just above the input, drawn last so it wins.
+        // Drawn last so the menu wins over the input box below it.
         if !self.thinking && self.pending_approval.is_none() {
             self.draw_command_menu(frame, input);
         }
 
-        // Footer: usage + hints.
         let usage = self
             .usage
             .filter(|u| u.total_tokens > 0)
@@ -618,29 +682,19 @@ impl ChatApp {
         frame.render_widget(Paragraph::new(Line::from(spans)), footer);
     }
 
-    /// The empty-state welcome panel: the wordmark, session context, and tips.
     fn welcome_lines(&self) -> Vec<Line<'static>> {
         let field = |k: &str, v: String| {
             Line::from(vec![
-                Span::styled(format!("  {k:<9}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{k:<9}"), Style::default().fg(Color::DarkGray)),
                 Span::raw(v),
             ])
         };
 
-        // The asterisk mark + wordmark, matching the desktop app's logo. Each mark
-        // row is indented two spaces to line up with the session fields below it.
-        let mut lines: Vec<Line<'static>> = mark_lines()
-            .into_iter()
-            .map(|line| {
-                let mut spans = vec![Span::raw("  ")];
-                spans.extend(line.spans);
-                Line::from(spans)
-            })
-            .collect();
+        let mut lines: Vec<Line<'static>> = mark_lines();
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled(
-                "  Aster",
+                "Aster",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -655,20 +709,38 @@ impl ChatApp {
         lines.push(field("mode", self.edit_mode.desc().into()));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Getting started",
+            "Getting started",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )));
-        lines.push(dim(
-            "  • Ask about a file, a diff, or anything in this repo",
-        ));
-        lines.push(dim(
-            "  • Type  /  to browse commands (model, edits, clear…)",
-        ));
+        lines.push(dim("• Ask about a file, a diff, or anything in this repo"));
+        lines.push(dim("• Type  /  to browse commands (model, edits, clear…)"));
         lines
     }
 
-    /// Render the filtered slash-command menu as a popup anchored just above the
-    /// input box. Does nothing when no command matches the current input.
+    fn draw_welcome(&self, frame: &mut Frame, body: Rect) {
+        let lines = self.welcome_lines();
+        let content_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+        let width = (content_w + 4).min(body.width);
+        let height = (lines.len() as u16 + 2).min(body.height);
+        let card = Rect {
+            x: body.x,
+            y: body.y,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, card);
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .padding(Padding::horizontal(1)),
+            ),
+            card,
+        );
+    }
+
     fn draw_command_menu(&self, frame: &mut Frame, input: Rect) {
         let matches = self.command_matches();
         if matches.is_empty() {
@@ -765,5 +837,50 @@ mod tests {
         let before = app.lines.len();
         app.handle_command("bogus", &mut client);
         assert!(app.lines.len() > before);
+    }
+
+    #[test]
+    fn resume_seeds_history_from_prior_session() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-resume-repo");
+        {
+            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+            w.append_message(MessageEvent::user("hello")).unwrap();
+            w.append_message(MessageEvent::assistant(Some("hi there".into()), vec![]))
+                .unwrap();
+        }
+
+        let (recorder, messages) = resume_or_new(&store, repo, "m").unwrap();
+        assert_eq!(messages.len(), 2);
+
+        let mut app = chat_app("m".into());
+        app.store = Some(store);
+        app.repo_root = repo.to_path_buf();
+        app.recorder = Some(recorder);
+        app.load_history(messages);
+        assert_eq!(app.history.len(), 2);
+        assert!(!app.lines.is_empty());
+    }
+
+    #[test]
+    fn record_user_persists_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-record-repo");
+        let (recorder, _) = resume_or_new(&store, repo, "m").unwrap();
+
+        let mut app = chat_app("m".into());
+        app.store = Some(store.clone());
+        app.repo_root = repo.to_path_buf();
+        app.recorder = Some(recorder);
+        app.record_user("remember me");
+
+        let latest = store.latest(repo).unwrap().unwrap();
+        let persisted = latest.events.iter().any(|e| {
+            matches!(e, aster_persist::TranscriptEvent::Message(m)
+                if m.role == "user" && m.content.as_deref() == Some("remember me"))
+        });
+        assert!(persisted);
     }
 }

@@ -19,8 +19,7 @@ fn git(args: &[&str]) -> Result<String> {
 pub fn diff(range: Option<&str>) -> Result<String> {
     match range {
         Some(range) => {
-            // A `--` separator ends option parsing, but a range starting with `-`
-            // still lands before it and would be read as a git flag, so reject it.
+            // A range starting with `-` lands before `--` and is read as a git flag.
             if range.starts_with('-') {
                 bail!("invalid diff range {range:?}: ranges must not start with '-'");
             }

@@ -1,8 +1,4 @@
-//! `aster init`: first-run onboarding. Inline clack-style prompts via `cliclack`
-//! pick a provider, model, and API key, then scaffold `aster.yaml` and wire the
-//! key into `.env` — so a fresh clone goes from "no API key found" to a working
-//! `aster review` in one step. Falls back to a default config when stdout isn't
-//! a terminal (CI, pipes) or `--yes` is passed.
+//! `aster init`: first-run onboarding that scaffolds `aster.yaml` and wires a key into `.env`.
 
 use std::io::{self, IsTerminal};
 use std::path::Path;
@@ -17,7 +13,7 @@ use serde::Deserialize;
 const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
 const RESET: &str = "\x1b[0m";
-/// 256-color orange, the closest palette match to the Aster accent.
+/// Closest 256-color palette match to the Aster accent.
 const ORANGE_256: u8 = 208;
 
 #[derive(Args)]
@@ -35,9 +31,8 @@ pub struct InitArgs {
     yes: bool,
 }
 
-/// One provider from the shared `providers.json` catalog at the repo root. That
-/// file is the single source of truth so the desktop app and web can grab the
-/// same list; fields we don't use here (notes) are ignored.
+/// One provider from the shared `providers.json` catalog, the single source of
+/// truth across desktop and web; unused fields are ignored.
 #[derive(Debug, Deserialize)]
 struct Provider {
     id: String,
@@ -55,22 +50,19 @@ struct Catalog {
 }
 
 impl Provider {
-    /// Whether this endpoint needs a real API key. Local/self-hosted servers
-    /// advertise "none" or "optional" auth and get to skip the key prompt.
+    /// Local/self-hosted servers advertise "none" or "optional" auth and skip the key prompt.
     fn needs_key(&self) -> bool {
         let a = self.auth.to_ascii_lowercase();
         !(a.contains("none") || a.contains("optional"))
     }
 
-    /// A base URL with a `{placeholder}` (Azure resource, Bedrock region, …) the
-    /// user must fill in before it will resolve.
+    /// A base URL with a `{placeholder}` the user must fill in before it resolves.
     fn templated(&self) -> bool {
         self.base_url.contains('{')
     }
 }
 
-/// The catalog is embedded at build time, so the binary carries it and there's
-/// no runtime file to locate.
+/// Embedded at build time so there's no runtime file to locate.
 const PROVIDERS_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.json"));
 
@@ -80,8 +72,7 @@ fn load_providers() -> Result<Vec<Provider>> {
     Ok(catalog.providers)
 }
 
-/// Human provider name for a base URL (e.g. `OpenRouter`), matched against the
-/// catalog. Falls back to the bare host when nothing matches.
+/// Human provider name for a base URL, matched against the catalog; falls back to the host.
 pub fn provider_label(base_url: &str) -> String {
     let want = base_url.trim_end_matches('/');
     if let Ok(providers) = load_providers() {
@@ -111,8 +102,7 @@ fn host_only(url: &str) -> &str {
         .unwrap_or(url)
 }
 
-/// The provider to prefill for the non-interactive path and the "Skip" row.
-/// OpenRouter is the friendliest default (aggregator, one key, any model).
+/// Prefill for the non-interactive path and "Skip" row; OpenRouter is the friendliest default.
 fn default_provider(providers: &[Provider]) -> &Provider {
     providers
         .iter()
@@ -120,7 +110,7 @@ fn default_provider(providers: &[Provider]) -> &Provider {
         .unwrap_or(&providers[0])
 }
 
-/// The clack theme, recolored from the default cyan to the Aster orange.
+/// The clack theme, recolored to the Aster orange.
 struct AsterTheme;
 
 impl cliclack::Theme for AsterTheme {
@@ -180,7 +170,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     emit(write_yaml(&yaml_path, &base_url, &model, args.force)?, true)?;
     if let Some(key) = key.filter(|k| !k.trim().is_empty()) {
         // The repo `.env` is git-ignored on our behalf; the global one lives
-        // beside the global config and is loaded on every run (see main.rs).
+        // beside the global config and is loaded on every run.
         let env_path = yaml_path.with_file_name(".env");
         emit(store_key(&env_path, key.trim(), !args.global)?, true)?;
     }
@@ -196,8 +186,7 @@ pub fn run(args: InitArgs) -> Result<()> {
 
 type Configured = (String, String, Option<String>);
 
-/// The prompt sequence: provider → (base URL) → model → key. Returns `None`
-/// when the user cancels (Esc / Ctrl+C).
+/// The prompt sequence: provider, base URL, model, key. `None` when the user cancels.
 fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     let skip = providers.len();
     let mut menu = select::<usize>("Which model provider?")
@@ -217,8 +206,7 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
         return Ok(Some((d.base_url.clone(), d.example_model.clone(), None)));
     };
 
-    // Only prompt for the base URL when it has a `{placeholder}` to fill in;
-    // every other provider's URL is ready to use, so we skip the step.
+    // Only prompt for the base URL when it has a `{placeholder}` to fill in.
     let base_url = if provider.templated() {
         let Some(url) = or_cancel(
             cliclack::input("Base URL")
@@ -258,8 +246,7 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     )))
 }
 
-/// Map a cliclack prompt result to `Option`: `Interrupted` (Esc / Ctrl+C) means
-/// the user cancelled; any other error propagates.
+/// Map a prompt result to `Option`: `Interrupted` means cancelled, any other error propagates.
 fn or_cancel<T>(result: io::Result<T>) -> Result<Option<T>> {
     match result {
         Ok(v) => Ok(Some(v)),
@@ -268,8 +255,7 @@ fn or_cancel<T>(result: io::Result<T>) -> Result<Option<T>> {
     }
 }
 
-/// A one-line status, emitted inside the clack frame (interactive) or as a plain
-/// line (CI / piped).
+/// A one-line status, emitted inside the clack frame or as a plain line.
 enum Note {
     Success(String),
     Info(String),
@@ -293,8 +279,7 @@ fn finish_plain(global: bool) {
     }
 }
 
-/// Store the API key in `.env`. When `gitignore` is set, also keep the file out
-/// of git (true for a repo `.env`, false for the global config dir).
+/// Store the API key in `.env`. When `gitignore` is set, also keep the file out of git.
 fn store_key(env_path: &Path, key: &str, gitignore: bool) -> Result<Note> {
     if env_has_key(env_path, "ASTER_API_KEY") {
         return Ok(Note::Info(
@@ -353,7 +338,7 @@ fn yaml_contents(base_url: &str, model: &str) -> String {
     )
 }
 
-/// True if `.env` already defines `key` (so we never clobber an existing secret).
+/// True if `.env` already defines `key`, so we never clobber an existing secret.
 fn env_has_key(env_path: &Path, key: &str) -> bool {
     let Ok(text) = fs::read_to_string(env_path) else {
         return false;
@@ -376,7 +361,6 @@ fn append_line(path: &Path, line: &str) -> Result<()> {
     Ok(())
 }
 
-/// Add `entry` to the repo's `.gitignore` if it isn't ignored already.
 fn ensure_gitignored(repo_root: &Path, entry: &str) -> Result<()> {
     let path = repo_root.join(".gitignore");
     let existing = fs::read_to_string(&path).unwrap_or_default();

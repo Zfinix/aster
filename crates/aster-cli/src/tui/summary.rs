@@ -1,7 +1,6 @@
 use aster_models::ReviewReport;
 
-/// Reprint the outcome to the real terminal after the TUI closes, so results
-/// survive in scrollback instead of vanishing with the alternate screen.
+/// Reprint the outcome after the TUI closes so results survive in scrollback.
 pub(super) fn print_summary(resp: &ReviewReport, min_confidence: f32) {
     let findings: Vec<_> = resp
         .findings

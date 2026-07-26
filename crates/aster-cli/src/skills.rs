@@ -1,0 +1,1107 @@
+//! `aster skills`: manage agent skills, mirroring the `npx skills@latest`
+//! surface. Skills install per-project (`.aster/skills`) by default or globally
+//! (`<config>/aster/skills`) with `-g`. A git source is fetched lazily: a
+//! treeless partial clone with only the `SKILL.md` manifests checked out, so
+//! browsing is cheap and a skill's full contents download only when chosen.
+
+use std::collections::BTreeMap;
+use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use anyhow::{Context, Result, bail};
+use aster_skills::{Skill, SkillSet, find_skills, install_skill, remove_skill};
+use clap::{Args, Subcommand};
+use cliclack::{confirm, input, intro, log, outro, outro_cancel, select};
+use console::{Key, Term, style};
+use serde::{Deserialize, Serialize};
+
+#[derive(Args)]
+pub struct SkillsArgs {
+    #[command(subcommand)]
+    command: Option<SkillsCommand>,
+}
+
+#[derive(Subcommand)]
+enum SkillsCommand {
+    /// Add skills from a repo, a local folder, or Claude Code.
+    #[command(visible_alias = "a")]
+    Add {
+        /// Source: `owner/repo`, a git URL, or a local path. Omit for the wizard.
+        source: Option<String>,
+        /// Install into the user-global root instead of this project.
+        #[arg(short = 'g', long)]
+        global: bool,
+        /// Install only these skills by name (repeat or comma-separate; `*` for all).
+        #[arg(short = 's', long = "skill", value_delimiter = ',')]
+        skill: Vec<String>,
+        /// Install every skill found, no prompts.
+        #[arg(long)]
+        all: bool,
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// List the skills a source offers without installing.
+        #[arg(short = 'l', long)]
+        list: bool,
+        /// Search all subdirectories even when a directory already has a SKILL.md.
+        #[arg(long)]
+        full_depth: bool,
+        /// Overwrite skills that are already installed.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List installed skills.
+    #[command(visible_alias = "ls")]
+    List {
+        /// List the user-global root instead of this project.
+        #[arg(short = 'g', long)]
+        global: bool,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove installed skills (interactive when no name is given).
+    #[command(visible_alias = "rm")]
+    Remove {
+        /// Skill names to remove.
+        skills: Vec<String>,
+        /// Remove from the user-global root instead of this project.
+        #[arg(short = 'g', long)]
+        global: bool,
+        /// Remove every installed skill.
+        #[arg(long)]
+        all: bool,
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Print a skill's instructions to stdout without installing it.
+    Use {
+        /// `owner/repo@skill`, `owner/repo`, or an installed skill name.
+        target: String,
+        /// The skill to use when the target is a repo with several.
+        #[arg(short = 's', long = "skill")]
+        skill: Option<String>,
+        /// Search all subdirectories even when a directory already has a SKILL.md.
+        #[arg(long)]
+        full_depth: bool,
+    },
+    /// Search GitHub for skills and install interactively.
+    Find {
+        /// Search terms.
+        query: Option<String>,
+        /// Restrict to repositories from this GitHub owner.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Install into the user-global root instead of this project.
+        #[arg(short = 'g', long)]
+        global: bool,
+    },
+    /// Update installed skills to their latest versions.
+    #[command(visible_alias = "upgrade")]
+    Update {
+        /// Skill names to update; omit for all.
+        skills: Vec<String>,
+        /// Update the user-global root instead of this project.
+        #[arg(short = 'g', long)]
+        global: bool,
+    },
+    /// Scaffold a new skill (creates <name>/SKILL.md).
+    Init {
+        /// The skill name; omit to write ./SKILL.md.
+        name: Option<String>,
+    },
+}
+
+pub async fn run(args: SkillsArgs) -> Result<()> {
+    let command = args.command.unwrap_or(SkillsCommand::List {
+        global: false,
+        json: false,
+    });
+    match command {
+        SkillsCommand::Add {
+            source,
+            global,
+            skill,
+            all,
+            yes,
+            list,
+            full_depth,
+            force,
+        } => add(AddOpts {
+            source,
+            global,
+            skill,
+            all,
+            yes,
+            list,
+            full_depth,
+            force,
+        }),
+        SkillsCommand::List { global, json } => list(global, json),
+        SkillsCommand::Remove {
+            skills,
+            global,
+            all,
+            yes,
+        } => remove(skills, global, all, yes),
+        SkillsCommand::Use {
+            target,
+            skill,
+            full_depth,
+        } => use_skill(&target, skill.as_deref(), full_depth),
+        SkillsCommand::Find {
+            query,
+            owner,
+            global,
+        } => find(query, owner, global).await,
+        SkillsCommand::Update { skills, global } => update(skills, global),
+        SkillsCommand::Init { name } => init(name.as_deref()),
+    }
+}
+
+// ---- scopes ----
+
+#[derive(Clone, Copy)]
+enum Scope {
+    Project,
+    Global,
+}
+
+fn scope_of(global: bool) -> Scope {
+    if global {
+        Scope::Global
+    } else {
+        Scope::Project
+    }
+}
+
+fn scope_root(scope: Scope) -> Result<PathBuf> {
+    match scope {
+        Scope::Global => Ok(crate::persist::home()?.join("skills")),
+        Scope::Project => Ok(std::env::current_dir()
+            .context("could not determine the current directory")?
+            .join(".aster")
+            .join("skills")),
+    }
+}
+
+fn scope_word(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Project => "project",
+        Scope::Global => "global",
+    }
+}
+
+// ---- add ----
+
+struct AddOpts {
+    source: Option<String>,
+    global: bool,
+    skill: Vec<String>,
+    all: bool,
+    yes: bool,
+    list: bool,
+    full_depth: bool,
+    force: bool,
+}
+
+fn add(opts: AddOpts) -> Result<()> {
+    let scope = scope_of(opts.global);
+    let dest = scope_root(scope)?;
+    let tty = is_tty();
+
+    let source = match opts.source.clone() {
+        Some(s) => s,
+        None if tty => {
+            intro("Add skills")?;
+            match prompt_source()? {
+                Some(s) => s,
+                None => return cancel(),
+            }
+        }
+        None => bail!("a source is required (owner/repo, a git URL, or a local path)"),
+    };
+
+    let (src, mut skills) = resolve_and_list(&source, opts.full_depth, tty)?;
+    if skills.is_empty() {
+        let msg = "No skills (SKILL.md folders) found at that source";
+        if tty {
+            outro_cancel(msg)?;
+        } else {
+            bail!("{msg}");
+        }
+        return Ok(());
+    }
+
+    if opts.list {
+        print_available(&skills);
+        return Ok(());
+    }
+
+    let Some(chosen) = select_skills("Select skills to install", &skills, &opts, tty)? else {
+        return cancel();
+    };
+    if chosen.is_empty() {
+        return cancel();
+    }
+
+    if tty && !opts.yes {
+        let ok = or_cancel(
+            confirm(format!(
+                "Install {} skill(s) into the {} scope?",
+                chosen.len(),
+                scope_word(scope)
+            ))
+            .initial_value(true)
+            .interact(),
+        )?;
+        if ok != Some(true) {
+            return cancel();
+        }
+    }
+
+    let installed = fetch_and_install(&src, &chosen, &dest, opts.force, &source)?;
+    let done = format!("Installed {installed} skill(s) into {}", dest.display());
+    if tty {
+        outro(done)?;
+    } else {
+        println!("{done}");
+    }
+    // Keep the discovered list from being flagged as unused on the headless path.
+    let _ = &mut skills;
+    Ok(())
+}
+
+/// Resolve a source and enumerate its skills, with a spinner in a terminal.
+fn resolve_and_list(source: &str, full_depth: bool, tty: bool) -> Result<(Source, Vec<Skill>)> {
+    let spinner = tty.then(|| {
+        let s = cliclack::spinner();
+        s.start(format!("Reading skills from {source}"));
+        s
+    });
+    let src = match resolve_source(source) {
+        Ok(s) => s,
+        Err(e) => {
+            if let Some(s) = spinner {
+                s.error("could not read source");
+            }
+            return Err(e);
+        }
+    };
+    let mut skills = find_skills(src.browse_root(), full_depth);
+    src.filter(&mut skills);
+    if let Some(s) = spinner {
+        s.stop(format!("Found {} skill(s)", skills.len()));
+    }
+    Ok((src, skills))
+}
+
+/// Pick which skills to install from flags, or interactively.
+fn select_skills(
+    title: &str,
+    skills: &[Skill],
+    opts: &AddOpts,
+    tty: bool,
+) -> Result<Option<Vec<Skill>>> {
+    if opts.all || opts.skill.iter().any(|s| s == "*") {
+        return Ok(Some(skills.to_vec()));
+    }
+    if !opts.skill.is_empty() {
+        let mut chosen = Vec::new();
+        for name in &opts.skill {
+            let skill = skills
+                .iter()
+                .find(|s| &s.name == name)
+                .with_context(|| format!("no skill named {name:?} in the source"))?;
+            chosen.push(skill.clone());
+        }
+        return Ok(Some(chosen));
+    }
+    if tty {
+        return choose_skills(title, skills);
+    }
+    bail!("specify --skill <names> or --all when not attached to a terminal");
+}
+
+/// Download the chosen skills, install them, and record their origin for updates.
+fn fetch_and_install(
+    src: &Source,
+    chosen: &[Skill],
+    dest: &Path,
+    force: bool,
+    source: &str,
+) -> Result<usize> {
+    src.materialize(chosen)?;
+    let installed = install_all(chosen, dest, force)?;
+    record_installed(dest, source, chosen);
+    Ok(installed)
+}
+
+fn install_all(skills: &[Skill], dest: &Path, force: bool) -> Result<usize> {
+    let mut count = 0;
+    for skill in skills {
+        match install_skill(skill, dest, force) {
+            Ok(_) => {
+                let _ = log::success(format!("installed {}", skill.name));
+                count += 1;
+            }
+            Err(e) => {
+                let _ = log::warning(format!("skipped {}: {e:#}", skill.name));
+            }
+        }
+    }
+    Ok(count)
+}
+
+fn print_available(skills: &[Skill]) {
+    let width = width();
+    let namew = skills.iter().map(|s| s.name.len()).max().unwrap_or(0);
+    for skill in skills {
+        let room = width.saturating_sub(namew + 4).clamp(20, 120);
+        let desc = console::truncate_str(first_line(&skill.description), room, "…");
+        println!("  {:<namew$}  {}", skill.name, style(desc).dim());
+    }
+}
+
+// ---- list ----
+
+fn list(global: bool, json: bool) -> Result<()> {
+    let scope = scope_of(global);
+    let root = scope_root(scope)?;
+    let set = SkillSet::discover(std::slice::from_ref(&root));
+
+    if json {
+        let items: Vec<_> = set
+            .iter()
+            .map(|s| serde_json::json!({ "name": s.name, "description": s.description }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+
+    if set.is_empty() {
+        println!("no {} skills in {}", scope_word(scope), root.display());
+        println!("install some with: aster skills add");
+        return Ok(());
+    }
+
+    println!("{} {} skill(s):\n", set.len(), scope_word(scope));
+    let skills: Vec<Skill> = set.iter().cloned().collect();
+    print_available(&skills);
+    Ok(())
+}
+
+// ---- remove ----
+
+fn remove(names: Vec<String>, global: bool, all: bool, yes: bool) -> Result<()> {
+    let scope = scope_of(global);
+    let root = scope_root(scope)?;
+    let set = SkillSet::discover(std::slice::from_ref(&root));
+    let tty = is_tty();
+
+    let targets: Vec<String> = if all {
+        set.iter().map(|s| s.name.clone()).collect()
+    } else if !names.is_empty() {
+        names
+    } else if tty {
+        if set.is_empty() {
+            println!("no {} skills to remove", scope_word(scope));
+            return Ok(());
+        }
+        let installed: Vec<Skill> = set.iter().cloned().collect();
+        match choose_skills("Select skills to remove", &installed)? {
+            Some(chosen) => chosen.into_iter().map(|s| s.name).collect(),
+            None => return cancel(),
+        }
+    } else {
+        bail!("specify skill names or --all");
+    };
+
+    if targets.is_empty() {
+        println!("nothing to remove");
+        return Ok(());
+    }
+
+    if tty && !yes {
+        let ok = or_cancel(
+            confirm(format!("Remove {} skill(s)?", targets.len()))
+                .initial_value(true)
+                .interact(),
+        )?;
+        if ok != Some(true) {
+            return cancel();
+        }
+    }
+
+    for name in &targets {
+        if remove_skill(&root, name)? {
+            println!("removed {name}");
+        } else {
+            eprintln!("no installed skill named {name:?}");
+        }
+    }
+    forget_installed(&root, &targets);
+    Ok(())
+}
+
+// ---- use ----
+
+fn use_skill(target: &str, skill: Option<&str>, full_depth: bool) -> Result<()> {
+    if let Some((pkg, name)) = target.split_once('@') {
+        return print_from_source(pkg, Some(name), full_depth);
+    }
+    if looks_like_source(target) {
+        return print_from_source(target, skill, full_depth);
+    }
+    let body = read_installed(target)?;
+    print!("{body}");
+    Ok(())
+}
+
+/// Print one skill's body pulled straight from a source, without installing.
+fn print_from_source(pkg: &str, skill: Option<&str>, full_depth: bool) -> Result<()> {
+    let src = resolve_source(pkg)?;
+    let mut skills = find_skills(src.browse_root(), full_depth);
+    src.filter(&mut skills);
+    let target = match skill {
+        Some(name) => skills
+            .into_iter()
+            .find(|s| s.name == name)
+            .with_context(|| format!("no skill named {name:?} in {pkg}"))?,
+        None if skills.len() == 1 => skills.remove(0),
+        None => bail!(
+            "{pkg} has {} skills; choose one with pkg@skill or --skill",
+            skills.len()
+        ),
+    };
+    src.materialize(std::slice::from_ref(&target))?;
+    print!("{}", target.load_body()?);
+    Ok(())
+}
+
+/// Read an installed skill's body, project scope shadowing global.
+fn read_installed(name: &str) -> Result<String> {
+    for scope in [Scope::Project, Scope::Global] {
+        let root = scope_root(scope)?;
+        let set = SkillSet::discover(std::slice::from_ref(&root));
+        if let Some(skill) = set.get(name) {
+            return skill.load_body();
+        }
+    }
+    bail!("no installed skill named {name:?}")
+}
+
+fn looks_like_source(s: &str) -> bool {
+    s.contains('/') || s.starts_with("http") || s.starts_with("git@") || Path::new(s).exists()
+}
+
+// ---- find ----
+
+async fn find(query: Option<String>, owner: Option<String>, global: bool) -> Result<()> {
+    let tty = is_tty();
+    let query = match query {
+        Some(q) => q,
+        None if tty => match or_cancel(input("Search skills").interact::<String>())? {
+            Some(q) => q.trim().to_string(),
+            None => return cancel(),
+        },
+        None => bail!("a search query is required"),
+    };
+
+    let repos = github_search(&query, owner.as_deref()).await?;
+    if repos.is_empty() {
+        println!("no repositories matched {query:?}");
+        return Ok(());
+    }
+
+    if !tty {
+        for repo in &repos {
+            println!("  {}  {}", repo.full_name, first_line(&repo.description));
+        }
+        return Ok(());
+    }
+
+    let mut menu = select::<usize>("Pick a repository").max_rows(12);
+    for (i, repo) in repos.iter().enumerate() {
+        let desc = console::truncate_str(first_line(&repo.description), 70, "…");
+        menu = menu.item(i, &repo.full_name, desc);
+    }
+    let Some(idx) = or_cancel(menu.interact())? else {
+        return cancel();
+    };
+
+    add(AddOpts {
+        source: Some(repos[idx].full_name.clone()),
+        global,
+        skill: Vec::new(),
+        all: false,
+        yes: false,
+        list: false,
+        full_depth: false,
+        force: false,
+    })
+}
+
+#[derive(Deserialize)]
+struct SearchResponse {
+    items: Vec<RepoItem>,
+}
+
+#[derive(Deserialize)]
+struct RepoItem {
+    full_name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+struct Repo {
+    full_name: String,
+    description: String,
+}
+
+async fn github_search(query: &str, owner: Option<&str>) -> Result<Vec<Repo>> {
+    let mut q = format!("{query} skill");
+    if let Some(owner) = owner {
+        q.push_str(&format!(" user:{owner}"));
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.github.com/search/repositories")
+        .query(&[("q", q.as_str()), ("per_page", "20")])
+        .header("User-Agent", "aster")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .context("querying the GitHub search API")?
+        .error_for_status()
+        .context("GitHub search failed (rate limited?)")?;
+    let body: SearchResponse = resp.json().await.context("parsing GitHub search results")?;
+    Ok(body
+        .items
+        .into_iter()
+        .map(|i| Repo {
+            full_name: i.full_name,
+            description: i.description.unwrap_or_default(),
+        })
+        .collect())
+}
+
+// ---- update ----
+
+fn update(names: Vec<String>, global: bool) -> Result<()> {
+    let scope = scope_of(global);
+    let root = scope_root(scope)?;
+    let lock = load_lock(&root);
+    if lock.skills.is_empty() {
+        println!("no tracked {} skills to update", scope_word(scope));
+        return Ok(());
+    }
+
+    // Group the wanted skills by their source so each source is fetched once.
+    let mut by_source: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, entry) in &lock.skills {
+        if names.is_empty() || names.contains(name) {
+            by_source
+                .entry(entry.source.clone())
+                .or_default()
+                .push(name.clone());
+        }
+    }
+    if by_source.is_empty() {
+        bail!("none of the named skills are tracked in this scope");
+    }
+
+    let mut updated = 0;
+    for (source, wanted) in by_source {
+        let src = match resolve_source(&source) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipping {source}: {e:#}");
+                continue;
+            }
+        };
+        let mut skills = find_skills(src.browse_root(), false);
+        src.filter(&mut skills);
+        let chosen: Vec<Skill> = skills
+            .into_iter()
+            .filter(|s| wanted.contains(&s.name))
+            .collect();
+        if chosen.is_empty() {
+            eprintln!("skipping {source}: its skills are no longer present");
+            continue;
+        }
+        src.materialize(&chosen)?;
+        updated += install_all(&chosen, &root, true)?;
+    }
+    println!("updated {updated} skill(s)");
+    Ok(())
+}
+
+// ---- init ----
+
+fn init(name: Option<&str>) -> Result<()> {
+    let (dir, ident) = match name {
+        Some(name) => (std::env::current_dir()?.join(name), name.to_string()),
+        None => {
+            let cwd = std::env::current_dir()?;
+            let ident = cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "skill".to_string());
+            (cwd, ident)
+        }
+    };
+    let manifest = dir.join("SKILL.md");
+    if manifest.exists() {
+        bail!("{} already exists", manifest.display());
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::write(&manifest, skill_template(&ident))
+        .with_context(|| format!("writing {}", manifest.display()))?;
+    println!("created {}", manifest.display());
+    Ok(())
+}
+
+fn skill_template(name: &str) -> String {
+    format!(
+        "---\n\
+        name: {name}\n\
+        description: What this skill does and when to use it. Be specific so the agent knows when to reach for it.\n\
+        ---\n\n\
+        # {name}\n\n\
+        ## Instructions\n\n\
+        Step-by-step guidance for the agent to follow.\n\n\
+        ## Examples\n\n\
+        Concrete examples of using this skill.\n"
+    )
+}
+
+// ---- lockfile (provenance for `update`) ----
+
+const LOCK_FILE: &str = "skills-lock.json";
+
+#[derive(Default, Serialize, Deserialize)]
+struct Lock {
+    skills: BTreeMap<String, LockEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LockEntry {
+    source: String,
+}
+
+fn load_lock(root: &Path) -> Lock {
+    std::fs::read_to_string(root.join(LOCK_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_lock(root: &Path, lock: &Lock) {
+    if let Err(e) = std::fs::create_dir_all(root)
+        .and_then(|_| serde_json::to_string_pretty(lock).map_err(io::Error::other))
+        .and_then(|json| std::fs::write(root.join(LOCK_FILE), json))
+    {
+        tracing::warn!("could not write {LOCK_FILE}: {e:#}");
+    }
+}
+
+fn record_installed(root: &Path, source: &str, skills: &[Skill]) {
+    let mut lock = load_lock(root);
+    for skill in skills {
+        lock.skills.insert(
+            skill.name.clone(),
+            LockEntry {
+                source: source.to_string(),
+            },
+        );
+    }
+    save_lock(root, &lock);
+}
+
+fn forget_installed(root: &Path, names: &[String]) {
+    let mut lock = load_lock(root);
+    for name in names {
+        lock.skills.remove(name);
+    }
+    save_lock(root, &lock);
+}
+
+// ---- interactive multiselect ----
+
+fn prompt_source() -> Result<Option<String>> {
+    let kind = match or_cancel(
+        select::<u8>("Where should skills come from?")
+            .item(0, "GitHub repo", "owner/repo, e.g. anthropics/skills")
+            .item(1, "Git URL", "https://… or git@…")
+            .item(2, "Local folder", "a path on this machine")
+            .item(3, "Claude Code", "import from ~/.claude/skills")
+            .interact(),
+    )? {
+        Some(k) => k,
+        None => return Ok(None),
+    };
+
+    let source = match kind {
+        3 => claude_skills_dir()
+            .context("could not locate ~/.claude/skills")?
+            .to_string_lossy()
+            .into_owned(),
+        _ => {
+            let prompt = match kind {
+                0 => "GitHub repo (owner/repo)",
+                1 => "Git URL",
+                _ => "Local folder path",
+            };
+            match or_cancel(input(prompt).interact::<String>())? {
+                Some(s) => s.trim().to_string(),
+                None => return Ok(None),
+            }
+        }
+    };
+    Ok(Some(source))
+}
+
+/// A multi-select list with `npx skills`-style shortcuts: arrows or j/k to move,
+/// space to toggle, `a` to toggle all, `i` to invert, enter to confirm, esc to
+/// cancel. cliclack's own multiselect has no select-all and can't be extended,
+/// so this is a small custom widget over `console` (its same rendering backend).
+fn choose_skills(title: &str, skills: &[Skill]) -> Result<Option<Vec<Skill>>> {
+    let term = Term::stderr();
+    let rows = skills.len() + 2;
+    let mut cursor = 0usize;
+    let mut checked = vec![false; skills.len()];
+
+    term.hide_cursor()?;
+    let mut drawn = false;
+    let result = loop {
+        if drawn {
+            term.clear_last_lines(rows)?;
+        }
+        render_menu(&term, title, skills, &checked, cursor)?;
+        drawn = true;
+
+        match term.read_key()? {
+            Key::ArrowUp | Key::Char('k') => {
+                cursor = cursor.checked_sub(1).unwrap_or(skills.len() - 1);
+            }
+            Key::ArrowDown | Key::Char('j') => {
+                cursor = (cursor + 1) % skills.len();
+            }
+            Key::Char(' ') => checked[cursor] = !checked[cursor],
+            Key::Char('a') | Key::Char('A') => {
+                let all = checked.iter().all(|&c| c);
+                checked.iter_mut().for_each(|c| *c = !all);
+            }
+            Key::Char('i') | Key::Char('I') => checked.iter_mut().for_each(|c| *c = !*c),
+            Key::Enter => {
+                let chosen = skills
+                    .iter()
+                    .zip(&checked)
+                    .filter(|&(_, &c)| c)
+                    .map(|(s, _)| s.clone())
+                    .collect();
+                break Some(chosen);
+            }
+            Key::Escape | Key::CtrlC => break None,
+            _ => {}
+        }
+    };
+    term.clear_last_lines(rows)?;
+    term.show_cursor()?;
+    Ok(result)
+}
+
+fn render_menu(
+    term: &Term,
+    title: &str,
+    skills: &[Skill],
+    checked: &[bool],
+    cursor: usize,
+) -> io::Result<()> {
+    let width = term.size().1 as usize;
+    let selected = checked.iter().filter(|&&c| c).count();
+    term.write_line(&format!(
+        "{}  {}",
+        style(title).bold(),
+        style(format!("({selected}/{} selected)", skills.len())).dim()
+    ))?;
+    for (i, skill) in skills.iter().enumerate() {
+        let pointer = if i == cursor {
+            style("❯").cyan().to_string()
+        } else {
+            " ".to_string()
+        };
+        let mark = if checked[i] {
+            style("◼").green().to_string()
+        } else {
+            style("◻").dim().to_string()
+        };
+        let name = if i == cursor {
+            style(&skill.name).cyan().bold().to_string()
+        } else {
+            skill.name.clone()
+        };
+        let head = format!("{pointer} {mark} {name}  ");
+        let room = width.saturating_sub(console::measure_text_width(&head) + 1);
+        let desc = console::truncate_str(first_line(&skill.description), room, "…");
+        term.write_line(&format!("{head}{}", style(desc).dim()))?;
+    }
+    term.write_line(
+        &style("space toggle · a all · i invert · enter confirm · esc cancel")
+            .dim()
+            .to_string(),
+    )?;
+    Ok(())
+}
+
+// ---- source resolution (lazy git) ----
+
+/// A git source is a treeless partial clone with only `SKILL.md` files checked
+/// out, so listing is cheap; a chosen skill's contents are fetched on demand.
+enum Source {
+    Local(PathBuf),
+    Git {
+        /// Kept alive so the clone survives until installation finishes.
+        _guard: tempfile::TempDir,
+        root: PathBuf,
+        subpath: Option<String>,
+    },
+}
+
+impl Source {
+    fn browse_root(&self) -> &Path {
+        match self {
+            Source::Local(p) => p,
+            Source::Git { root, .. } => root,
+        }
+    }
+
+    /// When a repo subpath was given, keep only skills beneath it.
+    fn filter(&self, skills: &mut Vec<Skill>) {
+        if let Source::Git {
+            root,
+            subpath: Some(sub),
+            ..
+        } = self
+        {
+            let prefix = root.join(sub);
+            skills.retain(|s| s.path.starts_with(&prefix));
+        }
+    }
+
+    /// A git source expands its sparse checkout to the chosen directories, which
+    /// lazily downloads only those blobs; local sources already have everything.
+    fn materialize(&self, chosen: &[Skill]) -> Result<()> {
+        let Source::Git { root, .. } = self else {
+            return Ok(());
+        };
+        let mut patterns = vec![MANIFEST_PATTERN.to_string()];
+        for skill in chosen {
+            if let Some(dir) = skill.path.parent()
+                && let Ok(rel) = dir.strip_prefix(root)
+            {
+                patterns.push(format!("/{}/**", rel.to_string_lossy()));
+            }
+        }
+        sparse_set(root, &patterns)
+    }
+}
+
+const MANIFEST_PATTERN: &str = "**/SKILL.md";
+
+/// A local path is used as-is; a `owner/repo` shorthand or git URL becomes a
+/// treeless partial clone. A trailing `/subpath` narrows browsing to that subtree.
+fn resolve_source(source: &str) -> Result<Source> {
+    let source = source.trim();
+
+    let local = Path::new(source);
+    if local.exists() {
+        return Ok(Source::Local(local.to_path_buf()));
+    }
+
+    let Some((url, subpath)) = git_source(source) else {
+        bail!("could not resolve {source:?} as a local path or git source");
+    };
+
+    let tmp = tempfile::tempdir().context("creating a temp dir for the checkout")?;
+    partial_clone(&url, tmp.path())?;
+    sparse_set(tmp.path(), &[MANIFEST_PATTERN.to_string()])?;
+    Ok(Source::Git {
+        root: tmp.path().to_path_buf(),
+        subpath,
+        _guard: tmp,
+    })
+}
+
+/// Recognises full git URLs and `owner/repo[/subpath]` GitHub shorthands.
+fn git_source(source: &str) -> Option<(String, Option<String>)> {
+    if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.starts_with("git@")
+        || source.ends_with(".git")
+    {
+        return Some((source.to_string(), None));
+    }
+
+    let mut parts = source.splitn(3, '/');
+    let owner = parts.next().filter(|s| is_ghslug(s))?;
+    let repo = parts.next().filter(|s| is_ghslug(s))?;
+    let subpath = parts.next().map(str::to_string);
+    Some((format!("https://github.com/{owner}/{repo}"), subpath))
+}
+
+fn is_ghslug(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Clone without blobs so only the tree is fetched; blobs arrive on demand. Falls
+/// back to a shallow clone for remotes that do not support partial clone.
+fn partial_clone(url: &str, into: &Path) -> Result<()> {
+    let dest = into.to_str().context("clone path is not valid UTF-8")?;
+    let filtered = git_try(&[
+        "clone",
+        "--quiet",
+        "--filter=blob:none",
+        "--sparse",
+        "--depth",
+        "1",
+        url,
+        dest,
+    ])?;
+    if filtered {
+        return Ok(());
+    }
+    tracing::debug!("partial clone unsupported; falling back to a shallow clone");
+    git(&["clone", "--quiet", "--sparse", "--depth", "1", url, dest])
+        .with_context(|| format!("git clone failed for {url}"))
+}
+
+/// Point the sparse checkout at `patterns`; in a partial clone this fetches
+/// exactly the blobs the new patterns need.
+fn sparse_set(dir: &Path, patterns: &[String]) -> Result<()> {
+    let d = dir.to_str().context("checkout path is not valid UTF-8")?;
+    let mut args = vec!["-C", d, "sparse-checkout", "set", "--no-cone"];
+    args.extend(patterns.iter().map(String::as_str));
+    git(&args)
+}
+
+/// Output captured so nothing corrupts an active spinner.
+fn git(args: &[&str]) -> Result<()> {
+    if !git_try(args)? {
+        bail!("git {} failed", args.join(" "));
+    }
+    Ok(())
+}
+
+/// Returns `false` on a non-zero exit rather than erroring.
+fn git_try(args: &[&str]) -> Result<bool> {
+    let output = Command::new("git")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("running git (is it installed?)")?;
+    if !output.status.success() {
+        tracing::debug!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+// ---- misc ----
+
+fn claude_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude").join("skills"))
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
+}
+
+fn is_tty() -> bool {
+    io::stdout().is_terminal() && io::stdin().is_terminal()
+}
+
+/// Terminal width for laying out plain output, with a sane fallback when piped.
+fn width() -> usize {
+    let w = Term::stdout().size().1 as usize;
+    if w == 0 { 100 } else { w }
+}
+
+fn cancel() -> Result<()> {
+    outro_cancel("Cancelled")?;
+    Ok(())
+}
+
+/// Map a prompt result to `Option`: `Interrupted` means cancelled.
+fn or_cancel<T>(result: io::Result<T>) -> Result<Option<T>> {
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_shorthand_becomes_clone_url() {
+        assert_eq!(
+            git_source("anthropics/skills"),
+            Some(("https://github.com/anthropics/skills".into(), None))
+        );
+    }
+
+    #[test]
+    fn shorthand_carries_subpath() {
+        assert_eq!(
+            git_source("anthropics/skills/document/pdf"),
+            Some((
+                "https://github.com/anthropics/skills".into(),
+                Some("document/pdf".into())
+            ))
+        );
+    }
+
+    #[test]
+    fn full_urls_pass_through() {
+        assert_eq!(
+            git_source("https://github.com/a/b.git"),
+            Some(("https://github.com/a/b.git".into(), None))
+        );
+        assert_eq!(
+            git_source("git@github.com:a/b.git"),
+            Some(("git@github.com:a/b.git".into(), None))
+        );
+    }
+
+    #[test]
+    fn plain_words_are_not_git_sources() {
+        assert_eq!(git_source("just-a-name"), None);
+    }
+
+    #[test]
+    fn source_detection() {
+        assert!(looks_like_source("owner/repo"));
+        assert!(looks_like_source("https://github.com/a/b"));
+        assert!(!looks_like_source("pdf"));
+    }
+
+    #[test]
+    fn template_has_valid_frontmatter() {
+        let t = skill_template("my-skill");
+        assert!(t.starts_with("---\nname: my-skill\n"));
+        assert!(t.contains("description:"));
+    }
+}

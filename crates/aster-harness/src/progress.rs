@@ -3,8 +3,6 @@ use aster_models::Finding;
 #[derive(Debug, Clone)]
 pub enum Progress {
     Phase(String),
-    /// A live token delta streamed from the model for a given stage
-    /// (e.g. "hypothesize", "verify"). Emitted as the model produces output.
     Token {
         stage: String,
         delta: String,

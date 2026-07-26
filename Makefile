@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := check
 .PHONY: fmt fmt-check lint test check desktop-check pre-push hooks \
 	review review-tui review-stream chat chat-print fix init desktop \
-	release install
+	release install bump
 
 # Extra flags for the run targets, e.g. `make review ARGS="--pr 42"`.
 ARGS ?=
@@ -76,3 +76,9 @@ release:
 
 install:
 	cargo install --path crates/aster-cli
+
+# Bump the version across the workspace and desktop app. Defaults to a patch bump;
+# `make bump LEVEL=minor`, `make bump LEVEL=major`, or `make bump VERSION=0.2.0`.
+LEVEL ?= patch
+bump:
+	./scripts/bump-version.sh $(if $(VERSION),$(VERSION),$(LEVEL))

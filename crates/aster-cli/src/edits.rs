@@ -1,13 +1,11 @@
-//! SEARCH/REPLACE edit blocks: the exchange format between the model and the
-//! working tree, shared by `aster fix` and the chat agent's `edit_file` tool.
-//! Exact-match, apply-once semantics keep model edits auditable and safe.
+//! SEARCH/REPLACE edit blocks shared by `aster fix` and the chat agent's `edit_file` tool.
+//! Exact-match, apply-once semantics keep model edits auditable.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-/// One parsed SEARCH/REPLACE block.
 #[derive(Debug, Clone)]
 pub struct EditBlock {
     pub search: String,
@@ -18,9 +16,7 @@ const SEARCH_MARK: &str = "<<<<<<< SEARCH";
 const DIVIDER_MARK: &str = "=======";
 const REPLACE_MARK: &str = ">>>>>>> REPLACE";
 
-/// Parse every SEARCH/REPLACE block out of a model reply. Tolerates
-/// surrounding prose and markdown fences; fails when a block is malformed or
-/// none are present.
+/// Parse SEARCH/REPLACE blocks from a reply, tolerating surrounding prose and fences.
 pub fn parse_blocks(reply: &str) -> Result<Vec<EditBlock>> {
     let mut blocks = Vec::new();
     let mut search: Option<Vec<&str>> = None;
@@ -58,9 +54,7 @@ pub fn parse_blocks(reply: &str) -> Result<Vec<EditBlock>> {
     Ok(blocks)
 }
 
-/// Apply one block to `content`. The search text must match exactly once;
-/// anything else is an error the caller can surface (or feed back to the
-/// model).
+/// Apply one block to `content`. The search text must match exactly once.
 pub fn apply_block(content: &str, block: &EditBlock) -> Result<String> {
     let hits = content.matches(&block.search).count();
     match hits {
@@ -72,8 +66,7 @@ pub fn apply_block(content: &str, block: &EditBlock) -> Result<String> {
     }
 }
 
-/// Resolve `path` inside `repo_root`, rejecting anything that escapes it
-/// (absolute paths, `..`, symlinked parents). Returns the canonical path.
+/// Resolve `path` inside `repo_root`, rejecting anything that escapes it (`..`, symlinks, absolute).
 pub fn resolve_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
     let root = repo_root
         .canonicalize()
@@ -88,7 +81,6 @@ pub fn resolve_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-/// Read a repo file for editing, with its canonical path.
 pub fn read_repo_file(repo_root: &Path, path: &str) -> Result<(PathBuf, String)> {
     let resolved = resolve_in_repo(repo_root, path)?;
     let content =

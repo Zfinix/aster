@@ -45,8 +45,7 @@ pub fn store_token(token: &str) -> Result<()> {
     let path = token_path()?;
     let bytes = serde_json::to_vec_pretty(&stored)?;
 
-    // On Unix, create the file with 0o600 from the start so the token is never
-    // briefly world-readable between write and chmod.
+    // Create with 0o600 from the start so the token is never briefly world-readable.
     #[cfg(unix)]
     {
         use std::io::Write;

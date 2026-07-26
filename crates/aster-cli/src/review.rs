@@ -50,13 +50,11 @@ pub struct ReviewArgs {
     #[arg(long)]
     no_index: bool,
 
-    /// Only review files matching this glob (repeatable). Overrides aster.yaml
-    /// `include`. e.g. --include "crates/aster-cli/**" --include "**/*.rs"
+    /// Only review files matching this glob (repeatable). Overrides aster.yaml `include`.
     #[arg(long = "include", short = 'i', value_name = "GLOB")]
     include: Vec<String>,
 
-    /// Skip files matching this glob (repeatable). Added on top of aster.yaml
-    /// `exclude` and the built-in defaults.
+    /// Skip files matching this glob (repeatable). Added on top of aster.yaml `exclude`.
     #[arg(long = "exclude", short = 'x', value_name = "GLOB")]
     exclude: Vec<String>,
 
@@ -68,8 +66,7 @@ pub struct ReviewArgs {
     #[arg(long, conflicts_with = "tui")]
     json: bool,
 
-    /// Stream structured NDJSON progress events to stdout, one per line
-    /// (phases, hypotheses, verdicts, findings, usage). For editors and UIs.
+    /// Stream structured NDJSON progress events to stdout, one per line. For editors and UIs.
     #[arg(long, conflicts_with_all = ["tui", "json", "comment"])]
     pub stream: bool,
 
@@ -129,7 +126,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     };
 
     // Usage counters are shared behind an Arc, so this clone reports the same
-    // totals after the client has been moved into the review job.
+    // totals after the client is moved into the review job.
     let usage_handle = ai_client.clone();
 
     let job = Job {
@@ -154,20 +151,17 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         no_index: args.no_index,
     };
 
-    // Only enter the ratatui alt-screen when stdout is a real terminal; otherwise
-    // fall through to the plain streaming path so piped/CI runs still work.
+    // Only enter the alt-screen on a real terminal; otherwise fall through to
+    // the plain streaming path so piped/CI runs still work.
     if args.tui && io::stdout().is_terminal() {
         return crate::tui::run(job, min_confidence).await;
     }
 
-    // Structured NDJSON: emit one event per line to stdout so editors and UIs
-    // can render the live hypothesize/verify/confirm feed and final usage.
     if args.stream {
         return run_stream(job, min_confidence, usage_handle).await;
     }
 
-    // JSON and comment modes must keep stdout clean; run them silently.
-    // The default text mode streams a live feed to stderr as the model works.
+    // JSON and comment modes must keep stdout clean, so run them silently.
     let response = if args.json || args.comment {
         execute(job, &None).await?
     } else {
@@ -197,12 +191,12 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     Ok(())
 }
 
-/// Runs a review and emits NDJSON events to stdout: one JSON object per progress event and a final `done` event.
+/// Emits one NDJSON object per progress event to stdout, then a final `done` event.
 async fn run_stream(job: Job, min_confidence: f32, usage_handle: AiClient) -> Result<()> {
     let mut out = io::stdout();
 
-    // The diff first, so the UI can render the GitHub-style view immediately and
-    // then attach findings as inline comments as they stream in.
+    // The diff first, so the UI can render immediately and attach findings as
+    // inline comments as they stream in.
     let diff_event = serde_json::json!({
         "type": "diff",
         "content": job.input.diff,
@@ -250,8 +244,8 @@ async fn run_stream(job: Job, min_confidence: f32, usage_handle: AiClient) -> Re
     Ok(())
 }
 
-/// Serialize a single progress event as a one-line JSON object. The harness's
-/// own `Done` is dropped here; `run_stream` emits a richer one with usage.
+/// Serialize a progress event as a one-line JSON object. `Done` is dropped here;
+/// `run_stream` emits a richer one with usage.
 fn emit_event(out: &mut impl Write, event: &Progress, min_confidence: f32) {
     let value = match event {
         Progress::Phase(name) => serde_json::json!({ "type": "phase", "name": name }),
@@ -346,7 +340,7 @@ pub async fn execute(job: Job, sink: &ProgressSink) -> Result<ReviewReport> {
     } = job;
 
     // Held until the review finishes so the sqlite pool (and its -wal/-shm
-    // siblings) outlives indexing; dropped on return, cleaning the whole dir.
+    // siblings) outlives indexing; dropped on return to clean the dir.
     let mut _index_dir: Option<TempDir> = None;
     let index = if no_index {
         None
@@ -376,8 +370,7 @@ fn emit(sink: &ProgressSink, event: Progress) {
     }
 }
 
-// ANSI helpers so the live feed reads like a real streaming session without
-// pulling in a styling dependency for the plain (non-TUI) path.
+// ANSI helpers for the plain (non-TUI) path, avoiding a styling dependency.
 const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
@@ -387,8 +380,8 @@ const BOLD: &str = "\x1b[1m";
 const ORANGE: &str = "\x1b[38;2;242;118;79m";
 
 async fn run_streaming(job: Job, min_confidence: f32) -> Result<ReviewReport> {
-    // Concurrent verify streams interleave into noise; stream raw tokens only
-    // when verification runs sequentially.
+    // Concurrent verify streams interleave into noise, so stream raw tokens
+    // only when verification runs sequentially.
     let stream_verify = job.config.verify_concurrency <= 1;
     let (tx, rx) = mpsc::channel::<Progress>();
     let task = tokio::spawn(async move { execute(job, &Some(tx)).await });
@@ -545,8 +538,7 @@ fn parse_analyzers() -> Vec<String> {
 }
 
 fn print_findings(summary: &str, findings: &[Finding]) {
-    // Honor the informal color conventions: NO_COLOR disables, CLICOLOR_FORCE
-    // forces on even when stdout isn't a TTY (e.g. captured in CI or a demo).
+    // NO_COLOR disables; CLICOLOR_FORCE forces on even when stdout isn't a TTY.
     let color = env::var_os("NO_COLOR").is_none()
         && (io::stdout().is_terminal() || env::var_os("CLICOLOR_FORCE").is_some());
     let paint = |code: &str, text: &str| {

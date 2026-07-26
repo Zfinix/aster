@@ -60,10 +60,8 @@ pub async fn review_with_progress(
         Progress::Phase(format!("Verifying {total} candidate(s)")),
     );
 
-    // Verification is I/O-bound on the model call, so verify candidates
-    // concurrently (bounded) rather than one at a time. Progress events
-    // interleave as calls finish; the final findings are re-sorted to a stable,
-    // hypothesis-order list before shaping so output is deterministic.
+    // I/O-bound on the model call; verify bounded-concurrently and re-sort to
+    // hypothesis order before shaping so output stays deterministic.
     let concurrency = deps.config.verify_concurrency.max(1);
     let repo_root = input.repo_root.as_deref();
     let min_confidence = deps.config.min_confidence;
@@ -81,10 +79,8 @@ pub async fn review_with_progress(
             },
         );
 
-        // Every candidate, whether hypothesized or produced by a static
-        // analyzer, goes through the same adversarial verify so it earns
-        // a real confidence and clears the same gate. Provenance is kept
-        // on the candidate but no longer changes the output path.
+        // Static and hypothesized candidates share the same adversarial gate;
+        // provenance rides along but no longer branches the output path.
         let evidence = retrieve_evidence(deps, repo_root, diff_ref, &candidate).await;
         match verify(deps, &candidate, &evidence, sink).await {
             Ok(verdict) if verdict.real && verdict.confidence >= min_confidence => {
@@ -214,8 +210,8 @@ async fn hypothesize(
     let json = extract_json(&content);
     let list: CandidateList = match serde_json::from_str(&json) {
         Ok(list) => list,
-        // A dropped stream leaves the array unterminated with complete objects
-        // inside. Salvage those rather than failing the whole review.
+        // A dropped stream leaves the array unterminated; salvage whole objects
+        // rather than failing the whole review.
         Err(e) => match salvage_candidates(&json) {
             Some(list) => {
                 tracing::warn!(
@@ -243,9 +239,8 @@ async fn hypothesize(
             "candidates dropped by scenario gate"
         );
     }
-    // A genuinely clean diff and a model that returned an unexpected shape both
-    // land here as zero candidates. The bad-shape case is loud (parse error
-    // above), but an empty `candidates` array is silent, so surface it.
+    // An empty `candidates` array is silent (unlike a parse error), so surface
+    // it: clean diff or the model returned an empty set.
     if raw == 0 {
         tracing::warn!(
             raw_len = content.len(),
@@ -258,11 +253,9 @@ async fn hypothesize(
 const EVIDENCE_WINDOW: i32 = 25;
 const MAX_REFERENCE_HITS: usize = 8;
 
-/// Assemble the minimal working set for a candidate: the changed hunk it points
-/// at, a source window, the enclosing symbol, and (when an index is present) the
-/// definition, its callers, and any tests that reference it. This is retrieval,
-/// not stuffing: each section is bounded and the whole thing is capped to
-/// `max_evidence_bytes`.
+/// Assemble a candidate's working set (changed hunk, source window, enclosing
+/// symbol, and indexed definition/callers/tests). Each section is bounded and
+/// the whole is capped to `max_evidence_bytes`.
 async fn retrieve_evidence(
     deps: &ReviewDeps,
     repo_root: Option<&Path>,
@@ -301,8 +294,7 @@ async fn retrieve_evidence(
             ));
 
             if is_simple_ident(&sym.name) {
-                // Definition of the symbol, which may live in another file (e.g.
-                // a type the scenario depends on).
+                // Definition may live in another file (e.g. a type the scenario depends on).
                 if let Ok(defs) = index.find_symbol(&sym.name, 3).await {
                     for def in defs.iter().filter(|d| d.path != candidate.file) {
                         if let Some(snippet) = def.snippet.as_deref() {
@@ -317,9 +309,7 @@ async fn retrieve_evidence(
                     }
                 }
 
-                // Callers and tests, retrieved from the index's snippet FTS
-                // rather than walking the whole repo per candidate. Skipped for
-                // common/short identifiers, where a name match is mostly noise.
+                // Skipped for common/short identifiers, where a name match is mostly noise.
                 if !is_common_ident(&sym.name) {
                     let (callers, tests) =
                         references_via_index(index, &sym.name, &candidate.file).await;
@@ -345,7 +335,7 @@ async fn retrieve_evidence(
     clamp_bytes(out, deps.config.max_evidence_bytes)
 }
 
-/// Find the symbol whose span contains `line`, falling back to the nearest.
+/// Symbol whose span contains `line`, else the nearest.
 fn enclosing_symbol(
     symbols: &[aster_index::SymbolHit],
     line: i32,
@@ -362,17 +352,15 @@ fn enclosing_symbol(
         })
 }
 
-/// Find symbols whose name or body references `name` via the index's snippet
-/// FTS, splitting them into callers and tests. This replaces a per-candidate
-/// full-repo grep walk: symbol-granularity, not exact line, but no filesystem
-/// traversal. The definition symbol itself is excluded (surfaced separately).
+/// Symbols referencing `name` via the index's snippet FTS, split into callers
+/// and tests. Symbol-granularity, no filesystem walk; the definition symbol is
+/// excluded (surfaced separately).
 async fn references_via_index(
     index: &SqliteCodeIndex,
     name: &str,
     def_file: &str,
 ) -> (Vec<String>, Vec<String>) {
-    // Quote the name so it is a phrase literal, never an FTS operator (AND/OR)
-    // or split oddly on punctuation.
+    // Quote so the name is a phrase literal, never an FTS operator (AND/OR).
     let hits = index
         .lexical(&format!("\"{name}\""), 32)
         .await
@@ -407,8 +395,8 @@ async fn references_via_index(
     (callers, tests)
 }
 
-/// Identifiers too common or too short for a reference search to be meaningful:
-/// a name match on `get`/`new`/`run` is mostly noise, so skip caller retrieval.
+/// Identifiers too common or short for reference search to be meaningful
+/// (`get`/`new`/`run`), so caller retrieval is skipped.
 fn is_common_ident(name: &str) -> bool {
     if name.len() < 4 {
         return true;
@@ -451,8 +439,7 @@ fn is_test_path(path: &str) -> bool {
         || lower.contains("_spec.")
 }
 
-/// Only identifiers we can safely turn into a `\b..\b` regex without escaping or
-/// risking a pathological pattern.
+/// Identifiers safe to turn into a `\b..\b` regex without escaping.
 fn is_simple_ident(name: &str) -> bool {
     !name.is_empty()
         && name.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -479,16 +466,13 @@ fn clamp_bytes(mut s: String, max: usize) -> String {
     s
 }
 
-/// Extract the unified-diff section for a single file: the hunks under the
-/// header whose `+++ b/<path>` matches `file`. Returns None if the file is not
-/// present in the diff.
+/// Hunks under the header whose `+++ b/<path>` matches `file`; None if absent.
 fn diff_for_file(diff: &str, file: &str) -> Option<String> {
     let target = file.replace('\\', "/");
     let mut collecting = false;
-    // Once inside a hunk body, `+++ `/`--- ` lines are added/removed *content*
-    // (a source line whose text starts with `++ `/`-- `), not file headers, so
-    // they must not be reinterpreted. `@@` opens a hunk; `diff --git` closes the
-    // file section and resets header parsing.
+    // Inside a hunk body, `+++ `/`--- ` lines are content, not file headers, so
+    // header parsing is gated on `in_hunk`. `@@` opens a hunk; `diff --git`
+    // closes the file section.
     let mut in_hunk = false;
     let mut out = String::new();
     for line in diff.lines() {
@@ -529,8 +513,8 @@ fn diff_for_file(diff: &str, file: &str) -> Option<String> {
     }
 }
 
-/// Match diff paths on component boundaries so `foo.rs` does not match
-/// `myfoo.rs`. A suffix only counts when it aligns to a `/` in the longer path.
+/// Match paths on component boundaries: a suffix counts only when it aligns to
+/// a `/`, so `foo.rs` does not match `myfoo.rs`.
 fn paths_match(a: &str, b: &str) -> bool {
     if a == b {
         return true;
@@ -621,17 +605,15 @@ fn finding_rank(f: &Finding) -> f32 {
     severity_weight(&f.severity) as f32 * f.confidence.unwrap_or(0.5)
 }
 
-/// Two findings describe the same defect if they sit on the same file and line
-/// and their titles clearly overlap. Title overlap (not category) is the signal,
-/// so a defect surfaced by both a static analyzer and the model (different
-/// categories, similar wording) collapses, while two genuinely different bugs on
-/// the same line (different wording) are both kept.
+/// Same file, line, and overlapping titles. Title overlap (not category) is the
+/// signal, so a static-analyzer and model hit on one defect collapse while two
+/// differently-worded bugs on the same line are both kept.
 fn same_defect(a: &Finding, b: &Finding) -> bool {
     a.file_path == b.file_path && a.line == b.line && titles_overlap(&a.title, &b.title)
 }
 
-/// Loose title similarity: the two share at least two meaningful (>=4 char)
-/// words, or one title's word set is contained in the other's.
+/// Loose title similarity: share >=2 meaningful (>=4 char) words, or one word
+/// set is contained in the other.
 fn titles_overlap(a: &str, b: &str) -> bool {
     let words = |s: &str| -> std::collections::HashSet<String> {
         s.to_lowercase()
@@ -648,13 +630,10 @@ fn titles_overlap(a: &str, b: &str) -> bool {
     shared >= 2 || shared == wa.len().min(wb.len())
 }
 
-/// Phase 4 (SHAPE): dedup then rank. Findings describing the same defect (see
-/// `same_defect`) collapse to the higher-ranked survivor, so a bug found by both
-/// a static analyzer and the model reports once, while distinct bugs on the same
-/// line are preserved. The result is ordered by `severity x confidence`.
+/// Dedup same-defect findings to the higher-ranked survivor, then order by
+/// `severity x confidence`.
 fn shape_report(mut ordered: Vec<(usize, Finding)>) -> Vec<Finding> {
-    // Restore hypothesis order first so dedup is deterministic regardless of
-    // verification timing.
+    // Restore hypothesis order so dedup is deterministic regardless of verify timing.
     ordered.sort_by_key(|(i, _)| *i);
 
     let mut deduped: Vec<Finding> = Vec::new();
@@ -699,8 +678,8 @@ async fn complete(
         .await
     {
         Ok(content) => Ok(content),
-        // Not every OpenAI-compatible endpoint honors `stream`. Fall back to a
-        // single-shot request so the pipeline still works, just without tokens.
+        // Not every OpenAI-compatible endpoint honors `stream`; fall back to a
+        // single-shot request.
         Err(e) => {
             tracing::debug!(stage, error = %e, "stream failed; falling back to non-streaming");
             deps.ai_client.complete_with(model, system, user, 0.0).await
@@ -712,8 +691,7 @@ fn truncate(diff: &str, max_bytes: usize) -> String {
     if diff.len() <= max_bytes {
         return diff.to_string();
     }
-    // Slice on a char boundary so a multi-byte codepoint at the cut point does
-    // not panic. Walk back from max_bytes until we land on a boundary.
+    // Walk back to a char boundary so slicing does not split a codepoint.
     let mut end = max_bytes;
     while end > 0 && !diff.is_char_boundary(end) {
         end -= 1;
@@ -725,11 +703,9 @@ fn truncate(diff: &str, max_bytes: usize) -> String {
     )
 }
 
-/// Recover complete `Candidate` objects from truncated candidate JSON (a
-/// stream that died mid-response leaves the `candidates` array unterminated).
-/// Walks the array with a string- and escape-aware depth counter, parsing each
-/// balanced top-level object individually and dropping the incomplete tail.
-/// Returns `None` when nothing whole could be recovered.
+/// Recover complete `Candidate` objects from truncated JSON by walking the
+/// array with a string- and escape-aware depth counter, parsing each balanced
+/// top-level object and dropping the incomplete tail. None if nothing whole.
 fn salvage_candidates(json: &str) -> Option<CandidateList> {
     let key = json.find("\"candidates\"")?;
     let array_start = json[key..].find('[')? + key;
@@ -819,8 +795,7 @@ mod tests {
 
     #[test]
     fn truncate_never_splits_utf8() {
-        // A string of multi-byte chars; cutting at an arbitrary byte would panic
-        // without the char-boundary walk.
+        // Multi-byte chars; an arbitrary byte cut would panic without the boundary walk.
         let s = "é".repeat(1000);
         for max in [1, 2, 3, 101, 999] {
             let _ = truncate(&s, max);
@@ -829,8 +804,7 @@ mod tests {
 
     #[test]
     fn salvage_candidates_recovers_complete_objects_from_truncated_array() {
-        // The exact failure shape from production: the stream died after the
-        // second object, so the array (and root object) never close.
+        // Production failure shape: stream died after the second object, so array never closes.
         let truncated = r#"{"candidates":[{"file":"a.rs","line":208,"defect_class":"correctness","severity":"critical","title":"t1","failure_scenario":"s1","suggestion":"f1","code_snippet":"c1"},{"file":"b.rs","line":300,"defect_class":"correctness","severity":"critical","title":"t2","failure_scenario":"s2","suggestion":"f2"},{"file":"c.rs","line":1,"defect_class":"perf","severity":"low","title":"t3","failure_sc"#;
         let list = salvage_candidates(truncated).unwrap();
         assert_eq!(list.candidates.len(), 2);
@@ -881,7 +855,6 @@ mod tests {
 
     #[test]
     fn diff_for_file_does_not_suffix_false_match() {
-        // `foo.rs` must NOT pull `myfoo.rs`'s hunk.
         let diff = "diff --git a/src/myfoo.rs b/src/myfoo.rs\n\
                     --- a/src/myfoo.rs\n\
                     +++ b/src/myfoo.rs\n\
@@ -892,8 +865,7 @@ mod tests {
 
     #[test]
     fn diff_for_file_keeps_body_lines_that_look_like_headers() {
-        // An added line whose content is `++ Heading` renders as `+++ Heading`
-        // and must be treated as body, not a file header that stops collection.
+        // An added line `++ Heading` renders as `+++ Heading`; it is body, not a header.
         let diff = "diff --git a/README.md b/README.md\n\
                     --- a/README.md\n\
                     +++ b/README.md\n\
@@ -938,8 +910,6 @@ mod tests {
 
     #[test]
     fn shape_report_merges_static_and_model_finding_on_same_defect() {
-        // A static analyzer (category = tool name) and the model flag the same
-        // SQL-injection defect on the same line with overlapping titles.
         let mut sast = finding("db.rs", 42, "semgrep", "high", 0.9);
         sast.title = "sql-injection".into();
         let mut llm = finding("db.rs", 42, "security", "critical", 0.8);
@@ -987,8 +957,7 @@ mod tests {
 
     #[test]
     fn shape_report_confidence_can_outrank_severity() {
-        // severity x confidence: a low-confidence critical (5*0.2=1.0) ranks
-        // below a high-confidence medium (3*0.9=2.7). Confidence matters.
+        // severity x confidence: critical 5*0.2=1.0 ranks below medium 3*0.9=2.7.
         let ordered = vec![
             (0, finding("a.rs", 1, "x", "critical", 0.2)),
             (1, finding("b.rs", 1, "x", "medium", 0.9)),

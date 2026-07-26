@@ -1,10 +1,7 @@
-//! A retry middleware that honors server backpressure. `reqwest-retry`'s default
-//! strategy classifies retryable responses but ignores `Retry-After` /
-//! `x-ratelimit-reset` for the delay, and treats every `403` as fatal. This
-//! middleware reads those headers to time the wait, treats a rate-limited `403`
-//! (e.g. GitHub's secondary limit) as transient, and bounds the whole thing by an
-//! attempt count and a total deadline so a hung provider can't stack per-attempt
-//! timeouts into minutes.
+//! Retry middleware honoring server backpressure: times waits from `Retry-After` /
+//! `x-ratelimit-reset`, treats a rate-limited `403` (GitHub's secondary limit) as
+//! transient, and bounds retries by attempt count and a total deadline.
+//! (`reqwest-retry`'s default ignores those headers and treats every `403` as fatal.)
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,9 +13,8 @@ use reqwest_middleware::{Middleware, Next, Result};
 const MAX_WAIT: Duration = Duration::from_secs(60);
 const BACKOFF_BASE_MS: u64 = 500;
 
-/// Retries transient failures (network errors, 408/429/5xx, and rate-limited
-/// 403s) with header-aware delays, capped by `max_retries` attempts and
-/// `total_deadline` of wall-clock across all attempts.
+/// Retries transient failures with header-aware delays, capped by `max_retries`
+/// and `total_deadline` of wall-clock across all attempts.
 pub struct RetryWithBackoff {
     max_retries: u32,
     total_deadline: Duration,
@@ -51,8 +47,7 @@ impl RetryWithBackoff {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
-            // A non-cloneable (streaming) request body can't be replayed; send it
-            // once and return whatever we get.
+            // A non-cloneable (streaming) body can't be replayed; send it once.
             let Some(dup) = req.try_clone() else {
                 return next.run(req, ext).await;
             };
@@ -85,20 +80,16 @@ fn is_retryable(resp: &Response) -> bool {
     if status.as_u16() == 408 || status.is_server_error() {
         return true;
     }
-    // 429 (rate limit) and 403 (GitHub's secondary limit) are only worth
-    // retrying when the server signals it is transient with a retry-hint header.
-    // A bare 429 with no such header is a permanent condition dressed as a rate
-    // limit (e.g. OpenAI `insufficient_quota`, a billing error) and will never
-    // succeed on retry, so we don't waste attempts on it.
+    // 429 and 403 (GitHub's secondary limit) are retryable only with a hint header.
+    // A bare 429 is a permanent condition dressed as a rate limit (e.g. OpenAI
+    // `insufficient_quota`) that never succeeds on retry.
     matches!(
         status,
         StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
     ) && has_retry_hint(resp.headers())
 }
 
-/// Whether the response carries any signal that a retry could succeed: a
-/// `Retry-After` header or any `x-ratelimit-*` header (covers GitHub's bare
-/// `x-ratelimit-*` and OpenAI's `x-ratelimit-*-requests` naming).
+/// True if a retry could succeed: a `Retry-After` or any `x-ratelimit-*` header.
 fn has_retry_hint(headers: &HeaderMap) -> bool {
     headers.contains_key(RETRY_AFTER)
         || headers
@@ -106,9 +97,8 @@ fn has_retry_hint(headers: &HeaderMap) -> bool {
             .any(|k| k.as_str().starts_with("x-ratelimit"))
 }
 
-/// Delay requested by the server: `Retry-After` seconds, or the gap until
-/// `x-ratelimit-reset` (epoch seconds). The HTTP-date form of `Retry-After` is
-/// not parsed; callers fall back to exponential backoff.
+/// Server-requested delay: `Retry-After` seconds, or the gap until
+/// `x-ratelimit-reset` (epoch seconds). The HTTP-date form is not parsed.
 fn header_delay(headers: &HeaderMap) -> Option<Duration> {
     if let Some(secs) = headers
         .get(RETRY_AFTER)
@@ -165,7 +155,6 @@ mod tests {
 
     #[test]
     fn http_date_retry_after_falls_through_to_none() {
-        // We do not parse the date form; caller uses backoff instead.
         let d = header_delay(&headers(&[(
             "retry-after",
             "Wed, 21 Oct 2026 07:28:00 GMT",
@@ -175,14 +164,12 @@ mod tests {
 
     #[test]
     fn retry_hint_distinguishes_rate_limit_from_permanent_error() {
-        // Real rate limits carry a hint header -> retryable.
         assert!(has_retry_hint(&headers(&[("retry-after", "60")])));
         assert!(has_retry_hint(&headers(&[("x-ratelimit-remaining", "0")])));
         assert!(has_retry_hint(&headers(&[(
             "x-ratelimit-reset-requests",
             "1s"
         )])));
-        // A bare 429 (e.g. OpenAI insufficient_quota) has no hint -> not retried.
         assert!(!has_retry_hint(&headers(&[])));
         assert!(!has_retry_hint(&headers(&[(
             "content-type",

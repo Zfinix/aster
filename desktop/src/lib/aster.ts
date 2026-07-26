@@ -33,8 +33,57 @@ export function chat(
   repoPath: string | null,
   model: string | null,
   allowEdits: boolean,
+  session: string | null,
 ): Promise<ChatReply> {
-  return invoke<ChatReply>("chat", { messages, repoPath, model, allowEdits });
+  return invoke<ChatReply>("chat", {
+    messages,
+    repoPath,
+    model,
+    allowEdits,
+    session,
+  });
+}
+
+export interface SessionSummary {
+  id: string;
+  created_at: string;
+  model: string | null;
+  turns: number;
+  title: string;
+}
+
+/** List saved chat sessions for a repo, newest first. */
+export function listSessions(
+  repoPath: string | null,
+): Promise<SessionSummary[]> {
+  return invoke<SessionSummary[]>("list_sessions", { repoPath });
+}
+
+/** Load a session's full transcript by id. */
+export function showSession(
+  id: string,
+  repoPath: string | null,
+): Promise<{ id: string; events: unknown[] }> {
+  return invoke("show_session", { id, repoPath });
+}
+
+export interface MemoryList {
+  dir: string;
+  blocks: { name: string; description: string }[];
+}
+
+/** List durable memory: project facts plus named blocks. */
+export function memoryList(): Promise<MemoryList> {
+  return invoke<MemoryList>("memory_list");
+}
+
+/** Save a durable fact. With a title it writes a named block; otherwise it
+ *  appends to project memory (ASTER.md). */
+export function memoryAdd(
+  text: string,
+  title?: string,
+): Promise<{ ok: boolean; kind: string; path: string | null }> {
+  return invoke("memory_add", { text, title: title ?? null });
 }
 
 export interface FixResult {

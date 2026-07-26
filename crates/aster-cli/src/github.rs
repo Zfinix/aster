@@ -83,9 +83,8 @@ pub async fn post_review(
         return Ok(());
     }
 
-    // 422 means at least one comment referenced a line outside the PR diff, and
-    // GitHub rejects the entire review. Fall back to a single summary review that
-    // carries every finding in its body so the user still gets the review.
+    // 422 means a comment referenced a line outside the diff and GitHub rejected the
+    // whole review; fall back to one summary review carrying every finding in its body.
     if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
         let fallback = json!({
             "event": "COMMENT",
@@ -150,8 +149,6 @@ fn review_summary(findings: &[Finding]) -> String {
     )
 }
 
-// Renders every finding into one markdown body, used when inline comments are
-// rejected so nothing is lost.
 fn findings_markdown(findings: &[Finding]) -> String {
     let mut out = review_summary(findings);
     out.push_str(

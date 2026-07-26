@@ -1,6 +1,5 @@
-//! Shared LLM provider resolution for every subcommand that talks to a model.
-//! One chain, applied identically to `review` and `chat`: shell env (non-empty)
-//! wins, then `aster.yaml`, then defaults. API keys never come from the yaml.
+//! Shared LLM provider resolution. Precedence: non-empty shell env, then `aster.yaml`, then defaults.
+//! API keys never come from the yaml.
 
 use std::env;
 
@@ -14,8 +13,7 @@ pub struct LlmConfig {
     pub model: String,
 }
 
-/// Resolve the endpoint, key, and model. `model_flag` (a CLI flag) wins over
-/// env and yaml; an empty env var counts as unset.
+/// Resolve endpoint, key, and model. `model_flag` wins over env and yaml; empty env counts as unset.
 pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
     let Some(api_key) =
         env_non_empty("ASTER_API_KEY").or_else(|| env_non_empty("OPEN_ROUTER_API_KEY"))
@@ -41,8 +39,7 @@ fn env_non_empty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|s| !s.trim().is_empty())
 }
 
-/// Resolve a setting without mutating the environment: shell env wins, then the
-/// aster.yaml value. Returns None if neither is set, so callers apply defaults.
+/// Shell env wins, then the aster.yaml value; None when neither is set.
 pub fn env_or(key: &str, file: Option<&str>) -> Option<String> {
     env::var(key)
         .ok()

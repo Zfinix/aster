@@ -70,8 +70,7 @@ pub struct Symbol {
     pub code_snippet: Option<String>,
 }
 
-/// Canonical extension-to-language mapping, shared so symbol extraction, the
-/// index, and ast-grep don't each keep their own table.
+/// Canonical extension-to-language mapping shared across symbol extraction, index, and ast-grep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,

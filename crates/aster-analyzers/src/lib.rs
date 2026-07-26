@@ -11,8 +11,6 @@ pub use ast_grep::AstGrep;
 pub use models::{Finding, Severity};
 pub use semgrep::Semgrep;
 
-/// A static-analysis backend. `available()` decides whether it can run in the
-/// current environment (e.g. its binary is on PATH).
 pub trait Analyzer: Send + Sync {
     fn name(&self) -> &'static str;
     fn available(&self) -> bool;
@@ -24,12 +22,9 @@ pub struct Detected {
     pub skipped: Vec<&'static str>,
 }
 
-/// Every backend name, for callers that want to enable them all.
 pub const ALL_MODES: [&str; 2] = ["semgrep", "ast-grep"];
 
-/// Detect only the named backends that are also available. `astgrep_rules` is
-/// the ast-grep rule YAML (from `aster.yaml`), threaded into the ast-grep
-/// backend so its rules come from config, not just the env.
+/// Detect only the named backends that are also available.
 pub fn detect_with(enabled: &[&str], astgrep_rules: Option<&str>) -> Detected {
     let mut active = Vec::new();
     let mut skipped = Vec::new();

@@ -1,7 +1,4 @@
-//! `aster fix`: turn review findings into applied edits. Reads findings JSON
-//! (from `aster review --json` or the desktop app), asks the model for a
-//! minimal SEARCH/REPLACE patch per finding, and applies it to the working
-//! tree. Dry-run by default; `--apply` writes.
+//! `aster fix`: turn review findings into SEARCH/REPLACE edits. Dry-run by default; `--apply` writes.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -24,13 +21,11 @@ const WINDOW_LINES: usize = 150;
 
 #[derive(Args)]
 pub struct FixArgs {
-    /// Findings to fix: a JSON array of finding objects (the `aster review
-    /// --json` output), from PATH or `-` for stdin.
+    /// JSON array of findings (from `aster review --json`), from PATH or `-` for stdin.
     #[arg(long, value_name = "PATH")]
     findings_json: String,
 
-    /// Write the edits to the working tree. Without this, print a dry-run
-    /// preview of what would change.
+    /// Write the edits to the working tree (otherwise print a dry-run preview).
     #[arg(long)]
     apply: bool,
 
@@ -42,13 +37,12 @@ pub struct FixArgs {
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
 
-    /// Repository root the file paths are relative to. Defaults to the
-    /// current directory.
+    /// Repository root the file paths are relative to. Defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     repo_root: Option<PathBuf>,
 }
 
-/// The per-finding outcome, also the `--json` wire shape.
+/// Per-finding outcome, also the `--json` wire shape.
 #[derive(Debug, Serialize)]
 struct FixResult {
     file_path: String,
@@ -179,8 +173,7 @@ async fn try_fix(
     }
 
     if apply {
-        // `fix` is a batch, non-interactive command: an edit that needs approval
-        // (mode `ask`) or is denied is reported as blocked rather than written.
+        // `fix` is non-interactive: edits needing approval (mode `ask`) or denied are blocked, not written.
         if let Decision::Deny { reason } | Decision::Prompt { preview: reason } =
             policy.evaluate(&Action::Edit {
                 path: &finding.file_path,
@@ -207,8 +200,6 @@ async fn try_fix(
     })
 }
 
-/// The user message for one fix request: the finding, then the file (or a
-/// window around the finding for big files).
 fn fix_request(finding: &Finding, code: &str, is_excerpt: bool) -> String {
     let mut msg = format!(
         "Finding to fix:\n\
@@ -234,8 +225,7 @@ fn fix_request(finding: &Finding, code: &str, is_excerpt: bool) -> String {
     msg
 }
 
-/// For large files, the lines around the finding; None when the whole file is
-/// small enough to send.
+/// Lines around the finding for large files; None when the whole file fits.
 fn excerpt_for(content: &str, line: usize) -> Option<String> {
     if content.len() <= MAX_WHOLE_FILE_BYTES {
         return None;

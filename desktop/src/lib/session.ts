@@ -31,10 +31,134 @@ export function emptyReview(): ReviewData {
   };
 }
 
+/** One tool call the chat agent made during a turn, derived from the session
+ *  transcript. `output` is the tool's result text, shown when a step expands. */
+export interface ToolStep {
+  id: string;
+  name: string;
+  label: string;
+  output?: string;
+}
+
 export type Turn =
-  | { id: string; role: "user"; text: string }
-  | { id: string; role: "assistant"; text: string; pending?: boolean; error?: boolean }
-  | { id: string; role: "review"; data: ReviewData };
+  | { id: string; role: "user"; text: string; ts?: number }
+  | {
+      id: string;
+      role: "assistant";
+      text: string;
+      ts?: number;
+      pending?: boolean;
+      error?: boolean;
+      steps?: ToolStep[];
+    }
+  | { id: string; role: "review"; data: ReviewData; ts?: number };
+
+/** "just now", "5 minutes ago", "2 hours ago", "3 days ago". */
+export function timeAgo(ts: number): string {
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+/** Friendly one-line label for a tool call, à la Claude's activity rows. */
+export function stepLabel(name: string, args: Record<string, unknown>): string {
+  const s = (v: unknown) => (typeof v === "string" ? v : "");
+  switch (name) {
+    case "read_file":
+      return `Read ${s(args.path) || "file"}`;
+    case "list_files":
+      return `Listed ${s(args.dir) || "project root"}`;
+    case "search_files":
+      return `Searched “${s(args.query)}”`;
+    case "edit_file":
+      return `Edited ${s(args.path) || "file"}`;
+    case "remember":
+      return "Saved to memory";
+    case "recall":
+      return `Recalled ${s(args.name)}`;
+    case "read_skill":
+      return `Read skill ${s(args.name)}`;
+    default:
+      return name.replace(/_/g, " ");
+  }
+}
+
+interface RawEvent {
+  type?: string;
+  role?: string;
+  content?: string;
+  tool_call_id?: string;
+  tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+}
+
+/** Extract the tool calls of the most recent turn from a session transcript:
+ *  every assistant tool call after the last user message, paired with its
+ *  result by tool_call_id. */
+export function stepsFromEvents(events: unknown[]): ToolStep[] {
+  const evs = events as RawEvent[];
+  let lastUser = -1;
+  evs.forEach((e, i) => {
+    if (e?.type === "message" && e.role === "user") lastUser = i;
+  });
+
+  const results = new Map<string, string>();
+  for (let i = lastUser + 1; i < evs.length; i++) {
+    const e = evs[i];
+    if (e?.type === "message" && e.role === "tool" && e.tool_call_id) {
+      results.set(e.tool_call_id, e.content ?? "");
+    }
+  }
+
+  const steps: ToolStep[] = [];
+  for (let i = lastUser + 1; i < evs.length; i++) {
+    const e = evs[i];
+    if (e?.type === "message" && e.role === "assistant" && e.tool_calls?.length) {
+      for (const tc of e.tool_calls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
+        steps.push({
+          id: tc.id,
+          name: tc.function.name,
+          label: stepLabel(tc.function.name, args),
+          output: results.get(tc.id),
+        });
+      }
+    }
+  }
+  return steps;
+}
+
+/** A compact summary line for a collapsed activity panel, e.g.
+ *  "Read 2 files · searched 1". */
+export function summarizeSteps(steps: ToolStep[]): string {
+  if (steps.length === 1) return steps[0].label;
+
+  const count = (name: string) => steps.filter((s) => s.name === name).length;
+  const reads = count("read_file");
+  const lists = count("list_files");
+  const searches = count("search_files");
+  const edits = count("edit_file");
+  const other = steps.length - reads - lists - searches - edits;
+
+  const parts: string[] = [];
+  if (edits) parts.push(`edited ${edits} file${edits > 1 ? "s" : ""}`);
+  if (reads) parts.push(`read ${reads} file${reads > 1 ? "s" : ""}`);
+  if (lists) parts.push(`listed ${lists} dir${lists > 1 ? "s" : ""}`);
+  if (searches) parts.push(`searched ${searches}`);
+  if (other) parts.push(`${other} more`);
+
+  const s = parts.join(" · ") || `${steps.length} steps`;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 export interface Conversation {
   id: string;
@@ -91,6 +215,21 @@ export const SOURCE_DEFAULT_VALUE: Record<SourceKind, string | null> = {
   pr: "",
   diff: "",
 };
+
+/** A concise, repo-free title for a review row, derived from its source.
+ *  The repo is already shown by the folder group, so we don't repeat it. */
+export function defaultReviewTitle(kind: SourceKind, value: string | null): string {
+  switch (kind) {
+    case "working":
+      return "Working tree";
+    case "range":
+      return value || "main..HEAD";
+    case "pr":
+      return value ? `PR #${value.replace(/^#/, "")}` : "Pull request";
+    case "diff":
+      return value ? value.split("/").pop() || "Diff" : "Diff";
+  }
+}
 
 export function repoNameOf(path: string): string {
   const parts = path.replace(/\/+$/, "").split("/");

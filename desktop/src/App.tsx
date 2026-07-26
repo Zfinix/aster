@@ -8,6 +8,7 @@ import {
   pickRepo,
   runReview,
   saveProvider,
+  showSession,
   startupInfo,
   type AuthStatus,
   type ChatMessage,
@@ -19,10 +20,12 @@ import {
   DEFAULT_MODEL,
   RESEARCH_MODELS,
   SOURCE_DEFAULT_VALUE,
+  defaultReviewTitle,
   emptyReview,
   latestReview,
   nextId,
   repoNameOf,
+  stepsFromEvents,
   type Conversation,
   type ReviewData,
   type Turn,
@@ -206,6 +209,7 @@ function App() {
   ];
   const [prompt, setPrompt] = useState("");
   const [view, setView] = useState<View>("home");
+  const [homeIntent, setHomeIntent] = useState<"review" | "chat">("review");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -296,9 +300,9 @@ function App() {
     const text = prompt.trim();
     if (!text || busy) return;
 
-    const userTurn: Turn = { id: nextId(), role: "user", text };
+    const userTurn: Turn = { id: nextId(), role: "user", text, ts: Date.now() };
     const asstId = nextId();
-    const asstTurn: Turn = { id: asstId, role: "assistant", text: "", pending: true };
+    const asstTurn: Turn = { id: asstId, role: "assistant", text: "", pending: true, ts: Date.now() };
 
     const isNew = activeId == null;
     const convoId = activeId ?? nextId();
@@ -331,10 +335,17 @@ function App() {
     const history = buildMessages(priorTurns);
     history.push({ role: "user", content: text });
     try {
-      const res = await chat(history, opts.repoPath || null, model, true);
+      const res = await chat(history, opts.repoPath || null, model, true, convoId);
       patchTurn(convoId, asstId, { text: res.reply, pending: false });
       if (res.edits.length > 0) {
         toast(`Edited ${res.edits.join(", ")}`);
+      }
+      try {
+        const sess = await showSession(convoId, opts.repoPath || null);
+        const steps = stepsFromEvents(sess.events);
+        if (steps.length > 0) patchTurn(convoId, asstId, { steps });
+      } catch {
+        /* transcript is best-effort; the reply already rendered */
       }
     } catch (e) {
       patchTurn(convoId, asstId, { text: String(e), pending: false, error: true });
@@ -370,25 +381,28 @@ function App() {
   // changed a source (e.g. attaching a diff) pass the updated opts directly,
   // since a `setOpts` in the same tick would not be visible here yet.
   const startReview = useCallback(
-    async (reviewOpts: ReviewOpts) => {
+    async (reviewOpts: ReviewOpts, targetId?: string) => {
       if (!reviewOpts.repoPath || busy) return;
       unlistenRef.current?.();
 
       const text = prompt.trim();
-      const isNew = activeId == null;
-      const convoId = activeId ?? nextId();
+      const existingId = targetId ?? activeId;
+      const isNew = existingId == null;
+      const convoId = existingId ?? nextId();
       const reviewId = nextId();
 
       const newTurns: Turn[] = [];
-      if (text) newTurns.push({ id: nextId(), role: "user", text });
-      newTurns.push({ id: reviewId, role: "review", data: emptyReview() });
+      if (text) newTurns.push({ id: nextId(), role: "user", text, ts: Date.now() });
+      newTurns.push({ id: reviewId, role: "review", data: emptyReview(), ts: Date.now() });
 
       setConversations((cs) =>
         isNew
           ? [
               {
                 id: convoId,
-                title: text || `Review ${repoNameOf(reviewOpts.repoPath)}`,
+                title:
+                  text ||
+                  defaultReviewTitle(reviewOpts.sourceKind, reviewOpts.sourceValue),
                 repoName: repoNameOf(reviewOpts.repoPath),
                 repoPath: reviewOpts.repoPath,
                 whenLabel: "now",
@@ -502,6 +516,34 @@ function App() {
     setView("home");
   }, [activeId]);
 
+  const onDeleteConvo = useCallback(
+    (id: string) => {
+      setConversations((cs) => cs.filter((c) => c.id !== id));
+      if (activeId === id) {
+        setActiveId(null);
+        setView("home");
+      }
+    },
+    [activeId],
+  );
+
+  const onRenameConvo = useCallback((id: string, title: string) => {
+    setConversations((cs) =>
+      cs.map((c) => (c.id === id ? { ...c, title } : c)),
+    );
+  }, []);
+
+  const onRerunConvo = useCallback(
+    (id: string) => {
+      const c = conversations.find((x) => x.id === id);
+      if (!c || busy) return;
+      setActiveId(id);
+      setView("thread");
+      startReview({ ...opts, repoPath: c.repoPath }, id);
+    },
+    [conversations, busy, opts, startReview],
+  );
+
   const onApplyFix = useCallback(
     async (finding: Finding) => {
       const res = await applyFix(finding, opts.repoPath || null, model);
@@ -515,33 +557,48 @@ function App() {
     [opts.repoPath, model, toast],
   );
 
-  const onFixBrief = useCallback(async () => {
-    if (!activeConvo) return;
-    const review = latestReview(activeConvo);
-    if (!review || review.findings.length === 0) {
-      toast("No findings to brief");
-      return;
-    }
-    const md = [
-      `# Fix brief · ${activeConvo.repoName}`,
-      "",
-      ...review.findings.map((f, i) =>
-        [
-          `## ${i + 1}. [${severityOf(f.severity).toUpperCase()}] ${f.title}`,
-          `**Where:** \`${f.file_path}:${f.line}\``,
-          "",
-          f.description,
-          "",
-          f.suggestion ? `**Fix:** ${f.suggestion}` : "",
-        ].join("\n"),
-      ),
-    ].join("\n");
-    await navigator.clipboard.writeText(md);
-    toast(`Fix brief for ${review.findings.length} findings copied`);
-  }, [activeConvo, toast]);
+  const copyFixBrief = useCallback(
+    async (convo: Conversation) => {
+      const review = latestReview(convo);
+      if (!review || review.findings.length === 0) {
+        toast("No findings to brief");
+        return;
+      }
+      const md = [
+        `# Fix brief · ${convo.repoName}`,
+        "",
+        ...review.findings.map((f, i) =>
+          [
+            `## ${i + 1}. [${severityOf(f.severity).toUpperCase()}] ${f.title}`,
+            `**Where:** \`${f.file_path}:${f.line}\``,
+            "",
+            f.description,
+            "",
+            f.suggestion ? `**Fix:** ${f.suggestion}` : "",
+          ].join("\n"),
+        ),
+      ].join("\n");
+      await navigator.clipboard.writeText(md);
+      toast(`Fix brief for ${review.findings.length} findings copied`);
+    },
+    [toast],
+  );
+
+  const onFixBrief = useCallback(() => {
+    if (activeConvo) copyFixBrief(activeConvo);
+  }, [activeConvo, copyFixBrief]);
+
+  const onCopyBriefConvo = useCallback(
+    (id: string) => {
+      const c = conversations.find((x) => x.id === id);
+      if (c) copyFixBrief(c);
+    },
+    [conversations, copyFixBrief],
+  );
 
   const composer: ComposerBinding = useMemo(
     () => ({
+      intent: homeIntent,
       prompt,
       setPrompt,
       onAsk,
@@ -561,7 +618,7 @@ function App() {
       onAttach,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, onAsk, onReview, busy, reviewing, opts, repos, onRepo, onSource, model, customModels, onModel, onAddModel, onAttach],
+    [homeIntent, prompt, onAsk, onReview, busy, reviewing, opts, repos, onRepo, onSource, model, customModels, onModel, onAddModel, onAttach],
   );
 
   return (
@@ -569,15 +626,28 @@ function App() {
       <AppSidebar
         conversations={conversations}
         activeId={activeId}
+        onNewChat={() => {
+          setActiveId(null);
+          setView("home");
+          setPrompt("");
+          setHomeIntent("chat");
+          setOpts({ sourceKind: "working", sourceValue: null });
+        }}
         onNewReview={() => {
           setActiveId(null);
           setView("home");
           setPrompt("");
+          setHomeIntent("review");
+          setOpts({ sourceKind: "working", sourceValue: null });
         }}
         onOpen={(id) => {
           setActiveId(id);
           setView("thread");
         }}
+        onRename={onRenameConvo}
+        onDelete={onDeleteConvo}
+        onRerun={onRerunConvo}
+        onCopyBrief={onCopyBriefConvo}
         onCollapse={toggleSidebar}
         theme={theme}
         setTheme={setTheme}
@@ -647,6 +717,7 @@ function App() {
           {view === "home" && (
             <HomeView
               composer={composer}
+              intent={homeIntent}
               conversations={conversations}
               onOpen={(id) => {
                 setActiveId(id);

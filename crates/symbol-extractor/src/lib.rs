@@ -60,7 +60,8 @@ fn config_for_path(file_path: &str) -> Option<&'static TagsConfiguration> {
         Language::CSharp => C_SHARP.as_ref(),
         Language::Php => PHP.as_ref(),
         Language::Swift => SWIFT.as_ref(),
-        Language::Kotlin | Language::Scala => None,
+        Language::Kotlin => KOTLIN.as_ref(),
+        Language::Scala => SCALA.as_ref(),
     }
 }
 
@@ -124,3 +125,78 @@ tags_config!(
     tree_sitter_swift::LANGUAGE,
     tree_sitter_swift::TAGS_QUERY
 );
+
+// tree-sitter-kotlin-ng and tree-sitter-scala ship no tags query, so these are
+// authored against each grammar's node types.
+tags_config!(KOTLIN, tree_sitter_kotlin_ng::LANGUAGE, KOTLIN_TAGS_QUERY);
+tags_config!(SCALA, tree_sitter_scala::LANGUAGE, SCALA_TAGS_QUERY);
+
+const KOTLIN_TAGS_QUERY: &str = r#"
+(class_declaration name: (identifier) @name) @definition.class
+(object_declaration name: (identifier) @name) @definition.object
+(companion_object name: (identifier) @name) @definition.object
+(function_declaration name: (identifier) @name) @definition.function
+(property_declaration (variable_declaration (identifier) @name)) @definition.property
+(enum_entry (identifier) @name) @definition.constant
+(type_alias type: (identifier) @name) @definition.type
+"#;
+
+const SCALA_TAGS_QUERY: &str = r#"
+(class_definition name: (identifier) @name) @definition.class
+(object_definition name: (identifier) @name) @definition.object
+(trait_definition name: (identifier) @name) @definition.interface
+(enum_definition name: (identifier) @name) @definition.enum
+(function_definition name: (identifier) @name) @definition.function
+(val_definition pattern: (identifier) @name) @definition.variable
+(var_definition pattern: (identifier) @name) @definition.variable
+(val_declaration name: (identifier) @name) @definition.variable
+(var_declaration name: (identifier) @name) @definition.variable
+(type_definition name: (type_identifier) @name) @definition.type
+(given_definition name: (identifier) @name) @definition.variable
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(content: &str, path: &str) -> Vec<String> {
+        extract_symbols(content, path)
+            .into_iter()
+            .filter_map(|s| s.symbol_name)
+            .collect()
+    }
+
+    #[test]
+    fn extracts_kotlin_definitions() {
+        let src = r#"
+class Greeter(val name: String) {
+    fun greet(): String = "hi"
+    val count = 0
+}
+object Registry
+enum class Color { RED, GREEN }
+typealias Handler = (Int) -> Unit
+"#;
+        let got = names(src, "a.kt");
+        for want in ["Greeter", "greet", "count", "Registry", "Color", "Handler"] {
+            assert!(got.contains(&want.to_string()), "missing {want} in {got:?}");
+        }
+    }
+
+    #[test]
+    fn extracts_scala_definitions() {
+        let src = r#"
+class Greeter(name: String) {
+  def greet: String = "hi"
+  val count = 0
+}
+object Registry
+trait Named { def name: String }
+type Handler = Int => Unit
+"#;
+        let got = names(src, "a.scala");
+        for want in ["Greeter", "greet", "count", "Registry", "Named", "Handler"] {
+            assert!(got.contains(&want.to_string()), "missing {want} in {got:?}");
+        }
+    }
+}

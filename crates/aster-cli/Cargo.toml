@@ -30,5 +30,7 @@ aster-ai = { path = "../aster-ai" }
 aster-harness = { path = "../aster-harness" }
 aster-models = { path = "../aster-models" }
 aster-policy = { path = "../aster-policy" }
+aster-persist = { path = "../aster-persist" }
+aster-skills = { path = "../aster-skills" }
 cliclack = "0.5.5"
 console = "0.16"
