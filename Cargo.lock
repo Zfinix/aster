@@ -161,6 +161,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-agents"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "aster-ai"
 version = "0.1.0"
 dependencies = [
