@@ -11,6 +11,7 @@ members = [
     "crates/aster-persist",
     "crates/aster-skills",
     "crates/aster-agents",
+    "crates/aster-mcp",
     "crates/aster-cli",
 ]
 

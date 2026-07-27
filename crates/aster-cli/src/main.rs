@@ -29,7 +29,7 @@ use clap::Subcommand;
 #[command(
     name = "aster",
     version,
-    about = "AI code review: hypothesize → verify → shape"
+    about = "A self-hostable agent harness for software work"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -46,7 +46,7 @@ enum Command {
     Logout,
     /// Review a diff: the current branch, an explicit range, a file, or a PR.
     Review(review::ReviewArgs),
-    /// Chat with the review agent (interactive TUI by default; --print for one-shot).
+    /// Chat with the Aster agent (interactive TUI by default; --print for one-shot).
     Chat(chat::ChatArgs),
     /// Apply model-generated fixes for review findings (dry-run by default).
     Fix(fix::FixArgs),

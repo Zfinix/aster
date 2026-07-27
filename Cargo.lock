@@ -268,6 +268,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aster-models"
 version = "0.1.0"
 dependencies = [

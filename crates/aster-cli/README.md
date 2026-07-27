@@ -1,7 +1,8 @@
 # aster
 
-The `aster` command-line tool: run Aster's verification-first code review on a
-diff, locally or against a GitHub PR.
+The `aster` command-line tool is the entry point to Aster's agent harness. It
+currently provides code review, an interactive codebase agent, guided fixes,
+durable sessions and memory, and reusable skills.
 
 ## Install
 
@@ -32,6 +33,11 @@ See [aster.yaml.example](../../aster.yaml.example) for the full set of knobs
 ## Usage
 
 ```bash
+aster chat "explain the authentication flow"  # codebase agent
+aster sessions list                            # resumable agent sessions
+aster memory list                              # durable project context
+aster skills list                              # reusable workflows
+
 aster review                       # review uncommitted changes (working tree)
 aster review --tui                 # watch the review happen live
 aster review --range main..HEAD    # a specific git range
@@ -52,9 +58,10 @@ aster logout
 Repo is auto-detected from the `origin` remote; override with `--repo owner/repo`.
 Token resolution: `--token` > `GITHUB_TOKEN` > the token stored by `aster login`.
 
-## How it works
+## Review capability
 
-`aster review` runs the harness pipeline: **hypothesize** (a cheap model
+`aster review` is Aster's first verification-first capability. It runs the
+harness pipeline: **hypothesize** (a cheap model
 over-produces candidate defects) → **retrieve** (pull only the evidence each
 candidate needs from a local symbol index) → **verify** (a second, adversarial
 model call refutes the weak ones and gates on confidence; set
