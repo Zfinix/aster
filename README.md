@@ -1,9 +1,10 @@
 
 # ✳ Aster
 
-**An open-source AI code review harness.**
+**An open-source agent harness for software work.**
 
-Self-hostable, bring-your-own model, verification-first reviews that are precise and cheap.
+Self-hostable, bring-your-own-model agents with controlled tools, durable
+context, and verification-first capabilities.
 
 [![CI](https://github.com/zfinix/aster/actions/workflows/ci.yml/badge.svg)](https://github.com/zfinix/aster/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
@@ -12,36 +13,65 @@ Built by [Instalog](https://instalog.dev).
 
 ---
 
-> **Status: early, building in the open.** The core review algorithm and the
-> `aster` CLI have landed. Deeper GitHub and Linear integrations are next. See [docs/](./docs).
+> **Status: early, building in the open.** The agent runtime, chat, memory,
+> skills, policy layer, and first verification capability have landed. See [docs/](./docs).
 
 ## What is Aster?
 
 ![Aster demo animation](./aster.gif)
 
-Aster reviews a code diff and emits verified, actionable findings. It is
-model-agnostic (point it at any OpenAI-compatible provider) and self-hostable
-(no vector DB, no external services in the core).
+Aster is the operating layer for agents that work in a codebase. It combines a
+model you choose with bounded context, local retrieval, durable memory, skills,
+agent definitions, and a policy-controlled tool surface. It is model-agnostic
+(any OpenAI-compatible provider) and self-hostable (no vector DB or hosted
+control plane in the core).
 
-The insight: **code review is an adversarial verification task, not a generation
-task.** So Aster separates *hypothesis* from *verification* and retrieves context
-precisely instead of stuffing whole files into a prompt. That makes it both more
-precise and cheaper, which turn out to be the same lever.
+Code review is Aster's first mature capability, not its boundary. The same
+harness can support exploration, implementation, maintenance, and future
+specialized agents without each workflow rebuilding memory, tools, policy, and
+context management from scratch.
+
+## The harness
+
+```mermaid
+flowchart LR
+    U[Developer or automation] --> A[Aster harness]
+    A --> M[Model provider]
+    A --> C[Context: index, memory, skills]
+    A --> T[Controlled tools and policy]
+    A --> W[Task capability]
+    W --> R[Code review today]
+    W --> F[Fix and implementation flows]
+    W --> X[Future specialized agents]
+```
+
+The harness provides:
+
+- **A controlled agent runtime.** Chat, tool loops, policy decisions, session
+  persistence, and machine-readable interfaces are shared infrastructure.
+- **Context that stays useful.** Local source retrieval, durable project memory,
+  and progressively loaded skills keep agents grounded without filling every
+  request with the whole repository.
+- **Composable capabilities.** Review, fix, and chat use the same primitives;
+  agent definitions and MCP injection make the surface extensible.
+- **Verification where it matters.** Aster can spend extra model effort to
+  challenge high-impact outputs instead of treating every task as free-form
+  generation.
 
 ## Why Aster
 
-- **Precision over volume.** A false positive costs more trust than a missed
-  finding costs coverage. Every candidate is put on trial before it reaches you.
+- **Harness, not a prompt.** Workflows inherit tools, policy, history, and
+  retrieval instead of reassembling them in a one-off agent prompt.
 - **BYO model, no lock-in.** Any OpenAI-compatible endpoint: OpenRouter, Groq,
   OpenAI, or a local llama.cpp server.
-- **Self-host first.** No vector DB and no external services in the review core.
-  A diff and a local SQLite index are all it needs.
-- **Cheap by design.** The expensive model tier is spent only on verifying what
-  survives, never on the whole diff.
+- **Self-host first.** Local files and SQLite/FTS5 are the source of context;
+  no hosted control plane is required.
+- **Verification-first.** Code review demonstrates the approach: hypotheses are
+  retrieved, challenged, and shaped before they are shown to a developer.
 
-Compared to a plain "ask GPT to review this diff" prompt, Aster refutes its own
-findings before showing them, retrieves the exact evidence each finding needs,
-and gives you a confidence score you can gate on.
+The review capability is deliberately demanding: compared with a plain
+"review this diff" prompt, it retrieves targeted evidence, refutes candidate
+findings, and emits a confidence-gated result.
 
 ## Install
 
@@ -56,7 +86,7 @@ cargo install --path crates/aster-cli    # installs the `aster` binary
 Or build without installing: `cargo build --release -p aster-cli` puts the
 binary at `target/release/aster`.
 
-## Quick start
+## Quick start: review
 
 Point Aster at a model provider, then review your current branch:
 
@@ -83,6 +113,17 @@ aster review -i "src/**/*.rs" -x "**/*.gen.rs"   # include / exclude globs
 ```
 
 Run `aster review --help` for every flag.
+
+## Available capabilities
+
+| Capability | Surface | Purpose |
+| --- | --- | --- |
+| Verification-first review | `aster review` | Finds and refutes candidate defects in a diff or pull request. |
+| Codebase agent | `aster chat` | Explores a repository, reads files, searches, recalls memory, and can edit under policy. |
+| Guided fixes | `aster fix` | Produces and applies review-driven changes through Aster's edit controls. |
+| Durable context | `aster sessions`, `aster memory` | Resumable transcripts and progressively disclosed project memory. |
+| Reusable workflows | `aster skills` and agent definitions | On-demand instructions and specialized agent roles. |
+| External capability boundary | `aster-mcp` | Progressive MCP tool injection; transport wiring is the next integration step. |
 
 ## What a finding looks like
 
@@ -115,7 +156,7 @@ fix-agent:
 ]
 ```
 
-## How it works
+## How review works
 
 A cost-staged, verification-first pipeline:
 
@@ -176,7 +217,12 @@ crates/
   aster-index/       zero-dep code index: SQLite + FTS5 + ripgrep
   aster-analyzers/   static-analysis engine (semgrep / ast-grep)
   symbol-extractor/  tree-sitter-tags symbol extraction (14 languages)
-  aster-harness/     the review core (hypothesize -> verify -> shape)
+  aster-harness/     verification-first review capability
+  aster-persist/     append-only sessions + progressive project memory
+  aster-skills/      on-demand workflow instructions
+  aster-agents/      specialized agent definitions and discovery
+  aster-policy/      controlled read/edit decisions
+  aster-mcp/         progressive MCP injection: one bridge, on-demand schemas
   aster-cli/         the `aster` command-line interface
 docs/
   ARCHITECTURE.md    crates + runtime diagrams
@@ -184,6 +230,9 @@ docs/
   ANALYZERS.md       static-analysis integration
   BENCHMARKS.md      how the hypothesis model was chosen (reproducible)
 ```
+
+MCP tool injection is designed around progressive disclosure; see
+[docs/MCP.md](./docs/MCP.md).
 
 ## Contributing
 

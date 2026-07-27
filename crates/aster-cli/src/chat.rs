@@ -1,6 +1,6 @@
 //! `aster chat`: a conversational turn with an agentic read/list/search/edit tool loop.
 
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{env, fs, io};
@@ -96,6 +96,30 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     prompt
 }
 
+/// CLI spelling of [`aster_policy::Mode`].
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub(crate) enum PermissionModeArg {
+    /// Apply edits without confirmation.
+    Auto,
+    /// Confirm every edit before it lands.
+    Ask,
+    /// Refuse all edits.
+    Deny,
+}
+
+impl From<PermissionModeArg> for aster_policy::Mode {
+    fn from(arg: PermissionModeArg) -> Self {
+        match arg {
+            PermissionModeArg::Auto => Self::Auto,
+            PermissionModeArg::Ask => Self::Ask,
+            PermissionModeArg::Deny => Self::Deny,
+        }
+    }
+}
+
+/// Emits one NDJSON event per line on the `--stream` path.
+pub(crate) type ChatEventSink = Box<dyn Fn(Value) + Send + Sync>;
+
 /// A pending edit the agent task sends to the UI loop, which replies through `respond`.
 pub(crate) struct ApprovalRequest {
     pub preview: String,
@@ -143,6 +167,8 @@ pub struct ChatArgs {
 
     /// Read a JSON array of {"role","content"} messages from PATH, or `-` for
     /// stdin. Roles: "user" | "assistant" | "system". For editors and UIs.
+    /// With --stream this must be a single line, since stdin stays open for
+    /// approval replies.
     #[arg(long, value_name = "PATH")]
     messages_json: Option<String>,
 
@@ -153,6 +179,17 @@ pub struct ChatArgs {
     /// Let the agent edit repo files via its edit_file tool.
     #[arg(long)]
     allow_edits: bool,
+
+    /// How edits are gated, overriding aster.yaml `permissions.mode`. `ask`
+    /// needs a front-end that answers prompts: the TUI, or `--stream`.
+    /// Anything but `deny` also enables the edit tool.
+    #[arg(long, value_name = "MODE", value_enum)]
+    permission_mode: Option<PermissionModeArg>,
+
+    /// Stream the turn as NDJSON on stdout, one event per line, and read
+    /// approval replies from stdin. For editors and UIs.
+    #[arg(long, conflicts_with_all = ["tui", "json", "print"])]
+    stream: bool,
 
     /// Plain single-shot chat: no read/search/edit tools.
     #[arg(long)]
@@ -174,7 +211,8 @@ pub struct ChatArgs {
 impl ChatArgs {
     /// True when both ends are a real terminal and no flag forced one-shot output.
     pub fn is_interactive(&self) -> bool {
-        let one_shot = self.print || self.json || self.no_tools || self.messages_json.is_some();
+        let one_shot =
+            self.print || self.json || self.no_tools || self.stream || self.messages_json.is_some();
         !one_shot && io::stdout().is_terminal() && io::stdin().is_terminal()
     }
 }
@@ -191,30 +229,30 @@ pub async fn run(args: ChatArgs) -> Result<()> {
 
     let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model);
-    let policy = Arc::new(Policy::compile(&settings.permissions)?);
+
+    let mut permissions = settings.permissions.clone();
+    if let Some(mode) = args.permission_mode {
+        permissions.mode = mode.into();
+    }
+    // `deny` means no edits at all, so the tool is withheld entirely; the other
+    // two modes imply the caller wants editing available.
+    let allow_edits = match args.permission_mode {
+        Some(PermissionModeArg::Deny) => false,
+        Some(_) => true,
+        None => args.allow_edits,
+    };
+    let policy = Arc::new(Policy::compile(&permissions)?);
 
     if args.is_interactive() {
         let seed = args.prompt.clone();
-        let perms = settings.permissions.clone();
-        return crate::tui::run_chat(client, repo_root, args.allow_edits, perms, seed).await;
+        return crate::tui::run_chat(client, repo_root, allow_edits, permissions, seed).await;
     }
 
-    let new_turns = read_history(&args)?;
-    let store = crate::persist::store().ok();
-    let (recorder, prior) =
-        resolve_headless_session(store.as_ref(), &repo_root, &args, &client.model)?;
-    let ctx = SessionCtx {
-        recorder,
-        store,
-        skills: discover_skills(&repo_root),
-    };
-    // Record only the new user turn. On the wire path `new_turns` is the full
-    // replayed history, whose earlier turns were recorded on previous calls.
-    if let Some(last) = new_turns.last().filter(|m| m.role == "user") {
-        ctx.record(MessageEvent::user(last.content.clone()));
+    if args.stream {
+        return run_stream(args, client, repo_root, policy, allow_edits).await;
     }
-    let mut history = prior;
-    history.extend(new_turns);
+
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client)?;
 
     let mut edited: Vec<String> = Vec::new();
     let reply = if args.no_tools {
@@ -233,11 +271,12 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             &client,
             &repo_root,
             &history,
-            args.allow_edits,
+            allow_edits,
             &policy,
             None,
             &mut edited,
             &ctx,
+            None,
         )
         .await?
         .0
@@ -268,10 +307,124 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the session and assemble the history for one headless turn.
+fn prepare_turn(
+    args: &ChatArgs,
+    repo_root: &Path,
+    client: &AiClient,
+) -> Result<(SessionCtx, Vec<ChatMessage>)> {
+    let new_turns = read_history(args)?;
+    let store = crate::persist::store().ok();
+    let (recorder, prior) =
+        resolve_headless_session(store.as_ref(), repo_root, args, &client.model)?;
+    let ctx = SessionCtx {
+        recorder,
+        store,
+        skills: discover_skills(repo_root),
+    };
+    // Record only the new user turn. On the wire path `new_turns` is the full
+    // replayed history, whose earlier turns were recorded on previous calls.
+    if let Some(last) = new_turns.last().filter(|m| m.role == "user") {
+        ctx.record(MessageEvent::user(last.content.clone()));
+    }
+    let mut history = prior;
+    history.extend(new_turns);
+    Ok((ctx, history))
+}
+
+/// Serialize one NDJSON event to stdout. Every write flushes so the reader sees
+/// events as they happen rather than when the pipe buffer fills.
+fn emit_line(value: &Value) {
+    let mut out = io::stdout();
+    let _ = writeln!(out, "{value}");
+    let _ = out.flush();
+}
+
+/// Bridge `ask` prompts to the caller: write an `approval_request` line, then
+/// block on one reply line of `{"allow": bool}`.
+fn stdio_approver() -> ApprovalSender {
+    let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            emit_line(&json!({ "type": "approval_request", "preview": req.preview }));
+            let allow = tokio::task::spawn_blocking(read_approval_reply)
+                .await
+                .unwrap_or(false);
+            let _ = req.respond.send(allow);
+        }
+    });
+    tx
+}
+
+/// One line of `{"allow": bool}` on stdin. A closed pipe or junk denies.
+fn read_approval_reply() -> bool {
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        return false;
+    }
+    serde_json::from_str::<Value>(&line)
+        .ok()
+        .and_then(|v| v.get("allow").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+/// Run a turn as NDJSON events on stdout, reading approval replies from stdin.
+async fn run_stream(
+    args: ChatArgs,
+    client: AiClient,
+    repo_root: PathBuf,
+    policy: Arc<Policy>,
+    allow_edits: bool,
+) -> Result<()> {
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client)?;
+
+    let sink: ChatEventSink = Box::new(|event| emit_line(&event));
+    let mut edited: Vec<String> = Vec::new();
+    let result = agent_loop(
+        &client,
+        &repo_root,
+        &history,
+        allow_edits,
+        &policy,
+        Some(&stdio_approver()),
+        &mut edited,
+        &ctx,
+        Some(&sink),
+    )
+    .await;
+
+    let u = client.usage_snapshot();
+    match result {
+        Ok((reply, _)) => emit_line(&json!({
+            "type": "done",
+            "reply": reply,
+            "edits": edited,
+            "usage": {
+                "prompt_tokens": u.prompt_tokens,
+                "completion_tokens": u.completion_tokens,
+                "total_tokens": u.total_tokens,
+                "requests": u.requests,
+                "estimated_cost_usd": u.estimated_cost_usd,
+                "estimated": u.estimated,
+            },
+        })),
+        Err(e) => emit_line(&json!({ "type": "error", "message": format!("{e:#}") })),
+    }
+    Ok(())
+}
+
 /// The conversation to send, minus the system prompt.
 fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
     if let Some(path) = args.messages_json.as_deref() {
-        let raw = if path == "-" {
+        let raw = if path == "-" && args.stream {
+            // Streaming keeps stdin open for approval replies, so the messages
+            // are one line rather than everything up to EOF.
+            let mut buf = String::new();
+            io::stdin()
+                .read_line(&mut buf)
+                .context("reading the messages line from stdin")?;
+            buf
+        } else if path == "-" {
             let mut buf = String::new();
             io::stdin()
                 .read_to_string(&mut buf)
@@ -381,6 +534,7 @@ pub(crate) async fn agent_turn(
         approver.as_ref(),
         &mut edited,
         &ctx,
+        None,
     )
     .await?;
     Ok((reply, edited, compacted))
@@ -398,7 +552,13 @@ async fn agent_loop(
     approver: Option<&ApprovalSender>,
     edited: &mut Vec<String>,
     ctx: &SessionCtx,
+    events: Option<&ChatEventSink>,
 ) -> Result<(String, Option<Vec<ChatMessage>>)> {
+    let emit = |event: Value| {
+        if let Some(sink) = events {
+            sink(event);
+        }
+    };
     let (history, compacted) = compact_if_needed(client, history, ctx).await?;
     let mut wire: Vec<Value> = vec![json!({
         "role": "system",
@@ -446,12 +606,22 @@ async fn agent_loop(
             msg.content.clone(),
             msg.tool_calls.clone(),
         ));
+        // Text the model emitted alongside its tool calls: its running commentary.
+        if let Some(text) = msg.content.as_deref().filter(|c| !c.trim().is_empty()) {
+            emit(json!({ "type": "text", "content": text }));
+        }
         wire.push(json!({
             "role": "assistant",
             "content": msg.content,
             "tool_calls": msg.tool_calls,
         }));
         for call in &msg.tool_calls {
+            emit(json!({
+                "type": "tool_call",
+                "id": call.id,
+                "name": call.function.name,
+                "arguments": call.function.arguments,
+            }));
             let result = exec_tool(
                 repo_root,
                 allow_edits,
@@ -465,6 +635,13 @@ async fn agent_loop(
             .await;
             tracing::debug!(tool = %call.function.name, "tool call executed");
             let result = truncate(&result, MAX_TOOL_RESULT_CHARS);
+            emit(json!({
+                "type": "tool_result",
+                "id": call.id,
+                "name": call.function.name,
+                "result": result,
+                "error": result.starts_with("error: "),
+            }));
             ctx.record(MessageEvent::tool(&call.id, &result));
             wire.push(json!({
                 "role": "tool",

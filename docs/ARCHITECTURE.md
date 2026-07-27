@@ -1,23 +1,29 @@
 # Aster Architecture
 
-Aster is a **cost-staged, verification-first** code-review harness. This document
-describes the crate layout and how a diff becomes a set of verified findings.
+Aster is a **self-hostable agent harness for software work**. It supplies the
+runtime primitives—model access, policy, local context, memory, skills, agents,
+and tool orchestration—that task capabilities share. Code review is the first
+deep, verification-first capability built on those primitives.
 
 ## Design thesis
 
-A code review is not a generation task — it is an **adversarial verification**
-task. The engine's job is to be an independent verifier of code someone else
-wrote. Two consequences follow, and they shape the whole system:
+An agent harness should not be a long system prompt wrapped around a model. It
+should supply controlled execution, durable context, and narrow task-specific
+working sets. Aster follows two rules:
 
-1. **Independent verification is the product, not a feature.** A reviewer that
-   trusts its own first-pass output is the "implementer certifying its own work"
-   anti-pattern pointed at bugs. Aster splits *hypothesis* from *verification*
-   into separate model calls with adversarial prompts.
-2. **The cheapest reviewer and the most accurate reviewer are the same
-   reviewer.** Cost blows up when you stuff whole files and history into a
-   prompt ("inject-first, rescue-later"). Every token you *don't* waste on
-   irrelevant context is a token of signal you didn't dilute. Precise retrieval
-   makes review both cheap and accurate — they are the same lever.
+1. **Context is selected, not dumped.** Local indexing, memory, and skills load
+   only the material relevant to the current turn. This keeps the model grounded
+   and preserves room for the work itself.
+2. **Verification is a capability, not a universal tax.** Some tasks need a
+   quick, direct agent response; high-impact outputs such as review findings
+   benefit from an independent challenge step.
+
+### The review capability
+
+Code review is an **adversarial verification** task, not a generation task. Its
+pipeline separates *hypothesis* from *verification* and retrieves narrowly. A
+reviewer that trusts its own first-pass output is the implementer certifying its
+own work; Aster's review capability refutes candidates before emitting findings.
 
 ## Crate layout
 
@@ -28,13 +34,19 @@ crates/
   aster-index/       zero-dep code index: SQLite + FTS5 + embedded ripgrep
   aster-analyzers/   runtime-selectable static backends: semgrep/ast-grep (CLI)
   symbol-extractor/  tree-sitter-tags symbol extraction (14 languages)
-  aster-harness/     the review core: hypothesize → retrieve → verify → shape
+  aster-harness/     verification-first review capability
   aster-persist/     filesystem-first chat transcripts + memory (see MEMORY.md)
   aster-skills/      filesystem-based agent skills: SKILL.md discovery + on-demand load
+  aster-mcp/         progressive MCP tool injection: one bridge + scoped catalogue
 ```
 
 Chat sessions and durable memory are documented separately in
 [`MEMORY.md`](./MEMORY.md).
+
+MCP integration is documented in [`MCP.md`](./MCP.md). `aster-mcp` is a
+transport-agnostic boundary: it builds the model-visible injection and routes a
+resolved real tool to the host. The CLI remains responsible for connecting to
+an MCP server, applying approvals, and recording the invocation.
 
 ### Dependency graph
 
@@ -50,19 +62,28 @@ graph TD
     AI -.HTTP.-> P[(any OpenAI-compatible provider)]
 ```
 
-`aster-harness` depends on nothing SaaS. The only outbound network call is
-through `aster-ai` to a model endpoint you control via env.
+The review capability depends on nothing SaaS. The only outbound network call
+in its core path is through `aster-ai` to a model endpoint you control via env.
 
 ## Runtime shape
 
 ```mermaid
 graph LR
     subgraph Host["Host (CLI / webhook / CI)"]
-        D[git diff]
+        I[User request, diff, or automation event]
     end
-    D --> H
+    I --> RUNTIME
 
-    subgraph H["aster-harness::review()"]
+    subgraph RUNTIME["Aster harness"]
+        direction TB
+        CHAT[Chat and tool loop]
+        POLICY[Policy-controlled tools]
+        STATE[Sessions, memory, skills, agents]
+        CHAT --> POLICY
+        CHAT --> STATE
+    end
+
+    subgraph H["Review capability: aster-harness::review()"]
         direction TB
         HY["1. HYPOTHESIZE<br/>cheap model, high recall"]
         RE["2. RETRIEVE<br/>working set from index"]
@@ -71,10 +92,11 @@ graph LR
         HY --> RE --> VE --> SH
     end
 
+    RUNTIME --> H
     IDX[(aster-index<br/>SQLite)] -.evidence.-> RE
     AI[aster-ai] -.model calls.-> HY
     AI -.model calls.-> VE
-    SH --> OUT[PRReviewResponse]
+    SH --> OUT[Verified findings]
     OUT --> SINK["inline comments / Linear ticket / fix-brief"]
 ```
 
