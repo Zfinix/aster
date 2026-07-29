@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aster tui spec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #111111;
+    --band: #262626;
+    --rule: #3a3a3a;
+    --text: #d8d8d8;
+    --dim: #8a8a85;
+    --dimmer: #6e6e6e;
+    --faint: #4a4a4a;
+    --fainter: #333333;
+    --blue: #6cb6e3;
+    --green: #8bd17c;
+    --purple: #b48ce3;
+    --pink: #e88ba8;
+    --amber: #e3c46c;
+    --add-bg: #12240f;
+    --add-fg: #9ecb84;
+    --add-mark: #5f8f4a;
+    --span-bg: #245c1a;
+    --span-fg: #c6e8b4;
+    --del-bg: #2a1518;
+    --del-fg: #e08b8b;
+    --del-mark: #a34f4f;
+    --sel-bg: #2a2418;
+    --line: 1.45;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 44px 20px 96px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    line-height: var(--line);
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+  .blank { height: calc(1em * var(--line)); }
+  .note { color: var(--fainter); padding: 0 18px; white-space: pre; }
+  .band { margin: 0 18px; background: var(--band); padding: 6px 14px; white-space: pre; }
+  .hr { margin: 0 18px; border-top: 1px solid var(--rule); }
+  .b { padding: 0 32px; white-space: pre; }
+  .bul::before { content: "• "; color: var(--dimmer); margin-left: -14px; }
+  .bul.warn::before { color: var(--amber); }
+  .tree::before { content: "\2514 "; color: var(--fainter); }
+  .k { font-weight: 500; }
+  .dim { color: var(--dim); }
+  .dimmer { color: var(--dimmer); }
+  .faint { color: var(--faint); }
+  .blue { color: var(--blue); }
+  .green { color: var(--green); }
+  .purple { color: var(--purple); }
+  .pink { color: var(--pink); }
+  .amber { color: var(--amber); }
+  .add { background: var(--add-bg); color: var(--add-fg); }
+  .add .m { color: var(--add-mark); }
+  .add .sp { background: var(--span-bg); color: var(--span-fg); }
+  .del { background: var(--del-bg); color: var(--del-fg); }
+  .del .m { color: var(--del-mark); }
+  .gut { color: var(--faint); }
+  .sel { background: var(--sel-bg); color: var(--amber); }
+  section { margin-bottom: calc(1em * var(--line) * 3); }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 2px 24px; padding: 0 18px; }
+  .sw { display: flex; align-items: center; gap: 10px; white-space: pre; color: var(--dimmer); }
+  .chip { width: 22px; height: 11px; display: inline-block; flex: none; }
+  @media (max-width: 640px) {
+    body { font-size: 11.5px; padding: 24px 6px 64px; }
+    .b { padding-left: 26px; padding-right: 10px; }
+    .band, .hr, .note, .swatches { margin-left: 10px; margin-right: 10px; padding-left: 10px; padding-right: 10px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<section>
+  <div class="note"># first run. hints only for what you cannot guess</div>
+  <div class="blank"></div>
+  <div class="b" style="color:#ef5a6f; letter-spacing:2px;">  &#9604;  &#9600;  &#9604;</div>
+  <div class="b" style="color:#f2764f; letter-spacing:2px;">   &#9600;&#9604;&#9600;&#9604;&#9600;</div>
+  <div class="b" style="color:#f2764f; letter-spacing:2px;"> &#9600;&#9600;&#9600;&#9600;&#9600;&#9600;&#9600;&#9600;&#9600;</div>
+  <div class="b" style="color:#f8cb66; letter-spacing:2px;">  &#9604;&#9600; &#9600; &#9600;&#9604;</div>
+  <div class="b" style="color:#f8cb66; letter-spacing:2px;">     &#9600;</div>
+  <div class="blank"></div>
+  <div class="b"><span class="k">aster</span><span class="dimmer">  v0.1.0</span></div>
+  <div class="b dimmer">plan mode. it explores and proposes, it will not edit yet.</div>
+  <div class="blank"></div>
+  <div class="band dimmer">&#8250; Message aster</div>
+  <div class="b dimmer" style="padding-top:3px;"><span class="green">moonshotai/kimi-k3</span> low <span class="faint">&#183;</span> ~/projects/work-projects/aster</div>
+  <div class="b faint">/ commands  &#183;  &#8679;&#8677; mode</div>
+</section>
+
+<section>
+  <div class="note"># one turn. headers say the consequence, children carry the artifact</div>
+  <div class="blank"></div>
+
+  <div class="band">&#8250; fix the retry logic in the stage-1 runner</div>
+  <div class="blank"></div>
+
+  <div class="b bul">Retrying on every error burns all five attempts on a bad key.</div>
+  <div class="blank"></div>
+
+  <div class="b bul"><span class="k">Read how retries currently work</span></div>
+  <div class="b tree"><span class="blue">Read</span> <span class="dim">src/stage1/runner.rs</span></div>
+  <div class="b"><span class="blue">  Grep</span> <span class="dim">"retry"</span></div>
+  <div class="blank"></div>
+
+  <div class="b bul"><span class="k">Planned three changes</span></div>
+  <div class="b tree">narrow retry to 429 and 5xx  <span class="dimmer">runner.rs</span></div>
+  <div class="b">  add is_retryable helper  <span class="dimmer">errors.rs</span></div>
+  <div class="b">  regenerate golden fixtures  <span class="dimmer">tests/fixtures</span></div>
+  <div class="b dimmer">  <span class="amber">&#9166;</span> start  &#183;  &#8679;&#8677; keep planning</div>
+  <div class="blank"></div>
+
+  <div class="b bul"><span class="k">Changed when a failed request is retried</span></div>
+  <div class="b tree"><span class="blue">src/stage1/runner.rs</span> <span class="dimmer">&#183;</span> <span class="green">+8</span> <span class="pink">&#8722;3</span></div>
+  <div class="b faint">  108      loop {</div>
+  <div class="b del">  <span class="gut">109</span>  <span class="m">&#8722;</span>   if attempt &lt; max_attempts {</div>
+  <div class="b add">  <span class="gut">109</span>  <span class="m">+</span>   if attempt &lt; max_attempts<span class="sp"> &amp;&amp; is_retryable(&amp;err)</span> {</div>
+  <div class="b add">  <span class="gut">110</span>  <span class="m">+</span>       let backoff = base * 2u32.pow(attempt);</div>
+  <div class="b faint">  &#8230; +6 lines (ctrl + d to view diff)</div>
+  <div class="blank"></div>
+
+  <div class="b bul warn"><span class="k">Three saved test results still expect the old behaviour</span></div>
+  <div class="b tree"><span class="dimmer">regenerating rewrites what the tests compare against</span></div>
+  <div class="b sel">  &#8250; regenerate them</div>
+  <div class="b dimmer">    leave them, I will fix the assertions</div>
+  <div class="blank"></div>
+
+  <div class="b bul"><span class="k">Checked that the tests still pass</span></div>
+  <div class="b tree"><span class="purple">cargo</span> <span class="green">test</span>  <span class="dimmer">&#8801; 12 passed, 0 failed</span></div>
+  <div class="blank"></div>
+
+  <div class="b bul"><span class="k">Done</span> <span class="dimmer">(22.4s &#183; 3 files &#183; <span class="green">+36</span> <span class="pink">&#8722;3</span> &#183; $0.031)</span></div>
+  <div class="blank"></div>
+
+  <div class="hr"></div>
+  <div class="blank"></div>
+
+  <div class="b bul">Retries now only fire on 429 and 5xx, with exponential backoff</div>
+  <div class="b">  starting at 250ms. The golden fixtures were regenerated, so the</div>
+  <div class="b">  old assertion on five attempts is gone.</div>
+  <div class="blank"></div>
+  <div class="b">  Want me to review the change before you commit?</div>
+  <div class="blank"></div>
+
+  <div class="hr"></div>
+  <div class="blank"></div>
+
+  <div class="band dimmer">&#8250; Summarize recent commits</div>
+  <div class="b dimmer" style="padding-top:3px;"><span class="green">moonshotai/kimi-k3</span> high <span class="faint">&#183;</span> ~/projects/work-projects/aster <span class="faint">&#183;</span> $0.031</div>
+</section>
+
+<section>
+  <div class="note"># same turn, three depths. one tree, not two modes.</div>
+  <div class="blank"></div>
+  <div class="note"># compact</div>
+  <div class="b bul">Read how retries currently work</div>
+  <div class="b bul">Changed when a failed request is retried</div>
+  <div class="b bul">Updated three saved test results to match</div>
+  <div class="b bul">Checked that the tests still pass <span class="green">&#10003;</span></div>
+  <div class="blank"></div>
+  <div class="note"># default</div>
+  <div class="b bul"><span class="k">Changed when a failed request is retried</span></div>
+  <div class="b tree"><span class="blue">src/stage1/runner.rs</span> <span class="dimmer">&#183;</span> <span class="green">+8</span> <span class="pink">&#8722;3</span></div>
+  <div class="b del">  <span class="gut">109</span>  <span class="m">&#8722;</span>   if attempt &lt; max_attempts {</div>
+  <div class="b add">  <span class="gut">109</span>  <span class="m">+</span>   if attempt &lt; max_attempts<span class="sp"> &amp;&amp; is_retryable(&amp;err)</span> {</div>
+  <div class="b faint">  &#8230; +6 lines</div>
+  <div class="blank"></div>
+  <div class="note"># full, ctrl + t</div>
+  <div class="b bul"><span class="k">Changed when a failed request is retried</span></div>
+  <div class="b tree"><span class="blue">Edit</span> <span class="dim">src/stage1/runner.rs</span> <span class="dimmer">&#183; 2 hunks &#183; 412 lines &#183; sha 8c41f0a</span></div>
+  <div class="b faint">  107      let mut attempt = 0;</div>
+  <div class="b faint">  108      loop {</div>
+  <div class="b del">  <span class="gut">109</span>  <span class="m">&#8722;</span>   if attempt &lt; max_attempts {</div>
+  <div class="b add">  <span class="gut">109</span>  <span class="m">+</span>   if attempt &lt; max_attempts<span class="sp"> &amp;&amp; is_retryable(&amp;err)</span> {</div>
+  <div class="b add">  <span class="gut">110</span>  <span class="m">+</span>       let backoff = base * 2u32.pow(attempt);</div>
+  <div class="b add">  <span class="gut">111</span>  <span class="m">+</span>       sleep(backoff.min(MAX_BACKOFF)).await;</div>
+  <div class="b faint">  112      }</div>
+</section>
+
+<section>
+  <div class="note"># a decision anyone on the team can make</div>
+  <div class="blank"></div>
+  <div class="b bul warn"><span class="k">Wants to delete the build folder and rebuild it</span></div>
+  <div class="b tree"><span class="dimmer">nothing you wrote is in there, it regenerates in about 40s</span></div>
+  <div class="b faint">  <span class="purple">rm</span> <span class="amber">-rf</span> target/debug</div>
+  <div class="blank"></div>
+  <div class="b sel">  &#8250; allow once</div>
+  <div class="b dimmer">    always allow this in aster</div>
+  <div class="b dimmer">    no</div>
+</section>
+
+<section>
+  <div class="note"># review findings. effect on the header, cause underneath.</div>
+  <div class="blank"></div>
+  <div class="b bul"><span class="k">Reviewed the change</span> <span class="dimmer">(2 findings from 9 candidates &#183; 18.7s &#183; $0.023)</span></div>
+  <div class="b tree"><span class="dim">hypothesize</span> gemini-3.1-flash-lite <span class="dimmer">&#183; $0.002</span></div>
+  <div class="b">  <span class="dim">verify</span> claude-sonnet-5 <span class="dimmer">&#183; $0.021</span></div>
+  <div class="blank"></div>
+  <div class="b bul warn"><span class="k">A retry could wait forever instead of giving up</span></div>
+  <div class="b tree"><span class="dimmer">backoff overflows past attempt 31</span> <span class="faint">runner.rs:110</span></div>
+  <div class="blank"></div>
+  <div class="b bul"><span class="k">A timeout response is treated as permanent</span></div>
+  <div class="b tree"><span class="dimmer">is_retryable ignores 408</span> <span class="faint">errors.rs:22</span></div>
+</section>
+
+<section>
+  <div class="note"># failure. what did not happen, then what to try.</div>
+  <div class="blank"></div>
+  <div class="b bul warn"><span class="k">Could not finish, the tests never ran</span></div>
+  <div class="b tree"><span class="dimmer">cargo is not on PATH in this shell</span></div>
+  <div class="b faint">  &#8230; full output (ctrl + t)</div>
+  <div class="blank"></div>
+  <div class="b dimmer">  Your edits are saved. Run the tests yourself, or tell me the path to cargo.</div>
+</section>
+
+<section>
+  <div class="note"># tokens</div>
+  <div class="blank"></div>
+  <div class="swatches">
+    <div class="sw"><i class="chip" style="background:#111111; outline:1px solid #2a2a2a;"></i>#111111  canvas</div>
+    <div class="sw"><i class="chip" style="background:#262626;"></i>#262626  input band</div>
+    <div class="sw"><i class="chip" style="background:#3a3a3a;"></i>#3a3a3a  phase rule</div>
+    <div class="sw"><i class="chip" style="background:#d8d8d8;"></i>#d8d8d8  body</div>
+    <div class="sw"><i class="chip" style="background:#8a8a85;"></i>#8a8a85  argument</div>
+    <div class="sw"><i class="chip" style="background:#6e6e6e;"></i>#6e6e6e  gloss, meta</div>
+    <div class="sw"><i class="chip" style="background:#4a4a4a;"></i>#4a4a4a  elision, gutter</div>
+    <div class="sw"><i class="chip" style="background:#6cb6e3;"></i>#6cb6e3  paths, tools</div>
+    <div class="sw"><i class="chip" style="background:#e3c46c;"></i>#e3c46c  needs you</div>
+    <div class="sw"><i class="chip" style="background:#8bd17c;"></i>#8bd17c  added, passing</div>
+    <div class="sw"><i class="chip" style="background:#e88ba8;"></i>#e88ba8  removed</div>
+    <div class="sw"><i class="chip" style="background:#b48ce3;"></i>#b48ce3  command name</div>
+    <div class="sw"><i class="chip" style="background:#12240f;"></i>#12240f  added row</div>
+    <div class="sw"><i class="chip" style="background:#245c1a;"></i>#245c1a  added span</div>
+    <div class="sw"><i class="chip" style="background:#2a1518;"></i>#2a1518  removed row</div>
+    <div class="sw"><i class="chip" style="background:#2a2418;"></i>#2a2418  selected row</div>
+  </div>
+  <div class="blank"></div>
+  <div class="note"># every block is one bullet, a headline, and children. nothing else.</div>
+  <div class="note"># headlines name the consequence. paths, commands and diffs live one level down.</div>
+  <div class="note"># amber bullet means it is waiting on you. it is the only colour that means that.</div>
+  <div class="note"># spacing is whole rows only. line height 1.45. one blank row between blocks.</div>
+  <div class="note"># fills span the pane width. the line number gutter stays unfilled.</div>
+  <div class="note"># depth is named compact and full, never by audience.</div>
+  <div class="note"># degrade to bold and reverse video at 16 colours. NO_COLOR keeps + and - alone.</div>
+</section>
+
+</main>
+</body>
+</html>

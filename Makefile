@@ -74,8 +74,11 @@ desktop:
 release:
 	cargo build --release -p aster-cli
 
+# --force so a rebuild at the same version still overwrites: the VS Code
+# extension and the desktop app both shell out to the `aster` on PATH, so a
+# stale binary makes source changes invisible to them.
 install:
-	cargo install --path crates/aster-cli
+	cargo install --path crates/aster-cli --force
 
 # Bump the version across the workspace and desktop app. Defaults to a patch bump;
 # `make bump LEVEL=minor`, `make bump LEVEL=major`, or `make bump VERSION=0.2.0`.

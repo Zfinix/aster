@@ -1,11 +1,11 @@
 ---
 name: aster-cli
-description: Guidance for using the `aster` CLI to run AI code reviews, chat with the review agent, apply fixes, and manage sessions, memory, and skills. Use when running or designing aster commands, reviewing a diff or PR with aster, or when the user mentions `aster review`, `aster chat`, `aster fix`, or aster.yaml.
+description: Guidance for using the `aster` CLI to work in a codebase with an AI agent: chat and edit code, run AI code reviews, apply fixes, and manage sessions, memory, and skills. Use when running or designing aster commands, reviewing a diff or PR with aster, or when the user mentions `aster review`, `aster chat`, `aster fix`, or aster.yaml.
 ---
 
 # Aster CLI
 
-Aster is an AI code review agent: it reads a diff, forms hypotheses about defects, verifies them against the codebase, and reports shaped findings. It runs locally against the current repo and needs an `aster.yaml` (created by `aster init`).
+Aster is an AI coding agent that works in your repository: it reads and searches the code, answers questions, applies edits, and runs a review pipeline that forms hypotheses about defects, verifies them against the codebase, and reports shaped findings. It runs locally against the current repo and needs an `aster.yaml` (created by `aster init`).
 
 ## Setup
 
@@ -47,7 +47,7 @@ aster memory add "fact"         # append a fact to project memory
 aster memory add --title t "…"  # save a titled memory block
 ```
 
-Both `sessions` and `memory` accept `--json` for machine-readable output; prefer it when parsing.
+Both accept `--json`; see below.
 
 ## Skills
 
@@ -57,7 +57,7 @@ Aster loads agent skills from `.aster/skills` (project) and `<config>/aster/skil
 aster skills add owner/repo     # install skills from a GitHub repo (also: git URL or local path)
 aster skills add -g owner/repo  # install user-global instead of project
 aster skills add owner/repo -l  # list what a source offers without installing
-aster skills list               # list installed skills (--json for machine output)
+aster skills list               # list installed skills
 aster skills use owner/repo@x   # print a skill's instructions without installing
 aster skills find <query>       # search GitHub for skills interactively
 aster skills update             # update all installed skills
@@ -66,6 +66,36 @@ aster skills init <name>        # scaffold <name>/SKILL.md
 ```
 
 `add` flags: `-s/--skill` to pick specific skills (`*` for all), `--all` for everything without prompts, `-y` to skip confirmation, `--force` to overwrite, `--full-depth` to keep searching inside a directory that already has a `SKILL.md`.
+
+## Machine-readable output
+
+`--json` is global: every command takes it, before or after the subcommand, and
+prints one JSON value on stdout. Failures come back the same way,
+`{"ok":false,"error":"…"}` with a non-zero exit, so a caller parses one shape.
+
+```sh
+aster --json sessions list
+aster --json skills list
+aster --json memory add "fact"
+aster review --json
+```
+
+`--json` also forces non-interactive behavior: wizards and prompts are skipped,
+so a command either completes or errors instead of hanging.
+
+## Modes and effort
+
+How the agent is allowed to act (`--permission-mode` on `aster chat`, or
+`permissions.mode` in aster.yaml):
+
+- `plan` — explore and present a plan, never edit
+- `manual` — ask for approval before each edit (needs the TUI or `--stream`)
+- `auto` — apply what passes the safety check, pause for anything risky
+- `edit` — edit files without asking (the default)
+
+`--effort <off|low|medium|high>` is global and sets the reasoning budget for
+thinking models, overriding `ASTER_EFFORT` and `review.effort` in aster.yaml.
+In the TUI, `/mode` cycles modes and `/effort` sets the budget.
 
 ## Conventions
 
