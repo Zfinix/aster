@@ -25,6 +25,35 @@ pub(crate) struct SessionCtx {
     pub store: Option<Store>,
     pub skills: Arc<aster_skills::SkillSet>,
     pub probe: Arc<bash_tools::ToolProbe>,
+    /// Plan state maintained by the `update_plan` tool, rendered as a progress
+    /// strip in the TUI and the desktop UI.
+    pub plan: std::sync::Arc<std::sync::Mutex<PlanState>>,
+}
+
+/// Phased plan the agent builds and tracks with `update_plan`. Read by the
+/// `exit_plan_mode` tool and rendered by both front-ends.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PlanState {
+    pub steps: Vec<PlanStep>,
+}
+
+/// One step in an agent's execution plan.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct PlanStep {
+    pub label: String,
+    #[serde(rename = "status")]
+    pub status: PlanStepStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PlanStepStatus {
+    Pending,
+    #[serde(rename = "in_progress")]
+    InProgress,
+    Done,
+    Skipped,
+    Blocked,
 }
 
 impl SessionCtx {
@@ -129,10 +158,19 @@ impl From<PermissionModeArg> for aster_policy::Mode {
 /// Emits one NDJSON event per line on the `--stream` path.
 pub(crate) type ChatEventSink = Box<dyn Fn(Value) + Send + Sync>;
 
-/// A pending action the agent task sends to the UI loop, which replies through
-/// `respond`. `scope` is the directory an "always allow" answer would cover;
-/// `None` means the request has no path to remember, so the front-end offers
-/// only yes or no.
+/// A request the agent task sends to the UI loop: an edit needing approval, a
+/// plan whose approval promotes the session to edit mode, or a question.
+pub(crate) enum UiRequest {
+    Approval(ApprovalRequest),
+    /// Approving this outlives the turn, so the front-end must change its own
+    /// mode rather than only unlocking the tool for the rest of this turn.
+    PlanApproval(ApprovalRequest),
+    Question(QuestionRequest),
+}
+
+/// A pending edit the agent wants to make; the UI renders a diff and asks the
+/// user to confirm. `scope` is the directory an "always allow" answer covers;
+/// `None` means the front-end offers only yes or no.
 pub(crate) struct ApprovalRequest {
     pub preview: String,
     pub scope: Option<PathBuf>,
@@ -154,8 +192,19 @@ impl Answer {
     }
 }
 
-/// Channel for `ask` mode prompts; headless callers pass `None`, denying every prompt.
-pub(crate) type ApprovalSender = mpsc::Sender<ApprovalRequest>;
+/// A structured question the agent asks the user, e.g. to disambiguate a plan.
+pub(crate) struct QuestionRequest {
+    pub header: String,
+    pub question: String,
+    /// 2-4 short options the user can pick from, plus an implicit "Other".
+    pub options: Vec<String>,
+    /// Resolves to the selected option text, or `None` when declined / headless.
+    pub respond: oneshot::Sender<Option<String>>,
+}
+
+/// Channel for UI requests — approval prompts and agent questions. Headless
+/// callers pass `None`, declining every prompt.
+pub(crate) type UiSender = mpsc::Sender<UiRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f32 = 0.4;
@@ -205,6 +254,11 @@ pub struct ChatArgs {
     /// Without it every session starts clean, in the TUI too.
     #[arg(long = "continue", conflicts_with = "messages_json")]
     continue_session: bool,
+
+    /// Pick a session to resume from a list of this repo's saved sessions.
+    /// Needs a terminal; with an ID it resumes that session directly.
+    #[arg(long, value_name = "ID", num_args = 0..=1, conflicts_with_all = ["messages_json", "session"])]
+    resume: Option<Option<String>>,
 
     /// Persist this turn into a session by id, resuming it if it exists and
     /// creating it if not. Alone it also seeds the session's prior history;
@@ -261,6 +315,27 @@ impl ChatArgs {
             || self.messages_json.is_some();
         !one_shot && io::stdout().is_terminal() && io::stdin().is_terminal()
     }
+
+    /// Which session this run opens. `--resume <id>` and `--session <id>` name
+    /// one outright; bare `--resume` defers the choice to the user.
+    fn resume_mode(&self) -> Resume {
+        match (&self.resume, &self.session) {
+            (Some(Some(id)), _) | (_, Some(id)) => Resume::Id(id.clone()),
+            (Some(None), _) => Resume::Pick,
+            _ if self.continue_session => Resume::Latest,
+            _ => Resume::New,
+        }
+    }
+}
+
+/// Which session a run opens with.
+pub(crate) enum Resume {
+    New,
+    /// This repo's most recent session.
+    Latest,
+    Id(String),
+    /// Chosen from a list once the UI is up.
+    Pick,
 }
 
 #[derive(Deserialize)]
@@ -318,9 +393,16 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             allow_edits,
             permissions,
             seed,
-            args.continue_session,
+            args.resume_mode(),
         )
         .await;
+    }
+
+    // A picker needs a terminal to draw in; naming the session is the way out.
+    if matches!(args.resume_mode(), Resume::Pick) {
+        anyhow::bail!(
+            "--resume needs a terminal to show the session list. Pass an id instead: `aster sessions list`, then `aster chat --resume <ID>`"
+        );
     }
 
     if args.stream {
@@ -398,6 +480,7 @@ fn prepare_turn(
         store,
         skills: discover_skills(repo_root),
         probe: Arc::new(bash_tools::ToolProbe::detect()),
+        plan: Default::default(),
     };
     // Record only the new user turn. On the wire path `new_turns` is the full
     // replayed history, whose earlier turns were recorded on previous calls.
@@ -417,26 +500,55 @@ fn emit_line(value: &Value) {
     let _ = out.flush();
 }
 
-/// Bridge `ask` prompts to the caller: write an `approval_request` line, then
-/// block on one reply line of `{"allow": bool}`.
-fn stdio_approver() -> ApprovalSender {
-    let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
+/// Bridge prompts to the caller: write an `approval_request` or `question`
+/// line, then block on one reply line of JSON.
+fn stdio_approver() -> UiSender {
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
-            emit_line(&json!({
-                "type": "approval_request",
-                "preview": req.preview,
-                // Present only when "always" is on the table, so a front-end
-                // can label the option with what it would remember.
-                "scope": req.scope.as_ref().map(|p| p.display().to_string()),
-            }));
-            let answer = tokio::task::spawn_blocking(read_approval_reply)
-                .await
-                .unwrap_or(Answer::No);
-            let _ = req.respond.send(answer);
+            match req {
+                UiRequest::Approval(a) | UiRequest::PlanApproval(a) => {
+                    emit_line(&json!({
+                        "type": "approval_request",
+                        "preview": a.preview,
+                        "scope": a.scope.as_ref().map(|p| p.display().to_string()),
+                    }));
+                    let answer = tokio::task::spawn_blocking(read_approval_reply)
+                        .await
+                        .unwrap_or(Answer::No);
+                    let _ = a.respond.send(answer);
+                }
+                UiRequest::Question(q) => {
+                    emit_line(&json!({
+                        "type": "question",
+                        "header": q.header,
+                        "question": q.question,
+                        "options": q.options,
+                    }));
+                    let answer = tokio::task::spawn_blocking(read_question_reply)
+                        .await
+                        .unwrap_or(None);
+                    let _ = q.respond.send(answer);
+                }
+            }
         }
     });
     tx
+}
+
+/// One line of `{"choice": "string"}` on stdin, or `{"choice": null}`.
+fn read_question_reply() -> Option<String> {
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        return None;
+    }
+    let Ok(reply) = serde_json::from_str::<Value>(&line) else {
+        return None;
+    };
+    reply
+        .get("choice")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// One line of `{"allow": bool}` on stdin, optionally with `"always": true` to
@@ -552,10 +664,8 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
 }
 
 /// Resolve the session a headless turn records into, and the prior history to
-/// prepend. Recording is explicit: only `--session` (resume-or-create by id)
-/// and `--continue` (resume the repo's latest) persist anything — a bare
-/// prompt or a `--messages-json` replay without `--session` is ephemeral and
-/// never creates or reopens a transcript on its own.
+/// prepend. Recording is explicit: only `--session`/`--resume <id>` and
+/// `--continue` persist anything; a bare prompt is ephemeral.
 fn resolve_headless_session(
     store: Option<&Store>,
     repo_root: &Path,
@@ -577,16 +687,14 @@ fn resolve_headless_session(
         return Ok((Some(recorder(writer)), Vec::new()));
     }
 
-    let base = if let Some(id) = &args.session {
-        Some(
+    let base = match args.resume_mode() {
+        Resume::Id(id) => Some(
             store
-                .resume(repo_root, id)
+                .resume(repo_root, &id)
                 .with_context(|| format!("no session {id:?} for this repo"))?,
-        )
-    } else if args.continue_session {
-        store.latest(repo_root)?
-    } else {
-        None
+        ),
+        Resume::Latest => store.latest(repo_root)?,
+        Resume::New | Resume::Pick => None,
     };
 
     let Some(transcript) = base else {
@@ -613,7 +721,7 @@ pub(crate) async fn agent_turn_streaming(
     allow_edits: bool,
     policy: Arc<Policy>,
     grants: Arc<Grants>,
-    approver: Option<ApprovalSender>,
+    approver: Option<UiSender>,
     ctx: SessionCtx,
     events: ChatEventSink,
 ) -> Result<(String, Vec<String>, Option<Vec<ChatMessage>>)> {
@@ -641,10 +749,10 @@ async fn agent_loop(
     client: &AiClient,
     repo_root: &Path,
     history: &[ChatMessage],
-    allow_edits: bool,
+    mut allow_edits: bool,
     policy: &Policy,
     grants: &Grants,
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     edited: &mut Vec<String>,
     ctx: &SessionCtx,
     events: Option<&ChatEventSink>,
@@ -662,9 +770,9 @@ async fn agent_loop(
     for m in &history {
         wire.push(serde_json::to_value(m)?);
     }
-    let tools = tool_defs(allow_edits);
 
     for round in 0..MAX_TOOL_ROUNDS {
+        let tools = tool_defs(allow_edits, approver.is_some());
         // False when the endpoint ignored `stream` and the client fell back to a
         // whole response, which the commentary emit below has to make up for.
         let mut streamed = false;
@@ -736,7 +844,7 @@ async fn agent_loop(
             }));
             let result = exec_tool(
                 repo_root,
-                allow_edits,
+                &mut allow_edits,
                 policy,
                 grants,
                 approver,
@@ -837,7 +945,7 @@ fn is_tool_unsupported(e: &anyhow::Error) -> bool {
     text.contains("tool") || text.contains("function")
 }
 
-fn tool_defs(allow_edits: bool) -> Vec<Value> {
+fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "type": "function",
@@ -942,6 +1050,53 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
             }
         }),
     ];
+    if has_approver {
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "update_plan",
+                "description": "Update the execution plan state. Accepts a list of step objects with `label` and `status` fields. Status must be one of: pending, in_progress, done, skipped, blocked. The plan is rendered as a progress strip in the UI.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": { "type": "string", "description": "Short label for this step" },
+                                    "status": { "type": "string", "description": "One of: pending, in_progress, done, skipped, blocked" }
+                                },
+                                "required": ["label", "status"]
+                            },
+                            "description": "All plan steps with their current statuses"
+                        }
+                    },
+                    "required": ["steps"]
+                }
+            }
+        }));
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "description": "Ask the user a structured question with a set of options. Use when you need a decision between alternatives, not for simple yes/no approval. The user can pick an option or write their own.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "header": { "type": "string", "description": "One-line title for the question (optional)" },
+                        "question": { "type": "string", "description": "The question to ask" },
+                        "options": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "2-4 short answer choices for the user (optional)"
+                        }
+                    },
+                    "required": ["question"]
+                }
+            }
+        }));
+    }
     if allow_edits {
         tools.push(json!({
             "type": "function",
@@ -956,6 +1111,19 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
                         "replace": { "type": "string", "description": "Replacement text, or the new file's contents" }
                     },
                     "required": ["path", "replace"]
+                }
+            }
+        }));
+    }
+    if has_approver && !allow_edits {
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "exit_plan_mode",
+                "description": "Exit plan mode and switch to edit mode. Presents the current plan for user approval; if approved, edit_file and unapproved command execution become available.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         }));
@@ -986,10 +1154,10 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
 #[allow(clippy::too_many_arguments)]
 async fn exec_tool(
     repo_root: &Path,
-    allow_edits: bool,
+    allow_edits: &mut bool,
     policy: &Policy,
     grants: &Grants,
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     name: &str,
     arguments: &str,
     edited: &mut Vec<String>,
@@ -1011,6 +1179,41 @@ async fn exec_tool(
         "read_skill" => str_arg("name")
             .context("read_skill needs a `name`")
             .and_then(|name| read_skill(ctx, &name)),
+        "update_plan" => update_plan(
+            ctx,
+            args["steps"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|v| {
+                            (
+                                v["label"].as_str().unwrap_or("").to_string(),
+                                v["status"].as_str(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+        "ask_user" => match str_arg("question").context("ask_user needs a `question`") {
+            Ok(question) => {
+                let options: Vec<String> = args["options"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let header = str_arg("header").unwrap_or_default();
+                ask_user(approver, &header, &question, &options).await
+            }
+            Err(e) => Err(e),
+        },
+        "exit_plan_mode" if !*allow_edits => exit_plan_mode(approver, ctx, allow_edits).await,
+        "exit_plan_mode" => Err(anyhow::anyhow!(
+            "already in edit mode; the plan has already been approved"
+        )),
         "read_file" => match str_arg("path").context("read_file needs a `path`") {
             Ok(path) if !edits::exists_anywhere(repo_root, &path) => {
                 return missing_path(repo_root, &path);
@@ -1068,7 +1271,7 @@ async fn exec_tool(
             },
             Err(e) => Err(e),
         },
-        "edit_file" if !allow_edits => Err(anyhow::anyhow!(
+        "edit_file" if !*allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),
         "edit_file" => edit_file(repo_root, policy, approver, &args, edited).await,
@@ -1088,17 +1291,144 @@ async fn exec_tool(
         },
         other => Err(anyhow::anyhow!(
             "unknown tool: {other}. Available tools: {}",
-            tool_names(allow_edits).join(", ")
+            tool_names(*allow_edits, approver.is_some()).join(", ")
         )),
     };
     result.unwrap_or_else(|e| format!("error: {e:#}"))
 }
 
-fn tool_names(allow_edits: bool) -> Vec<String> {
-    tool_defs(allow_edits)
+fn tool_names(allow_edits: bool, has_approver: bool) -> Vec<String> {
+    tool_defs(allow_edits, has_approver)
         .iter()
         .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
         .collect()
+}
+
+impl PlanStepStatus {
+    fn parse(raw: Option<&str>) -> Result<Self> {
+        match raw.unwrap_or("pending") {
+            "pending" => Ok(Self::Pending),
+            "in_progress" => Ok(Self::InProgress),
+            "done" => Ok(Self::Done),
+            "skipped" => Ok(Self::Skipped),
+            "blocked" => Ok(Self::Blocked),
+            other => Err(anyhow::anyhow!(
+                "unknown step status `{other}`; use pending, in_progress, done, skipped, or blocked"
+            )),
+        }
+    }
+
+    fn glyph(self) -> &'static str {
+        match self {
+            Self::Pending => "[ ]",
+            Self::InProgress => "[~]",
+            Self::Done => "[x]",
+            Self::Skipped => "[-]",
+            Self::Blocked => "[!]",
+        }
+    }
+}
+
+impl PlanState {
+    fn render(&self) -> String {
+        self.steps
+            .iter()
+            .map(|step| format!("{} {}", step.status.glyph(), step.label))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// Replace the plan wholesale. The model resends every step each call, so the
+/// tool is a set rather than a patch and the UI never shows a stale strip.
+fn update_plan(ctx: &SessionCtx, steps: Vec<(String, Option<&str>)>) -> Result<String> {
+    if steps.is_empty() {
+        return Err(anyhow::anyhow!(
+            "update_plan needs a non-empty `steps` list"
+        ));
+    }
+    let parsed = steps
+        .into_iter()
+        .map(|(label, status)| {
+            let label = label.trim();
+            match label.is_empty() {
+                true => Err(anyhow::anyhow!("every plan step needs a `label`")),
+                false => Ok(PlanStep {
+                    label: label.to_string(),
+                    status: PlanStepStatus::parse(status)?,
+                }),
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut plan = ctx
+        .plan
+        .lock()
+        .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?;
+    plan.steps = parsed;
+    Ok(format!("plan updated:\n{}", plan.render()))
+}
+
+/// Put a question to the user and wait for the answer. Headless callers have no
+/// UI channel, so the agent is told to decide for itself rather than blocking.
+async fn ask_user(
+    approver: Option<&UiSender>,
+    header: &str,
+    question: &str,
+    options: &[String],
+) -> Result<String> {
+    let Some(tx) = approver else {
+        return Ok(
+            "note: no interactive UI is attached, so the user cannot be asked. Pick the most reasonable option and say which you chose."
+                .to_string(),
+        );
+    };
+
+    let (respond, rx) = oneshot::channel();
+    let request = UiRequest::Question(QuestionRequest {
+        header: match header.trim().is_empty() {
+            true => "Question".to_string(),
+            false => header.trim().to_string(),
+        },
+        question: question.to_string(),
+        options: options.to_vec(),
+        respond,
+    });
+    if tx.send(request).await.is_err() {
+        return Err(anyhow::anyhow!("the UI closed before the question was put"));
+    }
+    match rx.await.unwrap_or(None) {
+        Some(answer) => Ok(format!("the user chose: {answer}")),
+        None => Ok("the user declined to answer; proceed with your best judgement".to_string()),
+    }
+}
+
+/// Present the plan for approval. Approval promotes the rest of the turn to edit
+/// mode, which is what unlocks `edit_file` and unapproved commands.
+async fn exit_plan_mode(
+    approver: Option<&UiSender>,
+    ctx: &SessionCtx,
+    allow_edits: &mut bool,
+) -> Result<String> {
+    let plan = ctx
+        .plan
+        .lock()
+        .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?
+        .clone();
+    if plan.steps.is_empty() {
+        return Err(anyhow::anyhow!(
+            "build a plan with update_plan before leaving plan mode"
+        ));
+    }
+
+    let preview = format!("Approve this plan and start editing?\n\n{}", plan.render());
+    if !request_plan_approval(approver, preview).await.allowed() {
+        return Ok(
+            "the user did not approve the plan; stay in plan mode and revise it".to_string(),
+        );
+    }
+    *allow_edits = true;
+    Ok("plan approved; edit mode is now active".to_string())
 }
 
 /// The requested directory when it does not exist, so a caller can widen or
@@ -1135,7 +1465,7 @@ fn missing_path(repo_root: &Path, path: &str) -> String {
 async fn run_command_tool(
     repo_root: &Path,
     policy: &Policy,
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     binary: &str,
     args: &[String],
 ) -> Result<String> {
@@ -1243,7 +1573,7 @@ async fn resolve_for_read(
     repo_root: &Path,
     policy: &Policy,
     grants: &Grants,
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     ctx: &SessionCtx,
     path: &str,
 ) -> Result<PathBuf> {
@@ -1290,7 +1620,7 @@ async fn resolve_dir(
     repo_root: &Path,
     policy: &Policy,
     grants: &Grants,
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     ctx: &SessionCtx,
     dir: &Option<String>,
 ) -> Result<PathBuf> {
@@ -1351,7 +1681,7 @@ fn search_files(
 async fn edit_file(
     repo_root: &Path,
     policy: &Policy,
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     args: &Value,
     edited: &mut Vec<String>,
 ) -> Result<String> {
@@ -1406,19 +1736,33 @@ async fn edit_file(
 /// Ask the front-end to approve a pending action. Headless callers have no
 /// approver, so every request is a `No`.
 async fn request_approval(
-    approver: Option<&ApprovalSender>,
+    approver: Option<&UiSender>,
     preview: String,
     scope: Option<PathBuf>,
+) -> Answer {
+    ask_approval(approver, preview, scope, UiRequest::Approval).await
+}
+
+/// As [`request_approval`], but tagged so the front-end promotes its own mode.
+async fn request_plan_approval(approver: Option<&UiSender>, preview: String) -> Answer {
+    ask_approval(approver, preview, None, UiRequest::PlanApproval).await
+}
+
+async fn ask_approval(
+    approver: Option<&UiSender>,
+    preview: String,
+    scope: Option<PathBuf>,
+    wrap: fn(ApprovalRequest) -> UiRequest,
 ) -> Answer {
     let Some(tx) = approver else {
         return Answer::No;
     };
     let (respond, rx) = oneshot::channel();
-    let request = ApprovalRequest {
+    let request = wrap(ApprovalRequest {
         preview,
         scope,
         respond,
-    };
+    });
     if tx.send(request).await.is_err() {
         return Answer::No;
     }
@@ -1447,10 +1791,18 @@ mod tests {
         }
     }
 
+    /// Unwraps the approval these tests expect; a question here is a bug.
+    fn approval(req: UiRequest) -> ApprovalRequest {
+        match req {
+            UiRequest::Approval(req) | UiRequest::PlanApproval(req) => req,
+            UiRequest::Question(_) => panic!("expected an approval, got a question"),
+        }
+    }
+
     async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
         exec_tool(
             repo,
-            false,
+            &mut false,
             &Policy::permissive(),
             &Grants::default(),
             None,
@@ -1460,6 +1812,277 @@ mod tests {
             &SessionCtx::default(),
         )
         .await
+    }
+
+    /// Runs a tool against a shared ctx and mutable edit gate, for the plan
+    /// tools whose whole point is the state they leave behind.
+    async fn run_tool_with(
+        repo: &Path,
+        allow_edits: &mut bool,
+        approver: Option<&UiSender>,
+        ctx: &SessionCtx,
+        name: &str,
+        arguments: Value,
+    ) -> String {
+        exec_tool(
+            repo,
+            allow_edits,
+            &Policy::permissive(),
+            &Grants::default(),
+            approver,
+            name,
+            &arguments.to_string(),
+            &mut Vec::new(),
+            ctx,
+        )
+        .await
+    }
+
+    fn steps(pairs: &[(&str, &str)]) -> Value {
+        json!({
+            "steps": pairs
+                .iter()
+                .map(|(label, status)| json!({ "label": label, "status": status }))
+                .collect::<Vec<_>>()
+        })
+    }
+
+    #[tokio::test]
+    async fn update_plan_stores_every_step_with_its_status() {
+        let repo = tempfile::tempdir().unwrap();
+        let ctx = SessionCtx::default();
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &ctx,
+            "update_plan",
+            steps(&[("read the code", "done"), ("write the fix", "in_progress")]),
+        )
+        .await;
+
+        assert!(out.contains("[x] read the code"), "{out}");
+        assert!(out.contains("[~] write the fix"), "{out}");
+        assert_eq!(ctx.plan.lock().unwrap().steps.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_plan_replaces_rather_than_appends() {
+        let repo = tempfile::tempdir().unwrap();
+        let ctx = SessionCtx::default();
+        for pairs in [
+            &[("first", "pending")][..],
+            &[("second", "pending"), ("third", "pending")][..],
+        ] {
+            run_tool_with(
+                repo.path(),
+                &mut false,
+                None,
+                &ctx,
+                "update_plan",
+                steps(pairs),
+            )
+            .await;
+        }
+
+        let plan = ctx.plan.lock().unwrap();
+        assert_eq!(plan.steps.len(), 2, "the second call replaced the first");
+        assert_eq!(plan.steps[0].label, "second");
+    }
+
+    #[tokio::test]
+    async fn update_plan_rejects_an_unknown_status() {
+        let repo = tempfile::tempdir().unwrap();
+        let ctx = SessionCtx::default();
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &ctx,
+            "update_plan",
+            steps(&[("do it", "almost")]),
+        )
+        .await;
+
+        assert!(out.starts_with("error:"), "{out}");
+        assert!(
+            out.contains("in_progress"),
+            "the error lists valid ones: {out}"
+        );
+        assert!(
+            ctx.plan.lock().unwrap().steps.is_empty(),
+            "nothing was stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_plan_needs_at_least_one_step() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = run_tool(repo.path(), "update_plan", json!({ "steps": [] })).await;
+        assert!(out.starts_with("error:"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn exit_plan_mode_needs_a_plan_first() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = run_tool(repo.path(), "exit_plan_mode", json!({})).await;
+        assert!(out.contains("update_plan"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn approving_the_plan_unlocks_editing() {
+        let repo = tempfile::tempdir().unwrap();
+        let ctx = SessionCtx::default();
+        let mut allow_edits = false;
+
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+        let prompt = tokio::spawn(async move {
+            let req = approval(rx.recv().await.unwrap());
+            assert!(req.preview.contains("[ ] ship it"), "{}", req.preview);
+            let _ = req.respond.send(Answer::Yes);
+        });
+
+        run_tool_with(
+            repo.path(),
+            &mut allow_edits,
+            None,
+            &ctx,
+            "update_plan",
+            steps(&[("ship it", "pending")]),
+        )
+        .await;
+        let out = run_tool_with(
+            repo.path(),
+            &mut allow_edits,
+            Some(&tx),
+            &ctx,
+            "exit_plan_mode",
+            json!({}),
+        )
+        .await;
+
+        prompt.await.unwrap();
+        assert!(out.contains("edit mode is now active"), "{out}");
+        assert!(allow_edits, "approval promotes the turn to edit mode");
+    }
+
+    #[tokio::test]
+    async fn rejecting_the_plan_leaves_editing_locked() {
+        let repo = tempfile::tempdir().unwrap();
+        let ctx = SessionCtx::default();
+        let mut allow_edits = false;
+
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+        let prompt = tokio::spawn(async move {
+            let _ = approval(rx.recv().await.unwrap()).respond.send(Answer::No);
+        });
+
+        run_tool_with(
+            repo.path(),
+            &mut allow_edits,
+            None,
+            &ctx,
+            "update_plan",
+            steps(&[("ship it", "pending")]),
+        )
+        .await;
+        let out = run_tool_with(
+            repo.path(),
+            &mut allow_edits,
+            Some(&tx),
+            &ctx,
+            "exit_plan_mode",
+            json!({}),
+        )
+        .await;
+
+        prompt.await.unwrap();
+        assert!(out.contains("stay in plan mode"), "{out}");
+        assert!(!allow_edits);
+    }
+
+    #[tokio::test]
+    async fn exit_plan_mode_is_refused_once_already_editing() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = run_tool_with(
+            repo.path(),
+            &mut true,
+            None,
+            &SessionCtx::default(),
+            "exit_plan_mode",
+            json!({}),
+        )
+        .await;
+        assert!(out.contains("already in edit mode"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn ask_user_relays_the_chosen_option() {
+        let repo = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+        let prompt = tokio::spawn(async move {
+            let UiRequest::Question(req) = rx.recv().await.unwrap() else {
+                panic!("expected a question");
+            };
+            assert_eq!(req.header, "Storage");
+            assert_eq!(req.options, ["sqlite", "postgres"]);
+            let _ = req.respond.send(Some("postgres".to_string()));
+        });
+
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            Some(&tx),
+            &SessionCtx::default(),
+            "ask_user",
+            json!({
+                "header": "Storage",
+                "question": "Which database?",
+                "options": ["sqlite", "postgres"]
+            }),
+        )
+        .await;
+
+        prompt.await.unwrap();
+        assert!(out.contains("postgres"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn ask_user_tells_the_agent_to_decide_when_headless() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = run_tool(
+            repo.path(),
+            "ask_user",
+            json!({ "question": "Which database?", "options": ["sqlite"] }),
+        )
+        .await;
+
+        assert!(
+            !out.starts_with("error:"),
+            "a missing UI is not an error: {out}"
+        );
+        assert!(out.contains("no interactive UI"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_declined_question_does_not_stall_the_turn() {
+        let repo = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+        // Dropping the responder is how a dismissed picker answers.
+        let prompt = tokio::spawn(async move { drop(rx.recv().await.unwrap()) });
+
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            Some(&tx),
+            &SessionCtx::default(),
+            "ask_user",
+            json!({ "question": "Which database?", "options": ["sqlite"] }),
+        )
+        .await;
+
+        prompt.await.unwrap();
+        assert!(out.contains("declined"), "{out}");
     }
 
     fn sample_repo() -> tempfile::TempDir {
@@ -1566,9 +2189,9 @@ mod tests {
         fs::write(&target, "hello").unwrap();
         let policy = Policy::permissive();
 
-        let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
         let answer = tokio::spawn(async move {
-            let req = rx.recv().await.unwrap();
+            let req = approval(rx.recv().await.unwrap());
             assert!(
                 req.preview.contains("outside the repository"),
                 "{}",
@@ -1601,12 +2224,12 @@ mod tests {
         let policy = Policy::permissive();
         let grants = Grants::default();
 
-        let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
         let prompts = tokio::spawn(async move {
             let mut seen = 0;
             while let Some(req) = rx.recv().await {
                 seen += 1;
-                let _ = req.respond.send(Answer::Yes);
+                let _ = approval(req).respond.send(Answer::Yes);
             }
             seen
         });
