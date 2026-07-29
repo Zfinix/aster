@@ -39,6 +39,7 @@ export function TurnView({
         <div className="a-turn">
           {turn.steps && turn.steps.length > 0 && <ActivityPanel steps={turn.steps} />}
           <AssistantText id={turn.id} text={turn.text} error={turn.error} />
+          {turn.stopped && <div className="a-stopped">Stopped</div>}
         </div>
         {!turn.pending && <MessageActions text={turn.text} ts={turn.ts} />}
       </div>

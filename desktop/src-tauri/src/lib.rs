@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,46 +202,205 @@ async fn run_aster_json(
         .map_err(|_| "unexpected output from aster".to_string())
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ChatReply {
-    reply: String,
-    edits: Vec<String>,
+/// The one live `chat --stream` child, so a turn can be cancelled and a new
+/// turn never overlaps an old one. Mirrors the extension's ChatRunner slot.
+/// The mutex only ever guards a state swap; it is never held across an await
+/// (std MutexGuards are not Send, which Tauri commands require).
+static ACTIVE_CHAT: Mutex<Option<ActiveChat>> = Mutex::new(None);
+
+struct ActiveChat {
+    child: Child,
 }
 
-/// Spawns `aster chat` with the repo as cwd so provider resolution matches
-/// `run_review`. The agent may read/search; with `allow_edits` it may edit.
+/// Free the slot if the child in it already exited. True when no turn is live.
+fn reap_finished_chat() -> Result<bool, String> {
+    let mut slot = ACTIVE_CHAT.lock().map_err(|e| e.to_string())?;
+    match slot.as_mut() {
+        None => Ok(true),
+        Some(active) => match active.child.try_wait() {
+            Ok(Some(_)) => {
+                slot.take();
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        },
+    }
+}
+
+/// Spawn a streaming chat turn. Stdout NDJSON is forwarded line-by-line as
+/// `aster://chat-event` payloads and stderr as `aster://log`; the returned
+/// future resolves once the child is launched — turn end arrives as a `done`
+/// or `error` event, and process exit as `aster://chat-exit`. Approval
+/// replies go through `answer_approval`.
 #[tauri::command]
 async fn chat(
+    app: AppHandle,
     messages: Vec<ChatMessage>,
     repo_path: Option<String>,
     model: Option<String>,
-    allow_edits: Option<bool>,
+    permission_mode: Option<String>,
     session: Option<String>,
-) -> Result<ChatReply, String> {
-    let mut args = vec!["chat", "--messages-json", "-", "--json"];
-    if allow_edits.unwrap_or(false) {
-        args.push("--allow-edits");
+) -> Result<(), String> {
+    let mut args: Vec<String> = vec![
+        "chat".into(),
+        "--messages-json".into(),
+        "-".into(),
+        "--stream".into(),
+    ];
+    match permission_mode.as_deref().filter(|m| !m.is_empty()) {
+        Some(mode @ ("plan" | "manual" | "auto" | "edit")) => {
+            args.push("--permission-mode".into());
+            args.push(mode.into());
+        }
+        // No explicit mode keeps the previous behavior: edits allowed, gated
+        // only by the repo's aster.yaml.
+        None => args.push("--allow-edits".into()),
+        Some(other) => return Err(format!("unknown permission mode {other:?}")),
     }
     if let Some(session) = session.as_deref().filter(|s| !s.is_empty()) {
-        args.push("--session");
-        args.push(session);
+        args.push("--session".into());
+        args.push(session.into());
     }
-    let payload = serde_json::to_vec(&messages).map_err(|e| e.to_string())?;
-    let v = run_aster_json(&args, repo_path.as_deref(), model, payload).await?;
-    let reply = v["reply"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| "unexpected output from aster chat".to_string())?;
-    let edits = v["edits"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(ChatReply { reply, edits })
+
+    let mut cmd = Command::new(resolve_bin());
+    cmd.args(&args);
+    if let Some(repo) = repo_path.filter(|p| !p.is_empty() && std::path::Path::new(p).is_dir()) {
+        cmd.current_dir(repo);
+    }
+    cmd.env("PATH", augmented_path());
+    inject_provider_env(&mut cmd, model, None);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not launch aster: {e}"))?;
+
+    // Reap a finished child before taking the slot; a live one means the UI
+    // double-sent, so refuse rather than run two turns at once.
+    if !reap_finished_chat()? {
+        let _ = child.kill().await;
+        return Err("a chat turn is already running".into());
+    }
+
+    // The messages go in as a single line; stdin then stays open, because
+    // that is the channel the CLI reads approval replies from.
+    let mut stdin = child.stdin.take().ok_or("aster chat has no stdin")?;
+    let line = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("could not send messages to aster: {e}"))?;
+    stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|e| format!("could not send messages to aster: {e}"))?;
+
+    // stderr is the CLI's log feed; keep a tail so a crashed turn (one that
+    // never emitted a terminal event) still surfaces the real error.
+    let err_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let app = app.clone();
+        let err_buf = err_buf.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let clean = strip_ansi(&line);
+                if !clean.trim().is_empty() {
+                    let mut b = err_buf.lock().unwrap();
+                    b.push(clean.clone());
+                    let overflow = b.len().saturating_sub(20);
+                    if overflow > 0 {
+                        b.drain(0..overflow);
+                    }
+                    let _ = app.emit("aster://log", clean);
+                }
+            }
+        });
+    }
+
+    // stdout is pure NDJSON: forward every line to the UI as a chat event.
+    if let Some(stdout) = child.stdout.take() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    let _ = app.emit("aster://chat-event", line);
+                }
+            }
+        });
+    }
+
+    // Watch for exit so the UI can settle even when the stream went quiet:
+    // emit the exit code (None = killed) plus the stderr tail on failure.
+    let app_exit = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let status = loop {
+            let poll = {
+                let mut slot = ACTIVE_CHAT.lock().unwrap();
+                match slot.as_mut() {
+                    None => None, // cancelled; cancel_chat already reaped
+                    Some(active) => Some(active.child.try_wait()),
+                }
+            };
+            match poll {
+                None => return,
+                Some(Ok(Some(status))) => break status,
+                Some(Ok(None)) => {}
+                Some(Err(_)) => return,
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        };
+        ACTIVE_CHAT.lock().unwrap().take();
+        let code = status.code();
+        let error = if code.is_some_and(|c| c != 0) {
+            let tail = stderr_tail(&err_buf.lock().unwrap());
+            Some(friendly_provider_error(if tail.trim().is_empty() {
+                format!("aster exited with {status}")
+            } else {
+                tail
+            }))
+        } else {
+            None
+        };
+        let _ = app_exit.emit(
+            "aster://chat-exit",
+            serde_json::json!({ "code": code, "error": error }),
+        );
+    });
+
+    *ACTIVE_CHAT.lock().map_err(|e| e.to_string())? = Some(ActiveChat { child });
+    Ok(())
+}
+
+/// Answer a pending `approval_request`; the CLI reads one `{"allow": bool}`
+/// line per prompt.
+#[tauri::command]
+async fn answer_approval(allow: bool) -> Result<(), String> {
+    let mut stdin = {
+        let mut slot = ACTIVE_CHAT.lock().map_err(|e| e.to_string())?;
+        slot.as_mut()
+            .and_then(|active| active.child.stdin.take())
+            .ok_or("no chat turn is waiting for an answer")?
+    };
+    stdin
+        .write_all(format!("{{\"allow\":{allow}}}\n").as_bytes())
+        .await
+        .map_err(|e| format!("could not answer the approval prompt: {e}"))
+}
+
+/// Stop the running turn. The monitor task sees the kill, frees the slot, and
+/// reports a null exit code so the UI settles without an error.
+#[tauri::command]
+async fn cancel_chat() -> Result<(), String> {
+    let active = ACTIVE_CHAT.lock().map_err(|e| e.to_string())?.take();
+    if let Some(mut active) = active {
+        let _ = active.child.kill().await;
+    }
+    Ok(())
 }
 
 /// Ask the fix engine to patch one finding in place. Returns the CLI's
@@ -280,6 +439,17 @@ async fn list_sessions(repo_path: Option<String>) -> Result<serde_json::Value, S
 async fn show_session(id: String, repo_path: Option<String>) -> Result<serde_json::Value, String> {
     run_aster_json(
         &["sessions", "show", &id, "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn delete_session(id: String, repo_path: Option<String>) -> Result<serde_json::Value, String> {
+    run_aster_json(
+        &["sessions", "delete", &id, "--json"],
         repo_path.as_deref(),
         None,
         Vec::new(),
@@ -458,6 +628,29 @@ async fn pick_repo(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Tracked and untracked-but-not-ignored files, for @-mentions in the
+/// composer. Capped so huge repos stay cheap to ship to the UI.
+#[tauri::command]
+async fn list_repo_files(repo_path: String) -> Result<Vec<String>, String> {
+    let out = Command::new("git")
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .current_dir(&repo_path)
+        .env("PATH", augmented_path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !out.status.success() {
+        return Err("not a git repository".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .take(20_000)
+        .map(str::to_owned)
+        .collect())
+}
+
 /// A launched macOS/Linux GUI app inherits a minimal `PATH`, so the CLI's own
 /// subprocesses (`git`, `gh`) can go missing even when they work in a shell.
 /// Prepend the common install locations so those tools resolve.
@@ -589,11 +782,15 @@ pub fn run() {
             auth_status,
             save_provider,
             chat,
+            answer_approval,
+            cancel_chat,
             apply_fix,
             list_sessions,
             show_session,
+            delete_session,
             memory_list,
-            memory_add
+            memory_add,
+            list_repo_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running aster desktop");

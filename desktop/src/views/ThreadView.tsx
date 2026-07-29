@@ -2,14 +2,19 @@ import { useEffect, useRef } from "react";
 import type { Conversation } from "../lib/session";
 import type { Finding } from "../lib/types";
 import { TurnView } from "../components/TurnView";
+import { ApprovalPrompt } from "../components/ApprovalPrompt";
 
 export function ThreadView({
   conversation,
+  approval,
+  onRespondApproval,
   onOpenDiff,
   onFocusFinding,
   onRetry,
 }: {
   conversation: Conversation;
+  approval: { preview: string } | null;
+  onRespondApproval: (allow: boolean) => void;
   onOpenDiff: () => void;
   onFocusFinding: (finding: Finding) => void;
   onRetry: () => void;
@@ -34,6 +39,9 @@ export function ThreadView({
           onRetry={onRetry}
         />
       ))}
+      {approval && (
+        <ApprovalPrompt preview={approval.preview} onRespond={onRespondApproval} />
+      )}
       <div ref={endRef} />
     </div>
   );

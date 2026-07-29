@@ -50,6 +50,9 @@ export type Turn =
       pending?: boolean;
       error?: boolean;
       steps?: ToolStep[];
+      usage?: Usage | null;
+      /** Set when the user cancelled the turn mid-stream. */
+      stopped?: boolean;
     }
   | { id: string; role: "review"; data: ReviewData; ts?: number };
 
@@ -167,6 +170,9 @@ export interface Conversation {
   repoPath: string;
   whenLabel: string;
   turns: Turn[];
+  /** Set only by an explicit "Save session": the turn then records into this
+   *  CLI session and the thread resumes it. Ephemeral until then. */
+  sessionId?: string;
 }
 
 /** The 7/7-recall models from docs/BENCHMARKS.md, best first. */

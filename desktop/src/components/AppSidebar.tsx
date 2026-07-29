@@ -99,7 +99,7 @@ export function AppSidebar(props: Props) {
       <div className="side-scroll">
         {conversations.length === 0 && (
           <div style={{ padding: "6px 10px", color: "var(--faint)", fontSize: 13 }}>
-            No reviews yet.
+            Nothing here yet.
           </div>
         )}
         {[...groups.entries()].map(([repo, list]) => {

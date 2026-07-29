@@ -33,6 +33,21 @@ export type StreamEvent =
   | { type: "refuted"; title: string; reason: string }
   | { type: "done"; summary: string; total: number; usage: Usage };
 
+/** Mirrors `aster_policy::Mode`; see crates/aster-policy/src/decision.rs. */
+export type PermissionMode = "plan" | "manual" | "auto" | "edit";
+
+/** One line of `aster chat --stream` output. */
+export type ChatStreamEvent =
+  /** One streamed content delta, appended as it arrives. */
+  | { type: "token"; content: string }
+  /** A whole content block, sent only when the endpoint streamed no deltas. */
+  | { type: "text"; content: string }
+  | { type: "tool_call"; id: string; name: string; arguments: string }
+  | { type: "tool_result"; id: string; name: string; result: string; error: boolean }
+  | { type: "approval_request"; preview: string }
+  | { type: "done"; reply: string; edits: string[]; usage?: Usage }
+  | { type: "error"; message: string };
+
 export type LineKind = "add" | "del" | "ctx" | "hunk";
 
 export interface DiffLine {

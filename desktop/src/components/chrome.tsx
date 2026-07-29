@@ -59,6 +59,7 @@ export interface DropdownOption {
   value: string;
   label: ReactNode;
   hint?: string;
+  icon?: ReactNode;
   danger?: boolean;
 }
 
@@ -123,8 +124,15 @@ export function Dropdown({
                 setOpen(false);
               }}
             >
-              <span>{o.label}</span>
-              {o.hint && <small>{o.hint}</small>}
+              {o.icon && <span className="dd-ico">{o.icon}</span>}
+              {o.icon || o.hint ? (
+                <span className="dd-col">
+                  <span>{o.label}</span>
+                  {o.hint && <small>{o.hint}</small>}
+                </span>
+              ) : (
+                <span>{o.label}</span>
+              )}
             </button>
           ))}
         </div>

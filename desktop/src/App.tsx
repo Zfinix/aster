@@ -2,19 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   applyFix,
+  answerApproval,
   authStatus,
-  chat,
+  cancelChat,
+  deleteSession,
   pickDiff,
   pickRepo,
+  runChat,
   runReview,
   saveProvider,
-  showSession,
   startupInfo,
   type AuthStatus,
   type ChatMessage,
 } from "./lib/aster";
 import { parseUnifiedDiff } from "./lib/diff";
-import type { Finding, ReviewOpts, SourceKind, StreamEvent } from "./lib/types";
+import type {
+  ChatStreamEvent,
+  Finding,
+  PermissionMode,
+  ReviewOpts,
+  SourceKind,
+  StreamEvent,
+} from "./lib/types";
 import { findingKey } from "./lib/match";
 import {
   DEFAULT_MODEL,
@@ -25,7 +34,7 @@ import {
   latestReview,
   nextId,
   repoNameOf,
-  stepsFromEvents,
+  stepLabel,
   type Conversation,
   type ReviewData,
   type Turn,
@@ -61,8 +70,8 @@ function InstallPrompt() {
         <Mark px={2} />
         <h2 className="install-title">Aster CLI not found</h2>
         <p className="install-body">
-          The desktop app runs reviews through the <code>aster</code> command-line
-          binary. Install it, then relaunch Aster.
+          The desktop app runs on the <code>aster</code> command-line binary.
+          Install it, then relaunch Aster.
         </p>
         <button className="install-cmd" onClick={copy} title="Copy to clipboard">
           <span className="install-prompt-glyph">$</span>
@@ -196,6 +205,16 @@ function App() {
   const [model, setModel] = useState(
     () => localStorage.getItem("aster.model") || DEFAULT_MODEL,
   );
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
+    () => {
+      const m = localStorage.getItem("aster.permissionMode");
+      return m === "plan" || m === "auto" || m === "edit" ? m : "manual";
+    },
+  );
+  const onPermissionMode = useCallback((m: PermissionMode) => {
+    localStorage.setItem("aster.permissionMode", m);
+    setPermissionMode(m);
+  }, []);
   const [customModels, setCustomModels] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("aster.customModels") || "[]");
@@ -209,7 +228,7 @@ function App() {
   ];
   const [prompt, setPrompt] = useState("");
   const [view, setView] = useState<View>("home");
-  const [homeIntent, setHomeIntent] = useState<"review" | "chat">("review");
+  const [homeIntent, setHomeIntent] = useState<"review" | "chat">("chat");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -220,11 +239,22 @@ function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const chatUnlistenRef = useRef<UnlistenFn | null>(null);
   const activeReviewRef = useRef<{ convoId: string; turnId: string } | null>(null);
+  const activeChatRef = useRef<{ convoId: string; turnId: string } | null>(null);
+  /** Set while the CLI blocks on an `ask`-mode edit approval. */
+  const [approval, setApproval] = useState<{ preview: string } | null>(null);
+  /** True while a chat turn is running: the send button becomes Stop. */
+  const chatRunning = busy && !reviewing;
 
   useEffect(() => {
     document.body.dataset.state = view;
   }, [view]);
+
+  const onRespondApproval = useCallback((allow: boolean) => {
+    setApproval(null);
+    answerApproval(allow).catch(() => {});
+  }, []);
 
   const refreshAuth = useCallback(() => {
     authStatus().then(setAuth).catch(() => setAuth(null));
@@ -239,7 +269,10 @@ function App() {
       }
     });
     refreshAuth();
-    return () => unlistenRef.current?.();
+    return () => {
+      unlistenRef.current?.();
+      chatUnlistenRef.current?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -296,7 +329,139 @@ function App() {
 
   /* ---- chat ---- */
 
-  const onAsk = useCallback(async () => {
+  /* Fold one stream event into the live assistant turn: tokens append to the
+   * text, tool calls become live activity steps, approval requests surface
+   * the diff prompt, and done/error settle the turn. */
+  const handleChatEvent = useCallback(
+    (ev: ChatStreamEvent) => {
+      const ref = activeChatRef.current;
+      if (!ref) return;
+      const { convoId, turnId } = ref;
+      switch (ev.type) {
+        case "token":
+        case "text":
+          patchTurn(convoId, turnId, {});
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? { ...t, text: t.text + ev.content }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        case "tool_call": {
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(ev.arguments || "{}");
+          } catch {
+            args = {};
+          }
+          const step = { id: ev.id, name: ev.name, label: stepLabel(ev.name, args) };
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? { ...t, steps: [...(t.steps ?? []), step] }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        }
+        case "tool_result":
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? {
+                            ...t,
+                            steps: (t.steps ?? []).map((s) =>
+                              s.id === ev.id ? { ...s, output: ev.result } : s,
+                            ),
+                          }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        case "approval_request":
+          setApproval({ preview: ev.preview });
+          break;
+        case "done": {
+          activeChatRef.current = null;
+          chatUnlistenRef.current?.();
+          chatUnlistenRef.current = null;
+          patchTurn(convoId, turnId, {
+            text: ev.reply,
+            pending: false,
+            usage: ev.usage ?? null,
+          });
+          setBusy(false);
+          if (ev.edits.length > 0) {
+            toast(`Edited ${ev.edits.join(", ")}`);
+          }
+          break;
+        }
+        case "error": {
+          activeChatRef.current = null;
+          chatUnlistenRef.current?.();
+          chatUnlistenRef.current = null;
+          patchTurn(convoId, turnId, {
+            text: ev.message,
+            pending: false,
+            error: true,
+          });
+          setBusy(false);
+          break;
+        }
+      }
+    },
+    [patchTurn, toast],
+  );
+
+  /** Settle a turn that ended without a terminal stream event (crash or
+   *  cancel). Keeps whatever streamed in and marks it. */
+  const settleChat = useCallback(
+    (error: string | null, stopped: boolean) => {
+      const ref = activeChatRef.current;
+      if (!ref) return;
+      activeChatRef.current = null;
+      chatUnlistenRef.current?.();
+      chatUnlistenRef.current = null;
+      setApproval(null);
+      patchTurn(ref.convoId, ref.turnId, {
+        pending: false,
+        error: !!error,
+        stopped,
+        ...(error ? { text: error } : {}),
+      });
+      setBusy(false);
+    },
+    [patchTurn],
+  );
+
+  const onStopChat = useCallback(() => {
+    cancelChat().catch(() => {});
+  }, []);
+
+  const onAsk = useCallback(() => {
     const text = prompt.trim();
     if (!text || busy) return;
 
@@ -332,27 +497,36 @@ function App() {
     setPrompt("");
     setBusy(true);
 
+    const convo = isNew ? null : (conversations.find((c) => c.id === convoId) ?? null);
     const history = buildMessages(priorTurns);
     history.push({ role: "user", content: text });
-    try {
-      const res = await chat(history, opts.repoPath || null, model, true, convoId);
-      patchTurn(convoId, asstId, { text: res.reply, pending: false });
-      if (res.edits.length > 0) {
-        toast(`Edited ${res.edits.join(", ")}`);
-      }
-      try {
-        const sess = await showSession(convoId, opts.repoPath || null);
-        const steps = stepsFromEvents(sess.events);
-        if (steps.length > 0) patchTurn(convoId, asstId, { steps });
-      } catch {
-        /* transcript is best-effort; the reply already rendered */
-      }
-    } catch (e) {
-      patchTurn(convoId, asstId, { text: String(e), pending: false, error: true });
-    } finally {
-      setBusy(false);
-    }
-  }, [prompt, busy, activeId, conversations, opts.repoPath, model, patchTurn, toast]);
+    activeChatRef.current = { convoId, turnId: asstId };
+    runChat(history, opts.repoPath || null, model, permissionMode, convo?.sessionId ?? null, {
+      onEvent: handleChatEvent,
+      onLog: () => {},
+      onError: (msg) => settleChat(msg, false),
+      onExit: (code, error) => {
+        if (error) settleChat(error, false);
+        else if (code === null) settleChat(null, true);
+        // A clean exit after `done` has nothing left to settle.
+      },
+    })
+      .then((unlisten) => {
+        chatUnlistenRef.current?.();
+        chatUnlistenRef.current = unlisten;
+      })
+      .catch((e) => settleChat(String(e), false));
+  }, [
+    prompt,
+    busy,
+    activeId,
+    conversations,
+    opts.repoPath,
+    model,
+    permissionMode,
+    handleChatEvent,
+    settleChat,
+  ]);
 
   /* ---- review ---- */
 
@@ -516,6 +690,32 @@ function App() {
     setView("home");
   }, [activeId]);
 
+  /** Opt the thread into persistence: the next turn records into a CLI
+   *  session named after the conversation, and the thread resumes it. */
+  const onSaveThread = useCallback(() => {
+    if (!activeConvo) return;
+    setConversations((cs) =>
+      cs.map((c) => (c.id === activeConvo.id ? { ...c, sessionId: c.id } : c)),
+    );
+    toast("Session saved — this thread now resumes across restarts");
+  }, [activeConvo, toast]);
+
+  /** Delete the CLI session transcript; the thread itself stays, ephemeral. */
+  const onDeleteSession = useCallback(() => {
+    if (!activeConvo?.sessionId) return;
+    const { sessionId, repoPath } = activeConvo;
+    deleteSession(sessionId, repoPath || null)
+      .then(() => {
+        setConversations((cs) =>
+          cs.map((c) =>
+            c.id === activeConvo.id ? { ...c, sessionId: undefined } : c,
+          ),
+        );
+        toast("Session deleted");
+      })
+      .catch((e) => toast(`Delete failed: ${e}`));
+  }, [activeConvo, toast]);
+
   const onDeleteConvo = useCallback(
     (id: string) => {
       setConversations((cs) => cs.filter((c) => c.id !== id));
@@ -602,9 +802,11 @@ function App() {
       prompt,
       setPrompt,
       onAsk,
+      onStop: onStopChat,
       onReview,
       busy,
       reviewing,
+      chatRunning,
       canReview: !!opts.repoPath,
       opts,
       repoName: repoNameOf(opts.repoPath),
@@ -615,10 +817,12 @@ function App() {
       models,
       onModel,
       onAddModel,
+      permissionMode,
+      onPermissionMode,
       onAttach,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [homeIntent, prompt, onAsk, onReview, busy, reviewing, opts, repos, onRepo, onSource, model, customModels, onModel, onAddModel, onAttach],
+    [homeIntent, prompt, onAsk, onStopChat, onReview, busy, reviewing, chatRunning, opts, repos, onRepo, onSource, model, customModels, onModel, onAddModel, permissionMode, onPermissionMode, onAttach],
   );
 
   return (
@@ -686,8 +890,23 @@ function App() {
                   <DotsIcon />
                 </span>
               )}
-              options={[{ value: "delete", label: "Delete conversation" }]}
-              onSelect={(v) => v === "delete" && onDeleteThread()}
+              options={[
+                ...(activeConvo.sessionId
+                  ? [
+                      {
+                        value: "delete-session",
+                        label: "Delete saved session",
+                        danger: true,
+                      },
+                    ]
+                  : [{ value: "save", label: "Save as session" }]),
+                { value: "delete", label: "Delete conversation", danger: true },
+              ]}
+              onSelect={(v) => {
+                if (v === "delete") onDeleteThread();
+                else if (v === "save") onSaveThread();
+                else if (v === "delete-session") onDeleteSession();
+              }}
               direction="down"
             />
             <span className="grow" data-tauri-drag-region />
@@ -728,6 +947,8 @@ function App() {
           {view === "thread" && activeConvo && (
             <ThreadView
               conversation={activeConvo}
+              approval={approval}
+              onRespondApproval={onRespondApproval}
               onOpenDiff={() => setShowDiff((s) => !s)}
               onFocusFinding={onFocusFinding}
               onRetry={onReview}

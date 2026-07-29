@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Aster",
   "version": "0.1.0",
-  "identifier": "dev.instalog.aster.desktop",
+  "identifier": "dev.aster.desktop",
   "build": {
     "beforeDevCommand": "bun run cli:debug && bun run dev:vite",
     "devUrl": "http://localhost:1420",
@@ -38,11 +38,16 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true,
+      "signingIdentity": null
+    }
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3NUMzNzg4MzgzQUZENjkKUldScC9UbzRpRGRjTndsTCswOGdKWmJtL1pYd2VKRjBmZUhWVlRVMXlVQnl5SFAwaG5DSkxXRWYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgwQUI0MjQzMjkzNkY2MzEKUldReDlqWXBRMEtyZ1BqUEF3Tll3NWxaRVdacWdDaVVTeU5GMjc4TWJmSFY4TEhUTTZnTlVNbHgK",
       "endpoints": [
         "https://github.com/Zfinix/aster/releases/latest/download/latest.json"
       ]
