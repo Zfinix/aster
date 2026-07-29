@@ -9,8 +9,6 @@ context, and verification-first capabilities.
 [![CI](https://github.com/zfinix/aster/actions/workflows/ci.yml/badge.svg)](https://github.com/zfinix/aster/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
-Built by [Instalog](https://instalog.dev).
-
 ---
 
 > **Status: early, building in the open.** The agent runtime, chat, memory,
@@ -193,6 +191,30 @@ never on the whole diff. Full write-up: [docs/ALGORITHM.md](./docs/ALGORITHM.md)
 Precedence: **CLI flags > shell env > `aster.yaml` > built-in defaults.** API
 keys are read only from the environment (or `aster login`), never from the file.
 
+Two flags are global, accepted by every subcommand before or after it:
+`--json` for machine-readable output (errors included, as
+`{"ok":false,"error":…}`), and `--effort <off|low|medium|high>` for the
+reasoning budget.
+
+```bash
+aster --json sessions list
+aster --json skills list
+aster --effort high review
+```
+
+How the agent is allowed to act is one setting, `permissions.mode` in
+aster.yaml or `--permission-mode` on `aster chat`:
+
+| Mode | What it does |
+| --- | --- |
+| `plan` | Explores the code and presents a plan; never edits. |
+| `manual` | Asks for approval before each edit. |
+| `auto` | Applies what passes the safety check, pauses for anything risky. |
+| `edit` | Edits files without asking (the default). |
+
+In the chat TUI, `/mode` cycles them and `/effort` sets the reasoning budget.
+The old `ask` and `deny` names still parse, as `manual` and `plan`.
+
 | Env var | Purpose | Default |
 | --- | --- | --- |
 | `ASTER_API_KEY` | Provider API key (required) | none |
@@ -200,7 +222,7 @@ keys are read only from the environment (or `aster login`), never from the file.
 | `ASTER_MODEL` | Default model for any stage without an override | `openai/gpt-4o-mini` |
 | `ASTER_HYPOTHESIS_MODEL` | Cheap, high-recall model for the hypothesis pass | falls back to `ASTER_MODEL` |
 | `ASTER_VERIFY_MODEL` | Independent model for the adversarial verify pass | falls back to `ASTER_MODEL` |
-| `ASTER_REASONING_EFFORT` | Thinking budget: `low` / `medium` / `high` / `off` | `low` |
+| `ASTER_EFFORT` | Thinking budget: `off` / `low` / `medium` / `high` (also `--effort`, or `review.effort` in aster.yaml; `ASTER_REASONING_EFFORT` still works) | `low` |
 | `ASTER_MAX_TOKENS` | Cap generated tokens (`0` or `off` disables) | `8000` |
 | `ASTER_SEED` | Fixed sampling seed for reproducibility (`off` disables) | `0` |
 
