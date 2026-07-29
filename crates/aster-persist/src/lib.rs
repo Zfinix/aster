@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+mod grants;
 mod memory;
 mod transcript;
 
+pub use grants::GrantStore;
 pub use memory::{MemoryMeta, MemoryStore, PROJECT_MEMORY_FILE};
 pub use transcript::{
     EventUsage, MessageEvent, SessionMeta, SessionTranscript, SessionWriter, SummaryEvent,
@@ -29,6 +31,16 @@ impl Store {
 
     pub fn memory(&self) -> MemoryStore {
         MemoryStore::new(self.home.join("memory"))
+    }
+
+    /// Out-of-repo directories approved for `repo_root`, scoped per project so
+    /// one project's approval never widens another's reach.
+    pub fn grants(&self, repo_root: &Path) -> GrantStore {
+        GrantStore::new(
+            self.home
+                .join("grants")
+                .join(format!("{}.json", project_slug(repo_root))),
+        )
     }
 
     fn sessions_dir(&self, repo_root: &Path) -> PathBuf {
@@ -122,6 +134,19 @@ impl Store {
         }
         metas.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(metas)
+    }
+
+    /// Delete a saved session transcript. Returns whether it existed; the id
+    /// is slugified so it can never escape the sessions directory.
+    pub fn delete_session(&self, repo_root: &Path, id: &str) -> Result<bool> {
+        let path = self
+            .sessions_dir(repo_root)
+            .join(format!("{}.jsonl", slugify(id)));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("deleting session {}", path.display())),
+        }
     }
 
     fn session_ids(&self, repo_root: &Path) -> Result<Vec<String>> {

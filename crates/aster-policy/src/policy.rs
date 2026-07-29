@@ -41,10 +41,10 @@ impl Policy {
         })
     }
 
-    /// A no-op policy: auto edits, nothing protected, no secret reads blocked.
+    /// A no-op policy: unconditional edits, nothing protected, no secret reads blocked.
     pub fn permissive() -> Policy {
         Policy {
-            mode: Mode::Auto,
+            mode: Mode::Edit,
             protected: GlobSet::empty(),
             allow: GlobSet::empty(),
             deny: GlobSet::empty(),
@@ -67,25 +67,35 @@ impl Policy {
                 reason: format!("`{path}` matches a permissions `deny` rule"),
             };
         }
-        // Protected beats mode, unless the user explicitly allow-listed it.
-        if self.protected.is_match(path) && !self.allow.is_match(path) {
+        // Plan mode never writes, allow-listed or not.
+        if self.mode == Mode::Plan {
             return Decision::Deny {
-                reason: format!(
-                    "`{path}` is a protected path; add it to permissions `allow` to override"
-                ),
+                reason: "permissions mode is `plan`, so edits are off".to_string(),
+            };
+        }
+        // Protected beats mode, unless the user explicitly allow-listed it.
+        // `auto` is the exception: risky is what it pauses on rather than refuses.
+        if self.protected.is_match(path) && !self.allow.is_match(path) {
+            return match self.mode {
+                Mode::Auto => Decision::Prompt {
+                    preview: format!("edit {path} (protected path)"),
+                },
+                _ => Decision::Deny {
+                    reason: format!(
+                        "`{path}` is a protected path; add it to permissions `allow` to override"
+                    ),
+                },
             };
         }
         if self.allow.is_match(path) {
             return Decision::Allow;
         }
         match self.mode {
-            Mode::Auto => Decision::Allow,
-            Mode::Ask => Decision::Prompt {
+            Mode::Auto | Mode::Edit => Decision::Allow,
+            Mode::Manual => Decision::Prompt {
                 preview: format!("edit {path}"),
             },
-            Mode::Deny => Decision::Deny {
-                reason: "permissions mode is `deny`".to_string(),
-            },
+            Mode::Plan => unreachable!("plan returns above"),
         }
     }
 
@@ -163,7 +173,7 @@ mod tests {
     #[test]
     fn evaluate_allow_glob_allows() {
         let mut c = cfg();
-        c.mode = Mode::Deny;
+        c.mode = Mode::Manual;
         c.allow = vec!["src/**".to_string()];
         let p = policy(c);
         assert_eq!(
@@ -196,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_mode_auto_allows_plain() {
+    fn evaluate_mode_edit_allows_plain() {
         let p = policy(cfg());
         assert_eq!(
             p.evaluate(&Action::Edit {
@@ -207,9 +217,9 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_mode_ask_prompts_plain() {
+    fn evaluate_mode_manual_prompts_plain() {
         let mut c = cfg();
-        c.mode = Mode::Ask;
+        c.mode = Mode::Manual;
         let p = policy(c);
         assert!(matches!(
             p.evaluate(&Action::Edit {
@@ -220,13 +230,50 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_mode_deny_denies_plain() {
+    fn evaluate_mode_plan_denies_plain() {
         let mut c = cfg();
-        c.mode = Mode::Deny;
+        c.mode = Mode::Plan;
         let p = policy(c);
         assert!(is_deny(&p.evaluate(&Action::Edit {
             path: "src/main.rs"
         })));
+    }
+
+    #[test]
+    fn evaluate_mode_plan_denies_even_allow_listed() {
+        let mut c = cfg();
+        c.mode = Mode::Plan;
+        c.allow = vec!["src/**".to_string()];
+        let p = policy(c);
+        assert!(is_deny(&p.evaluate(&Action::Edit {
+            path: "src/main.rs"
+        })));
+    }
+
+    #[test]
+    fn evaluate_mode_auto_prompts_for_protected() {
+        let mut c = cfg();
+        c.mode = Mode::Auto;
+        let p = policy(c);
+        assert!(matches!(
+            p.evaluate(&Action::Edit {
+                path: ".github/workflows/ci.yml"
+            }),
+            Decision::Prompt { .. }
+        ));
+    }
+
+    #[test]
+    fn evaluate_mode_auto_allows_plain() {
+        let mut c = cfg();
+        c.mode = Mode::Auto;
+        let p = policy(c);
+        assert_eq!(
+            p.evaluate(&Action::Edit {
+                path: "src/main.rs"
+            }),
+            Decision::Allow
+        );
     }
 
     #[test]

@@ -9,9 +9,11 @@ mod action;
 mod config;
 mod decision;
 pub mod defaults;
+mod grants;
 mod policy;
 
 pub use action::Action;
 pub use config::PermissionsConfig;
 pub use decision::{Decision, Mode};
+pub use grants::Grants;
 pub use policy::Policy;
