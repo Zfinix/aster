@@ -60,9 +60,18 @@
   src: url("./assets/fonts/JetBrainsMono-Italic.woff2") format("woff2");
 }
 
+/* Paper Mono variable, vendored from paper-mono v0.300 (OFL). */
+@font-face {
+  font-family: "Paper Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/PaperMono.woff2") format("woff2");
+}
+
 :root {
   --sans: "InterVariable", -apple-system, BlinkMacSystemFont, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --mono: "Paper Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --coral: #f2764f;
   --rose: #ef5a6f;
   --amber: #f7c15c;
@@ -128,15 +137,15 @@ html[data-theme="dark"] {
   --focus: color-mix(in srgb, var(--coral) 55%, transparent);
   --radius: 0.5rem;
 
-  --sh-keyword: #f2764f;
-  --sh-string: #3fb950;
-  --sh-comment: #5c5c5c;
-  --sh-class: #f7c15c;
-  --sh-entity: #d67bd6;
-  --sh-property: #ef5a6f;
-  --sh-jsxliterals: #ef5a6f;
-  --sh-sign: #8f8f8f;
-  --sh-identifier: #fcfcfc;
+  --sh-keyword: #ff7b72;
+  --sh-string: #7ee787;
+  --sh-comment: #8b949e;
+  --sh-class: #ffa657;
+  --sh-entity: #d2a8ff;
+  --sh-property: #79c0ff;
+  --sh-jsxliterals: #ffa657;
+  --sh-sign: #8b949e;
+  --sh-identifier: #ededed;
 }
 
 html[data-theme="light"] {
@@ -182,14 +191,14 @@ html[data-theme="light"] {
   --focus: color-mix(in srgb, var(--coral) 50%, transparent);
   --radius: 0.5rem;
 
-  --sh-keyword: #d1451f;
+  --sh-keyword: #cf222e;
   --sh-string: #1a7f37;
-  --sh-comment: #a3a3a3;
-  --sh-class: #b3831c;
-  --sh-entity: #9333a8;
-  --sh-property: #c62a45;
-  --sh-jsxliterals: #c62a45;
-  --sh-sign: #6e6e6e;
+  --sh-comment: #6e7781;
+  --sh-class: #953800;
+  --sh-entity: #8250df;
+  --sh-property: #0550ae;
+  --sh-jsxliterals: #953800;
+  --sh-sign: #6e7781;
   --sh-identifier: #0a0a0a;
 }
 
@@ -448,7 +457,7 @@ textarea:focus-visible {
 .proj-count {
   font-size: 11px;
   color: var(--faint);
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 .thread {
@@ -492,7 +501,6 @@ textarea:focus-visible {
   font-size: 11.5px;
   color: var(--faint);
   flex-shrink: 0;
-  font-family: var(--mono);
   transition: opacity 0.12s;
 }
 .thread:hover .t-meta {
@@ -771,7 +779,6 @@ textarea:focus-visible {
 }
 .menu-row .val {
   color: var(--dim);
-  font-family: var(--mono);
   font-size: 11.5px;
   max-width: 55%;
   overflow: hidden;
@@ -790,7 +797,7 @@ textarea:focus-visible {
 }
 .menu-slider-head .val {
   color: var(--text);
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
 }
 .conf-slider {
@@ -832,8 +839,8 @@ textarea:focus-visible {
   display: flex;
   justify-content: space-between;
   margin-top: 7px;
-  font-family: var(--mono);
-  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
   color: var(--faint);
 }
 .menu-toggle {
@@ -1100,7 +1107,7 @@ h1 {
   background: var(--sev-clean);
 }
 .h-stats {
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--faint);
   flex-shrink: 0;
@@ -1355,6 +1362,80 @@ h1 {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.activity-output .out-line {
+  display: flex;
+}
+.activity-output .out-gutter {
+  color: var(--faint);
+  user-select: none;
+  flex-shrink: 0;
+  white-space: pre;
+  margin-right: 12px;
+}
+.activity-output .out-line code {
+  flex: 1;
+  min-width: 0;
+}
+/* The output card stays black in both themes, so the code colors must too. */
+html[data-theme="light"] .activity-output {
+  color: #b3b3b3;
+  --sh-keyword: #ff7b72;
+  --sh-string: #7ee787;
+  --sh-comment: #8b949e;
+  --sh-class: #ffa657;
+  --sh-entity: #d2a8ff;
+  --sh-property: #79c0ff;
+  --sh-jsxliterals: #ffa657;
+  --sh-sign: #8b949e;
+  --sh-identifier: #ededed;
+}
+html[data-theme="light"] .activity-output .out-gutter {
+  color: #5c5c5c;
+}
+
+/* Inline edit-approval card: the diff preview with approve/reject actions. */
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 14px;
+  margin: 0 auto;
+  max-width: var(--chat-max, 720px);
+}
+.approval-head {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.approval-preview {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.approval-preview .add {
+  color: var(--ok, #3fb950);
+}
+.approval-preview .del {
+  color: var(--err, #f85149);
+}
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* A cancelled turn keeps what streamed, marked. */
+.a-stopped {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--faint);
+  font-style: italic;
+}
 
 .a-run {
   display: flex;
@@ -1418,8 +1499,7 @@ h1 {
   text-decoration-color: var(--faint);
 }
 .pipe-kill .why {
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 /* Entrance for rows that stream in while the verifier works. */
@@ -1541,19 +1621,27 @@ h1 {
 /* Fenced code: one bordered box. The header (extension + actions) lives
    inside the border as a hairline-split top row; the body loses its own box. */
 .a-text.md [data-streamdown="code-block"] {
+  position: relative;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: #000000;
   padding: 0;
   gap: 0;
 }
+/* No header row: the extension chip and actions float over the code instead
+   of reserving a 32px strip above it. */
 .a-text.md [data-streamdown="code-block-header"] {
-  height: 32px;
-  padding: 0 12px;
+  position: absolute;
+  top: 13px;
+  right: 70px;
+  height: auto;
+  padding: 0;
   border-bottom: 0;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--faint);
+  pointer-events: none;
+  z-index: 2;
 }
 /* Show a file extension instead of the raw language id. */
 .a-text.md [data-streamdown="code-block-header"] > span {
@@ -1585,16 +1673,20 @@ h1 {
 /* Re-anchor the floating actions overlay onto the header row (the stock
    -mt-10 assumed the outer card's gap-2) and strip its pill chrome. */
 .a-text.md div:has(> [data-streamdown="code-block-actions"]) {
-  position: static;
-  margin-top: -32px;
-  height: 32px;
-  padding-right: 10px;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  margin: 0;
+  height: auto;
+  padding: 0;
+  z-index: 2;
 }
 .a-text.md [data-streamdown="code-block-actions"] {
-  border: 0;
-  background: transparent;
-  backdrop-filter: none;
-  padding: 0;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, #000000 65%, transparent);
+  backdrop-filter: blur(6px);
+  border-radius: 8px;
+  padding: 4px 7px;
   gap: 8px;
 }
 .a-text.md [data-streamdown="code-block-copy-button"],
@@ -1627,6 +1719,12 @@ h1 {
 .a-text.md :not(pre) > code {
   font-family: var(--mono);
   font-size: 0.86em;
+  padding: 1.5px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+html[data-theme="light"] .a-text.md :not(pre) > code {
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
 }
 .a-text.md blockquote {
   margin: 10px 0;
@@ -1783,7 +1881,7 @@ h1 {
   opacity: 0.5;
 }
 .run-timer {
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--faint);
 }
@@ -1792,7 +1890,6 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -1865,7 +1962,7 @@ h1 {
 }
 .chip-card .cc-stats {
   margin-left: auto;
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 12.5px;
 }
 .chip-card .plus {
@@ -1936,7 +2033,6 @@ h1 {
   font-size: 13px;
 }
 .refuted-row .x {
-  font-family: var(--mono);
   color: var(--red);
   flex-shrink: 0;
   font-size: 11px;
@@ -1963,6 +2059,7 @@ body[data-state="run"] .c-foot {
   display: none;
 }
 .composer {
+  position: relative;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -2048,7 +2145,6 @@ html[data-theme="dark"] .composer {
   font-size: 10px;
 }
 .pill .mono {
-  font-family: var(--mono);
   font-size: 12px;
 }
 .pill .hy {
@@ -2131,8 +2227,56 @@ html[data-theme="dark"] .model-pill {
   flex: 1;
 }
 .under-row .mono {
-  font-family: var(--mono);
   font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mention-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 5px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  max-height: 300px;
+  overflow-y: auto;
+}
+html[data-theme="light"] .mention-menu {
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.12);
+}
+.mention-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--dim);
+  text-align: left;
+}
+.mention-menu button[data-active="true"] {
+  background: var(--raise-2);
+  color: var(--text);
+}
+.mention-menu svg {
+  flex-shrink: 0;
+  color: var(--faint);
+}
+.mention-menu .m-name {
+  white-space: nowrap;
+}
+.mention-menu .m-dir {
+  color: var(--faint);
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dd-wrap {
@@ -2175,12 +2319,33 @@ html[data-theme="light"] .dd {
 }
 .dd button small {
   color: var(--faint);
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
+}
+.dd button .dd-ico {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  color: var(--dim);
+  flex-shrink: 0;
+}
+.dd button .dd-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.dd button .dd-col small {
+  line-height: 1.4;
+}
+.dd button[data-active="true"] .dd-ico {
+  color: var(--coral);
 }
 .dd button[data-active="true"]::after {
   content: "✓";
-  color: var(--green);
+  color: var(--coral);
   font-size: 12px;
 }
 .dd-label {
@@ -2481,7 +2646,7 @@ html[data-theme="light"] .inline-comment {
   flex: 1;
 }
 .ic-head .conf {
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--faint);
 }

@@ -1,7 +1,7 @@
 {
   "name": "Aster",
   "version": "0.1.0",
-  "description": "Desktop app for the aster AI code reviewer",
+  "description": "Desktop app for the aster coding agent",
   "private": true,
   "type": "module",
   "scripts": {

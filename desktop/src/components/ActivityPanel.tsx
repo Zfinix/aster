@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ActivityOutput } from "./ActivityOutput";
 import { ChevronIcon } from "./icons";
 import { summarizeSteps, type ToolStep } from "../lib/session";
 
@@ -51,7 +52,7 @@ function ActivityStep({ step }: { step: ToolStep }) {
           </span>
         )}
       </button>
-      {open && hasOutput && <pre className="activity-output">{step.output}</pre>}
+      {open && hasOutput && <ActivityOutput name={step.name} output={step.output!} />}
     </div>
   );
 }

@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Finding, ReviewOpts, StartupInfo, StreamEvent } from "./types";
+import type {
+  ChatStreamEvent,
+  Finding,
+  PermissionMode,
+  ReviewOpts,
+  StartupInfo,
+  StreamEvent,
+} from "./types";
 
 export function startupInfo(): Promise<StartupInfo> {
   return invoke<StartupInfo>("startup_info");
@@ -14,34 +21,75 @@ export function pickDiff(): Promise<string | null> {
   return invoke<string | null>("pick_diff");
 }
 
+export function listRepoFiles(repoPath: string): Promise<string[]> {
+  return invoke<string[]>("list_repo_files", { repoPath });
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
 }
 
-export interface ChatReply {
-  reply: string;
-  /** Repo-relative paths the agent edited during this turn. */
-  edits: string[];
+export interface ChatHandlers {
+  onEvent: (event: ChatStreamEvent) => void;
+  onLog: (line: string) => void;
+  /** The child failed to spawn or the invoke itself failed. */
+  onError: (message: string) => void;
+  /** The child exited. `error` is set when it failed without a terminal
+   *  stream event (a crash); `code` is null when cancelled. */
+  onExit: (code: number | null, error: string | null) => void;
 }
 
-/** A conversational reply from Aster (not a review). Runs `aster chat` with
- *  the repo as cwd so provider resolution matches review exactly. The agent
- *  can read/search the repo; with allowEdits it can change it. */
-export function chat(
+/**
+ * Kick off a streaming chat turn (`aster chat --stream`). The backend owns the
+ * child; NDJSON arrives as `aster://chat-event`, exit as `aster://chat-exit`.
+ * Returns an unlisten that must be called when the turn is torn down.
+ */
+export async function runChat(
   messages: ChatMessage[],
   repoPath: string | null,
   model: string | null,
-  allowEdits: boolean,
+  permissionMode: PermissionMode | null,
   session: string | null,
-): Promise<ChatReply> {
-  return invoke<ChatReply>("chat", {
-    messages,
-    repoPath,
-    model,
-    allowEdits,
-    session,
-  });
+  handlers: ChatHandlers,
+): Promise<UnlistenFn> {
+  const unlisteners: UnlistenFn[] = [];
+
+  unlisteners.push(
+    await listen<string>("aster://chat-event", (e) => {
+      try {
+        handlers.onEvent(JSON.parse(e.payload) as ChatStreamEvent);
+      } catch {
+        // A malformed line is not worth killing the stream over.
+      }
+    }),
+  );
+  unlisteners.push(
+    await listen<string>("aster://log", (e) => handlers.onLog(e.payload)),
+  );
+  unlisteners.push(
+    await listen<{ code: number | null; error: string | null }>(
+      "aster://chat-exit",
+      (e) => handlers.onExit(e.payload.code, e.payload.error),
+    ),
+  );
+
+  const unlistenAll: UnlistenFn = () => unlisteners.forEach((u) => u());
+
+  invoke("chat", { messages, repoPath, model, permissionMode, session })
+    .catch((err: unknown) => handlers.onError(String(err)));
+
+  return unlistenAll;
+}
+
+/** Answer a pending `approval_request`. */
+export function answerApproval(allow: boolean): Promise<void> {
+  return invoke("answer_approval", { allow });
+}
+
+/** Stop the running chat turn. */
+export function cancelChat(): Promise<void> {
+  return invoke("cancel_chat");
 }
 
 export interface SessionSummary {
@@ -65,6 +113,14 @@ export function showSession(
   repoPath: string | null,
 ): Promise<{ id: string; events: unknown[] }> {
   return invoke("show_session", { id, repoPath });
+}
+
+/** Delete a saved session by id. */
+export function deleteSession(
+  id: string,
+  repoPath: string | null,
+): Promise<{ ok: boolean; id: string }> {
+  return invoke("delete_session", { id, repoPath });
 }
 
 export interface MemoryList {

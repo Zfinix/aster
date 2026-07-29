@@ -9,7 +9,7 @@ export function HomeView({
   composer,
   conversations,
   onOpen,
-  intent = "review",
+  intent = "chat",
 }: {
   composer: ComposerBinding;
   conversations: Conversation[];
@@ -19,7 +19,7 @@ export function HomeView({
   return (
     <div className="hero">
       <Mark px={3.2} interactive />
-      <h1>{intent === "chat" ? "What can Aster help with?" : "What should we review next?"}</h1>
+      <h1>{intent === "review" ? "What should we review next?" : "What are we building?"}</h1>
       <Composer variant="home" intent={intent} {...composer} />
 
       {conversations.length > 0 && (
