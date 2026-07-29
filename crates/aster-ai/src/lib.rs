@@ -19,6 +19,9 @@ use retry::RetryWithBackoff;
 mod effort;
 pub use effort::Effort;
 
+mod inline_tools;
+use inline_tools::{TokenGate, split_inline_tool_calls};
+
 mod models;
 pub use models::{AssistantMessage, ChatMessage, ToolCall, ToolCallFunction};
 use models::{
@@ -378,12 +381,22 @@ impl AiClient {
 
         let parsed: ToolChatResponse =
             serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
-        let message = parsed
+        let mut message = parsed
             .choices
             .into_iter()
             .next()
             .map(|c| c.message)
             .context("no choices in model response")?;
+        if message.tool_calls.is_empty()
+            && let Some(content) = message.content.as_deref()
+        {
+            let (text, inline) = split_inline_tool_calls(content);
+            if !inline.is_empty() {
+                tracing::debug!(model, calls = inline.len(), "recovered inline tool calls");
+                message.content = (!text.is_empty()).then_some(text);
+                message.tool_calls = inline;
+            }
+        }
         let completion_chars = message.content.as_deref().map(str::len).unwrap_or(0)
             + message
                 .tool_calls
@@ -480,6 +493,9 @@ impl AiClient {
         let mut content = String::new();
         let mut usage: Option<Usage> = None;
         let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+        // Some models write their tool calls into the content. The gate keeps
+        // that markup off the screen; the block is parsed back out below.
+        let mut gate = TokenGate::default();
 
         read_sse(response, |data| {
             let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
@@ -493,7 +509,7 @@ impl AiClient {
             };
             if let Some(delta) = choice.delta.content.filter(|d| !d.is_empty()) {
                 content.push_str(&delta);
-                on_token(&delta);
+                gate.feed(&delta, &mut on_token);
             }
             for fragment in choice.delta.tool_calls {
                 let slot = partials.entry(fragment.index).or_default();
@@ -511,6 +527,7 @@ impl AiClient {
             }
         })
         .await?;
+        gate.finish(&mut on_token);
 
         if content.is_empty() && partials.is_empty() {
             tracing::debug!(
@@ -522,7 +539,7 @@ impl AiClient {
                 .await;
         }
 
-        let tool_calls: Vec<ToolCall> = partials
+        let mut tool_calls: Vec<ToolCall> = partials
             .into_iter()
             .filter(|(_, p)| !p.name.is_empty())
             .map(|(index, p)| ToolCall {
@@ -540,6 +557,15 @@ impl AiClient {
                 },
             })
             .collect();
+
+        if tool_calls.is_empty() {
+            let (text, inline) = split_inline_tool_calls(&content);
+            if !inline.is_empty() {
+                tracing::debug!(model, calls = inline.len(), "recovered inline tool calls");
+                content = text;
+                tool_calls = inline;
+            }
+        }
 
         let completion_chars = content.len()
             + tool_calls
