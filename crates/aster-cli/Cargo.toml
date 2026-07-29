@@ -42,6 +42,7 @@ aster-policy = { path = "../aster-policy" }
 aster-persist = { path = "../aster-persist" }
 aster-skills = { path = "../aster-skills" }
 aster-tools = { path = "../aster-tools" }
+aster-web = { path = "../aster-web" }
 aster-sandbox = { path = "../aster-sandbox" }
 cliclack = "0.5.5"
 console = "0.16"
