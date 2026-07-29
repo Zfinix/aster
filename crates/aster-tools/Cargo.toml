@@ -1,0 +1,20 @@
+[package]
+name = "aster-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bash_tools"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+which = "7"
+ignore = "0.4"
+grep = "0.4.1"
+
+[dev-dependencies]
+tempfile = "3"

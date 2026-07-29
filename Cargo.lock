@@ -213,13 +213,17 @@ dependencies = [
  "aster-persist",
  "aster-policy",
  "aster-skills",
+ "aster-tools",
  "clap",
  "cliclack",
  "console",
+ "crossterm",
  "dirs",
  "dotenvy",
+ "futures-util",
  "globset",
  "open",
+ "pulldown-cmark",
  "ratatui",
  "reqwest",
  "reqwest-middleware",
@@ -230,6 +234,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
@@ -304,6 +309,7 @@ dependencies = [
  "anyhow",
  "globset",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -358,6 +364,18 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "aster-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grep",
+ "ignore",
+ "tempfile",
+ "tracing",
+ "which",
+]
 
 [[package]]
 name = "bit-set"
@@ -674,6 +692,7 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags 2.13.1",
  "crossterm_winapi",
+ "futures-core",
  "mio",
  "parking_lot 0.12.5",
  "rustix 0.38.44",
@@ -2021,6 +2040,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags 2.13.1",
+ "memchr",
+ "unicase",
 ]
 
 [[package]]
@@ -3686,6 +3716,12 @@ dependencies = [
  "rand 0.9.5",
  "web-time",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
 name = "unicode-bidi"

@@ -8,7 +8,7 @@ use std::{env, fs, io};
 use anyhow::{Context, Result, bail};
 use aster_ai::{AiClient, ChatMessage};
 use aster_persist::{MessageEvent, Store, SummaryEvent, TranscriptEvent};
-use aster_policy::{Action, Decision, Policy};
+use aster_policy::{Action, Decision, Grants, Policy};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -24,6 +24,7 @@ pub(crate) struct SessionCtx {
     pub recorder: Option<Recorder>,
     pub store: Option<Store>,
     pub skills: Arc<aster_skills::SkillSet>,
+    pub probe: Arc<bash_tools::ToolProbe>,
 }
 
 impl SessionCtx {
@@ -96,23 +97,31 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     prompt
 }
 
-/// CLI spelling of [`aster_policy::Mode`].
+/// CLI spelling of [`aster_policy::Mode`]. `ask` and `deny` stay as hidden
+/// aliases so older scripts and aster.yaml files keep working.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub(crate) enum PermissionModeArg {
-    /// Apply edits without confirmation.
+    /// Explore the code and present a plan before editing.
+    Plan,
+    /// Ask for approval before each edit.
+    Manual,
+    /// Apply what passes the safety check, pause for anything risky.
     Auto,
-    /// Confirm every edit before it lands.
+    /// Edit files without asking.
+    Edit,
+    #[value(hide = true)]
     Ask,
-    /// Refuse all edits.
+    #[value(hide = true)]
     Deny,
 }
 
 impl From<PermissionModeArg> for aster_policy::Mode {
     fn from(arg: PermissionModeArg) -> Self {
         match arg {
+            PermissionModeArg::Plan | PermissionModeArg::Deny => Self::Plan,
+            PermissionModeArg::Manual | PermissionModeArg::Ask => Self::Manual,
             PermissionModeArg::Auto => Self::Auto,
-            PermissionModeArg::Ask => Self::Ask,
-            PermissionModeArg::Deny => Self::Deny,
+            PermissionModeArg::Edit => Self::Edit,
         }
     }
 }
@@ -120,10 +129,29 @@ impl From<PermissionModeArg> for aster_policy::Mode {
 /// Emits one NDJSON event per line on the `--stream` path.
 pub(crate) type ChatEventSink = Box<dyn Fn(Value) + Send + Sync>;
 
-/// A pending edit the agent task sends to the UI loop, which replies through `respond`.
+/// A pending action the agent task sends to the UI loop, which replies through
+/// `respond`. `scope` is the directory an "always allow" answer would cover;
+/// `None` means the request has no path to remember, so the front-end offers
+/// only yes or no.
 pub(crate) struct ApprovalRequest {
     pub preview: String,
-    pub respond: oneshot::Sender<bool>,
+    pub scope: Option<PathBuf>,
+    pub respond: oneshot::Sender<Answer>,
+}
+
+/// How the user answered an [`ApprovalRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Answer {
+    Yes,
+    No,
+    /// Yes, and remember it: persist `scope` so the question stops recurring.
+    Always,
+}
+
+impl Answer {
+    pub(crate) fn allowed(self) -> bool {
+        !matches!(self, Answer::No)
+    }
 }
 
 /// Channel for `ask` mode prompts; headless callers pass `None`, denying every prompt.
@@ -144,8 +172,11 @@ const COMPACT_KEEP_TAIL: usize = 6;
 
 const TOOLS_PROMPT: &str = "\n\n## Tools\n\n\
 You can inspect the repository with `read_file`, `list_files`, and \
-`search_files`, and change it with `edit_file` when it is available. Ground \
-every claim about the code in what you actually read. Only edit files when the \
+`search_files`, and change it with `edit_file` when it is available. \
+`search_files` supports regex syntax and respects `.gitignore`. \
+`edit_file` also creates files: omit `search` and pass the whole contents as \
+`replace`. \
+Ground every claim about the code in what you actually read. Only edit files when the \
 user asked for a change; keep edits minimal and in the file's existing style. \
 After editing, state plainly which files you changed and what the change does. \
 If `edit_file` is unavailable, say so and describe the change instead.";
@@ -157,11 +188,13 @@ pub struct ChatArgs {
     prompt: Option<String>,
 
     /// Continue this repo's most recent session, seeding its prior history.
+    /// Without it every session starts clean, in the TUI too.
     #[arg(long = "continue", conflicts_with = "messages_json")]
     continue_session: bool,
 
-    /// Persist this turn into a session by id. Alone it also seeds the session's
-    /// prior history; with --messages-json (the caller owns history) it only records.
+    /// Persist this turn into a session by id, resuming it if it exists and
+    /// creating it if not. Alone it also seeds the session's prior history;
+    /// with --messages-json (the caller owns history) it only records.
     #[arg(long, value_name = "ID")]
     session: Option<String>,
 
@@ -180,9 +213,9 @@ pub struct ChatArgs {
     #[arg(long)]
     allow_edits: bool,
 
-    /// How edits are gated, overriding aster.yaml `permissions.mode`. `ask`
-    /// needs a front-end that answers prompts: the TUI, or `--stream`.
-    /// Anything but `deny` also enables the edit tool.
+    /// How edits are gated, overriding aster.yaml `permissions.mode`: plan,
+    /// manual, auto, or edit. `manual` needs a front-end that answers prompts:
+    /// the TUI, or `--stream`. Anything but `plan` also enables the edit tool.
     #[arg(long, value_name = "MODE", value_enum)]
     permission_mode: Option<PermissionModeArg>,
 
@@ -202,17 +235,16 @@ pub struct ChatArgs {
     /// Answer once and print plain text instead of opening the TUI (default when piped).
     #[arg(long, short = 'p', conflicts_with_all = ["messages_json", "json"])]
     print: bool,
-
-    /// Emit {"reply", "edits", "usage"} as one JSON object on stdout.
-    #[arg(long)]
-    json: bool,
 }
 
 impl ChatArgs {
     /// True when both ends are a real terminal and no flag forced one-shot output.
     pub fn is_interactive(&self) -> bool {
-        let one_shot =
-            self.print || self.json || self.no_tools || self.stream || self.messages_json.is_some();
+        let one_shot = self.print
+            || crate::json_mode()
+            || self.no_tools
+            || self.stream
+            || self.messages_json.is_some();
         !one_shot && io::stdout().is_terminal() && io::stdin().is_terminal()
     }
 }
@@ -223,33 +255,62 @@ struct WireMessage {
     content: String,
 }
 
+/// `manual` needs the TUI or --stream to confirm edits; otherwise the agent is
+/// read-only. `auto` still edits headlessly: only its risky paths would prompt.
+fn ask_needs_front_end(mode: aster_policy::Mode, allow_edits: bool, can_prompt: bool) -> bool {
+    allow_edits && mode == aster_policy::Mode::Manual && !can_prompt
+}
+
 pub async fn run(args: ChatArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
 
     let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
-    let client = AiClient::new(llm.base_url, llm.api_key, llm.model);
+    let client = AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort);
 
     let mut permissions = settings.permissions.clone();
     if let Some(mode) = args.permission_mode {
-        permissions.mode = mode.into();
+        permissions.mode = permissions.mode.stricter(mode.into());
     }
-    // `deny` means no edits at all, so the tool is withheld entirely; the other
-    // two modes imply the caller wants editing available.
+
+    // The TUI answers its own prompts, so it is editable unless the config or
+    // --permission-mode says otherwise; --allow-edits only gates headless runs.
+    let interactive = args.is_interactive();
     let allow_edits = match args.permission_mode {
-        Some(PermissionModeArg::Deny) => false,
         Some(_) => true,
-        None => args.allow_edits,
-    };
+        None => interactive || args.allow_edits,
+    } && permissions.mode.can_edit();
+
+    let can_prompt = args.is_interactive() || args.stream;
+    let allow_edits =
+        if !args.no_tools && ask_needs_front_end(permissions.mode, allow_edits, can_prompt) {
+            eprintln!(
+                "note: `ask` permissions confirm every edit and this run cannot ask, \
+             so the agent is read-only. Use --permission-mode edit to let it edit."
+            );
+            false
+        } else {
+            allow_edits
+        };
+
     let policy = Arc::new(Policy::compile(&permissions)?);
+    let grants = Arc::new(configured_grants(&permissions, &repo_root));
 
     if args.is_interactive() {
         let seed = args.prompt.clone();
-        return crate::tui::run_chat(client, repo_root, allow_edits, permissions, seed).await;
+        return crate::tui::run_chat(
+            client,
+            repo_root,
+            allow_edits,
+            permissions,
+            seed,
+            args.continue_session,
+        )
+        .await;
     }
 
     if args.stream {
-        return run_stream(args, client, repo_root, policy, allow_edits).await;
+        return run_stream(args, client, repo_root, policy, grants, allow_edits).await;
     }
 
     let (ctx, history) = prepare_turn(&args, &repo_root, &client)?;
@@ -273,6 +334,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             &history,
             allow_edits,
             &policy,
+            &grants,
             None,
             &mut edited,
             &ctx,
@@ -282,7 +344,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .0
     };
 
-    if args.json {
+    if crate::json_mode() {
         let u = client.usage_snapshot();
         let out = json!({
             "reply": reply,
@@ -321,6 +383,7 @@ fn prepare_turn(
         recorder,
         store,
         skills: discover_skills(repo_root),
+        probe: Arc::new(bash_tools::ToolProbe::detect()),
     };
     // Record only the new user turn. On the wire path `new_turns` is the full
     // replayed history, whose earlier turns were recorded on previous calls.
@@ -346,26 +409,39 @@ fn stdio_approver() -> ApprovalSender {
     let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
-            emit_line(&json!({ "type": "approval_request", "preview": req.preview }));
-            let allow = tokio::task::spawn_blocking(read_approval_reply)
+            emit_line(&json!({
+                "type": "approval_request",
+                "preview": req.preview,
+                // Present only when "always" is on the table, so a front-end
+                // can label the option with what it would remember.
+                "scope": req.scope.as_ref().map(|p| p.display().to_string()),
+            }));
+            let answer = tokio::task::spawn_blocking(read_approval_reply)
                 .await
-                .unwrap_or(false);
-            let _ = req.respond.send(allow);
+                .unwrap_or(Answer::No);
+            let _ = req.respond.send(answer);
         }
     });
     tx
 }
 
-/// One line of `{"allow": bool}` on stdin. A closed pipe or junk denies.
-fn read_approval_reply() -> bool {
+/// One line of `{"allow": bool}` on stdin, optionally with `"always": true` to
+/// persist the request's scope. A closed pipe or junk denies.
+fn read_approval_reply() -> Answer {
     let mut line = String::new();
     if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
-        return false;
+        return Answer::No;
     }
-    serde_json::from_str::<Value>(&line)
-        .ok()
-        .and_then(|v| v.get("allow").and_then(Value::as_bool))
-        .unwrap_or(false)
+    let Ok(reply) = serde_json::from_str::<Value>(&line) else {
+        return Answer::No;
+    };
+    if !reply.get("allow").and_then(Value::as_bool).unwrap_or(false) {
+        return Answer::No;
+    }
+    match reply.get("always").and_then(Value::as_bool) {
+        Some(true) => Answer::Always,
+        _ => Answer::Yes,
+    }
 }
 
 /// Run a turn as NDJSON events on stdout, reading approval replies from stdin.
@@ -374,6 +450,7 @@ async fn run_stream(
     client: AiClient,
     repo_root: PathBuf,
     policy: Arc<Policy>,
+    grants: Arc<Grants>,
     allow_edits: bool,
 ) -> Result<()> {
     let (ctx, history) = prepare_turn(&args, &repo_root, &client)?;
@@ -386,6 +463,7 @@ async fn run_stream(
         &history,
         allow_edits,
         &policy,
+        &grants,
         Some(&stdio_approver()),
         &mut edited,
         &ctx,
@@ -460,9 +538,10 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
 }
 
 /// Resolve the session a headless turn records into, and the prior history to
-/// prepend. The `--messages-json` wire path (desktop replays it) records nothing.
-/// Otherwise a session is opened: `--session`/`--continue` resume an existing one,
-/// a bare prompt starts a fresh one so it is resumable later.
+/// prepend. Recording is explicit: only `--session` (resume-or-create by id)
+/// and `--continue` (resume the repo's latest) persist anything — a bare
+/// prompt or a `--messages-json` replay without `--session` is ephemeral and
+/// never creates or reopens a transcript on its own.
 fn resolve_headless_session(
     store: Option<&Store>,
     repo_root: &Path,
@@ -473,8 +552,9 @@ fn resolve_headless_session(
         return Ok((None, Vec::new()));
     };
 
-    // The wire path (desktop replays full history) owns its history, so it only
-    // records into a named session and never seeds prior turns.
+    // The wire path (a UI replays full history) owns its history; with
+    // `--session` it also records into that session, resuming it if the id is
+    // already on disk — an explicit ask, since the id then keeps appending.
     if args.messages_json.is_some() {
         let Some(id) = &args.session else {
             return Ok((None, Vec::new()));
@@ -495,17 +575,12 @@ fn resolve_headless_session(
         None
     };
 
-    let (prior, writer) = match base {
-        Some(transcript) => {
-            let prior = transcript.to_chat_messages();
-            let writer = store.resume_writer(repo_root, &transcript.meta.id)?;
-            (prior, writer)
-        }
-        None => (
-            Vec::new(),
-            store.new_session(repo_root, repo_root, Some(model.to_string()))?,
-        ),
+    let Some(transcript) = base else {
+        // No explicit session: the turn is ephemeral, nothing is recorded.
+        return Ok((None, Vec::new()));
     };
+    let prior = transcript.to_chat_messages();
+    let writer = store.resume_writer(repo_root, &transcript.meta.id)?;
     Ok((Some(recorder(writer)), prior))
 }
 
@@ -513,16 +588,20 @@ fn recorder(writer: aster_persist::SessionWriter) -> Recorder {
     std::sync::Arc::new(std::sync::Mutex::new(writer))
 }
 
-/// One full agentic turn owning its inputs so it can be spawned as a task.
+/// One full agentic turn that also reports progress as it goes: streamed
+/// tokens, tool call steps, and edit notifications arrive on `events` so a
+/// front-end can render the turn live instead of waiting for the reply.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn agent_turn(
+pub(crate) async fn agent_turn_streaming(
     client: AiClient,
     repo_root: PathBuf,
     history: Vec<ChatMessage>,
     allow_edits: bool,
     policy: Arc<Policy>,
+    grants: Arc<Grants>,
     approver: Option<ApprovalSender>,
     ctx: SessionCtx,
+    events: ChatEventSink,
 ) -> Result<(String, Vec<String>, Option<Vec<ChatMessage>>)> {
     let mut edited = Vec::new();
     let (reply, compacted) = agent_loop(
@@ -531,10 +610,11 @@ pub(crate) async fn agent_turn(
         &history,
         allow_edits,
         &policy,
+        &grants,
         approver.as_ref(),
         &mut edited,
         &ctx,
-        None,
+        Some(&events),
     )
     .await?;
     Ok((reply, edited, compacted))
@@ -549,6 +629,7 @@ async fn agent_loop(
     history: &[ChatMessage],
     allow_edits: bool,
     policy: &Policy,
+    grants: &Grants,
     approver: Option<&ApprovalSender>,
     edited: &mut Vec<String>,
     ctx: &SessionCtx,
@@ -570,8 +651,20 @@ async fn agent_loop(
     let tools = tool_defs(allow_edits);
 
     for round in 0..MAX_TOOL_ROUNDS {
+        // False when the endpoint ignored `stream` and the client fell back to a
+        // whole response, which the commentary emit below has to make up for.
+        let mut streamed = false;
         let msg = match client
-            .complete_tools(wire.clone(), tools.clone(), CHAT_TEMPERATURE)
+            .complete_tools_stream_with(
+                &client.model,
+                wire.clone(),
+                tools.clone(),
+                CHAT_TEMPERATURE,
+                |delta| {
+                    streamed = true;
+                    emit(json!({ "type": "token", "content": delta }));
+                },
+            )
             .await
         {
             Ok(msg) => msg,
@@ -607,8 +700,13 @@ async fn agent_loop(
             msg.tool_calls.clone(),
         ));
         // Text the model emitted alongside its tool calls: its running commentary.
+        // Streaming already delivered it, so that path only needs the separator.
         if let Some(text) = msg.content.as_deref().filter(|c| !c.trim().is_empty()) {
-            emit(json!({ "type": "text", "content": text }));
+            if streamed {
+                emit(json!({ "type": "token", "content": "\n\n" }));
+            } else {
+                emit(json!({ "type": "text", "content": text }));
+            }
         }
         wire.push(json!({
             "role": "assistant",
@@ -626,6 +724,7 @@ async fn agent_loop(
                 repo_root,
                 allow_edits,
                 policy,
+                grants,
                 approver,
                 &call.function.name,
                 &call.function.arguments,
@@ -657,7 +756,9 @@ async fn agent_loop(
         "content": "Stop using tools and answer now with what you have.",
     }));
     let msg = client
-        .complete_tools(wire, Vec::new(), CHAT_TEMPERATURE)
+        .complete_tools_stream_with(&client.model, wire, Vec::new(), CHAT_TEMPERATURE, |delta| {
+            emit(json!({ "type": "token", "content": delta }));
+        })
         .await?;
     let reply = msg
         .content
@@ -728,11 +829,11 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file from the repository, with line numbers. Optionally a line range.",
+                "description": "Read a file, with line numbers. Optionally a line range. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Repo-relative file path" },
+                        "path": { "type": "string", "description": "Repo-relative path, or an absolute/~ path outside the repo (needs approval)" },
                         "start_line": { "type": "integer", "description": "First line, 1-based (optional)" },
                         "end_line": { "type": "integer", "description": "Last line, inclusive (optional)" }
                     },
@@ -744,11 +845,11 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "List the entries of a repository directory. Directories end with '/'.",
+                "description": "List the entries of a directory. Directories end with '/'. Paths outside the repository are allowed but the user is asked to approve each one.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "dir": { "type": "string", "description": "Repo-relative directory; omit for the root" }
+                        "dir": { "type": "string", "description": "Repo-relative directory, or an absolute/~ path outside the repo (needs approval); omit for the root" }
                     }
                 }
             }
@@ -817,15 +918,15 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Replace text in a repository file. `search` must be copied verbatim from the file and match exactly once; include surrounding lines to disambiguate.",
+                "description": "Replace text in a repository file, or create a new one. `search` must be copied verbatim from the file and match exactly once; include surrounding lines to disambiguate. Omit `search` to create a new file at `path` with `replace` as its whole contents; missing parent directories are created.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Repo-relative file path" },
-                        "search": { "type": "string", "description": "Exact existing text to replace" },
-                        "replace": { "type": "string", "description": "Replacement text" }
+                        "search": { "type": "string", "description": "Exact existing text to replace; omit or leave empty to create a new file" },
+                        "replace": { "type": "string", "description": "Replacement text, or the new file's contents" }
                     },
-                    "required": ["path", "search", "replace"]
+                    "required": ["path", "replace"]
                 }
             }
         }));
@@ -839,6 +940,7 @@ async fn exec_tool(
     repo_root: &Path,
     allow_edits: bool,
     policy: &Policy,
+    grants: &Grants,
     approver: Option<&ApprovalSender>,
     name: &str,
     arguments: &str,
@@ -861,28 +963,34 @@ async fn exec_tool(
         "read_skill" => str_arg("name")
             .context("read_skill needs a `name`")
             .and_then(|name| read_skill(ctx, &name)),
-        "read_file" => str_arg("path")
-            .context("read_file needs a `path`")
-            .and_then(|path| {
-                deny_secret_read(policy, &path)?;
-                read_numbered(
-                    repo_root,
-                    &path,
-                    args["start_line"].as_u64().map(|n| n as usize),
-                    args["end_line"].as_u64().map(|n| n as usize),
-                )
-            }),
-        "list_files" => list_files(repo_root, str_arg("dir").as_deref().unwrap_or("")),
-        "search_files" => str_arg("query")
-            .context("search_files needs a `query`")
-            .and_then(|q| {
-                search_files(
-                    repo_root,
-                    policy,
-                    &q,
-                    str_arg("dir").as_deref().unwrap_or(""),
-                )
-            }),
+        "read_file" => match str_arg("path").context("read_file needs a `path`") {
+            Ok(path) => {
+                match resolve_for_read(repo_root, policy, grants, approver, ctx, &path).await {
+                    Ok(target) => read_numbered(
+                        &target,
+                        args["start_line"].as_u64().map(|n| n as usize),
+                        args["end_line"].as_u64().map(|n| n as usize),
+                    ),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        },
+        "list_files" => {
+            match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir")).await {
+                Ok(base) => list_files(&ctx.probe, &base),
+                Err(e) => Err(e),
+            }
+        }
+        "search_files" => match str_arg("query").context("search_files needs a `query`") {
+            Ok(query) => {
+                match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir")).await {
+                    Ok(base) => search_files(&ctx.probe, repo_root, policy, &query, &base),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        },
         "edit_file" if !allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),
@@ -926,20 +1034,98 @@ fn read_skill(ctx: &SessionCtx, name: &str) -> Result<String> {
     skill.load_body()
 }
 
-fn deny_secret_read(policy: &Policy, path: &str) -> Result<()> {
-    if let Decision::Deny { reason } = policy.evaluate(&Action::Read { path }) {
-        bail!("{reason}");
-    }
-    Ok(())
+/// Seed the session's grants from `permissions.additional_directories`.
+/// Unreadable entries are dropped rather than failing the run: a stale entry in
+/// aster.yaml should not stop the agent from starting.
+pub(crate) fn configured_grants(
+    permissions: &aster_policy::PermissionsConfig,
+    repo_root: &Path,
+) -> Grants {
+    let configured = permissions
+        .additional_directories
+        .iter()
+        .filter_map(|dir| edits::expand_home(dir).canonicalize().ok());
+    let persisted = crate::persist::store()
+        .map(|store| store.grants(repo_root).load())
+        .unwrap_or_default();
+    Grants::new(configured.chain(persisted))
 }
 
-fn read_numbered(
+/// The directory an approval covers: the file's parent, or the directory itself.
+fn grant_root(resolved: &Path) -> PathBuf {
+    if resolved.is_dir() {
+        return resolved.to_path_buf();
+    }
+    resolved.parent().unwrap_or(resolved).to_path_buf()
+}
+
+/// Resolve a path the agent wants to read. In-repo paths go through the
+/// policy's secret-read rules; anything outside the repo is gated on the
+/// user's approval, which a headless run cannot give.
+async fn resolve_for_read(
     repo_root: &Path,
+    policy: &Policy,
+    grants: &Grants,
+    approver: Option<&ApprovalSender>,
+    ctx: &SessionCtx,
     path: &str,
-    start: Option<usize>,
-    end: Option<usize>,
-) -> Result<String> {
-    let (_, content) = edits::read_repo_file(repo_root, path)?;
+) -> Result<PathBuf> {
+    let (resolved, scope) = edits::resolve_anywhere(repo_root, path)?;
+    match scope {
+        edits::Scope::InRepo => {
+            let root = repo_root.canonicalize().unwrap_or_default();
+            let relative = resolved.strip_prefix(&root).unwrap_or(&resolved);
+            if let Decision::Deny { reason } = policy.evaluate(&Action::Read {
+                path: &relative.to_string_lossy(),
+            }) {
+                bail!("{reason}");
+            }
+        }
+        edits::Scope::Outside if !grants.allows(&resolved) => {
+            // Grant the directory, not the file, so the rest of the session can
+            // read its siblings without another prompt.
+            let root = grant_root(&resolved);
+            let preview = format!("read outside the repository:\n  {}", resolved.display());
+            match request_approval(approver, preview, Some(root.clone())).await {
+                Answer::No => bail!(
+                    "{} is outside the repository and needs the user's approval; \
+                     it was rejected or this run has no way to ask",
+                    resolved.display()
+                ),
+                Answer::Yes => grants.grant(root),
+                Answer::Always => {
+                    grants.grant(root.clone());
+                    if let Some(store) = &ctx.store
+                        && let Err(e) = store.grants(repo_root).add(&root)
+                    {
+                        tracing::warn!("could not persist the grant for {}: {e:#}", root.display());
+                    }
+                }
+            }
+        }
+        edits::Scope::Outside => {}
+    }
+    Ok(resolved)
+}
+
+/// An omitted or empty `dir` means the repo root, which never needs approval.
+async fn resolve_dir(
+    repo_root: &Path,
+    policy: &Policy,
+    grants: &Grants,
+    approver: Option<&ApprovalSender>,
+    ctx: &SessionCtx,
+    dir: &Option<String>,
+) -> Result<PathBuf> {
+    match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(dir) => resolve_for_read(repo_root, policy, grants, approver, ctx, dir).await,
+        None => Ok(repo_root.to_path_buf()),
+    }
+}
+
+fn read_numbered(target: &Path, start: Option<usize>, end: Option<usize>) -> Result<String> {
+    let content =
+        fs::read_to_string(target).with_context(|| format!("reading {}", target.display()))?;
     let lines: Vec<&str> = content.lines().collect();
     let from = start.unwrap_or(1).max(1) - 1;
     let to = end.unwrap_or(lines.len()).min(lines.len());
@@ -955,102 +1141,34 @@ fn read_numbered(
     Ok(body)
 }
 
-/// Directories never worth walking; mirrors the review path filter's defaults.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-    "out",
-    "vendor",
-    ".hg",
-    ".svn",
-];
-
-fn list_files(repo_root: &Path, dir: &str) -> Result<String> {
-    let base = if dir.is_empty() {
-        repo_root.to_path_buf()
-    } else {
-        edits::resolve_in_repo(repo_root, dir)?
-    };
-    let mut entries: Vec<String> = fs::read_dir(&base)
-        .with_context(|| format!("listing {}", base.display()))?
-        .filter_map(|e| e.ok())
-        .map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if e.path().is_dir() {
-                format!("{name}/")
-            } else {
-                name
-            }
-        })
-        .collect();
-    entries.sort();
-    entries.truncate(MAX_LIST_ENTRIES);
-    Ok(entries.join("\n"))
+fn list_files(probe: &bash_tools::ToolProbe, base: &Path) -> Result<String> {
+    bash_tools::list(probe, base, MAX_LIST_ENTRIES)
 }
 
-fn search_files(repo_root: &Path, policy: &Policy, query: &str, dir: &str) -> Result<String> {
-    if query.trim().is_empty() {
-        bail!("empty search query");
-    }
-    let base = if dir.is_empty() {
-        repo_root.to_path_buf()
-    } else {
-        edits::resolve_in_repo(repo_root, dir)?
-    };
-    let needle = query.to_lowercase();
-    let mut hits = Vec::new();
-    let mut stack = vec![base];
-    while let Some(current) = stack.pop() {
-        if hits.len() >= MAX_SEARCH_HITS {
-            break;
-        }
-        let Ok(entries) = fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if path.is_dir() {
-                if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
-                    stack.push(path);
-                }
-                continue;
-            }
-            let rel = path
-                .strip_prefix(repo_root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            // Never surface secret-file contents in search results.
-            if matches!(
-                policy.evaluate(&Action::Read { path: &rel }),
+/// Search via the best available tool, then strip any paths the policy
+/// blocks (secret files) so they never reach the model.
+fn search_files(
+    probe: &bash_tools::ToolProbe,
+    repo_root: &Path,
+    policy: &Policy,
+    query: &str,
+    base: &Path,
+) -> Result<String> {
+    let raw = bash_tools::search(probe, repo_root, base, query, MAX_SEARCH_HITS)?;
+    let filtered: Vec<&str> = raw
+        .lines()
+        .filter(|line| {
+            let path = line.split(':').next().unwrap_or("");
+            !matches!(
+                policy.evaluate(&Action::Read { path }),
                 Decision::Deny { .. }
-            ) {
-                continue;
-            }
-            let Ok(content) = fs::read_to_string(&path) else {
-                continue;
-            };
-            for (no, line) in content.lines().enumerate() {
-                if line.to_lowercase().contains(&needle) {
-                    hits.push(format!("{rel}:{}: {}", no + 1, truncate(line.trim(), 240)));
-                    if hits.len() >= MAX_SEARCH_HITS {
-                        break;
-                    }
-                }
-            }
-            if hits.len() >= MAX_SEARCH_HITS {
-                break;
-            }
-        }
-    }
-    if hits.is_empty() {
+            )
+        })
+        .collect();
+    if filtered.is_empty() {
         return Ok("no matches".into());
     }
-    Ok(hits.join("\n"))
+    Ok(filtered.join("\n"))
 }
 
 async fn edit_file(
@@ -1062,24 +1180,33 @@ async fn edit_file(
 ) -> Result<String> {
     let path = args["path"].as_str().context("edit_file needs a `path`")?;
     let block = EditBlock {
-        search: args["search"]
-            .as_str()
-            .context("edit_file needs `search`")?
-            .to_string(),
+        search: args["search"].as_str().unwrap_or_default().to_string(),
         replace: args["replace"]
             .as_str()
             .context("edit_file needs `replace`")?
             .to_string(),
     };
-    let (resolved, content) = edits::read_repo_file(repo_root, path)?;
-    let updated = edits::apply_block(&content, &block)?;
+    // An empty `search` has nothing to match, so it means "create this file".
+    let creating = block.search.is_empty();
+    let (resolved, updated) = if creating {
+        let resolved = edits::resolve_new_in_repo(repo_root, path)?;
+        if resolved.exists() {
+            bail!("{path} already exists; put the text to replace in `search`");
+        }
+        (resolved, block.replace.clone())
+    } else {
+        let (resolved, content) = edits::read_repo_file(repo_root, path)?;
+        let updated = edits::apply_block(&content, &block)?;
+        (resolved, updated)
+    };
+    let verb = if creating { "create" } else { "edit" };
 
     match policy.evaluate(&Action::Edit { path }) {
         Decision::Allow => {}
         Decision::Deny { reason } => bail!("edit blocked by policy: {reason}"),
         Decision::Prompt { .. } => {
-            let preview = format!("edit {path}:\n{}", edits::preview(&block));
-            if !request_approval(approver, preview).await {
+            let preview = format!("{verb} {path}:\n{}", edits::preview(&block));
+            if !request_approval(approver, preview, None).await.allowed() {
                 bail!(
                     "edit needs user approval (permissions mode is `ask`); \
                      it was rejected or no interactive approver is available"
@@ -1088,23 +1215,37 @@ async fn edit_file(
         }
     }
 
+    if creating && let Some(parent) = resolved.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
     fs::write(&resolved, &updated).with_context(|| format!("writing {}", resolved.display()))?;
     if !edited.iter().any(|p| p == path) {
         edited.push(path.to_string());
     }
-    Ok(format!("edited {path}:\n{}", edits::preview(&block)))
+    let done = if creating { "created" } else { "edited" };
+    Ok(format!("{done} {path}:\n{}", edits::preview(&block)))
 }
 
-/// Ask the front-end to approve a pending edit; false when headless or rejected.
-async fn request_approval(approver: Option<&ApprovalSender>, preview: String) -> bool {
+/// Ask the front-end to approve a pending action. Headless callers have no
+/// approver, so every request is a `No`.
+async fn request_approval(
+    approver: Option<&ApprovalSender>,
+    preview: String,
+    scope: Option<PathBuf>,
+) -> Answer {
     let Some(tx) = approver else {
-        return false;
+        return Answer::No;
     };
     let (respond, rx) = oneshot::channel();
-    if tx.send(ApprovalRequest { preview, respond }).await.is_err() {
-        return false;
+    let request = ApprovalRequest {
+        preview,
+        scope,
+        respond,
+    };
+    if tx.send(request).await.is_err() {
+        return Answer::No;
     }
-    rx.await.unwrap_or(false)
+    rx.await.unwrap_or(Answer::No)
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -1116,4 +1257,190 @@ fn truncate(text: &str, max: usize) -> String {
         cut -= 1;
     }
     format!("{}\n... [truncated]", &text[..cut])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(path: &str, search: Option<&str>, replace: &str) -> Value {
+        match search {
+            Some(s) => json!({ "path": path, "search": s, "replace": replace }),
+            None => json!({ "path": path, "replace": replace }),
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_file_creates_a_missing_file_without_search() {
+        let repo = tempfile::tempdir().unwrap();
+        let policy = Policy::permissive();
+        let mut edited = Vec::new();
+
+        let out = edit_file(
+            repo.path(),
+            &policy,
+            None,
+            &args("docs/notes/test.md", None, "# Test\n"),
+            &mut edited,
+        )
+        .await
+        .unwrap();
+
+        assert!(out.starts_with("created docs/notes/test.md"), "{out}");
+        assert_eq!(
+            fs::read_to_string(repo.path().join("docs/notes/test.md")).unwrap(),
+            "# Test\n"
+        );
+        assert_eq!(edited, ["docs/notes/test.md"]);
+    }
+
+    #[tokio::test]
+    async fn outside_reads_are_approved_by_the_front_end() {
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("notes.txt");
+        fs::write(&target, "hello").unwrap();
+        let policy = Policy::permissive();
+
+        let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
+        let answer = tokio::spawn(async move {
+            let req = rx.recv().await.unwrap();
+            assert!(
+                req.preview.contains("outside the repository"),
+                "{}",
+                req.preview
+            );
+            let _ = req.respond.send(Answer::Yes);
+        });
+
+        let resolved = resolve_for_read(
+            repo.path(),
+            &policy,
+            &Grants::default(),
+            Some(&tx),
+            &SessionCtx::default(),
+            &target.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+
+        answer.await.unwrap();
+        assert_eq!(resolved, target.canonicalize().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_grant_covers_the_rest_of_the_directory() {
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("a.txt"), "a").unwrap();
+        fs::write(outside.path().join("b.txt"), "b").unwrap();
+        let policy = Policy::permissive();
+        let grants = Grants::default();
+
+        let (tx, mut rx) = mpsc::channel::<ApprovalRequest>(1);
+        let prompts = tokio::spawn(async move {
+            let mut seen = 0;
+            while let Some(req) = rx.recv().await {
+                seen += 1;
+                let _ = req.respond.send(Answer::Yes);
+            }
+            seen
+        });
+
+        for name in ["a.txt", "b.txt"] {
+            let path = outside.path().join(name);
+            resolve_for_read(
+                repo.path(),
+                &policy,
+                &grants,
+                Some(&tx),
+                &SessionCtx::default(),
+                &path.to_string_lossy(),
+            )
+            .await
+            .unwrap();
+        }
+        drop(tx);
+
+        assert_eq!(
+            prompts.await.unwrap(),
+            1,
+            "the second read should be covered"
+        );
+        assert_eq!(grants.granted(), [outside.path().canonicalize().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn configured_directories_never_prompt() {
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("a.txt"), "a").unwrap();
+
+        let permissions = aster_policy::PermissionsConfig {
+            additional_directories: vec![outside.path().to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+
+        let resolved = resolve_for_read(
+            repo.path(),
+            &Policy::permissive(),
+            &configured_grants(&permissions, repo.path()),
+            None,
+            &SessionCtx::default(),
+            &outside.path().join("a.txt").to_string_lossy(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            resolved,
+            outside.path().join("a.txt").canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn outside_reads_are_denied_without_an_approver() {
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("notes.txt");
+        fs::write(&target, "hello").unwrap();
+
+        let err = resolve_for_read(
+            repo.path(),
+            &Policy::permissive(),
+            &Grants::default(),
+            None,
+            &SessionCtx::default(),
+            &target.to_string_lossy(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("needs the user's approval"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_to_clobber_an_existing_file() {
+        let repo = tempfile::tempdir().unwrap();
+        fs::write(repo.path().join("test.md"), "keep me").unwrap();
+        let policy = Policy::permissive();
+
+        let err = edit_file(
+            repo.path(),
+            &policy,
+            None,
+            &args("test.md", None, "gone"),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(
+            fs::read_to_string(repo.path().join("test.md")).unwrap(),
+            "keep me"
+        );
+    }
 }
