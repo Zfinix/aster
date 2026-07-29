@@ -38,6 +38,12 @@ crates/
   aster-persist/     filesystem-first chat transcripts + memory (see MEMORY.md)
   aster-skills/      filesystem-based agent skills: SKILL.md discovery + on-demand load
   aster-mcp/         progressive MCP tool injection: one bridge + scoped catalogue
+  aster-policy/      policy engine: permissions, approvals, grants, modes
+  aster-agents/      agent definitions: AGENT.md parsing, discovery, registry
+  aster-tools/       tiered search/list/find/suggest (rg/fd native, hand-rolled fallback)
+  aster-sandbox/     OS-native command sandbox (macOS Seatbelt, Linux bubblewrap)
+  aster-web/         web extraction/crawling via pluggable providers, MCP tools
+  aster-cli/         CLI and TUI entry points, chat loop, tool dispatch
 ```
 
 Chat sessions and durable memory are documented separately in
@@ -52,7 +58,16 @@ an MCP server, applying approvals, and recording the invocation.
 
 ```mermaid
 graph TD
-    H[aster-harness] --> AI[aster-ai]
+    CLI[aster-cli] --> H[aster-harness]
+    CLI --> PS[aster-persist]
+    CLI --> SK[aster-skills]
+    CLI --> AG[aster-agents]
+    CLI --> MC[aster-mcp]
+    CLI --> TL[aster-tools]
+    CLI --> SB[aster-sandbox]
+    CLI --> WB[aster-web]
+    CLI --> PL[aster-policy]
+    H --> AI[aster-ai]
     H --> IDX[aster-index]
     H --> AN[aster-analyzers]
     H --> M[aster-models]
@@ -60,6 +75,9 @@ graph TD
     SE[symbol-extractor] --> M
     IDX -.builds index from.-> SE
     AI -.HTTP.-> P[(any OpenAI-compatible provider)]
+    PS --> M
+    MC --> PS
+    CLI -.chat loop tool dispatch.-> M
 ```
 
 The review capability depends on nothing SaaS. The only outbound network call

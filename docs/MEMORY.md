@@ -143,6 +143,8 @@ sequenceDiagram
 
 - **Default is resume.** On launch the chat TUI continues the repo's most recent
   session, seeding both the visible scrollback and the model's history.
+  **Note:** this is the current behavior; [HARNESS.md](./HARNESS.md) Phase 2
+  plans to flip the default to a new session and fix `--continue`.
 - **`/clear` starts a fresh session.** It does not delete anything; the previous
   transcript stays on disk, and a new file begins.
 

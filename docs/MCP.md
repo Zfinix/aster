@@ -44,7 +44,7 @@ MCP tool. It sees either:
   configured context budget, or
 - a compact server inventory when that manifest would exceed the budget.
 
-The default budget is 5% of the context still available to the prompt. The host
+The default budget is 6% of the context still available to the prompt. The host
 must calculate that value *after* reserving the system prompt, conversation,
 and desired completion budget. This makes disclosure adapt to the actual turn,
 rather than relying on a fixed number of tools.
@@ -110,7 +110,7 @@ unique `server/tool` IDs.
 | Field | Default | Meaning |
 | --- | ---: | --- |
 | `available_context_tokens` | `100_000` | Tokens left after host reservations. Required to be greater than zero. |
-| `inventory_threshold_percent` | `5.0` | Maximum percentage of available context used by the direct manifest. Range: `(0, 100]`. |
+| `inventory_threshold_percent` | `6.0` | Maximum percentage of available context used by the direct manifest. Range: `(0, 100]`. |
 | `search_default_limit` | `5` | Result count when the model does not provide `limit`. |
 | `max_search_limit` | `20` | Maximum accepted model-supplied search limit. |
 
@@ -210,7 +210,7 @@ unreviewed access to credentials or bypassing Aster's policy engine.
   conversions, approval denials, and upstream failures. These reveal whether
   the catalogue or descriptions need improvement.
 - Evaluate retrieval recall and wrong-tool calls on Aster tasks before changing
-  the 5% threshold. Smaller budgets reduce context use but can add a search
+  the 6% threshold. Smaller budgets reduce context use but can add a search
   round-trip for tools that would otherwise be obvious.
 
 ## Non-goals

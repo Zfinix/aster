@@ -18,6 +18,11 @@ sequencing below.
 
 ## 1. `aster-sandbox`: isolated execution
 
+**Status.** The crate exists and `run_command` is integrated into the chat tool
+loop. Backend detection (Seatbelt, bubblewrap, process-level fallback), profile
+compilation, secret filtering, and timeout enforcement are implemented. Remaining:
+an escape-test suite and the platform-tradeoffs writeup.
+
 **Gap.** Aster has no execution tool. The tool surface is read, list, search,
 edit, remember, recall, read_skill ([chat.rs](../crates/aster-cli/src/chat.rs)).
 The only subprocesses are `git` and `semgrep`, both spawned directly with no
@@ -179,6 +184,11 @@ baseline on the same task.
 ---
 
 ## 5. `aster-agents`: definitions with dispatch
+
+**Status.** The crate exists. `AgentDef` parsing, `AgentRegistry::discover`
+(project → user → built-in roots), and built-in explorer/reviewer/fixer agents
+are done. Dispatch (`aster run`, `run_agent` tool) is not yet wired — the
+registry renders an index that references an `agent` tool that does not exist.
 
 **Gap.** [aster-agents](../crates/aster-agents/) parses `AGENT.md`
 frontmatter, resolves project over user over builtin roots, and renders an
