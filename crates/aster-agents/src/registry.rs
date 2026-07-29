@@ -3,25 +3,21 @@ use std::path::{Path, PathBuf};
 
 use crate::def::{AGENT_FILE, AgentDef, AgentSource, parse_agent_md};
 
-/// Compiled-in agents, parsed through the same path as user files. A user
-/// definition of the same name shadows the built-in.
+// Built-in agents. User definitions with the same name override these.
 const BUILTINS: &[(&str, &str)] = &[
     ("explorer", include_str!("../builtins/explorer/AGENT.md")),
     ("reviewer", include_str!("../builtins/reviewer/AGENT.md")),
     ("fixer", include_str!("../builtins/fixer/AGENT.md")),
 ];
 
-/// Agents discovered across roots plus built-ins, deduped by name.
+// Registry of agents, deduped by name.
 #[derive(Debug, Default, Clone)]
 pub struct AgentRegistry {
     agents: Vec<AgentDef>,
 }
 
 impl AgentRegistry {
-    /// Scan each root's immediate subdirectories for an `AGENT.md`. First name
-    /// wins, so pass the project root before the global one; built-ins are
-    /// merged last. Unreadable roots and malformed agents are skipped with a
-    /// warning, not fatal.
+    // Search each root for agents, merging built-ins last. Malformed or unreadable agents are skipped.
     pub fn discover(roots: &[PathBuf]) -> Self {
         let mut agents: Vec<AgentDef> = Vec::new();
         for root in roots {
@@ -55,8 +51,7 @@ impl AgentRegistry {
         self.agents.iter()
     }
 
-    /// The system-prompt block listing every agent by name and description, or
-    /// `None` when none exist. The model delegates with the `agent` tool.
+    // Returns a markdown index of agents or None if empty.
     pub fn render_index(&self) -> Option<String> {
         if self.agents.is_empty() {
             return None;
@@ -88,8 +83,7 @@ fn push_unless_shadowed(agents: &mut Vec<AgentDef>, agent: AgentDef) {
     agents.push(agent);
 }
 
-/// Read one root's subdirectories into agents. A missing or unreadable root is
-/// an empty result, not an error.
+// Load agents from a root's subdirectories. Returns empty if root is missing or unreadable.
 fn scan_root(root: &Path) -> Vec<AgentDef> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
