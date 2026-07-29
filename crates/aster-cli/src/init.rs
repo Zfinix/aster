@@ -176,17 +176,28 @@ pub fn run(args: InitArgs) -> Result<()> {
             .apply_to(" ✳ aster init "),
     )?;
 
-    let Some((base_url, model, key)) = wizard(&providers)? else {
+    let Some(cfg) = wizard(&providers)? else {
         outro_cancel("Cancelled. Nothing was written.")?;
         return Ok(());
     };
 
-    emit(write_yaml(&yaml_path, &base_url, &model, args.force)?, true)?;
-    if let Some(key) = key.filter(|k| !k.trim().is_empty()) {
-        // The repo `.env` is git-ignored on our behalf; the global one lives
-        // beside the global config and is loaded on every run.
-        let env_path = yaml_path.with_file_name(".env");
-        emit(store_key(&env_path, key.trim(), !args.global)?, true)?;
+    emit(
+        write_yaml(&yaml_path, &cfg.base_url, &cfg.model, args.force)?,
+        true,
+    )?;
+    let env_path = yaml_path.with_file_name(".env");
+    let gitignore = !args.global;
+    if let Some(key) = cfg.api_key.filter(|k| !k.trim().is_empty()) {
+        emit(
+            store_key(&env_path, "ASTER_API_KEY", key.trim(), gitignore)?,
+            true,
+        )?;
+    }
+    if let Some(key) = cfg.context_dev_key.filter(|k| !k.trim().is_empty()) {
+        emit(
+            store_key(&env_path, "CONTEXT_DEV_API_KEY", key.trim(), gitignore)?,
+            true,
+        )?;
     }
 
     let next = if args.global {
@@ -198,7 +209,12 @@ pub fn run(args: InitArgs) -> Result<()> {
     Ok(())
 }
 
-type Configured = (String, String, Option<String>);
+struct Configured {
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+    context_dev_key: Option<String>,
+}
 
 /// The prompt sequence: provider, base URL, model, key. `None` when the user cancels.
 fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
@@ -215,12 +231,15 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     };
 
     let Some(provider) = providers.get(idx) else {
-        // The trailing "Skip" row: write defaults, wire nothing.
         let d = default_provider(providers);
-        return Ok(Some((d.base_url.clone(), d.example_model.clone(), None)));
+        return Ok(Some(Configured {
+            base_url: d.base_url.clone(),
+            model: d.example_model.clone(),
+            api_key: None,
+            context_dev_key: None,
+        }));
     };
 
-    // Only prompt for the base URL when it has a `{placeholder}` to fill in.
     let base_url = if provider.templated() {
         let Some(url) = or_cancel(
             cliclack::input("Base URL")
@@ -253,11 +272,21 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
         return Ok(None);
     };
 
-    Ok(Some((
-        base_url.trim().to_string(),
-        model.trim().to_string(),
-        Some(key),
-    )))
+    let Some(context_dev_key) = or_cancel(
+        password("Context.dev API key (optional · enables web crawl)")
+            .mask('•')
+            .interact(),
+    )?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(Configured {
+        base_url: base_url.trim().to_string(),
+        model: model.trim().to_string(),
+        api_key: Some(key),
+        context_dev_key: Some(context_dev_key),
+    }))
 }
 
 /// Map a prompt result to `Option`: `Interrupted` means cancelled, any other error propagates.
@@ -302,22 +331,22 @@ fn finish_plain(global: bool) {
 }
 
 /// Store the API key in `.env`. When `gitignore` is set, also keep the file out of git.
-fn store_key(env_path: &Path, key: &str, gitignore: bool) -> Result<Note> {
-    if env_has_key(env_path, "ASTER_API_KEY") {
-        return Ok(Note::Info(
-            "ASTER_API_KEY already set in .env · leaving it".into(),
-        ));
+fn store_key(env_path: &Path, var_name: &str, key: &str, gitignore: bool) -> Result<Note> {
+    if env_has_key(env_path, var_name) {
+        return Ok(Note::Info(format!(
+            "{var_name} already set in .env · leaving it"
+        )));
     }
     if let Some(parent) = env_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    append_line(env_path, &format!("ASTER_API_KEY={key}"))
+    append_line(env_path, &format!("{var_name}={key}"))
         .with_context(|| format!("writing {}", env_path.display()))?;
     if gitignore && let Some(dir) = env_path.parent() {
         ensure_gitignored(dir, ".env")?;
     }
     Ok(Note::Success(format!(
-        "Stored key in {}",
+        "Stored {var_name} in {}",
         display(env_path)
     )))
 }
