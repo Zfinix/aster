@@ -215,6 +215,7 @@ dependencies = [
  "aster-sandbox",
  "aster-skills",
  "aster-tools",
+ "aster-web",
  "clap",
  "cliclack",
  "console",
@@ -345,6 +346,20 @@ dependencies = [
  "tempfile",
  "tracing",
  "which",
+]
+
+[[package]]
+name = "aster-web"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aster-mcp",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

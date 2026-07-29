@@ -15,6 +15,7 @@ mod sessions;
 mod settings;
 mod skills;
 mod tui;
+mod web;
 
 use std::env;
 use std::fs;
@@ -70,6 +71,8 @@ enum Command {
     Memory(sessions::MemoryArgs),
     /// Install, list, and remove agent skills.
     Skills(skills::SkillsArgs),
+    /// Crawl or extract web pages as Markdown.
+    Web(web::WebArgs),
 }
 
 /// Set once from the root `--json` flag, then read anywhere a command chooses
@@ -127,6 +130,7 @@ async fn main() -> Result<()> {
         Command::Sessions(args) => sessions::run_sessions(args),
         Command::Memory(args) => sessions::run_memory(args),
         Command::Skills(args) => skills::run(args).await,
+        Command::Web(args) => web::run(args).await,
     };
 
     // In JSON mode a failure is data too, so callers parse one shape either way.
