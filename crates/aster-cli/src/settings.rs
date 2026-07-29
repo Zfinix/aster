@@ -99,6 +99,8 @@ fn merge_permissions(
             global.additional_directories,
             project.additional_directories,
         ),
+        allow_exec: union(global.allow_exec, project.allow_exec),
+        deny_exec: union(global.deny_exec, project.deny_exec),
         use_default_protected: global.use_default_protected && project.use_default_protected,
     }
 }

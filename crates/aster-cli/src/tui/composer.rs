@@ -290,6 +290,40 @@ impl Composer {
         (self.rows(width).len() as u16).clamp(1, 8)
     }
 
+    /* ---- @‑file mentions ---- */
+
+    /// If the cursor sits right after an `@` with no intervening whitespace,
+    /// return the byte position of the `@` and the query text after it (may be
+    /// empty).  Returns `None` when the cursor is not inside a mention context.
+    pub(super) fn mention_context(&self) -> Option<(usize, &str)> {
+        let head = &self.text[..self.cursor];
+        let at = head.rfind('@')?;
+        // Must be at the start or preceded by a space.
+        if at > 0 && !head.as_bytes()[at - 1].is_ascii_whitespace() {
+            return None;
+        }
+        let query = &self.text[at + 1..self.cursor];
+        if query.contains(char::is_whitespace) {
+            return None;
+        }
+        Some((at, query))
+    }
+
+    /// Replace the mention at `start` (the `@` byte offset) through the cursor
+    /// with `@path ` and park the cursor after the trailing space.
+    pub(super) fn complete_mention(&mut self, start: usize, path: &str) {
+        self.text
+            .replace_range(start..self.cursor, &format!("@{path} "));
+        self.cursor = start + path.len() + 2;
+        self.recall = None;
+    }
+
+    /// Delete from the `@` at `start` through the cursor, canceling the mention.
+    pub(super) fn cancel_mention(&mut self, start: usize) {
+        self.text.replace_range(start..self.cursor, "");
+        self.cursor = start;
+    }
+
     /// The draft as styled rows, plus the cursor's `(row, column)` inside them.
     pub(super) fn render(&self, width: u16, placeholder: &str) -> (Vec<Line<'static>>, (u16, u16)) {
         if self.text.is_empty() {
@@ -446,5 +480,51 @@ mod tests {
         assert_eq!(c.height(W), 4);
         c.insert_str(&"line\n".repeat(40));
         assert_eq!(c.height(W), 8);
+    }
+
+    #[test]
+    fn mention_context_finds_at_cursor() {
+        let c = with("fix @src/mai");
+        let (start, query) = c.mention_context().unwrap();
+        assert_eq!(start, "fix ".len());
+        assert_eq!(query, "src/mai");
+    }
+
+    #[test]
+    fn mention_context_empty_just_after_at() {
+        let c = with("look at @");
+        let (start, query) = c.mention_context().unwrap();
+        assert_eq!(start, "look at ".len());
+        assert_eq!(query, "");
+    }
+
+    #[test]
+    fn mention_context_none_when_at_in_middle_of_word() {
+        let c = with("email@example.com");
+        assert!(c.mention_context().is_none());
+    }
+
+    #[test]
+    fn mention_context_none_when_cursor_not_after_at() {
+        let c = with("fix @src/main.rs bug");
+        assert!(c.mention_context().is_none());
+    }
+
+    #[test]
+    fn complete_mention_replaces_query_and_adds_space() {
+        let mut c = with("check @sr");
+        let (start, _) = c.mention_context().unwrap();
+        c.complete_mention(start, "src/main.rs");
+        assert_eq!(c.text(), "check @src/main.rs ");
+        assert_eq!(c.cursor, "check @src/main.rs ".len());
+    }
+
+    #[test]
+    fn cancel_mention_removes_at_and_query() {
+        let mut c = with("fix @src/mai");
+        let (start, _) = c.mention_context().unwrap();
+        c.cancel_mention(start);
+        assert_eq!(c.text(), "fix ");
+        assert_eq!(c.cursor, "fix ".len());
     }
 }

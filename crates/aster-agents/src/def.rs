@@ -8,7 +8,13 @@ use serde::Deserialize;
 pub const AGENT_FILE: &str = "AGENT.md";
 
 /// Tools an agent may call when its frontmatter names no allowlist: read-only.
-pub const DEFAULT_TOOLS: &[&str] = &["read_file", "list_files", "search_files", "read_skill"];
+pub const DEFAULT_TOOLS: &[&str] = &[
+    "read_file",
+    "list_files",
+    "search_files",
+    "find_files",
+    "read_skill",
+];
 
 /// Spec limits on the frontmatter fields, matching `aster-skills`.
 const MAX_NAME_LEN: usize = 64;

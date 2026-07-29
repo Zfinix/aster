@@ -163,19 +163,33 @@ const CHAT_TEMPERATURE: f32 = 0.4;
 const MAX_TOOL_ROUNDS: usize = 12;
 /// Caps tool output so one fat file cannot blow the context.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
+/// Caps command output (stdout + stderr combined).
 const MAX_SEARCH_HITS: usize = 80;
 const MAX_LIST_ENTRIES: usize = 200;
+const MAX_FIND_HITS: usize = 100;
+/// Nearby paths offered when a guessed path does not exist.
+const MAX_PATH_SUGGESTIONS: usize = 8;
+/// Maximum seconds a sandboxed command may run before it is killed.
+const COMMAND_TIMEOUT_SECS: u64 = 30;
 /// Total history size (chars) above which older turns are folded into a summary.
 const COMPACT_BUDGET_CHARS: usize = 48_000;
 /// Recent turns kept verbatim when compacting; everything older is summarized.
 const COMPACT_KEEP_TAIL: usize = 6;
 
 const TOOLS_PROMPT: &str = "\n\n## Tools\n\n\
-You can inspect the repository with `read_file`, `list_files`, and \
-`search_files`, and change it with `edit_file` when it is available. \
-`search_files` supports regex syntax and respects `.gitignore`. \
+You can inspect the repository with `read_file`, `list_files`, `find_files`, \
+and `search_files`, and change it with `edit_file` when it is available. \
+`search_files` searches file contents, supports regex syntax, and respects \
+`.gitignore`. `find_files` locates files by name or glob; reach for it before \
+guessing a path, and whenever a tool reports that a path does not exist. \
+A path that does not exist is a wrong guess, not a failure: take the nearby \
+paths the tool offers and try again. \
 `edit_file` also creates files: omit `search` and pass the whole contents as \
 `replace`. \
+`run_command` runs a CLI tool or build command in a sandbox. The sandbox \
+restricts filesystem writes to the repo and temp directories and drops \
+secrets from the environment. Use it for builds, tests, linters, and fast \
+search with `rg` or `fd` when available. \
 Ground every claim about the code in what you actually read. Only edit files when the \
 user asked for a change; keep edits minimal and in the file's existing style. \
 After editing, state plainly which files you changed and what the change does. \
@@ -858,14 +872,29 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "search_files",
-                "description": "Case-insensitive substring search across repository files. Returns path:line: text.",
+                "description": "Case-insensitive content search across repository files. The query is a regex, falling back to a literal match when it is not valid regex. Returns path:line: text. A directory that does not exist is not an error: the whole repository is searched instead.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Text to search for" },
+                        "query": { "type": "string", "description": "Text or regex to search for" },
                         "dir": { "type": "string", "description": "Repo-relative directory to search under (optional)" }
                     },
                     "required": ["query"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "find_files",
+                "description": "Find files by name or glob, e.g. `chat.rs`, `*.rs`, `crates/*/src/**/*.rs`. A bare name matches at any depth. Use this before guessing a path, and whenever a read or list reports that a path does not exist.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "File name or glob pattern" },
+                        "dir": { "type": "string", "description": "Repo-relative directory to search under (optional)" }
+                    },
+                    "required": ["pattern"]
                 }
             }
         }),
@@ -931,6 +960,25 @@ fn tool_defs(allow_edits: bool) -> Vec<Value> {
             }
         }));
     }
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run a command in the sandbox. The sandbox restricts filesystem writes to the repository and temp directories, blocks network unless the command is allow-listed, and drops secrets from the environment. Returns stdout, stderr, and exit code. Use the best available CLI tool (rg for search, fd for file listing, cargo/npm/etc for builds and tests).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "The binary to run, e.g. `rg`, `cargo`, `npm`" },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Arguments to pass to the command"
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    }));
     tools
 }
 
@@ -964,6 +1012,9 @@ async fn exec_tool(
             .context("read_skill needs a `name`")
             .and_then(|name| read_skill(ctx, &name)),
         "read_file" => match str_arg("path").context("read_file needs a `path`") {
+            Ok(path) if !edits::exists_anywhere(repo_root, &path) => {
+                return missing_path(repo_root, &path);
+            }
             Ok(path) => {
                 match resolve_for_read(repo_root, policy, grants, approver, ctx, &path).await {
                     Ok(target) => read_numbered(
@@ -976,28 +1027,154 @@ async fn exec_tool(
             }
             Err(e) => Err(e),
         },
-        "list_files" => {
-            match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir")).await {
-                Ok(base) => list_files(&ctx.probe, &base),
-                Err(e) => Err(e),
-            }
-        }
-        "search_files" => match str_arg("query").context("search_files needs a `query`") {
-            Ok(query) => {
+        "list_files" => match missing_dir(repo_root, &str_arg("dir")) {
+            Some(dir) => return missing_path(repo_root, &dir),
+            None => {
                 match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir")).await {
-                    Ok(base) => search_files(&ctx.probe, repo_root, policy, &query, &base),
+                    Ok(base) => list_files(&ctx.probe, &base),
                     Err(e) => Err(e),
                 }
             }
+        },
+        // A directory that does not exist widens the search rather than
+        // failing it: the hits are usually what the model was after anyway.
+        "search_files" => match str_arg("query").context("search_files needs a `query`") {
+            Ok(query) => match missing_dir(repo_root, &str_arg("dir")) {
+                Some(dir) => search_files(&ctx.probe, repo_root, policy, &query, repo_root)
+                    .map(|hits| widened(&dir, hits)),
+                None => {
+                    match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir"))
+                        .await
+                    {
+                        Ok(base) => search_files(&ctx.probe, repo_root, policy, &query, &base),
+                        Err(e) => Err(e),
+                    }
+                }
+            },
+            Err(e) => Err(e),
+        },
+        "find_files" => match str_arg("pattern").context("find_files needs a `pattern`") {
+            Ok(pattern) => match missing_dir(repo_root, &str_arg("dir")) {
+                Some(dir) => bash_tools::find(repo_root, repo_root, &pattern, MAX_FIND_HITS)
+                    .map(|hits| widened(&dir, hits)),
+                None => {
+                    match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir"))
+                        .await
+                    {
+                        Ok(base) => bash_tools::find(repo_root, &base, &pattern, MAX_FIND_HITS),
+                        Err(e) => Err(e),
+                    }
+                }
+            },
             Err(e) => Err(e),
         },
         "edit_file" if !allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),
         "edit_file" => edit_file(repo_root, policy, approver, &args, edited).await,
-        other => Err(anyhow::anyhow!("unknown tool: {other}")),
+        "run_command" => match str_arg("command").context("run_command needs a `command`") {
+            Ok(cmd) => {
+                let cmd_args: Vec<String> = args["args"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|v| v.as_str().unwrap_or("").to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                run_command_tool(repo_root, policy, approver, &cmd, &cmd_args).await
+            }
+            Err(e) => Err(e),
+        },
+        other => Err(anyhow::anyhow!(
+            "unknown tool: {other}. Available tools: {}",
+            tool_names(allow_edits).join(", ")
+        )),
     };
     result.unwrap_or_else(|e| format!("error: {e:#}"))
+}
+
+fn tool_names(allow_edits: bool) -> Vec<String> {
+    tool_defs(allow_edits)
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The requested directory when it does not exist, so a caller can widen or
+/// hint instead of failing.
+fn missing_dir(repo_root: &Path, dir: &Option<String>) -> Option<String> {
+    let dir = dir.as_deref().map(str::trim).filter(|d| !d.is_empty())?;
+    (!edits::exists_anywhere(repo_root, dir)).then(|| dir.to_string())
+}
+
+fn widened(dir: &str, hits: String) -> String {
+    format!("note: {dir} does not exist, so the whole repository was searched instead.\n\n{hits}")
+}
+
+/// A wrong path is a bad guess, not a failure. Name the nearest real paths so
+/// the model corrects itself instead of guessing again.
+fn missing_path(repo_root: &Path, path: &str) -> String {
+    let nearby = bash_tools::suggest(repo_root, path, MAX_PATH_SUGGESTIONS);
+    if nearby.is_empty() {
+        return format!(
+            "note: {path} does not exist. Call find_files with a name or glob to locate it."
+        );
+    }
+    format!(
+        "note: {path} does not exist. Nearest paths in the repository:\n{}\n\nCall find_files if none of these are the one.",
+        nearby
+            .iter()
+            .map(|p| format!("  {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+/// Run a command in the sandbox, subject to policy and approval.
+async fn run_command_tool(
+    repo_root: &Path,
+    policy: &Policy,
+    approver: Option<&ApprovalSender>,
+    binary: &str,
+    args: &[String],
+) -> Result<String> {
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match policy.evaluate(&Action::Exec {
+        binary,
+        args: &arg_refs,
+    }) {
+        Decision::Allow => {}
+        Decision::Deny { reason } => bail!("{reason}"),
+        Decision::Prompt { preview } => {
+            if !request_approval(approver, preview, None).await.allowed() {
+                bail!(
+                    "command `{binary}` needs user approval; it was rejected or this run cannot ask"
+                );
+            }
+        }
+    }
+
+    let profile = aster_sandbox::SandboxProfile::new(repo_root).timeout(COMMAND_TIMEOUT_SECS);
+    let config = aster_sandbox::SandboxConfig::new(profile);
+    let output = aster_sandbox::run_command(&config, binary, args).await?;
+    let mut result = String::new();
+    if !output.stdout.is_empty() {
+        result.push_str("stdout:\n");
+        result.push_str(&output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("stderr:\n");
+        result.push_str(&output.stderr);
+    }
+    result.push_str(&format!("\nexit code: {}", output.exit_code.unwrap_or(-1)));
+    if result.is_empty() {
+        return Ok("(no output)".into());
+    }
+    Ok(result)
 }
 
 fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String> {
@@ -1268,6 +1445,93 @@ mod tests {
             Some(s) => json!({ "path": path, "search": s, "replace": replace }),
             None => json!({ "path": path, "replace": replace }),
         }
+    }
+
+    async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
+        exec_tool(
+            repo,
+            false,
+            &Policy::permissive(),
+            &Grants::default(),
+            None,
+            name,
+            &arguments.to_string(),
+            &mut Vec::new(),
+            &SessionCtx::default(),
+        )
+        .await
+    }
+
+    fn sample_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir_all(repo.path().join("crates/aster-cli/src/tui")).unwrap();
+        fs::write(
+            repo.path().join("crates/aster-cli/src/tui/composer.rs"),
+            "fn compose() {}\n",
+        )
+        .unwrap();
+        repo
+    }
+
+    #[tokio::test]
+    async fn a_missing_read_path_suggests_real_ones_instead_of_failing() {
+        let repo = sample_repo();
+
+        let out = run_tool(
+            repo.path(),
+            "read_file",
+            json!({ "path": "crates/ui/src/composer.rs" }),
+        )
+        .await;
+
+        assert!(!out.starts_with("error: "), "{out}");
+        assert!(
+            out.contains("crates/aster-cli/src/tui/composer.rs"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_search_dir_widens_to_the_whole_repo() {
+        let repo = sample_repo();
+
+        let out = run_tool(
+            repo.path(),
+            "search_files",
+            json!({ "query": "compose", "dir": "crates/aster-tui" }),
+        )
+        .await;
+
+        assert!(
+            out.starts_with("note: crates/aster-tui does not exist"),
+            "{out}"
+        );
+        assert!(out.contains("composer.rs"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn find_files_locates_a_file_by_name() {
+        let repo = sample_repo();
+
+        let out = run_tool(
+            repo.path(),
+            "find_files",
+            json!({ "pattern": "composer.rs" }),
+        )
+        .await;
+
+        assert_eq!(out, "crates/aster-cli/src/tui/composer.rs");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_names_the_real_ones() {
+        let repo = tempfile::tempdir().unwrap();
+
+        let out = run_tool(repo.path(), "search_file", json!({ "query": "x" })).await;
+
+        assert!(out.starts_with("error: unknown tool: search_file"), "{out}");
+        assert!(out.contains("search_files"), "{out}");
+        assert!(out.contains("find_files"), "{out}");
     }
 
     #[tokio::test]

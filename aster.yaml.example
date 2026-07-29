@@ -55,3 +55,7 @@ permissions:
   # ~-relative. Anything else outside the repo prompts, and an approval lasts
   # for the rest of the session.
   additional_directories: []    # e.g. ["~/Desktop", "~/Downloads"]
+  # Commands the agent may run without asking, matched by binary name.
+  # The sandbox restricts filesystem writes and drops secrets regardless.
+  allow_exec: []             # e.g. ["cargo", "rg", "fd", "npm", "node", "python"]
+  deny_exec: []             # always blocked, e.g. ["rm", "sudo", "curl"]

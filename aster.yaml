@@ -1,0 +1,19 @@
+# Aster review config. Precedence: CLI flags > shell env > this file > defaults.
+# API keys are NEVER read from here. Use ASTER_API_KEY or `aster login`.
+review:
+  model: deepseek-v4-pro
+  base_url: https://api.deepseek.com/v1
+
+  # Drop findings below this confidence (0.0-1.0).
+  min_confidence: 0.6
+
+  # Bias the hypothesis pass toward these defect classes.
+  focus_areas:
+    - correctness
+    - security
+
+  # Which files to review. `include` empty = everything except `exclude`.
+  include: []
+  exclude:
+    - "target/**"
+    - "node_modules/**"

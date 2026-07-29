@@ -1,0 +1,19 @@
+[package]
+name = "aster-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "aster_sandbox"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+dirs = "6.0"
+
+[dev-dependencies]
+tempfile = "3"

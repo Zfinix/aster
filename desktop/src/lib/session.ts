@@ -78,6 +78,8 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return `Listed ${s(args.dir) || "project root"}`;
     case "search_files":
       return `Searched “${s(args.query)}”`;
+    case "find_files":
+      return `Found files matching ${s(args.pattern)}`;
     case "edit_file":
       return `Edited ${s(args.path) || "file"}`;
     case "remember":

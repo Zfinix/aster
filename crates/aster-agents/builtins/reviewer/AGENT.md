@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Skeptical code reviewer. Use to assess a claim, a diff, or a piece of code for real defects; it tries to refute findings before reporting them.
-tools: [read_file, list_files, search_files, read_skill]
+tools: [read_file, list_files, search_files, find_files, read_skill]
 max_rounds: 10
 verify: true
 ---

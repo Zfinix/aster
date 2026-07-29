@@ -1,0 +1,248 @@
+//! Sandbox profile generation for OS-native isolation.
+//!
+//! On macOS, generates a Seatbelt (sandbox-exec) profile that allows most
+//! operations but restricts filesystem writes to the repo root and temp
+//! directories. On Linux, generates bwrap args that achieve the same effect.
+
+use std::path::{Path, PathBuf};
+
+/// Describes the filesystem and network boundaries for a sandboxed command.
+#[derive(Debug, Clone)]
+pub struct SandboxProfile {
+    /// The repository root: readable and writable.
+    pub repo_root: PathBuf,
+    /// Additional directories the command may read (e.g. granted paths).
+    pub readable_dirs: Vec<PathBuf>,
+    /// Additional directories the command may write to (beyond repo and temp).
+    pub writable_dirs: Vec<PathBuf>,
+    /// Whether network access is allowed.
+    pub network: bool,
+    /// Maximum execution time in seconds.
+    pub timeout_secs: u64,
+}
+
+impl SandboxProfile {
+    pub fn new(repo_root: &Path) -> Self {
+        Self {
+            repo_root: repo_root.to_path_buf(),
+            readable_dirs: Vec::new(),
+            writable_dirs: Vec::new(),
+            network: false,
+            timeout_secs: 30,
+        }
+    }
+
+    pub fn readable(mut self, dir: PathBuf) -> Self {
+        self.readable_dirs.push(dir);
+        self
+    }
+
+    pub fn writable(mut self, dir: PathBuf) -> Self {
+        self.writable_dirs.push(dir);
+        self
+    }
+
+    pub fn network(mut self, allow: bool) -> Self {
+        self.network = allow;
+        self
+    }
+
+    pub fn timeout(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
+        self
+    }
+
+    /// Generate a macOS Seatbelt profile string for `sandbox-exec -p`.
+    ///
+    /// Starts from `(allow default)`, denies all writes, then re-allows the
+    /// writable set. Seatbelt takes the last matching rule, so ordering does
+    /// the work; the alternative, one deny with `(not (subpath ...))` filters,
+    /// ORs its filters together and denies everything.
+    #[cfg(target_os = "macos")]
+    pub fn seatbelt_profile(&self) -> String {
+        let mut profile = String::new();
+        profile.push_str("(version 1)\n");
+        profile.push_str("(allow default)\n");
+        profile.push_str("(deny file-write*)\n");
+        // Commands routinely redirect to /dev/null and write to their tty.
+        profile.push_str(
+            "(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n",
+        );
+        profile.push_str("(allow file-write* (subpath \"/dev\"))\n");
+
+        let writable = self.writable_paths();
+        if !writable.is_empty() {
+            profile.push_str("(allow file-write*");
+            for dir in writable {
+                profile.push_str(&format!(" (subpath \"{}\")", escape(&dir)));
+            }
+            profile.push_str(")\n");
+        }
+
+        if !self.network {
+            profile.push_str("(deny network*)\n");
+        }
+
+        profile
+    }
+
+    /// All directories the command may write to: repo root, temp dirs, and any
+    /// explicitly writable dirs. Paths are resolved through symlinks and
+    /// dropped when they do not exist: Seatbelt rejects the whole profile over
+    /// one unresolvable `subpath`, and on macOS `/tmp` and `/var` are symlinks.
+    #[cfg(target_os = "macos")]
+    fn writable_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.repo_root.clone()];
+        paths.extend(self.writable_dirs.clone());
+        paths.extend(["/tmp", "/var/folders", "/var/tmp"].map(PathBuf::from));
+        // Build caches, without which cargo, npm, and friends fail on their
+        // first fetch. Everything else under $HOME stays read-only.
+        if let Some(home) = dirs::home_dir() {
+            paths.extend(
+                [".cargo", ".rustup", ".npm", ".cache", "Library/Caches"].map(|d| home.join(d)),
+            );
+        }
+
+        let mut out: Vec<PathBuf> = Vec::new();
+        for path in paths {
+            let Ok(resolved) = path.canonicalize() else {
+                continue;
+            };
+            if !out.contains(&resolved) {
+                out.push(resolved);
+            }
+        }
+        out
+    }
+
+    /// Generate `bwrap` arguments for Linux.
+    #[cfg(target_os = "linux")]
+    pub fn bwrap_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--ro-bind".to_string(),
+            "/usr".to_string(),
+            "/usr".to_string(),
+            "--ro-bind".to_string(),
+            "/lib".to_string(),
+            "/lib".to_string(),
+            "--ro-bind".to_string(),
+            "/bin".to_string(),
+            "/bin".to_string(),
+            "--symlink".to_string(),
+            "usr/lib64".to_string(),
+            "/lib64".to_string(),
+            "--proc".to_string(),
+            "/proc".to_string(),
+            "--dev".to_string(),
+            "/dev".to_string(),
+            "--bind".to_string(),
+            self.repo_root.display().to_string(),
+            self.repo_root.display().to_string(),
+        ];
+
+        for dir in &self.readable_dirs {
+            args.push("--ro-bind".into());
+            args.push(dir.display().to_string());
+            args.push(dir.display().to_string());
+        }
+
+        for dir in &self.writable_dirs {
+            args.push("--bind".into());
+            args.push(dir.display().to_string());
+            args.push(dir.display().to_string());
+        }
+
+        // Bind /tmp writable for builds and tests.
+        args.push("--bind".into());
+        args.push("/tmp".into());
+        args.push("/tmp".into());
+
+        if !self.network {
+            args.push("--unshare-net".into());
+        }
+
+        args.push("--die-with-parent".into());
+
+        args
+    }
+}
+
+/// Quote a path for a Seatbelt string literal.
+#[cfg(target_os = "macos")]
+fn escape(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', r"\\")
+        .replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_defaults() {
+        let p = SandboxProfile::new(Path::new("/repo"));
+        assert_eq!(p.repo_root, PathBuf::from("/repo"));
+        assert!(p.readable_dirs.is_empty());
+        assert!(!p.network);
+        assert_eq!(p.timeout_secs, 30);
+    }
+
+    #[test]
+    fn profile_builder() {
+        let p = SandboxProfile::new(Path::new("/repo"))
+            .readable(PathBuf::from("/opt"))
+            .writable(PathBuf::from("/tmp/out"))
+            .network(true)
+            .timeout(60);
+        assert_eq!(p.readable_dirs, vec![PathBuf::from("/opt")]);
+        assert_eq!(p.writable_dirs, vec![PathBuf::from("/tmp/out")]);
+        assert!(p.network);
+        assert_eq!(p.timeout_secs, 60);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_contains_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let p = SandboxProfile::new(repo.path());
+        let profile = p.seatbelt_profile();
+        let root = repo.path().canonicalize().unwrap();
+        assert!(profile.contains(&root.display().to_string()), "{profile}");
+        assert!(profile.contains("(allow default)"));
+        assert!(profile.contains("(deny file-write*)"), "{profile}");
+        assert!(profile.contains("(deny network*)"), "{profile}");
+    }
+
+    /// Seatbelt rejects the whole profile when a `subpath` cannot be resolved,
+    /// and on macOS `/tmp` and `/var` are symlinks into `/private`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_writable_paths_are_resolved_and_existing() {
+        let repo = tempfile::tempdir().unwrap();
+        let p = SandboxProfile::new(repo.path()).writable(PathBuf::from("/nope/missing"));
+        let profile = p.seatbelt_profile();
+        assert!(!profile.contains("\"/tmp\""), "{profile}");
+        assert!(profile.contains("/private/tmp"), "{profile}");
+        assert!(!profile.contains("/nope/missing"), "{profile}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_allows_network_when_requested() {
+        let p = SandboxProfile::new(Path::new("/repo")).network(true);
+        let profile = p.seatbelt_profile();
+        assert!(!profile.contains("(deny network*)"), "{profile}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bwrap_args_contain_repo() {
+        let p = SandboxProfile::new(Path::new("/repo"));
+        let args = p.bwrap_args();
+        assert!(args.contains(&"--bind".to_string()));
+        assert!(args.contains(&"/repo".to_string()));
+        assert!(args.contains(&"--unshare-net".to_string()));
+    }
+}

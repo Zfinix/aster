@@ -114,6 +114,17 @@ pub fn resolve_anywhere(repo_root: &Path, path: &str) -> Result<(PathBuf, Scope)
     Ok((resolved, scope))
 }
 
+/// Whether `path` resolves to something that exists, under the same rules as
+/// [`resolve_anywhere`]. Lets a caller answer a wrong guess with a hint
+/// instead of an error.
+pub fn exists_anywhere(repo_root: &Path, path: &str) -> bool {
+    let expanded = expand_home(path);
+    if expanded.is_absolute() {
+        return expanded.exists();
+    }
+    repo_root.join(expanded).exists()
+}
+
 /// `~` and `~/rest` become the home directory. A bare `~user` is left alone;
 /// resolving another account's home is not something the agent should guess at.
 pub fn expand_home(path: &str) -> PathBuf {

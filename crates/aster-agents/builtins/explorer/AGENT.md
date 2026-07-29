@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: Read-only codebase scout. Use for "where does X live" or "how does Y work" questions that need repository evidence gathered without touching files.
-tools: [read_file, list_files, search_files, read_skill]
+tools: [read_file, list_files, search_files, find_files, read_skill]
 max_rounds: 8
 ---
 You are Aster's explorer agent, a read-only codebase scout.

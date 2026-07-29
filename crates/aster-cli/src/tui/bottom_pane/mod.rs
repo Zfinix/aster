@@ -12,8 +12,9 @@ pub(super) use list_selection::{ListSelectionView, SelectionItem};
 pub(super) use status::StatusWidget;
 pub(super) use view::BottomPaneView;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use ignore::WalkBuilder;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -43,6 +44,11 @@ pub(super) enum InputResult {
     Command(String),
 }
 
+/// Cap the file index so huge repos stay cheap.
+const MAX_FILE_INDEX: usize = 20_000;
+/// Max mention suggestions shown at once.
+const MAX_MENTION_MATCHES: usize = 8;
+
 pub(super) struct BottomPane<E> {
     pub(super) composer: Composer,
     views: Vec<Box<dyn BottomPaneView<E>>>,
@@ -54,6 +60,8 @@ pub(super) struct BottomPane<E> {
     tx: mpsc::UnboundedSender<E>,
     on_approval: fn(Answer, Option<PathBuf>) -> E,
     task_running: bool,
+    file_index: Vec<String>,
+    mention_sel: usize,
 }
 
 impl<E: Clone + 'static> BottomPane<E> {
@@ -75,6 +83,8 @@ impl<E: Clone + 'static> BottomPane<E> {
             tx,
             on_approval,
             task_running: false,
+            file_index: Vec::new(),
+            mention_sel: 0,
         }
     }
 
@@ -149,6 +159,41 @@ impl<E: Clone + 'static> BottomPane<E> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let menu_open = !self.command_matches().is_empty();
+        let mention_open = self.composer.mention_context().is_some();
+
+        // Mention menu owns these keys when open; slash menu is mutually exclusive.
+        if mention_open
+            && !menu_open
+            && let Some((start, query)) = self.composer.mention_context()
+        {
+            let matches = self.mention_matches(query);
+            if !matches.is_empty() {
+                match key.code {
+                    KeyCode::Up => {
+                        self.mention_move(-1);
+                        return InputResult::None;
+                    }
+                    KeyCode::Down => {
+                        self.mention_move(1);
+                        return InputResult::None;
+                    }
+                    KeyCode::Tab | KeyCode::Enter => {
+                        self.complete_selected_mention(start);
+                        return InputResult::None;
+                    }
+                    KeyCode::Esc => {
+                        self.composer.cancel_mention(start);
+                        self.mention_sel = 0;
+                        return InputResult::None;
+                    }
+                    _ => {}
+                }
+            } else if key.code == KeyCode::Esc {
+                self.composer.cancel_mention(start);
+                self.mention_sel = 0;
+                return InputResult::None;
+            }
+        }
 
         match key.code {
             KeyCode::Up if menu_open => self.menu_move(-1),
@@ -195,11 +240,13 @@ impl<E: Clone + 'static> BottomPane<E> {
             KeyCode::Backspace => {
                 self.composer.backspace();
                 self.menu_sel = 0;
+                self.mention_sel = 0;
             }
             KeyCode::Delete => self.composer.delete(),
             KeyCode::Char(c) if !ctrl => {
                 self.composer.insert(c);
                 self.menu_sel = 0;
+                self.mention_sel = 0;
             }
             _ => {}
         }
@@ -290,6 +337,95 @@ impl<E: Clone + 'static> BottomPane<E> {
         )
     }
 
+    /* ---- @‑file mentions ---- */
+
+    /// Walk the repo root, respecting `.gitignore`, and collect up to
+    /// `MAX_FILE_INDEX` repo-relative paths.
+    pub(super) fn build_file_index(&mut self, root: &Path) {
+        let mut paths: Vec<String> = WalkBuilder::new(root)
+            .git_ignore(true)
+            .hidden(false)
+            .build()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|e| {
+                e.path()
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+            .take(MAX_FILE_INDEX)
+            .collect();
+        paths.sort();
+        self.file_index = paths;
+    }
+
+    /// Substring match against `file_index`, returning up to `MAX_MENTION_MATCHES`.
+    fn mention_matches(&self, query: &str) -> Vec<&str> {
+        if query.is_empty() {
+            return self
+                .file_index
+                .iter()
+                .take(MAX_MENTION_MATCHES)
+                .map(String::as_str)
+                .collect();
+        }
+        let lower = query.to_lowercase();
+        self.file_index
+            .iter()
+            .filter(|p| p.to_lowercase().contains(&lower))
+            .take(MAX_MENTION_MATCHES)
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn mention_move(&mut self, delta: isize) {
+        if let Some((_, query)) = self.composer.mention_context() {
+            let len = self.mention_matches(query).len();
+            if len > 0 {
+                let cur = self.mention_sel.min(len - 1) as isize;
+                self.mention_sel = (cur + delta).rem_euclid(len as isize) as usize;
+            }
+        }
+    }
+
+    fn complete_selected_mention(&mut self, start: usize) {
+        if let Some((_, query)) = self.composer.mention_context() {
+            let matches = self.mention_matches(query);
+            let sel = self.mention_sel.min(matches.len().saturating_sub(1));
+            if let Some(path) = matches.get(sel).map(|p| p.to_string()) {
+                self.composer.complete_mention(start, &path);
+            }
+        }
+        self.mention_sel = 0;
+    }
+
+    fn mention_lines(&self) -> Option<Vec<Line<'static>>> {
+        let (_, query) = self.composer.mention_context()?;
+        let matches = self.mention_matches(query);
+        if matches.is_empty() {
+            return None;
+        }
+        let sel = self.mention_sel.min(matches.len() - 1);
+        Some(
+            matches
+                .iter()
+                .enumerate()
+                .map(|(i, path)| {
+                    let style = if i == sel {
+                        Style::default().fg(ACCENT).bg(super::theme::SEL_BG)
+                    } else {
+                        super::theme::dimmer()
+                    };
+                    Line::from(vec![
+                        Span::styled(if i == sel { "▸ " } else { "  " }, style),
+                        Span::styled(path.to_string(), style),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
     fn as_column(&self) -> Column<'_> {
         let mut col = Column::new();
         col.push(Line::from(""));
@@ -302,6 +438,9 @@ impl<E: Clone + 'static> BottomPane<E> {
         }
         if let Some(menu) = self.menu_lines() {
             col.push(Inset::new(menu, Insets::tlbr(1, 1, 0, 1)));
+        }
+        if let Some(mention_menu) = self.mention_lines() {
+            col.push(Inset::new(mention_menu, Insets::tlbr(1, 1, 0, 1)));
         }
         col.push(Inset::new(
             ComposerRef {
