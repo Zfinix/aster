@@ -59,6 +59,10 @@ pub struct ToolChatRequest {
     pub messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,4 +137,24 @@ pub struct ChatStreamChoice {
 pub struct ChatDelta {
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallDelta>,
+}
+
+#[derive(Deserialize)]
+pub struct ToolCallDelta {
+    #[serde(default)]
+    pub index: usize,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub function: Option<ToolCallFunctionDelta>,
+}
+
+#[derive(Deserialize)]
+pub struct ToolCallFunctionDelta {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
 }
