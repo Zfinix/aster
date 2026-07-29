@@ -291,8 +291,6 @@ function App() {
     [refreshAuth],
   );
 
-  /* ---- conversation helpers ---- */
-
   const patchTurn = useCallback(
     (convoId: string, turnId: string, patch: Partial<Extract<Turn, { role: "assistant" }>>) =>
       setConversations((cs) =>
@@ -326,8 +324,6 @@ function App() {
       ),
     [],
   );
-
-  /* ---- chat ---- */
 
   /* Fold one stream event into the live assistant turn: tokens append to the
    * text, tool calls become live activity steps, approval requests surface
