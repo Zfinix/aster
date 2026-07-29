@@ -68,7 +68,7 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
     let mut task = tokio::spawn(async move { execute(job, &Some(tx)).await });
 
     // Restores the terminal on every exit path: normal return, early `?`, panic.
-    let guard = TuiGuard::install();
+    let guard = TuiGuard::install(ratatui::restore);
 
     let mut terminal = ratatui::init();
     let mut app = App::new(min_confidence);
