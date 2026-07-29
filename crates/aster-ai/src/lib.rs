@@ -3,6 +3,7 @@
 //! endpoint. Point `ASTER_BASE_URL` / `ASTER_API_KEY` / `ASTER_MODEL` at anything
 //! that speaks the OpenAI schema.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +15,9 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 
 pub mod retry;
 use retry::RetryWithBackoff;
+
+mod effort;
+pub use effort::Effort;
 
 mod models;
 pub use models::{AssistantMessage, ChatMessage, ToolCall, ToolCallFunction};
@@ -73,7 +77,7 @@ pub struct AiClient {
     price_completion_per_m: Option<f64>,
     seed: Option<u64>,
     max_tokens: Option<u32>,
-    reasoning_effort: Option<String>,
+    effort: Effort,
 }
 
 impl AiClient {
@@ -151,12 +155,28 @@ impl AiClient {
                 Some(v) => v.parse().ok(),
                 None => Some(8000),
             },
-            reasoning_effort: match env::var("ASTER_REASONING_EFFORT").ok().as_deref() {
-                Some("off") | Some("none") | Some("") => Some("off".to_string()),
-                Some(v) => Some(v.to_string()),
-                None => Some("low".to_string()),
-            },
+            effort: env::var("ASTER_EFFORT")
+                .or_else(|_| env::var("ASTER_REASONING_EFFORT"))
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_default(),
         }
+    }
+
+    /// Builder form of [`AiClient::set_effort`], for a client built from config.
+    pub fn with_effort(mut self, effort: Effort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// Change the reasoning budget for later requests. Clones made before this
+    /// call keep the old one, so set it before handing the client to a task.
+    pub fn set_effort(&mut self, effort: Effort) {
+        self.effort = effort;
+    }
+
+    pub fn effort(&self) -> Effort {
+        self.effort
     }
 
     fn build_request(
@@ -206,16 +226,15 @@ impl AiClient {
     }
 
     fn reasoning(&self) -> Option<Reasoning> {
-        match self.reasoning_effort.as_deref() {
-            Some("off") => Some(Reasoning {
+        match self.effort {
+            Effort::Off => Some(Reasoning {
                 effort: None,
                 enabled: Some(false),
             }),
-            Some(effort @ ("low" | "medium" | "high")) => Some(Reasoning {
-                effort: Some(effort.to_string()),
+            effort => Some(Reasoning {
+                effort: Some(effort.as_str().to_string()),
                 enabled: None,
             }),
-            _ => None,
         }
     }
 
@@ -347,6 +366,8 @@ impl AiClient {
             temperature: Some(temperature),
             messages,
             tools,
+            stream: false,
+            stream_options: None,
             seed: self.seed,
             max_tokens: self.max_tokens,
             reasoning: self.reasoning(),
@@ -392,44 +413,25 @@ impl AiClient {
 
         let mut acc = String::new();
         let mut usage: Option<Usage> = None;
-        // Split lines on the byte buffer so a multibyte codepoint straddling two
-        // network chunks is never decoded until whole.
-        let mut buf: Vec<u8> = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.context("reading stream chunk")?;
-            buf.extend_from_slice(&bytes);
-
-            // Keep trailing partial bytes for the next chunk.
-            while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-                let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
-                let line = String::from_utf8_lossy(&line_bytes[..nl]);
-                let line = line.trim();
-                let Some(data) = line.strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
-                    continue;
-                }
-                let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
-                    continue;
-                };
-                if let Some(u) = parsed.usage {
-                    usage = Some(u);
-                }
-                if let Some(delta) = parsed
-                    .choices
-                    .into_iter()
-                    .next()
-                    .and_then(|c| c.delta.content)
-                    && !delta.is_empty()
-                {
-                    acc.push_str(&delta);
-                    on_token(&delta);
-                }
+        read_sse(response, |data| {
+            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
+                return;
+            };
+            if let Some(u) = parsed.usage {
+                usage = Some(u);
             }
-        }
+            if let Some(delta) = parsed
+                .choices
+                .into_iter()
+                .next()
+                .and_then(|c| c.delta.content)
+                && !delta.is_empty()
+            {
+                acc.push_str(&delta);
+                on_token(&delta);
+            }
+        })
+        .await?;
 
         // Some endpoints ignore `stream` and return an empty body; fall back to a
         // non-streaming call (which records its own usage).
@@ -442,6 +444,114 @@ impl AiClient {
         }
         self.record_usage(usage, system.len() + user.len(), acc.len());
         Ok(acc)
+    }
+
+    /// Streaming tool-call completion: the same contract as
+    /// [`Self::complete_tools_with`], but `on_token` receives each content delta
+    /// as it arrives. Tool-call fragments are reassembled by index. Falls back to
+    /// a non-streaming call when the endpoint yields nothing.
+    pub async fn complete_tools_stream_with(
+        &self,
+        model: &str,
+        messages: Vec<serde_json::Value>,
+        tools: Vec<serde_json::Value>,
+        temperature: f32,
+        mut on_token: impl FnMut(&str),
+    ) -> Result<AssistantMessage> {
+        let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
+        let request = ToolChatRequest {
+            model: model.to_string(),
+            temperature: Some(temperature),
+            messages: messages.clone(),
+            tools: tools.clone(),
+            stream: true,
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
+            seed: self.seed,
+            max_tokens: self.max_tokens,
+            reasoning: self.reasoning(),
+        };
+
+        let response = self
+            .send_with_retry(&request, "streaming tool chat request")
+            .await?;
+
+        let mut content = String::new();
+        let mut usage: Option<Usage> = None;
+        let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+
+        read_sse(response, |data| {
+            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
+                return;
+            };
+            if let Some(u) = parsed.usage {
+                usage = Some(u);
+            }
+            let Some(choice) = parsed.choices.into_iter().next() else {
+                return;
+            };
+            if let Some(delta) = choice.delta.content.filter(|d| !d.is_empty()) {
+                content.push_str(&delta);
+                on_token(&delta);
+            }
+            for fragment in choice.delta.tool_calls {
+                let slot = partials.entry(fragment.index).or_default();
+                if let Some(id) = fragment.id.filter(|s| !s.is_empty()) {
+                    slot.id = id;
+                }
+                if let Some(function) = fragment.function {
+                    if let Some(name) = function.name.filter(|s| !s.is_empty()) {
+                        slot.name = name;
+                    }
+                    if let Some(args) = function.arguments {
+                        slot.arguments.push_str(&args);
+                    }
+                }
+            }
+        })
+        .await?;
+
+        if content.is_empty() && partials.is_empty() {
+            tracing::debug!(
+                model,
+                "tool stream produced nothing; falling back to non-streaming"
+            );
+            return self
+                .complete_tools_with(model, messages, tools, temperature)
+                .await;
+        }
+
+        let tool_calls: Vec<ToolCall> = partials
+            .into_iter()
+            .filter(|(_, p)| !p.name.is_empty())
+            .map(|(index, p)| ToolCall {
+                // Some providers omit the id on streamed fragments; it only has to
+                // match results back to calls, so the index serves.
+                id: if p.id.is_empty() {
+                    format!("call_{index}")
+                } else {
+                    p.id
+                },
+                kind: "function".to_string(),
+                function: ToolCallFunction {
+                    name: p.name,
+                    arguments: p.arguments,
+                },
+            })
+            .collect();
+
+        let completion_chars = content.len()
+            + tool_calls
+                .iter()
+                .map(|t| t.function.arguments.len())
+                .sum::<usize>();
+        self.record_usage(usage, prompt_chars, completion_chars);
+
+        Ok(AssistantMessage {
+            content: (!content.is_empty()).then_some(content),
+            tool_calls,
+        })
     }
 
     /// POST a chat request. Transient failures are retried by the middleware; a
@@ -467,6 +577,42 @@ impl AiClient {
         }
         Ok(response)
     }
+}
+
+/// A tool call being reassembled from streamed fragments.
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Feed each SSE `data:` payload to `on_data`, skipping keep-alives and the
+/// terminating `[DONE]`. Lines are split on the byte buffer so a multibyte
+/// codepoint straddling two network chunks is never decoded until whole.
+async fn read_sse(response: reqwest::Response, mut on_data: impl FnMut(&str)) -> Result<()> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.context("reading stream chunk")?;
+        buf.extend_from_slice(&bytes);
+
+        // Keep trailing partial bytes for the next chunk.
+        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line_bytes[..nl]);
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            on_data(data);
+        }
+    }
+    Ok(())
 }
 
 fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
