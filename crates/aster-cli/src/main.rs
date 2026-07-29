@@ -19,9 +19,12 @@ mod tui;
 use std::env;
 use std::fs;
 use std::io::stderr;
-use std::sync::Mutex;
+use std::process;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Result;
+use aster_ai::Effort;
 use clap::Parser;
 use clap::Subcommand;
 
@@ -32,8 +35,19 @@ use clap::Subcommand;
     about = "A self-hostable agent harness for software work"
 )]
 struct Cli {
+    /// Defaults to `chat`: bare `aster` opens the interactive TUI.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+
+    /// Emit JSON on stdout instead of human text. Accepted by every subcommand,
+    /// before or after it, and turns errors into `{"ok":false,"error":…}`.
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Reasoning budget for thinking models: off, low, medium, or high.
+    /// Overrides ASTER_EFFORT and aster.yaml `review.effort`.
+    #[arg(long, global = true, value_name = "LEVEL")]
+    effort: Option<Effort>,
 }
 
 #[derive(Subcommand)]
@@ -58,6 +72,23 @@ enum Command {
     Skills(skills::SkillsArgs),
 }
 
+/// Set once from the root `--json` flag, then read anywhere a command chooses
+/// between its human and machine output.
+static JSON: AtomicBool = AtomicBool::new(false);
+
+/// True when the run was asked for machine-readable output.
+pub fn json_mode() -> bool {
+    JSON.load(Ordering::Relaxed)
+}
+
+/// Set once from the root `--effort` flag; `None` leaves env and aster.yaml in charge.
+static EFFORT: OnceLock<Option<Effort>> = OnceLock::new();
+
+/// The `--effort` level this run was started with, if any.
+pub fn effort_flag() -> Option<Effort> {
+    EFFORT.get().copied().flatten()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
@@ -65,7 +96,19 @@ async fn main() -> Result<()> {
         let _ = dotenvy::from_path(&global);
     }
 
-    let command = Cli::parse().command;
+    let cli = Cli::parse();
+    JSON.store(cli.json, Ordering::Relaxed);
+    let _ = EFFORT.set(cli.effort);
+
+    // Bare `aster` is the interactive chat TUI; `aster --json` is one-shot chat.
+    let command = cli.command.unwrap_or_else(|| {
+        let argv: &[&str] = if cli.json {
+            &["aster", "chat"]
+        } else {
+            &["aster", "chat", "--tui"]
+        };
+        Cli::parse_from(argv).command.expect("chat is a subcommand")
+    });
     // Full-screen TUI logs must go to a file, not stderr.
     let chat_tui = matches!(&command, Command::Chat(a) if a.is_interactive());
     let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui;
@@ -74,7 +117,7 @@ async fn main() -> Result<()> {
         || matches!(&command, Command::Chat(a) if !a.is_interactive());
     init_tracing(tui_mode, stream_mode);
 
-    match command {
+    let result = match command {
         Command::Init(args) => init::run(args),
         Command::Login => auth::login().await,
         Command::Logout => config::clear_token(),
@@ -84,6 +127,18 @@ async fn main() -> Result<()> {
         Command::Sessions(args) => sessions::run_sessions(args),
         Command::Memory(args) => sessions::run_memory(args),
         Command::Skills(args) => skills::run(args).await,
+    };
+
+    // In JSON mode a failure is data too, so callers parse one shape either way.
+    match result {
+        Err(e) if json_mode() => {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": format!("{e:#}") })
+            );
+            process::exit(1);
+        }
+        other => other,
     }
 }
 

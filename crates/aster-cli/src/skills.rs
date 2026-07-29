@@ -57,9 +57,6 @@ enum SkillsCommand {
         /// List the user-global root instead of this project.
         #[arg(short = 'g', long)]
         global: bool,
-        /// Emit JSON instead of a table.
-        #[arg(long)]
-        json: bool,
     },
     /// Remove installed skills (interactive when no name is given).
     #[command(visible_alias = "rm")]
@@ -115,10 +112,9 @@ enum SkillsCommand {
 }
 
 pub async fn run(args: SkillsArgs) -> Result<()> {
-    let command = args.command.unwrap_or(SkillsCommand::List {
-        global: false,
-        json: false,
-    });
+    let command = args
+        .command
+        .unwrap_or(SkillsCommand::List { global: false });
     match command {
         SkillsCommand::Add {
             source,
@@ -139,7 +135,7 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
             full_depth,
             force,
         }),
-        SkillsCommand::List { global, json } => list(global, json),
+        SkillsCommand::List { global } => list(global),
         SkillsCommand::Remove {
             skills,
             global,
@@ -236,7 +232,14 @@ fn add(opts: AddOpts) -> Result<()> {
     }
 
     if opts.list {
-        print_available(&skills);
+        if crate::json_mode() {
+            emit_json(serde_json::json!({
+                "source": source,
+                "skills": skill_values(&skills),
+            }));
+        } else {
+            print_available(&skills);
+        }
         return Ok(());
     }
 
@@ -263,6 +266,17 @@ fn add(opts: AddOpts) -> Result<()> {
     }
 
     let installed = fetch_and_install(&src, &chosen, &dest, opts.force, &source)?;
+    if crate::json_mode() {
+        emit_json(serde_json::json!({
+            "ok": true,
+            "source": source,
+            "scope": scope_word(scope),
+            "root": dest.display().to_string(),
+            "installed": installed,
+            "skills": skill_values(&chosen),
+        }));
+        return Ok(());
+    }
     let done = format!("Installed {installed} skill(s) into {}", dest.display());
     if tty {
         outro(done)?;
@@ -344,11 +358,17 @@ fn install_all(skills: &[Skill], dest: &Path, force: bool) -> Result<usize> {
     for skill in skills {
         match install_skill(skill, dest, force) {
             Ok(_) => {
-                let _ = log::success(format!("installed {}", skill.name));
+                if !crate::json_mode() {
+                    let _ = log::success(format!("installed {}", skill.name));
+                }
                 count += 1;
             }
             Err(e) => {
-                let _ = log::warning(format!("skipped {}: {e:#}", skill.name));
+                if crate::json_mode() {
+                    tracing::warn!("skipped {}: {e:#}", skill.name);
+                } else {
+                    let _ = log::warning(format!("skipped {}: {e:#}", skill.name));
+                }
             }
         }
     }
@@ -367,17 +387,18 @@ fn print_available(skills: &[Skill]) {
 
 // ---- list ----
 
-fn list(global: bool, json: bool) -> Result<()> {
+fn list(global: bool) -> Result<()> {
     let scope = scope_of(global);
     let root = scope_root(scope)?;
     let set = SkillSet::discover(std::slice::from_ref(&root));
 
-    if json {
-        let items: Vec<_> = set
-            .iter()
-            .map(|s| serde_json::json!({ "name": s.name, "description": s.description }))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
+    if crate::json_mode() {
+        let skills: Vec<Skill> = set.iter().cloned().collect();
+        emit_json(serde_json::json!({
+            "scope": scope_word(scope),
+            "root": root.display().to_string(),
+            "skills": skill_values(&skills),
+        }));
         return Ok(());
     }
 
@@ -420,7 +441,11 @@ fn remove(names: Vec<String>, global: bool, all: bool, yes: bool) -> Result<()> 
     };
 
     if targets.is_empty() {
-        println!("nothing to remove");
+        if crate::json_mode() {
+            emit_json(serde_json::json!({ "ok": true, "removed": [], "missing": [] }));
+        } else {
+            println!("nothing to remove");
+        }
         return Ok(());
     }
 
@@ -435,14 +460,31 @@ fn remove(names: Vec<String>, global: bool, all: bool, yes: bool) -> Result<()> 
         }
     }
 
+    let json = crate::json_mode();
+    let (mut removed, mut missing) = (Vec::new(), Vec::new());
     for name in &targets {
         if remove_skill(&root, name)? {
-            println!("removed {name}");
+            removed.push(name.clone());
+            if !json {
+                println!("removed {name}");
+            }
         } else {
-            eprintln!("no installed skill named {name:?}");
+            missing.push(name.clone());
+            if !json {
+                eprintln!("no installed skill named {name:?}");
+            }
         }
     }
     forget_installed(&root, &targets);
+    if json {
+        emit_json(serde_json::json!({
+            "ok": true,
+            "scope": scope_word(scope),
+            "root": root.display().to_string(),
+            "removed": removed,
+            "missing": missing,
+        }));
+    }
     Ok(())
 }
 
@@ -456,7 +498,7 @@ fn use_skill(target: &str, skill: Option<&str>, full_depth: bool) -> Result<()> 
         return print_from_source(target, skill, full_depth);
     }
     let body = read_installed(target)?;
-    print!("{body}");
+    emit_body(target, &body);
     Ok(())
 }
 
@@ -477,7 +519,7 @@ fn print_from_source(pkg: &str, skill: Option<&str>, full_depth: bool) -> Result
         ),
     };
     src.materialize(std::slice::from_ref(&target))?;
-    print!("{}", target.load_body()?);
+    emit_body(&target.name, &target.load_body()?);
     Ok(())
 }
 
@@ -491,6 +533,15 @@ fn read_installed(name: &str) -> Result<String> {
         }
     }
     bail!("no installed skill named {name:?}")
+}
+
+/// A skill's instructions: raw markdown, or wrapped in JSON for a caller.
+fn emit_body(name: &str, body: &str) {
+    if crate::json_mode() {
+        emit_json(serde_json::json!({ "name": name, "body": body }));
+    } else {
+        print!("{body}");
+    }
 }
 
 fn looks_like_source(s: &str) -> bool {
@@ -511,6 +562,16 @@ async fn find(query: Option<String>, owner: Option<String>, global: bool) -> Res
     };
 
     let repos = github_search(&query, owner.as_deref()).await?;
+    if crate::json_mode() {
+        emit_json(serde_json::json!({
+            "query": query,
+            "repos": repos.iter().map(|r| serde_json::json!({
+                "full_name": r.full_name,
+                "description": r.description,
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(());
+    }
     if repos.is_empty() {
         println!("no repositories matched {query:?}");
         return Ok(());
@@ -594,7 +655,15 @@ fn update(names: Vec<String>, global: bool) -> Result<()> {
     let root = scope_root(scope)?;
     let lock = load_lock(&root);
     if lock.skills.is_empty() {
-        println!("no tracked {} skills to update", scope_word(scope));
+        if crate::json_mode() {
+            emit_json(serde_json::json!({
+                "ok": true,
+                "scope": scope_word(scope),
+                "updated": 0,
+            }));
+        } else {
+            println!("no tracked {} skills to update", scope_word(scope));
+        }
         return Ok(());
     }
 
@@ -634,7 +703,16 @@ fn update(names: Vec<String>, global: bool) -> Result<()> {
         src.materialize(&chosen)?;
         updated += install_all(&chosen, &root, true)?;
     }
-    println!("updated {updated} skill(s)");
+    if crate::json_mode() {
+        emit_json(serde_json::json!({
+            "ok": true,
+            "scope": scope_word(scope),
+            "root": root.display().to_string(),
+            "updated": updated,
+        }));
+    } else {
+        println!("updated {updated} skill(s)");
+    }
     Ok(())
 }
 
@@ -659,7 +737,15 @@ fn init(name: Option<&str>) -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     std::fs::write(&manifest, skill_template(&ident))
         .with_context(|| format!("writing {}", manifest.display()))?;
-    println!("created {}", manifest.display());
+    if crate::json_mode() {
+        emit_json(serde_json::json!({
+            "ok": true,
+            "name": ident,
+            "path": manifest.display().to_string(),
+        }));
+    } else {
+        println!("created {}", manifest.display());
+    }
     Ok(())
 }
 
@@ -1028,7 +1114,19 @@ fn first_line(text: &str) -> &str {
 }
 
 fn is_tty() -> bool {
-    io::stdout().is_terminal() && io::stdin().is_terminal()
+    !crate::json_mode() && io::stdout().is_terminal() && io::stdin().is_terminal()
+}
+
+/// One JSON object on stdout, the shape every `--json` skills command returns.
+fn emit_json(value: serde_json::Value) {
+    println!("{value}");
+}
+
+fn skill_values(skills: &[Skill]) -> Vec<serde_json::Value> {
+    skills
+        .iter()
+        .map(|s| serde_json::json!({ "name": s.name, "description": s.description }))
+        .collect()
 }
 
 /// Terminal width for laying out plain output, with a sane fallback when piped.

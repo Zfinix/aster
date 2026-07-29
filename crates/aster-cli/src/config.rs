@@ -72,10 +72,20 @@ pub fn store_token(token: &str) -> Result<()> {
 
 pub fn clear_token() -> Result<()> {
     let path = token_path()?;
-    match fs::remove_file(&path) {
-        Ok(()) => println!("Logged out."),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("Not logged in."),
+    let was_logged_in = match fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e).context("removing stored credentials"),
+    };
+    if crate::json_mode() {
+        println!(
+            "{}",
+            serde_json::json!({ "ok": true, "was_logged_in": was_logged_in })
+        );
+    } else if was_logged_in {
+        println!("Logged out.");
+    } else {
+        println!("Not logged in.");
     }
     Ok(())
 }
