@@ -22,6 +22,11 @@ pub struct PermissionsConfig {
     /// Directories outside the repository the agent may read without asking.
     /// Absolute, or `~`-relative. Anything else outside the repo prompts.
     pub additional_directories: Vec<String>,
+    /// Commands the agent may run without asking. Matched by binary name
+    /// (e.g. "cargo", "rg", "npm"). Empty = none allowed.
+    pub allow_exec: Vec<String>,
+    /// Commands the agent may never run. Matched by binary name.
+    pub deny_exec: Vec<String>,
 }
 
 impl Default for PermissionsConfig {
@@ -34,6 +39,8 @@ impl Default for PermissionsConfig {
             secret_read: Vec::new(),
             use_default_protected: true,
             additional_directories: Vec::new(),
+            allow_exec: Vec::new(),
+            deny_exec: Vec::new(),
         }
     }
 }

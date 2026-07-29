@@ -447,7 +447,10 @@ async fn show_session(id: String, repo_path: Option<String>) -> Result<serde_jso
 }
 
 #[tauri::command]
-async fn delete_session(id: String, repo_path: Option<String>) -> Result<serde_json::Value, String> {
+async fn delete_session(
+    id: String,
+    repo_path: Option<String>,
+) -> Result<serde_json::Value, String> {
     run_aster_json(
         &["sessions", "delete", &id, "--json"],
         repo_path.as_deref(),

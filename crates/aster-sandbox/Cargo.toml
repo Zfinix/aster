@@ -1,21 +1,19 @@
 [package]
-name = "aster-tools"
+name = "aster-sandbox"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "bash_tools"
+name = "aster_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
 anyhow = { workspace = true }
 tracing = { workspace = true }
-which = "7"
-ignore = "0.4"
-grep = "0.4.1"
-globset = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+dirs = "6.0"
 
 [dev-dependencies]
 tempfile = "3"

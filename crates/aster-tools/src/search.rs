@@ -48,21 +48,32 @@ fn search_with_rg(
     query: &str,
     max_hits: usize,
 ) -> Result<String> {
-    let output = Command::new(rg)
-        .args([
+    let run = |literal: bool| {
+        let mut cmd = Command::new(rg);
+        cmd.args([
             "--line-number",
             "--no-heading",
+            "--ignore-case",
             "--color",
             "never",
             "--max-count",
             &max_hits.to_string(),
-        ])
-        .arg(query)
-        .arg(base)
-        .current_dir(repo_root)
-        .output()
-        .context("running rg")?;
+        ]);
+        if literal {
+            cmd.arg("--fixed-strings");
+        }
+        cmd.arg(query)
+            .arg(base)
+            .current_dir(repo_root)
+            .output()
+            .context("running rg")
+    };
 
+    let mut output = run(false)?;
+    // A query that is not valid regex is almost always meant literally.
+    if !output.status.success() && !output.status.code().is_some_and(|c| c == 1) {
+        output = run(true)?;
+    }
     if !output.status.success() && !output.status.code().is_some_and(|c| c == 1) {
         bail!(
             "rg failed: {}",
@@ -81,16 +92,25 @@ fn search_with_rg(
 /// Embedded ripgrep via the `grep` and `ignore` crates. Respects
 /// `.gitignore` and walks in parallel.
 fn search_embedded(repo_root: &Path, base: &Path, query: &str, max_hits: usize) -> Result<String> {
-    use grep::regex::RegexMatcher;
+    use grep::regex::RegexMatcherBuilder;
     use grep::searcher::Searcher;
     use grep::searcher::sinks::UTF8;
     use ignore::WalkBuilder;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    let matcher = Arc::new(
-        RegexMatcher::new(query).with_context(|| format!("invalid regex pattern: {query}"))?,
-    );
+    let build = |pattern: &str| {
+        RegexMatcherBuilder::new()
+            .case_insensitive(true)
+            .build(pattern)
+    };
+    // A query that is not valid regex is almost always meant literally.
+    let matcher = match build(query) {
+        Ok(m) => m,
+        Err(_) => build(&escape_regex(query))
+            .with_context(|| format!("invalid search pattern: {query}"))?,
+    };
+    let matcher = Arc::new(matcher);
     let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
 
@@ -153,6 +173,20 @@ fn search_embedded(repo_root: &Path, base: &Path, query: &str, max_hits: usize) 
         return Ok("no matches".into());
     }
     Ok(out.join("\n"))
+}
+
+fn escape_regex(query: &str) -> String {
+    const META: &[char] = &[
+        '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$', '#', '&', '-', '~',
+    ];
+    let mut out = String::with_capacity(query.len() * 2);
+    for ch in query.chars() {
+        if META.contains(&ch) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Hand-rolled fallback: `fs::read_dir` + substring match. No regex, no

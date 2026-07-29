@@ -16,6 +16,8 @@ pub struct Policy {
     allow: GlobSet,
     deny: GlobSet,
     secret_read: GlobSet,
+    allow_exec: Vec<String>,
+    deny_exec: Vec<String>,
 }
 
 impl Policy {
@@ -38,6 +40,8 @@ impl Policy {
             allow: build(&cfg.allow)?,
             deny: build(&cfg.deny)?,
             secret_read: build(&secret_read)?,
+            allow_exec: cfg.allow_exec.clone(),
+            deny_exec: cfg.deny_exec.clone(),
         })
     }
 
@@ -49,6 +53,8 @@ impl Policy {
             allow: GlobSet::empty(),
             deny: GlobSet::empty(),
             secret_read: GlobSet::empty(),
+            allow_exec: Vec::new(),
+            deny_exec: Vec::new(),
         }
     }
 
@@ -57,6 +63,27 @@ impl Policy {
         match action {
             Action::Edit { path } => self.evaluate_edit(path),
             Action::Read { path } => self.evaluate_read(path),
+            Action::Exec { binary, .. } => self.evaluate_exec(binary),
+        }
+    }
+
+    fn evaluate_exec(&self, binary: &str) -> Decision {
+        if self.deny_exec.iter().any(|b| b == binary) {
+            return Decision::Deny {
+                reason: format!("command `{binary}` is denied by permissions"),
+            };
+        }
+        if self.allow_exec.iter().any(|b| b == binary) {
+            return Decision::Allow;
+        }
+        match self.mode {
+            Mode::Plan => Decision::Deny {
+                reason: "permissions mode is `plan`, so command execution is off".to_string(),
+            },
+            Mode::Edit => Decision::Allow,
+            Mode::Auto | Mode::Manual => Decision::Prompt {
+                preview: format!("run `{binary}`"),
+            },
         }
     }
 

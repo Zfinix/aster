@@ -1,7 +1,7 @@
 ---
 name: fixer
 description: Edit-capable repair agent. Use to apply a specific, well-described fix to repository files; edits stay policy-gated and may prompt for approval.
-tools: [read_file, list_files, search_files, read_skill, edit_file]
+tools: [read_file, list_files, search_files, find_files, read_skill, edit_file]
 max_rounds: 10
 verify: true
 ---

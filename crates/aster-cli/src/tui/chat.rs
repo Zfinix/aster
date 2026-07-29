@@ -36,6 +36,7 @@ const READ_ONLY: &[&str] = &[
     "read_file",
     "list_files",
     "search_files",
+    "find_files",
     "recall",
     "read_skill",
 ];
@@ -107,6 +108,7 @@ pub async fn run_chat(
         app_tx.clone(),
         |answer, scope| AppEvent::ApprovalDecided { answer, scope },
     );
+    pane.build_file_index(&repo_root);
 
     let endpoint = crate::init::provider_label(client.base_url());
     app.emit(history::welcome(
@@ -379,6 +381,7 @@ fn step_label(name: &str, args: &str) -> String {
             dir => format!("Listed {dir}"),
         },
         "search_files" => format!("Searched \u{201c}{}\u{201d}", s("query")),
+        "find_files" => format!("Found files matching {}", s("pattern")),
         "edit_file" => match s("path") {
             "" => "Edited file".to_string(),
             path => format!("Edited {path}"),
@@ -388,6 +391,12 @@ fn step_label(name: &str, args: &str) -> String {
         "read_skill" => format!("Read skill {}", s("name")),
         other => other.replace('_', " "),
     }
+}
+
+/// A tool that answered with a hint instead of results: the path was a wrong
+/// guess. Worth a mark on the collapsed label, not a red failure cell.
+fn missed(result: &str) -> bool {
+    result.starts_with("note: ") && result.contains("does not exist")
 }
 
 fn arg_str(args: &str, key: &str) -> String {
@@ -633,7 +642,10 @@ impl ChatApp {
 
     fn on_tool_result(&mut self, tool: RunningTool, result: &str, failed: bool) {
         if !failed && READ_ONLY.contains(&tool.name.as_str()) {
-            self.explored.push(tool.label);
+            self.explored.push(match missed(result) {
+                true => format!("{} (not found)", tool.label),
+                false => tool.label,
+            });
             return;
         }
         self.end_explored();
@@ -1274,6 +1286,27 @@ mod tests {
             error: true,
         });
         assert!(rendered(&app).contains("no such file"));
+    }
+
+    #[test]
+    fn a_missing_path_is_marked_on_the_explored_line_not_raised_as_an_error() {
+        let mut app = chat_app("m1".into());
+        app.on_turn_event(TurnEvent::ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            args: "{\"path\":\"crates/ui/src/chat.rs\"}".into(),
+        });
+        app.on_turn_event(TurnEvent::ToolResult {
+            id: "1".into(),
+            result: "note: crates/ui/src/chat.rs does not exist. Nearest paths:\n  a.rs".into(),
+            error: false,
+        });
+        app.on_turn_event(TurnEvent::Token("done\n".into()));
+
+        let out = rendered(&app);
+        assert!(out.contains("Explored"), "{out}");
+        assert!(out.contains("(not found)"), "{out}");
+        assert!(!out.contains("Nearest paths"), "{out}");
     }
 
     #[test]

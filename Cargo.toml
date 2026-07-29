@@ -13,6 +13,7 @@ members = [
     "crates/aster-agents",
     "crates/aster-mcp",
     "crates/aster-tools",
+    "crates/aster-sandbox",
     "crates/aster-cli",
 ]
 
