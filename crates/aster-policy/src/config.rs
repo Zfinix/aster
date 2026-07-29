@@ -19,6 +19,9 @@ pub struct PermissionsConfig {
     pub secret_read: Vec<String>,
     /// Include the built-in protected and secret-read lists. Defaults to true.
     pub use_default_protected: bool,
+    /// Directories outside the repository the agent may read without asking.
+    /// Absolute, or `~`-relative. Anything else outside the repo prompts.
+    pub additional_directories: Vec<String>,
 }
 
 impl Default for PermissionsConfig {
@@ -30,6 +33,7 @@ impl Default for PermissionsConfig {
             protected: Vec::new(),
             secret_read: Vec::new(),
             use_default_protected: true,
+            additional_directories: Vec::new(),
         }
     }
 }

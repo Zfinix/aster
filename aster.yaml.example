@@ -23,6 +23,9 @@ review:
   # `ast-grep`/`sg` on PATH; point ASTER_ASTGREP_RULES at a rule file).
   analyzers: []            # e.g. [ast-grep] or [semgrep, ast-grep]
 
+  # Reasoning budget for thinking models: off | low | medium | high.
+  effort: low
+
   # Bias the hypothesis pass toward these defect classes.
   focus_areas:
     - correctness
@@ -38,9 +41,17 @@ review:
 
 # Edit/read permissions for `aster chat --allow-edits` and `aster fix --apply`.
 permissions:
-  mode: auto              # auto | ask | deny  (ask prompts in the TUI; denies when headless)
+  # plan   explore and present a plan, never edit
+  # manual ask for approval before each edit (prompts in the TUI; denies when headless)
+  # auto   apply what passes the safety check, pause for anything risky
+  # edit   edit files without asking
+  mode: edit              # the old `ask` and `deny` names still parse
   allow: []               # globs always writable, e.g. ["src/**"]
   deny: []                # globs never writable, e.g. ["**/*.pem"]
   protected: []           # extra always-blocked write globs (unioned with defaults)
   secret_read: []         # extra never-readable globs (unioned with defaults)
   use_default_protected: true   # block writes to .git/**, .github/workflows/**, hooks; block secret reads
+  # Directories outside the repo the agent may read without asking. Absolute or
+  # ~-relative. Anything else outside the repo prompts, and an approval lasts
+  # for the rest of the session.
+  additional_directories: []    # e.g. ["~/Desktop", "~/Downloads"]
