@@ -143,6 +143,16 @@ pub(super) fn human_count(n: usize) -> String {
     }
 }
 
+/// Clip a one-line label, on a char boundary so multi-byte text survives.
+pub(super) fn truncate_label(text: &str, max: usize) -> String {
+    let flat = text.replace('\n', " ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let kept: String = flat.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 pub(super) fn dim(text: impl Into<String>) -> Line<'static> {
     Line::from(Span::styled(
         text.into(),

@@ -26,7 +26,9 @@ use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
 use super::terminal::{Tui, TuiEvent};
 use super::{ACCENT, history, theme};
-use crate::chat::{Answer, ApprovalRequest, ApprovalSender, SessionCtx};
+use crate::chat::{
+    Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
+};
 use crate::persist::Recorder;
 
 type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
@@ -50,6 +52,8 @@ enum AppEvent {
         answer: Answer,
         scope: Option<PathBuf>,
     },
+    QuestionAnswered(String),
+    SessionPicked(String),
 }
 
 pub async fn run_chat(
@@ -58,16 +62,19 @@ pub async fn run_chat(
     allow_edits: bool,
     perms: PermissionsConfig,
     seed: Option<String>,
-    resume_latest: bool,
+    resume: Resume,
 ) -> Result<()> {
+    if matches!(resume, Resume::Pick) && seed.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        anyhow::bail!("--resume opens a session picker, so it cannot also take a prompt");
+    }
     let _guard = TuiGuard::install(super::terminal::restore_raw);
     // Idle layout is four rows: gap, status, composer, footer. Anchoring
     // smaller would make the first draw grow the viewport, and that growth
     // scrolls blank rows into the middle of the transcript.
     let mut tui = Tui::new(4)?;
 
-    // Depth 1: the agent awaits each approval before proposing the next.
-    let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(1);
+    // Depth 1: the agent awaits each request before proposing the next.
+    let (approval_tx, mut approval_rx) = mpsc::channel::<UiRequest>(1);
     let (events_tx, mut events_rx) = mpsc::channel::<TurnEvent>(64);
     let (app_tx, mut app_rx) = mpsc::unbounded_channel::<AppEvent>();
 
@@ -123,14 +130,23 @@ pub async fn run_chat(
     ));
 
     if let Ok(store) = crate::persist::store() {
-        match resume_or_new(&store, &repo_root, &client.model, resume_latest) {
-            Ok((recorder, seeded)) => {
+        match resume_or_new(&store, &repo_root, &client.model, &resume) {
+            Ok(Some((recorder, seeded))) => {
                 app.recorder = Some(recorder);
                 app.load_history(seeded);
             }
+            // `Pick`: the picker opens below, and the choice arrives as an event.
+            Ok(None) => {}
+            // A named session that does not exist is the user's mistake, not a
+            // store problem to log and carry on from.
+            Err(e) if matches!(resume, Resume::Id(_)) => return Err(e),
             Err(e) => tracing::warn!("could not open session store: {e:#}"),
         }
         app.store = Some(store);
+    }
+
+    if matches!(resume, Resume::Pick) {
+        app.open_session_picker(&mut pane);
     }
 
     let mut turn: Option<ChatTurn> = None;
@@ -181,9 +197,11 @@ pub async fn run_chat(
                 app.on_turn_event(ev);
                 pane.set_status_detail(app.running.last().map(|t| t.label.to_lowercase()));
             }
-            Some(req) = approval_rx.recv() => {
-                app.on_approval_request(req, &mut pane);
-            }
+            Some(req) = approval_rx.recv() => match req {
+                UiRequest::Approval(req) => app.on_approval_request(req, &mut pane),
+                UiRequest::PlanApproval(req) => app.on_plan_approval_request(req, &mut pane),
+                UiRequest::Question(req) => app.on_question_request(req, &mut pane),
+            },
             Some(ev) = app_rx.recv() => {
                 app.on_app_event(ev, &mut client);
             }
@@ -318,24 +336,31 @@ fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<A
 /// only an explicit `--continue` reopens the repo's latest session and seeds
 /// its prior turns. Returns the live transcript handle and the seeded
 /// user/assistant turns to replay into the view.
+/// `Pick` returns nothing: the session is chosen once the UI is up, and opening
+/// a transcript before then would leave an empty one behind.
 fn resume_or_new(
     store: &Store,
     repo_root: &std::path::Path,
     model: &str,
-    resume_latest: bool,
-) -> Result<(Recorder, Vec<ChatMessage>)> {
-    let prev = if resume_latest {
-        store.latest(repo_root)?
-    } else {
-        None
+    resume: &Resume,
+) -> Result<Option<(Recorder, Vec<ChatMessage>)>> {
+    let prev = match resume {
+        Resume::Pick => return Ok(None),
+        Resume::Latest => store.latest(repo_root)?,
+        Resume::Id(id) => Some(
+            store
+                .resume(repo_root, id)
+                .with_context(|| format!("no session {id:?} for this repo"))?,
+        ),
+        Resume::New => None,
     };
     if let Some(prev) = prev {
         let messages = prev.to_chat_messages();
         let writer = store.resume_writer(repo_root, &prev.meta.id)?;
-        Ok((sync::Arc::new(sync::Mutex::new(writer)), messages))
+        Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), messages)))
     } else {
         let writer = store.new_session(repo_root, repo_root, Some(model.to_string()))?;
-        Ok((sync::Arc::new(sync::Mutex::new(writer)), Vec::new()))
+        Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), Vec::new())))
     }
 }
 
@@ -382,6 +407,10 @@ fn step_label(name: &str, args: &str) -> String {
         },
         "search_files" => format!("Searched \u{201c}{}\u{201d}", s("query")),
         "find_files" => format!("Found files matching {}", s("pattern")),
+        "run_command" => match command_line(&parsed) {
+            None => "Ran a command".to_string(),
+            Some(line) => format!("Ran {line}"),
+        },
         "edit_file" => match s("path") {
             "" => "Edited file".to_string(),
             path => format!("Edited {path}"),
@@ -390,6 +419,21 @@ fn step_label(name: &str, args: &str) -> String {
         "recall" => format!("Recalled {}", s("name")),
         "read_skill" => format!("Read skill {}", s("name")),
         other => other.replace('_', " "),
+    }
+}
+
+/// The command line as invoked, so the label says what actually ran rather than
+/// just naming the binary.
+fn command_line(args: &Value) -> Option<String> {
+    let binary = args.get("command").and_then(Value::as_str)?;
+    let rest = args
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    match rest.is_empty() {
+        true => Some(binary.to_string()),
+        false => Some(format!("{binary} {}", rest.join(" "))),
     }
 }
 
@@ -545,13 +589,20 @@ struct ChatApp {
     recorder: Option<Recorder>,
     repo_root: std::path::PathBuf,
     perms: SessionPermissions,
-    approval_tx: ApprovalSender,
+    approval_tx: UiSender,
     events_tx: mpsc::Sender<TurnEvent>,
     should_quit: bool,
     /// Transient footer status, cleared on the next keystroke.
     flash: Option<String>,
     /// Set by `/clear`; the run loop wipes the screen on the next pass.
     clear_requested: bool,
+    /// Owned here rather than per turn, so a plan survives the turn that built it.
+    plan: sync::Arc<sync::Mutex<crate::chat::PlanState>>,
+    /// Where the answer to the open `ask_user` question goes. A picker event
+    /// carries only the chosen text, since the responder cannot be cloned.
+    pending_question: Option<tokio::sync::oneshot::Sender<Option<String>>>,
+    /// The open approval is a plan; granting it promotes the session.
+    pending_plan_approval: bool,
 }
 
 impl ChatApp {
@@ -561,7 +612,7 @@ impl ChatApp {
         edits_locked: bool,
         model: String,
         perms: SessionPermissions,
-        approval_tx: ApprovalSender,
+        approval_tx: UiSender,
         events_tx: mpsc::Sender<TurnEvent>,
     ) -> Self {
         Self {
@@ -590,6 +641,9 @@ impl ChatApp {
             should_quit: false,
             flash: None,
             clear_requested: false,
+            plan: sync::Arc::default(),
+            pending_question: None,
+            pending_plan_approval: false,
         }
     }
 
@@ -703,6 +757,11 @@ impl ChatApp {
     /* ---- turns ---- */
 
     fn submit(&mut self, text: &str, client: &AiClient, repo_root: &std::path::Path) -> ChatTurn {
+        // A dismissed session picker leaves no transcript open; start one now
+        // rather than dropping the conversation on the floor.
+        if self.recorder.is_none() {
+            self.start_new_session();
+        }
         let block = history::user(text, self.width);
         self.emit(block);
         self.history.push(ChatMessage {
@@ -728,6 +787,7 @@ impl ChatApp {
             store: self.store.clone(),
             skills: crate::chat::discover_skills(&repo_root),
             probe: std::sync::Arc::new(bash_tools::ToolProbe::detect()),
+            plan: self.plan.clone(),
         };
         tokio::spawn(async move {
             let sink: crate::chat::ChatEventSink = Box::new(move |event| {
@@ -851,28 +911,150 @@ impl ChatApp {
         pane.push_approval(req);
     }
 
+    /// `submit` recomputes the edit gate from `self.mode`, so approving a plan
+    /// has to move the session, not just the turn.
+    fn on_plan_approval_request(&mut self, req: ApprovalRequest, pane: &mut BottomPane<AppEvent>) {
+        if self.mode == Mode::Edit {
+            let _ = req.respond.send(Answer::Yes);
+            return;
+        }
+        self.pending_plan_approval = true;
+        pane.push_approval(req);
+    }
+
+    /// Offer the agent's question as a picker. Without options there is nothing
+    /// to pick, so the question is printed and the agent told to decide.
+    fn on_question_request(&mut self, req: QuestionRequest, pane: &mut BottomPane<AppEvent>) {
+        if req.options.is_empty() {
+            self.note(&format!("{}: {}", req.header, req.question));
+            let _ = req.respond.send(None);
+            return;
+        }
+
+        // A question that arrives while one is open replaces it; the dropped
+        // responder resolves to "declined" on the agent's side.
+        self.pending_question = Some(req.respond);
+        let items = req
+            .options
+            .iter()
+            .map(|option| SelectionItem {
+                name: option.clone(),
+                description: String::new(),
+                is_current: false,
+                event: AppEvent::QuestionAnswered(option.clone()),
+            })
+            .collect();
+        self.note(&req.question);
+        pane.push_picker(&req.header, items);
+    }
+
     fn on_app_event(&mut self, ev: AppEvent, client: &mut AiClient) {
         match ev {
             AppEvent::SetMode(mode) => self.select_mode(mode),
             AppEvent::SetEffort(effort) => self.set_effort(effort, client),
             AppEvent::ApprovalDecided { answer, scope } => {
+                let plan = std::mem::take(&mut self.pending_plan_approval);
                 let note = match (answer, &scope) {
+                    (Answer::No, _) if plan => Some("plan rejected".to_string()),
                     (Answer::No, _) => Some("edit rejected".to_string()),
                     (Answer::Always, Some(dir)) => {
                         Some(format!("always allowing {}", short_path(dir)))
                     }
                     _ => None,
                 };
-                // "Always" on an in-repo edit means "stop asking": promote the
-                // session so later requests auto-approve.
-                if answer == Answer::Always && scope.is_none() && !self.edits_locked {
+                // An approved plan, or "always" on an in-repo edit, both mean
+                // "stop asking": promote the session so it outlives the turn.
+                let promotes =
+                    (plan && answer.allowed()) || (answer == Answer::Always && scope.is_none());
+                if promotes && !self.edits_locked {
                     self.select_mode(Mode::Edit);
                 }
                 if let Some(note) = note {
                     self.note(&note);
                 }
             }
+            AppEvent::QuestionAnswered(answer) => {
+                if let Some(respond) = self.pending_question.take() {
+                    let _ = respond.send(Some(answer.clone()));
+                }
+                self.note(&format!("answered: {answer}"));
+            }
+            AppEvent::SessionPicked(id) => self.resume_session(&id),
         }
+    }
+
+    /* ---- sessions ---- */
+
+    /// One row per saved session, newest first. With nothing saved there is
+    /// nothing to choose, so the run just starts clean.
+    fn open_session_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
+        let Some(store) = &self.store else {
+            self.note("no session store available; starting fresh");
+            return;
+        };
+        let metas = match store.list_sessions(&self.repo_root) {
+            Ok(metas) => metas,
+            Err(e) => {
+                self.note(&format!("could not list sessions: {e:#}"));
+                return;
+            }
+        };
+
+        let items: Vec<SelectionItem<AppEvent>> = metas
+            .iter()
+            .filter_map(|meta| {
+                let transcript = store.resume(&self.repo_root, &meta.id).ok()?;
+                let turns = transcript.user_turn_count();
+                // An empty transcript is a stray from a session nobody typed
+                // into; offering it is the trap `--continue` already falls into.
+                if turns == 0 {
+                    return None;
+                }
+                let title = transcript
+                    .first_user_text()
+                    .map(|s| super::helpers::truncate_label(s.trim(), 60))
+                    .unwrap_or_else(|| meta.id.clone());
+                Some(SelectionItem {
+                    name: title,
+                    description: format!(
+                        "{}  ·  {turns} turn{}",
+                        meta.created_at.format("%Y-%m-%d %H:%M"),
+                        if turns == 1 { "" } else { "s" }
+                    ),
+                    is_current: false,
+                    event: AppEvent::SessionPicked(meta.id.clone()),
+                })
+            })
+            .collect();
+
+        if items.is_empty() {
+            self.note("no saved sessions for this repo yet");
+            return;
+        }
+        pane.push_picker("Resume a session", items);
+    }
+
+    /// Adopt a chosen session: its history seeds the view and later turns append
+    /// to its transcript rather than to a fresh one.
+    fn resume_session(&mut self, id: &str) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let transcript = match store.resume(&self.repo_root, id) {
+            Ok(t) => t,
+            Err(e) => {
+                self.note(&format!("could not resume {id}: {e:#}"));
+                return;
+            }
+        };
+        match store.resume_writer(&self.repo_root, id) {
+            Ok(writer) => self.recorder = Some(sync::Arc::new(sync::Mutex::new(writer))),
+            Err(e) => {
+                self.note(&format!("could not reopen {id} for writing: {e:#}"));
+                return;
+            }
+        }
+        self.load_history(transcript.to_chat_messages());
     }
 
     /* ---- modes and effort ---- */
@@ -934,8 +1116,6 @@ impl ChatApp {
             format!("effort {next}")
         });
     }
-
-    /* ---- commands ---- */
 
     /// A model change takes effect next turn, since each turn clones the client.
     fn handle_command(
@@ -1175,6 +1355,109 @@ mod tests {
         assert_eq!(rx.blocking_recv(), Ok(Answer::Yes));
     }
 
+    fn plan_request() -> (ApprovalRequest, tokio::sync::oneshot::Receiver<Answer>) {
+        let (respond, rx) = tokio::sync::oneshot::channel();
+        (
+            ApprovalRequest {
+                preview: "Approve this plan and start editing?\n\n[ ] ship it".into(),
+                scope: None,
+                respond,
+            },
+            rx,
+        )
+    }
+
+    #[test]
+    fn a_plan_approval_asks_rather_than_passing_silently() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Plan;
+        let (mut p, _rx) = pane();
+        let (req, _answer) = plan_request();
+        app.on_plan_approval_request(req, &mut p);
+        assert!(p.has_active_view(), "the user must see the plan");
+    }
+
+    /// The turn-local edit gate dies with the turn, so approval has to land on
+    /// the session or the next message drops back to plan.
+    #[test]
+    fn an_approved_plan_promotes_the_session_not_just_the_turn() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Plan;
+        app.edits_locked = false;
+        let mut client = AiClient::new("http://localhost", "k", "m1");
+        let (mut p, _rx) = pane();
+
+        let (req, _answer) = plan_request();
+        app.on_plan_approval_request(req, &mut p);
+        app.on_app_event(
+            AppEvent::ApprovalDecided {
+                answer: Answer::Yes,
+                scope: None,
+            },
+            &mut client,
+        );
+
+        assert_eq!(app.mode, Mode::Edit, "the footer and the next turn agree");
+        assert!(app.mode.can_edit(), "the next submit() keeps edits on");
+    }
+
+    #[test]
+    fn a_rejected_plan_leaves_the_session_in_plan() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Plan;
+        let mut client = AiClient::new("http://localhost", "k", "m1");
+        let (mut p, _rx) = pane();
+
+        let (req, _answer) = plan_request();
+        app.on_plan_approval_request(req, &mut p);
+        app.on_app_event(
+            AppEvent::ApprovalDecided {
+                answer: Answer::No,
+                scope: None,
+            },
+            &mut client,
+        );
+
+        assert_eq!(app.mode, Mode::Plan);
+    }
+
+    /// A plain edit approval must not promote; only "always" and plans do.
+    #[test]
+    fn a_one_off_edit_approval_does_not_promote_the_session() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Manual;
+        let mut client = AiClient::new("http://localhost", "k", "m1");
+        app.on_app_event(
+            AppEvent::ApprovalDecided {
+                answer: Answer::Yes,
+                scope: None,
+            },
+            &mut client,
+        );
+        assert_eq!(app.mode, Mode::Manual);
+    }
+
+    #[test]
+    fn a_locked_run_cannot_be_promoted_by_approving_a_plan() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Plan;
+        app.edits_locked = true;
+        let mut client = AiClient::new("http://localhost", "k", "m1");
+        let (mut p, _rx) = pane();
+
+        let (req, _answer) = plan_request();
+        app.on_plan_approval_request(req, &mut p);
+        app.on_app_event(
+            AppEvent::ApprovalDecided {
+                answer: Answer::Yes,
+                scope: None,
+            },
+            &mut client,
+        );
+
+        assert_eq!(app.mode, Mode::Plan, "a read-only run stays read-only");
+    }
+
     #[test]
     fn approval_always_promotes_the_session_to_edit() {
         let mut app = chat_app("m1".into());
@@ -1310,6 +1593,56 @@ mod tests {
     }
 
     #[test]
+    fn a_command_step_names_the_command_it_ran() {
+        assert_eq!(
+            step_label(
+                "run_command",
+                r#"{"command":"cargo","args":["test","--all"]}"#
+            ),
+            "Ran cargo test --all"
+        );
+        assert_eq!(
+            step_label("run_command", r#"{"command":"cargo"}"#),
+            "Ran cargo"
+        );
+    }
+
+    #[test]
+    fn a_half_streamed_command_label_does_not_invent_a_name() {
+        assert_eq!(
+            step_label("run_command", r#"{"args":["test"]}"#),
+            "Ran a command"
+        );
+        assert_eq!(
+            step_label("run_command", r#"{"command":"car"#),
+            "Ran a command"
+        );
+    }
+
+    #[test]
+    fn a_command_shows_its_command_and_then_its_output() {
+        let mut app = chat_app("m1".into());
+        app.on_turn_event(TurnEvent::ToolCall {
+            id: "1".into(),
+            name: "run_command".into(),
+            args: r#"{"command":"cargo","args":["test"]}"#.into(),
+        });
+        app.on_turn_event(TurnEvent::ToolResult {
+            id: "1".into(),
+            result: "test result: ok. 29 passed".into(),
+            error: false,
+        });
+
+        let out = rendered(&app);
+        assert!(out.contains("cargo test"), "the command is named: {out}");
+        assert!(out.contains("29 passed"), "the output follows it: {out}");
+        assert!(
+            !out.contains("Explored"),
+            "a command is not collapsed away as exploration: {out}"
+        );
+    }
+
+    #[test]
     fn a_quiet_endpoint_still_renders_its_reply() {
         let mut app = chat_app("m1".into());
         app.finish_turn("the whole answer", &[], None);
@@ -1357,7 +1690,9 @@ mod tests {
                 .unwrap();
         }
 
-        let (recorder, messages) = resume_or_new(&store, repo, "m", true).unwrap();
+        let (recorder, messages) = resume_or_new(&store, repo, "m", &Resume::Latest)
+            .unwrap()
+            .unwrap();
         assert_eq!(messages.len(), 2);
 
         let mut app = chat_app("m".into());
@@ -1369,12 +1704,146 @@ mod tests {
         assert!(rendered(&app).contains("hi there"));
     }
 
+    /// A picker cannot be shown before the UI exists, and opening a transcript
+    /// early is what leaves the stray empty sessions `--continue` trips over.
+    #[test]
+    fn pick_opens_no_session_up_front() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-pick-repo");
+
+        assert!(
+            resume_or_new(&store, repo, "m", &Resume::Pick)
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.list_sessions(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resume_by_id_reopens_that_session() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-by-id-repo");
+        let id = {
+            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+            w.append_message(MessageEvent::user("the first one"))
+                .unwrap();
+            w.meta().id.clone()
+        };
+        // A newer session, so "latest" and "this id" disagree.
+        {
+            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+            w.append_message(MessageEvent::user("the second one"))
+                .unwrap();
+        }
+
+        let (_, messages) = resume_or_new(&store, repo, "m", &Resume::Id(id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "the first one");
+    }
+
+    #[test]
+    fn resume_by_unknown_id_is_an_error_not_a_new_session() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-bad-id-repo");
+
+        let Err(err) = resume_or_new(&store, repo, "m", &Resume::Id("nope".into())) else {
+            panic!("an unknown id cannot be resumed");
+        };
+        assert!(err.to_string().contains("nope"), "{err}");
+        assert!(store.list_sessions(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_session_picker_skips_empty_transcripts() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-picker-repo");
+        store.new_session(repo, repo, Some("m".into())).unwrap();
+        {
+            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+            w.append_message(MessageEvent::user("real work")).unwrap();
+        }
+
+        let mut app = chat_app("m".into());
+        app.store = Some(store);
+        app.repo_root = repo.to_path_buf();
+        let (mut p, _rx) = pane();
+        app.open_session_picker(&mut p);
+
+        assert!(p.has_active_view(), "the one real session is offered");
+        assert!(
+            rendered(&app).contains("real work") || !rendered(&app).contains("no saved sessions"),
+            "{}",
+            rendered(&app)
+        );
+    }
+
+    #[test]
+    fn the_session_picker_says_so_when_there_is_nothing_to_resume() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-empty-picker-repo");
+        store.new_session(repo, repo, Some("m".into())).unwrap();
+
+        let mut app = chat_app("m".into());
+        app.store = Some(store);
+        app.repo_root = repo.to_path_buf();
+        let (mut p, _rx) = pane();
+        app.open_session_picker(&mut p);
+
+        assert!(!p.has_active_view(), "an empty list is not a picker");
+        assert!(
+            rendered(&app).contains("no saved sessions"),
+            "{}",
+            rendered(&app)
+        );
+    }
+
+    #[test]
+    fn picking_a_session_seeds_its_history_and_reopens_its_transcript() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open(home.path()).unwrap();
+        let repo = std::path::Path::new("/tmp/aster-adopt-repo");
+        let id = {
+            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+            w.append_message(MessageEvent::user("earlier question"))
+                .unwrap();
+            w.append_message(MessageEvent::assistant(
+                Some("earlier answer".into()),
+                vec![],
+            ))
+            .unwrap();
+            w.meta().id.clone()
+        };
+
+        let mut app = chat_app("m".into());
+        app.store = Some(store);
+        app.repo_root = repo.to_path_buf();
+        let mut client = AiClient::new("http://localhost", "k", "m");
+        app.on_app_event(AppEvent::SessionPicked(id), &mut client);
+
+        assert_eq!(app.history.len(), 2);
+        assert!(app.recorder.is_some(), "later turns append to that session");
+        assert!(
+            rendered(&app).contains("earlier answer"),
+            "{}",
+            rendered(&app)
+        );
+    }
+
     #[test]
     fn record_user_persists_turn() {
         let home = tempfile::tempdir().unwrap();
         let store = Store::open(home.path()).unwrap();
         let repo = std::path::Path::new("/tmp/aster-record-repo");
-        let (recorder, _) = resume_or_new(&store, repo, "m", true).unwrap();
+        let (recorder, _) = resume_or_new(&store, repo, "m", &Resume::Latest)
+            .unwrap()
+            .unwrap();
 
         let mut app = chat_app("m".into());
         app.store = Some(store.clone());
