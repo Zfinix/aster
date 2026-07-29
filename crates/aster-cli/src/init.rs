@@ -143,13 +143,27 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     let providers = load_providers()?;
 
-    let interactive = !args.yes && io::stdin().is_terminal() && io::stdout().is_terminal();
+    let interactive =
+        !args.yes && !crate::json_mode() && io::stdin().is_terminal() && io::stdout().is_terminal();
     if !interactive {
         let d = default_provider(&providers);
-        emit(
-            write_yaml(&yaml_path, &d.base_url, &d.example_model, args.force)?,
-            false,
-        )?;
+        let note = write_yaml(&yaml_path, &d.base_url, &d.example_model, args.force)?;
+        if crate::json_mode() {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "path": yaml_path.display().to_string(),
+                    "scope": if args.global { "global" } else { "project" },
+                    "base_url": d.base_url,
+                    "model": d.example_model,
+                    "wrote": matches!(note, Note::Success(_)),
+                    "message": note.message(),
+                })
+            );
+            return Ok(());
+        }
+        emit(note, false)?;
         finish_plain(args.global);
         return Ok(());
     }
@@ -259,6 +273,14 @@ fn or_cancel<T>(result: io::Result<T>) -> Result<Option<T>> {
 enum Note {
     Success(String),
     Info(String),
+}
+
+impl Note {
+    fn message(&self) -> &str {
+        match self {
+            Note::Success(m) | Note::Info(m) => m,
+        }
+    }
 }
 
 fn emit(note: Note, framed: bool) -> Result<()> {

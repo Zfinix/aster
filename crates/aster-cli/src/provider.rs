@@ -4,6 +4,7 @@
 use std::env;
 
 use anyhow::{Result, bail};
+use aster_ai::Effort;
 
 use crate::settings::Review;
 
@@ -11,6 +12,7 @@ pub struct LlmConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub effort: Effort,
 }
 
 /// Resolve endpoint, key, and model. `model_flag` wins over env and yaml; empty env counts as unset.
@@ -32,7 +34,22 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
         api_key,
         base_url,
         model,
+        effort: resolve_effort(review),
     })
+}
+
+/// `--effort` wins, then `ASTER_EFFORT`/`ASTER_REASONING_EFFORT`, then
+/// aster.yaml, then the client default. An unparseable value is ignored rather
+/// than fatal: a typo should not stop a run.
+fn resolve_effort(review: &Review) -> Effort {
+    crate::effort_flag()
+        .or_else(|| {
+            env_or("ASTER_EFFORT", None)
+                .or_else(|| env_or("ASTER_REASONING_EFFORT", None))
+                .and_then(|v| v.parse().ok())
+        })
+        .or(review.effort)
+        .unwrap_or_default()
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

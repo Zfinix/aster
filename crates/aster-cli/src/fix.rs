@@ -29,10 +29,6 @@ pub struct FixArgs {
     #[arg(long)]
     apply: bool,
 
-    /// Emit one JSON array of per-finding results on stdout.
-    #[arg(long)]
-    json: bool,
-
     /// Model override (else ASTER_MODEL, aster.yaml, default).
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
@@ -65,9 +61,10 @@ pub async fn run(args: FixArgs) -> Result<()> {
 
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
     let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
-    let client = AiClient::new(llm.base_url, llm.api_key, llm.model);
+    let client = AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort);
     let policy = Policy::compile(&settings.permissions)?;
 
+    let json = crate::json_mode();
     let findings = read_findings(&args.findings_json)?;
     if findings.is_empty() {
         bail!("no findings to fix (the findings JSON was an empty array)");
@@ -76,13 +73,13 @@ pub async fn run(args: FixArgs) -> Result<()> {
     let mut results = Vec::with_capacity(findings.len());
     for finding in &findings {
         let result = fix_one(&client, &repo_root, &policy, finding, args.apply).await;
-        if !args.json {
+        if !json {
             print_result(&result);
         }
         results.push(result);
     }
 
-    if args.json {
+    if json {
         println!("{}", serde_json::to_string(&results)?);
     } else {
         crate::review::print_usage(client.usage_snapshot());

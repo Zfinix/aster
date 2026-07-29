@@ -2,7 +2,7 @@
 //! Exact-match, apply-once semantics keep model edits auditable.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -81,6 +81,87 @@ pub fn resolve_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Where a resolved path landed relative to the repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Inside the repo. The policy's globs apply to the repo-relative path.
+    InRepo,
+    /// Outside the repo. Reachable only with the user's per-path approval.
+    Outside,
+}
+
+/// Resolve `path` to something that exists, expanding a leading `~`. Unlike
+/// [`resolve_in_repo`] this accepts paths outside the repository and reports
+/// where they landed, so the caller can gate them instead of failing outright.
+pub fn resolve_anywhere(repo_root: &Path, path: &str) -> Result<(PathBuf, Scope)> {
+    let root = repo_root
+        .canonicalize()
+        .with_context(|| format!("resolving repo root {}", repo_root.display()))?;
+    let expanded = expand_home(path);
+    let joined = if expanded.is_absolute() {
+        expanded
+    } else {
+        root.join(expanded)
+    };
+    let resolved = joined
+        .canonicalize()
+        .with_context(|| format!("no such file or directory: {path}"))?;
+    let scope = if resolved.starts_with(&root) {
+        Scope::InRepo
+    } else {
+        Scope::Outside
+    };
+    Ok((resolved, scope))
+}
+
+/// `~` and `~/rest` become the home directory. A bare `~user` is left alone;
+/// resolving another account's home is not something the agent should guess at.
+pub fn expand_home(path: &str) -> PathBuf {
+    let Some(rest) = path.strip_prefix('~') else {
+        return PathBuf::from(path);
+    };
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return PathBuf::from(path);
+    }
+    match dirs::home_dir() {
+        Some(home) => home.join(rest.trim_start_matches('/')),
+        None => PathBuf::from(path),
+    }
+}
+
+/// Resolve `path` for a file that does not exist yet, so it can be created.
+/// [`resolve_in_repo`] cannot: canonicalizing a missing path always fails. The
+/// nearest existing ancestor is canonicalized instead, so a symlinked directory
+/// still cannot place the new file outside the repo.
+pub fn resolve_new_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
+    let root = repo_root
+        .canonicalize()
+        .with_context(|| format!("resolving repo root {}", repo_root.display()))?;
+    let relative = Path::new(path);
+    if !relative
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        bail!("path must be repo-relative and stay inside the repository: {path}");
+    }
+
+    let target = root.join(relative);
+    let mut existing = target.as_path();
+    while !existing.exists() {
+        existing = existing
+            .parent()
+            .with_context(|| format!("no directory to create {path} in"))?;
+    }
+    if !existing
+        .canonicalize()
+        .with_context(|| format!("resolving {}", existing.display()))?
+        .starts_with(&root)
+    {
+        bail!("path escapes the repository: {path}");
+    }
+    Ok(target)
+}
+
 pub fn read_repo_file(repo_root: &Path, path: &str) -> Result<(PathBuf, String)> {
     let resolved = resolve_in_repo(repo_root, path)?;
     let content =
@@ -109,6 +190,47 @@ mod tests {
     use super::*;
 
     const REPLY: &str = "<<<<<<< SEARCH\nlet a = 1;\n=======\nlet a = 2;\n>>>>>>> REPLACE\n";
+
+    #[test]
+    fn resolve_anywhere_classifies_in_repo_and_outside() {
+        let repo = tempfile::tempdir().unwrap();
+        fs::write(repo.path().join("inside.rs"), "").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("elsewhere.txt"), "").unwrap();
+
+        let (_, scope) = resolve_anywhere(repo.path(), "inside.rs").unwrap();
+        assert_eq!(scope, Scope::InRepo);
+
+        let path = outside.path().join("elsewhere.txt");
+        let (resolved, scope) = resolve_anywhere(repo.path(), &path.to_string_lossy()).unwrap();
+        assert_eq!(scope, Scope::Outside);
+        assert_eq!(resolved, path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn resolve_anywhere_expands_a_leading_tilde() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = dirs::home_dir().unwrap();
+        let (resolved, scope) = resolve_anywhere(repo.path(), "~").unwrap();
+        assert_eq!(resolved, home.canonicalize().unwrap());
+        assert_eq!(scope, Scope::Outside);
+    }
+
+    #[test]
+    fn resolve_new_accepts_a_missing_nested_path() {
+        let repo = tempfile::tempdir().unwrap();
+        let target = resolve_new_in_repo(repo.path(), "src/deep/new.rs").unwrap();
+        assert!(target.ends_with("src/deep/new.rs"));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn resolve_new_rejects_paths_leaving_the_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        for path in ["../outside.rs", "src/../../outside.rs", "/etc/passwd"] {
+            assert!(resolve_new_in_repo(repo.path(), path).is_err(), "{path}");
+        }
+    }
 
     #[test]
     fn parse_blocks_single_block() {

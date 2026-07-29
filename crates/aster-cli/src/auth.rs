@@ -45,22 +45,39 @@ pub async fn login() -> Result<()> {
         .await
         .context("parsing device code response")?;
 
-    println!(
-        "\nTo link your GitHub account, open:\n  {}",
-        device.verification_uri
+    // Under --json stdout is the caller's channel, so the human instructions
+    // go to stderr and stdout carries one object at the end.
+    let json = crate::json_mode();
+    let instructions = format!(
+        "\nTo link your GitHub account, open:\n  {}\nand enter the code:\n\n    {}\n\nWaiting for authorization…",
+        device.verification_uri, device.user_code
     );
-    println!("and enter the code:\n\n    {}\n", device.user_code);
+    if json {
+        eprintln!("{instructions}");
+    } else {
+        println!("{instructions}");
+    }
     let _ = open::that(&device.verification_uri);
-    println!("Waiting for authorization…");
 
     let token = poll_for_token(&http, &device).await?;
     config::store_token(&token)?;
 
-    println!("\n✓ Linked. Credentials stored.");
-    println!(
-        "If you haven't yet, install the Aster app on your repos:\n  {}",
-        config::APP_INSTALL_URL
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "linked": true,
+                "install_url": config::APP_INSTALL_URL,
+            })
+        );
+    } else {
+        println!("\n✓ Linked. Credentials stored.");
+        println!(
+            "If you haven't yet, install the Aster app on your repos:\n  {}",
+            config::APP_INSTALL_URL
+        );
+    }
     Ok(())
 }
 

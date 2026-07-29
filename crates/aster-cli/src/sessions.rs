@@ -9,9 +9,6 @@ use serde_json::{Value, json};
 pub struct SessionsArgs {
     #[command(subcommand)]
     cmd: Option<SessionsCmd>,
-    /// Emit JSON instead of text (for editors and the desktop app).
-    #[arg(long, global = true)]
-    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -20,6 +17,8 @@ enum SessionsCmd {
     List,
     /// Print a session's full transcript by id.
     Show { id: String },
+    /// Delete a saved session by id.
+    Delete { id: String },
 }
 
 pub fn run_sessions(args: SessionsArgs) -> Result<()> {
@@ -46,7 +45,7 @@ pub fn run_sessions(args: SessionsArgs) -> Result<()> {
                 })
                 .collect();
 
-            if args.json {
+            if crate::json_mode() {
                 let out: Vec<Value> = rows
                     .iter()
                     .map(|(meta, turns, title)| {
@@ -78,7 +77,7 @@ pub fn run_sessions(args: SessionsArgs) -> Result<()> {
             let transcript = store
                 .resume(&repo_root, &id)
                 .with_context(|| format!("no session {id:?} for this repo"))?;
-            if args.json {
+            if crate::json_mode() {
                 let events: Vec<Value> = transcript
                     .events
                     .iter()
@@ -87,6 +86,16 @@ pub fn run_sessions(args: SessionsArgs) -> Result<()> {
                 println!("{}", json!({ "id": transcript.meta.id, "events": events }));
             } else {
                 print_transcript(&transcript);
+            }
+        }
+        SessionsCmd::Delete { id } => {
+            if !store.delete_session(&repo_root, &id)? {
+                anyhow::bail!("no session {id:?} for this repo");
+            }
+            if crate::json_mode() {
+                println!("{}", json!({ "ok": true, "id": id }));
+            } else {
+                println!("deleted session {id}");
             }
         }
     }
@@ -130,9 +139,6 @@ fn print_transcript(transcript: &aster_persist::SessionTranscript) {
 pub struct MemoryArgs {
     #[command(subcommand)]
     cmd: Option<MemoryCmd>,
-    /// Emit JSON instead of text (for editors and the desktop app).
-    #[arg(long, global = true)]
-    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -153,7 +159,7 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
     match args.cmd.unwrap_or(MemoryCmd::List) {
         MemoryCmd::List => {
             let blocks = memory.list()?;
-            if args.json {
+            if crate::json_mode() {
                 let out = json!({
                     "dir": memory.dir().display().to_string(),
                     "blocks": blocks.iter().map(|b| json!({
@@ -192,7 +198,7 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
                     ("project", None)
                 }
             };
-            if args.json {
+            if crate::json_mode() {
                 println!(
                     "{}",
                     json!({

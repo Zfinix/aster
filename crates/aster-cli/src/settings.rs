@@ -31,6 +31,8 @@ pub struct Review {
     pub astgrep_rules: Option<String>,
     /// Defect classes to bias the hypothesis pass toward.
     pub focus_areas: Vec<String>,
+    /// Reasoning budget for thinking models: off, low, medium, or high.
+    pub effort: Option<aster_ai::Effort>,
     /// Globs of files to review. Empty = everything (minus `exclude`).
     pub include: Vec<String>,
     /// Globs of files to never review.
@@ -38,23 +40,92 @@ pub struct Review {
 }
 
 impl Settings {
-    /// Load from `repo_root`, else the global config dir, else defaults. Malformed files error.
+    /// The global config, then the repo's, with the repo's on top. Malformed
+    /// files error rather than being skipped, so a typo is never silent.
     pub fn load(repo_root: Option<&Path>) -> Result<Self> {
-        if let Some(root) = repo_root {
-            for name in ["aster.yaml", "aster.yml", ".aster.yaml"] {
-                let path = root.join(name);
-                if path.exists() {
-                    return parse(&path);
-                }
+        let global = match dirs::config_dir().map(|d| d.join("aster/aster.yaml")) {
+            Some(path) if path.exists() => Some(parse(&path)?),
+            _ => None,
+        };
+        let project = repo_root
+            .and_then(|root| {
+                ["aster.yaml", "aster.yml", ".aster.yaml"]
+                    .iter()
+                    .map(|name| root.join(name))
+                    .find(|path| path.exists())
+            })
+            .map(|path| parse(&path))
+            .transpose()?;
+
+        match (global, project) {
+            (Some(global), Some(project)) => Ok(global.overlaid_with(project)),
+            (Some(only), None) | (None, Some(only)) => Ok(only),
+            (None, None) => Ok(Self::default()),
+        }
+    }
+
+    /// Layer `project` over `self`. Scalars are the project's when it sets
+    /// them; permission lists union, since both files are grants and dropping
+    /// the global one silently would widen or narrow access by accident.
+    /// `mode` takes the stricter of the two rather than the nearer, so a
+    /// project file cannot loosen a global `ask` just by omitting the key.
+    fn overlaid_with(self, project: Settings) -> Settings {
+        Settings {
+            review: self.review.overlaid_with(project.review),
+            permissions: merge_permissions(self.permissions, project.permissions),
+        }
+    }
+}
+
+fn merge_permissions(
+    global: aster_policy::PermissionsConfig,
+    project: aster_policy::PermissionsConfig,
+) -> aster_policy::PermissionsConfig {
+    fn union(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
+        for item in b {
+            if !a.contains(&item) {
+                a.push(item);
             }
         }
-        if let Some(global) = dirs::config_dir().map(|d| d.join("aster/aster.yaml"))
-            && global.exists()
-        {
-            return parse(&global);
-        }
-        Ok(Self::default())
+        a
     }
+    aster_policy::PermissionsConfig {
+        mode: global.mode.stricter(project.mode),
+        allow: union(global.allow, project.allow),
+        deny: union(global.deny, project.deny),
+        protected: union(global.protected, project.protected),
+        secret_read: union(global.secret_read, project.secret_read),
+        additional_directories: union(
+            global.additional_directories,
+            project.additional_directories,
+        ),
+        use_default_protected: global.use_default_protected && project.use_default_protected,
+    }
+}
+
+impl Review {
+    fn overlaid_with(self, project: Review) -> Review {
+        Review {
+            model: project.model.or(self.model),
+            base_url: project.base_url.or(self.base_url),
+            hypothesis_model: project.hypothesis_model.or(self.hypothesis_model),
+            verify_model: project.verify_model.or(self.verify_model),
+            min_confidence: project.min_confidence.or(self.min_confidence),
+            max_diff_bytes: project.max_diff_bytes.or(self.max_diff_bytes),
+            analyzers: pick(self.analyzers, project.analyzers),
+            astgrep_rules: project.astgrep_rules.or(self.astgrep_rules),
+            effort: project.effort.or(self.effort),
+            focus_areas: pick(self.focus_areas, project.focus_areas),
+            include: pick(self.include, project.include),
+            exclude: pick(self.exclude, project.exclude),
+        }
+    }
+}
+
+/// Review lists replace rather than union: an `include` of `["src/**"]` in a
+/// project means that and nothing else.
+fn pick(global: Vec<String>, project: Vec<String>) -> Vec<String> {
+    if project.is_empty() { global } else { project }
 }
 
 fn parse(path: &Path) -> Result<Settings> {
@@ -197,12 +268,28 @@ permissions:
             }),
             Decision::Deny { .. }
         ));
-        // Ask mode falls through to a prompt for unmatched paths.
+        // The legacy `ask` name is `manual`, which prompts for unmatched paths.
         assert!(matches!(
             p.evaluate(&Action::Edit {
                 path: "docs/readme.md"
             }),
             Decision::Prompt { .. }
         ));
+    }
+
+    #[test]
+    fn effort_parses_and_overlays_from_the_project_file() {
+        let global: Settings = serde_yaml::from_str("review:\n  effort: high\n").expect("parse");
+        assert_eq!(global.review.effort, Some(aster_ai::Effort::High));
+
+        let project: Settings = serde_yaml::from_str("review:\n  effort: off\n").expect("parse");
+        let merged = global.overlaid_with(project);
+        assert_eq!(merged.review.effort, Some(aster_ai::Effort::Off));
+    }
+
+    #[test]
+    fn effort_absent_leaves_the_client_default() {
+        let s: Settings = serde_yaml::from_str("review: {}").expect("parse");
+        assert_eq!(s.review.effort, None);
     }
 }

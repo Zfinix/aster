@@ -62,10 +62,6 @@ pub struct ReviewArgs {
     #[arg(long, value_name = "F")]
     min_confidence: Option<f32>,
 
-    /// Emit findings as JSON instead of text.
-    #[arg(long, conflicts_with = "tui")]
-    json: bool,
-
     /// Stream structured NDJSON progress events to stdout, one per line. For editors and UIs.
     #[arg(long, conflicts_with_all = ["tui", "json", "comment"])]
     pub stream: bool,
@@ -82,7 +78,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     let review = &settings.review;
 
     let llm = crate::provider::resolve(review, None)?;
-    let ai_client = AiClient::new(llm.base_url, llm.api_key, llm.model);
+    let ai_client = AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort);
 
     let (raw_diff, pr_target) = resolve_diff(&args).await?;
     // --include overrides the file's include list; --exclude adds to it.
@@ -162,7 +158,8 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
 
     // JSON and comment modes must keep stdout clean, so run them silently.
-    let response = if args.json || args.comment {
+    let json = crate::json_mode();
+    let response = if json || args.comment {
         execute(job, &None).await?
     } else {
         run_streaming(job, min_confidence).await?
@@ -182,7 +179,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
             "Posted {} comment(s) to {owner}/{repo}#{pr}.",
             findings.len()
         );
-    } else if args.json {
+    } else if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
         print_findings(&response.summary, &findings);
