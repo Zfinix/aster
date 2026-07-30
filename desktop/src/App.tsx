@@ -524,8 +524,6 @@ function App() {
     settleChat,
   ]);
 
-  /* ---- review ---- */
-
   const handleEvent = useCallback(
     (ev: StreamEvent) => {
       const ref = activeReviewRef.current;
@@ -604,8 +602,6 @@ function App() {
 
   const onReview = useCallback(() => startReview(opts), [startReview, opts]);
 
-  /* ---- repo / source / model pickers ---- */
-
   const onRepo = useCallback(async (value: string) => {
     if (value === "__browse__") {
       const picked = await pickRepo();
@@ -651,8 +647,6 @@ function App() {
     },
     [onModel],
   );
-
-  /* ---- derived ---- */
 
   const activeConvo = conversations.find((c) => c.id === activeId) ?? null;
   const activeFiles = activeConvo ? (latestReview(activeConvo)?.files ?? []) : [];

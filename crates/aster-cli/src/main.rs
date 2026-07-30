@@ -8,13 +8,17 @@ mod fix;
 mod git;
 mod github;
 mod init;
+mod instructions;
+mod mcp;
 mod persist;
 mod provider;
 mod review;
 mod sessions;
 mod settings;
 mod skills;
+mod term;
 mod tui;
+mod util;
 mod web;
 
 use std::env;
@@ -73,6 +77,8 @@ enum Command {
     Skills(skills::SkillsArgs),
     /// Crawl or extract web pages as Markdown.
     Web(web::WebArgs),
+    /// Inspect the MCP servers configured for this repo.
+    Mcp(mcp::McpArgs),
 }
 
 /// Set once from the root `--json` flag, then read anywhere a command chooses
@@ -95,7 +101,7 @@ pub fn effort_flag() -> Option<Effort> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
-    if let Some(global) = dirs::config_dir().map(|d| d.join("aster/.env")) {
+    if let Some(global) = dirs::home_dir().map(|h| h.join(".aster/.env")) {
         let _ = dotenvy::from_path(&global);
     }
 
@@ -131,6 +137,7 @@ async fn main() -> Result<()> {
         Command::Memory(args) => sessions::run_memory(args),
         Command::Skills(args) => skills::run(args).await,
         Command::Web(args) => web::run(args).await,
+        Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
     };
 
     // In JSON mode a failure is data too, so callers parse one shape either way.

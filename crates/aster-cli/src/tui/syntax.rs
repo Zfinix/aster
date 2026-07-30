@@ -112,7 +112,7 @@ pub(super) fn highlight(src: &str) -> Vec<Span<'static>> {
             // colours are not swallowed.
             let standalone = *open != "#" || i == 0 || !chars[i - 1].is_alphanumeric();
             if standalone {
-                out.push(Span::styled(rest, theme::faint()));
+                out.push(Span::styled(rest, theme::get().faint_style()));
                 return out;
             }
         }
@@ -139,7 +139,7 @@ pub(super) fn highlight(src: &str) -> Vec<Span<'static>> {
             }
             out.push(Span::styled(
                 chars[start..i].iter().collect::<String>(),
-                Style::default().fg(theme::AMBER),
+                Style::default().fg(theme::get().amber),
             ));
             continue;
         }
@@ -164,7 +164,7 @@ pub(super) fn highlight(src: &str) -> Vec<Span<'static>> {
         }
         out.push(Span::styled(
             chars[start..i].iter().collect::<String>(),
-            theme::dimmer(),
+            theme::get().dimmer_style(),
         ));
     }
     out
@@ -189,7 +189,7 @@ fn string_from(chars: &[char], start: usize, quote: char) -> (Span<'static>, usi
     (
         Span::styled(
             chars[start..end].iter().collect::<String>(),
-            Style::default().fg(theme::ADD_FG),
+            Style::default().fg(theme::get().add_fg),
         ),
         end,
     )
@@ -197,20 +197,20 @@ fn string_from(chars: &[char], start: usize, quote: char) -> (Span<'static>, usi
 
 fn word_style(word: &str, called: bool, leading: bool) -> Style {
     if KEYWORDS.contains(&word) {
-        return Style::default().fg(theme::PURPLE);
+        return Style::default().fg(theme::get().purple);
     }
     if LITERALS.contains(&word) {
-        return Style::default().fg(theme::AMBER);
+        return Style::default().fg(theme::get().amber);
     }
     // A word in call position, or the first word of a shell line, is the
     // thing being invoked.
     if called || leading {
-        return Style::default().fg(theme::BLUE);
+        return Style::default().fg(theme::get().blue);
     }
     if starts_upper(word) {
-        return Style::default().fg(theme::BLUE);
+        return Style::default().fg(theme::get().blue);
     }
-    Style::default().fg(theme::TEXT)
+    Style::default().fg(theme::get().text)
 }
 
 fn starts_upper(word: &str) -> bool {
@@ -247,29 +247,29 @@ mod tests {
     #[test]
     fn highlight_colours_keywords_strings_and_numbers() {
         let out = styles("let x = 12");
-        assert_eq!(out[0], ("let".into(), Some(theme::PURPLE)));
+        assert_eq!(out[0], ("let".into(), Some(theme::get().purple)));
         assert!(
             out.iter()
-                .any(|(t, c)| t == "12" && *c == Some(theme::AMBER))
+                .any(|(t, c)| t == "12" && *c == Some(theme::get().amber))
         );
     }
 
     #[test]
     fn highlight_treats_a_trailing_comment_as_one_span() {
         let out = styles("run # do the thing");
-        assert_eq!(out.last().unwrap().1, Some(theme::FAINT));
+        assert_eq!(out.last().unwrap().1, Some(theme::get().faint));
         assert!(out.last().unwrap().0.starts_with('#'));
     }
 
     #[test]
     fn highlight_marks_the_first_shell_word_as_the_command() {
         let out = styles("cargo test");
-        assert_eq!(out[0], ("cargo".into(), Some(theme::BLUE)));
+        assert_eq!(out[0], ("cargo".into(), Some(theme::get().blue)));
     }
 
     #[test]
     fn highlight_leaves_an_unterminated_string_on_its_line() {
         let out = styles("echo \"open");
-        assert_eq!(out.last().unwrap().1, Some(theme::ADD_FG));
+        assert_eq!(out.last().unwrap().1, Some(theme::get().add_fg));
     }
 }

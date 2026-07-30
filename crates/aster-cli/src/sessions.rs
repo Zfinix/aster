@@ -19,6 +19,15 @@ enum SessionsCmd {
     Show { id: String },
     /// Delete a saved session by id.
     Delete { id: String },
+    /// Delete stale sessions: empty ones always, plus anything past the limits.
+    Prune {
+        /// Keep only this many of the newest sessions with turns in them.
+        #[arg(long, value_name = "N")]
+        keep: Option<usize>,
+        /// Delete sessions older than this many days.
+        #[arg(long, value_name = "DAYS")]
+        older_than: Option<i64>,
+    },
 }
 
 pub fn run_sessions(args: SessionsArgs) -> Result<()> {
@@ -88,6 +97,38 @@ pub fn run_sessions(args: SessionsArgs) -> Result<()> {
                 print_transcript(&transcript);
             }
         }
+        SessionsCmd::Prune { keep, older_than } => {
+            let metas = store.list_sessions(&repo_root)?;
+            let cutoff = older_than.map(|days| chrono::Utc::now() - chrono::Duration::days(days));
+            let mut kept = 0;
+            let mut deleted = Vec::new();
+            // Newest first, so `--keep` counts from the most recent.
+            let mut metas = metas;
+            metas.sort_by_key(|m| std::cmp::Reverse(m.created_at));
+            for meta in metas {
+                let turns = store
+                    .resume(&repo_root, &meta.id)
+                    .map(|t| t.user_turn_count())
+                    .unwrap_or(0);
+                let stale = cutoff.is_some_and(|c| meta.created_at < c);
+                let over_limit = keep.is_some_and(|k| kept >= k);
+                if turns == 0 || stale || over_limit {
+                    if store.delete_session(&repo_root, &meta.id)? {
+                        deleted.push(meta.id);
+                    }
+                    continue;
+                }
+                kept += 1;
+            }
+            if crate::json_mode() {
+                println!(
+                    "{}",
+                    json!({ "ok": true, "deleted": deleted, "kept": kept })
+                );
+            } else {
+                println!("deleted {} session(s), kept {kept}", deleted.len());
+            }
+        }
         SessionsCmd::Delete { id } => {
             if !store.delete_session(&repo_root, &id)? {
                 anyhow::bail!("no session {id:?} for this repo");
@@ -151,6 +192,10 @@ enum MemoryCmd {
         #[arg(long, value_name = "NAME")]
         title: Option<String>,
     },
+    /// Delete a memory block by name, so a wrong fact can be taken back.
+    Remove { name: String },
+    /// Print a memory block in full.
+    Show { name: String },
 }
 
 pub fn run_memory(args: MemoryArgs) -> Result<()> {
@@ -185,6 +230,24 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
                         println!("  {}  —  {}", block.name, block.description);
                     }
                 }
+            }
+        }
+        MemoryCmd::Remove { name } => {
+            if !memory.forget(&name)? {
+                anyhow::bail!("no memory block named {name:?}; `aster memory list` shows them all");
+            }
+            if crate::json_mode() {
+                println!("{}", json!({ "ok": true, "removed": name }));
+            } else {
+                println!("removed {name}");
+            }
+        }
+        MemoryCmd::Show { name } => {
+            let body = memory.read_block(&name)?;
+            if crate::json_mode() {
+                println!("{}", json!({ "name": name, "body": body }));
+            } else {
+                println!("{body}");
             }
         }
         MemoryCmd::Add { text, title } => {

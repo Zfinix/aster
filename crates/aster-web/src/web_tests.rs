@@ -72,6 +72,7 @@ fn backend(with: Configured) -> WebBackend {
         cloudflare: with.cloudflare.then(|| {
             cloudflare_br::CloudflareBrClient::new("acct".into(), "cf-token".into(), timeout)
         }),
+        jina: jina::JinaClient::new(None, timeout),
         plain_http: plain_http::PlainHttpClient::new(timeout),
     }
 }

@@ -1,6 +1,6 @@
 //! `aster fix`: turn review findings into SEARCH/REPLACE edits. Dry-run by default; `--apply` writes.
 
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 
@@ -12,6 +12,7 @@ use clap::Args;
 use serde::Serialize;
 
 use crate::edits;
+use crate::term::{DIM, GREEN, RED, RESET};
 
 const FIX_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-fix.md");
 const FIX_TEMPERATURE: f32 = 0.0;
@@ -21,8 +22,9 @@ const WINDOW_LINES: usize = 150;
 
 #[derive(Args)]
 pub struct FixArgs {
-    /// JSON array of findings (from `aster review --json`), from PATH or `-` for stdin.
-    #[arg(long, value_name = "PATH")]
+    /// JSON array of findings (from `aster review --json`), from PATH or `-`
+    /// for stdin, which is the default so a review can be piped straight in.
+    #[arg(long, value_name = "PATH", default_value = "-")]
     findings_json: String,
 
     /// Write the edits to the working tree (otherwise print a dry-run preview).
@@ -60,8 +62,7 @@ pub async fn run(args: FixArgs) -> Result<()> {
         .context("could not determine the repository root")?;
 
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
-    let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
-    let client = AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort);
+    let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
     let policy = Policy::compile(&settings.permissions)?;
 
     let json = crate::json_mode();
@@ -94,6 +95,11 @@ pub async fn run(args: FixArgs) -> Result<()> {
 
 fn read_findings(source: &str) -> Result<Vec<Finding>> {
     let raw = if source == "-" {
+        if io::stdin().is_terminal() {
+            bail!(
+                "no findings on stdin. Pipe a review in (`aster review --json | aster fix`) or pass --findings-json <PATH>"
+            );
+        }
         let mut buf = String::new();
         io::stdin()
             .read_to_string(&mut buf)
@@ -233,11 +239,6 @@ fn excerpt_for(content: &str, line: usize) -> Option<String> {
     let end = (center + WINDOW_LINES).min(lines.len());
     Some(lines[start..end].join("\n"))
 }
-
-const DIM: &str = "\x1b[2m";
-const GREEN: &str = "\x1b[32m";
-const RED: &str = "\x1b[31m";
-const RESET: &str = "\x1b[0m";
 
 fn print_result(r: &FixResult) {
     let (badge, color) = match r.status.as_str() {

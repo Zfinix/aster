@@ -19,19 +19,22 @@ use ratatui::widgets::Widget;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::bottom_pane::{BottomPane, CommandDesc, InputResult, SelectionItem};
+use super::bottom_pane::{BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem};
 use super::guard::TuiGuard;
 use super::helpers::{human_count, short_path};
 use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
 use super::terminal::{Tui, TuiEvent};
-use super::{ACCENT, history, theme};
+use super::{history, theme};
 use crate::chat::{
     Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
 };
 use crate::persist::Recorder;
 
 type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
+
+/// Pressing ctrl-c once arms the quit; a second press within this window exits.
+const QUIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Read-only tools whose consecutive calls collapse into one `Explored` cell.
 const READ_ONLY: &[&str] = &[
@@ -45,7 +48,7 @@ const READ_ONLY: &[&str] = &[
 
 /// Side effects routed back from the bottom pane's views.
 #[derive(Clone)]
-enum AppEvent {
+pub(super) enum AppEvent {
     SetMode(Mode),
     SetEffort(Effort),
     ApprovalDecided {
@@ -54,8 +57,21 @@ enum AppEvent {
     },
     QuestionAnswered(String),
     SessionPicked(String),
+    ModelChanged(String),
+    /// The provider's catalog, fetched off the loop so `/model` never blocks
+    /// the UI on a round trip.
+    ModelsLoaded(Vec<String>),
+    /// The catalog request failed; `/model` says so instead of hanging on
+    /// "fetching models…" with the reason buried in a log file.
+    ModelsFailed(String),
+    /// A provider chosen from `/provider`: endpoint plus its example model.
+    ProviderPicked {
+        base_url: String,
+        model: String,
+    },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_chat(
     mut client: AiClient,
     repo_root: std::path::PathBuf,
@@ -63,11 +79,14 @@ pub async fn run_chat(
     perms: PermissionsConfig,
     seed: Option<String>,
     resume: Resume,
+    mcp: Option<crate::mcp::McpRuntime>,
+    limits: crate::chat::Limits,
 ) -> Result<()> {
     if matches!(resume, Resume::Pick) && seed.as_deref().is_some_and(|s| !s.trim().is_empty()) {
         anyhow::bail!("--resume opens a session picker, so it cannot also take a prompt");
     }
     let _guard = TuiGuard::install(super::terminal::restore_raw);
+    theme::set(theme::Theme::DEFAULT);
     // Idle layout is four rows: gap, status, composer, footer. Anchoring
     // smaller would make the first draw grow the viewport, and that growth
     // scrolls blank rows into the middle of the transcript.
@@ -107,6 +126,10 @@ pub async fn run_chat(
     );
     app.repo_root = repo_root.clone();
     app.width = tui.width() as usize;
+    app.instructions = sync::Arc::new(crate::instructions::discover(&repo_root));
+    app.mcp = mcp;
+    app.limits = limits;
+    app.provider_base_url = client.base_url().to_string();
 
     let mut pane: BottomPane<AppEvent> = BottomPane::new(
         CHAT_COMMANDS,
@@ -130,7 +153,7 @@ pub async fn run_chat(
     ));
 
     if let Ok(store) = crate::persist::store() {
-        match resume_or_new(&store, &repo_root, &client.model, &resume) {
+        match resume_or_new(&store, &repo_root, &resume) {
             Ok(Some((recorder, seeded))) => {
                 app.recorder = Some(recorder);
                 app.load_history(seeded);
@@ -190,6 +213,9 @@ pub async fn run_chat(
                 }
                 TuiEvent::Draw => {
                     app.usage = Some(client.usage_snapshot());
+                    if let Some(flash) = app.usage_flash() {
+                        app.flash = Some(flash);
+                    }
                     draw(&mut tui, &app, &pane)?;
                 }
             },
@@ -202,12 +228,20 @@ pub async fn run_chat(
                 UiRequest::PlanApproval(req) => app.on_plan_approval_request(req, &mut pane),
                 UiRequest::Question(req) => app.on_question_request(req, &mut pane),
             },
-            Some(ev) = app_rx.recv() => {
-                app.on_app_event(ev, &mut client);
-            }
+            Some(ev) = app_rx.recv() => match ev {
+                AppEvent::ModelsLoaded(models) => app.open_model_picker(models, &mut pane),
+                ev => app.on_app_event(ev, &mut client),
+            },
             res = wait_turn(&mut turn) => {
                 match res {
-                    Ok(Ok((reply, edited, compacted))) => app.finish_turn(&reply, &edited, compacted),
+                    Ok(Ok((reply, edited, compacted))) => {
+                        // Files the turn created are only mentionable once the
+                        // index knows about them.
+                        if !edited.is_empty() {
+                            pane.build_file_index(&repo_root);
+                        }
+                        app.finish_turn(&reply, &edited, compacted);
+                    }
                     Ok(Err(e)) => app.fail_turn(&format!("{e:#}")),
                     Err(e) => app.fail_turn(&format!("chat failed: {e}")),
                 }
@@ -290,16 +324,25 @@ fn on_key(
                 abort(app, turn, pane);
                 return Flow::Continue;
             }
-            if ctrl || pane.composer.is_empty() {
+            if !pane.composer.is_empty() {
+                pane.composer.clear();
+                app.quit_armed = None;
+                return Flow::Continue;
+            }
+            // Quitting takes two presses: esc is muscle memory for "dismiss",
+            // and one stray keystroke should not end the session.
+            if app.quit_armed.is_some_and(|at| at.elapsed() < QUIT_WINDOW) {
                 return Flow::Quit;
             }
-            pane.composer.clear();
+            app.quit_armed = Some(Instant::now());
+            app.flash = Some("press again to quit".into());
             return Flow::Continue;
         }
-        // Shift+tab opens the modes panel, unless it is standing in for
-        // shift+enter mid-composition.
+        app.quit_armed = None;
+        // Shift+tab steps to the next mode, unless it is standing in for
+        // shift+enter mid-composition. `/mode` opens the full panel.
         if key.code == KeyCode::BackTab && pane.composer.is_empty() {
-            app.open_mode_picker(pane);
+            app.cycle_mode();
             return Flow::Continue;
         }
     } else if ctrl && key.code == KeyCode::Char('c') {
@@ -314,6 +357,10 @@ fn on_key(
         }
         InputResult::Command(cmd) => {
             app.handle_command(&cmd, client, pane);
+        }
+        InputResult::Busy => {
+            app.flash = Some("still working · esc to interrupt, then send".into());
+            return Flow::Continue;
         }
         InputResult::None => {}
     }
@@ -336,32 +383,28 @@ fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<A
 /// only an explicit `--continue` reopens the repo's latest session and seeds
 /// its prior turns. Returns the live transcript handle and the seeded
 /// user/assistant turns to replay into the view.
-/// `Pick` returns nothing: the session is chosen once the UI is up, and opening
-/// a transcript before then would leave an empty one behind.
+/// `New` and `Pick` return nothing: a transcript opened before the first
+/// message would leave an empty file behind every time aster is started.
 fn resume_or_new(
     store: &Store,
     repo_root: &std::path::Path,
-    model: &str,
     resume: &Resume,
 ) -> Result<Option<(Recorder, Vec<ChatMessage>)>> {
     let prev = match resume {
-        Resume::Pick => return Ok(None),
+        Resume::New | Resume::Pick => return Ok(None),
         Resume::Latest => store.latest(repo_root)?,
         Resume::Id(id) => Some(
             store
                 .resume(repo_root, id)
                 .with_context(|| format!("no session {id:?} for this repo"))?,
         ),
-        Resume::New => None,
     };
-    if let Some(prev) = prev {
-        let messages = prev.to_chat_messages();
-        let writer = store.resume_writer(repo_root, &prev.meta.id)?;
-        Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), messages)))
-    } else {
-        let writer = store.new_session(repo_root, repo_root, Some(model.to_string()))?;
-        Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), Vec::new())))
-    }
+    let Some(prev) = prev else {
+        return Ok(None);
+    };
+    let messages = prev.to_chat_messages();
+    let writer = store.resume_writer(repo_root, &prev.meta.id)?;
+    Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), messages)))
 }
 
 /// Decode one event from the agent's `ChatEventSink` NDJSON into a UI event.
@@ -388,6 +431,9 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
                 .to_string(),
             error: event.get("error").and_then(Value::as_bool).unwrap_or(false),
         }),
+        "notice" => Some(TurnEvent::Notice(
+            event.get("message")?.as_str()?.to_string(),
+        )),
         _ => None,
     }
 }
@@ -464,6 +510,9 @@ enum TurnEvent {
         result: String,
         error: bool,
     },
+    /// Something the harness did that the user has to know about, e.g. the
+    /// turn being cut short at the tool-round cap.
+    Notice(String),
 }
 
 /// A tool call the agent has made but not yet finished.
@@ -490,22 +539,26 @@ impl SessionPermissions {
             Mode::Plan => self.plan.clone(),
             Mode::Manual => self.manual.clone(),
             Mode::Auto => self.auto.clone(),
-            Mode::Edit => self.edit.clone(),
+            Mode::Edit | Mode::Yolo => self.edit.clone(),
         }
     }
 }
 
-/// Picker order: plan → manual → auto → edit.
-const MODE_ORDER: [Mode; 4] = [Mode::Plan, Mode::Manual, Mode::Auto, Mode::Edit];
+/// Picker order: plan → manual → auto → edit → yolo.
+const MODE_ORDER: [Mode; 5] = [Mode::Plan, Mode::Manual, Mode::Auto, Mode::Edit, Mode::Yolo];
 
-/// The accent each mode wears in the footer. Amber marks the modes that stop
-/// to ask; plan stays a quiet gray.
 fn mode_color(mode: Mode) -> Color {
+    theme::get().mode_color(mode)
+}
+
+/// How far the agent runs on its own: paused, one step at a time, or ahead.
+fn mode_glyph(mode: Mode) -> &'static str {
     match mode {
-        Mode::Edit => ACCENT,
-        Mode::Auto => ACCENT,
-        Mode::Manual => theme::AMBER,
-        Mode::Plan => theme::DIMMER,
+        Mode::Plan => "⏸",
+        Mode::Manual => "⏵",
+        Mode::Auto => "⏵⏵",
+        Mode::Edit => "⏵⏵⏵",
+        Mode::Yolo => "☠",
     }
 }
 
@@ -522,11 +575,32 @@ fn is_edit_note(msg: &ChatMessage) -> bool {
     msg.role == "system" && msg.content.starts_with(EDIT_NOTE_PREFIX)
 }
 
+/// Keys the composer answers to. None of them are visible on screen, so
+/// `/help` is where they get said.
+const KEY_HELP: &[(&str, &str)] = &[
+    ("enter", "send · esc interrupts a running turn"),
+    ("esc esc", "quit (twice, so a stray press does not)"),
+    ("shift+tab", "step to the next mode"),
+    ("ctrl+j", "newline without sending"),
+    ("@", "mention a file from this repo"),
+    ("↑ ↓", "move the cursor, then step through past messages"),
+];
+
 const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "model",
         takes_arg: true,
-        desc: "Switch the active model, or show it with no argument",
+        desc: "Switch the active model, or pick one with no argument",
+    },
+    CommandDesc {
+        name: "provider",
+        takes_arg: false,
+        desc: "Switch the endpoint Aster talks to, then pick a model",
+    },
+    CommandDesc {
+        name: "resume",
+        takes_arg: false,
+        desc: "Reopen one of this repo's saved sessions",
     },
     CommandDesc {
         name: "mode",
@@ -537,6 +611,11 @@ const CHAT_COMMANDS: &[CommandDesc] = &[
         name: "effort",
         takes_arg: true,
         desc: "Set the reasoning budget (off, low, medium, high), or cycle it",
+    },
+    CommandDesc {
+        name: "yolo",
+        takes_arg: false,
+        desc: "Toggle YOLO mode — no sandbox, red theme, triple confirm",
     },
     CommandDesc {
         name: "clear",
@@ -603,6 +682,16 @@ struct ChatApp {
     pending_question: Option<tokio::sync::oneshot::Sender<Option<String>>>,
     /// The open approval is a plan; granting it promotes the session.
     pending_plan_approval: bool,
+    /// `AGENTS.md` and friends, read once at startup rather than per turn.
+    instructions: sync::Arc<crate::instructions::Instructions>,
+    /// Connected MCP servers, cloned into each turn's context.
+    mcp: Option<crate::mcp::McpRuntime>,
+    /// Per-turn caps, cloned into each turn's context.
+    limits: crate::chat::Limits,
+    /// The endpoint in use, so `/provider` can mark the current row.
+    provider_base_url: String,
+    /// When the last interrupt key landed, so quitting takes two presses.
+    quit_armed: Option<Instant>,
 }
 
 impl ChatApp {
@@ -644,6 +733,11 @@ impl ChatApp {
             plan: sync::Arc::default(),
             pending_question: None,
             pending_plan_approval: false,
+            instructions: sync::Arc::default(),
+            mcp: None,
+            limits: crate::chat::Limits::default(),
+            provider_base_url: String::new(),
+            quit_armed: None,
         }
     }
 
@@ -657,8 +751,6 @@ impl ChatApp {
         let block = history::notice(text, self.width);
         self.emit(block);
     }
-
-    /* ---- streaming ---- */
 
     fn on_turn_event(&mut self, ev: TurnEvent) {
         match ev {
@@ -691,6 +783,11 @@ impl ChatApp {
                 let tool = self.running.remove(i);
                 self.on_tool_result(tool, &result, error);
             }
+            TurnEvent::Notice(message) => {
+                self.end_message();
+                self.end_explored();
+                self.note(&message);
+            }
         }
     }
 
@@ -705,6 +802,9 @@ impl ChatApp {
         self.end_explored();
         let block = if failed {
             history::tool(&tool.label, result, true, self.width)
+        } else if tool.name == "update_plan" {
+            // The plan itself is the output; the tool's text just repeats it.
+            history::plan(&self.plan_steps(), self.width)
         } else if tool.name == "edit_file" {
             // `edit_file` answers with "edited <path>:\n<patch>".
             let (head, patch) = result.split_once('\n').unwrap_or((result, ""));
@@ -719,6 +819,18 @@ impl ChatApp {
         };
         self.emit(block);
         self.worked = true;
+    }
+
+    /// The plan as the agent last left it. Read from the shared state rather
+    /// than parsed back out of the tool's text.
+    fn plan_steps(&self) -> Vec<(crate::chat::PlanStepStatus, String)> {
+        let Ok(plan) = self.plan.lock() else {
+            return Vec::new();
+        };
+        plan.steps
+            .iter()
+            .map(|step| (step.status, step.label.clone()))
+            .collect()
     }
 
     /// Close the assistant message in flight, emitting its trailing partial line.
@@ -754,8 +866,6 @@ impl ChatApp {
         self.emit(block);
     }
 
-    /* ---- turns ---- */
-
     fn submit(&mut self, text: &str, client: &AiClient, repo_root: &std::path::Path) -> ChatTurn {
         // A dismissed session picker leaves no transcript open; start one now
         // rather than dropping the conversation on the floor.
@@ -786,8 +896,12 @@ impl ChatApp {
             recorder: self.recorder.clone(),
             store: self.store.clone(),
             skills: crate::chat::discover_skills(&repo_root),
+            instructions: self.instructions.clone(),
             probe: std::sync::Arc::new(bash_tools::ToolProbe::detect()),
             plan: self.plan.clone(),
+            mcp: self.mcp.clone(),
+            limits: self.limits,
+            yolo: self.mode == Mode::Yolo,
         };
         tokio::spawn(async move {
             let sink: crate::chat::ChatEventSink = Box::new(move |event| {
@@ -898,8 +1012,6 @@ impl ChatApp {
         }
     }
 
-    /* ---- approvals ---- */
-
     /// The running turn cloned the older policy, so it keeps asking after a
     /// promotion to `edit`; honour the newer mode. Out-of-repo requests
     /// (`scope`) are a separate question `edit` does not answer.
@@ -980,10 +1092,14 @@ impl ChatApp {
                 self.note(&format!("answered: {answer}"));
             }
             AppEvent::SessionPicked(id) => self.resume_session(&id),
+            AppEvent::ModelChanged(model) => self.set_model(model, client),
+            AppEvent::ProviderPicked { base_url, model } => {
+                self.switch_provider(base_url, model, client)
+            }
+            AppEvent::ModelsLoaded(_) => {}
+            AppEvent::ModelsFailed(e) => self.note(&format!("failed to load model list: {e}")),
         }
     }
-
-    /* ---- sessions ---- */
 
     /// One row per saved session, newest first. With nothing saved there is
     /// nothing to choose, so the run just starts clean.
@@ -1057,8 +1173,6 @@ impl ChatApp {
         self.load_history(transcript.to_chat_messages());
     }
 
-    /* ---- modes and effort ---- */
-
     fn open_mode_picker(&self, pane: &mut BottomPane<AppEvent>) {
         let items = MODE_ORDER
             .iter()
@@ -1070,6 +1184,12 @@ impl ChatApp {
             })
             .collect();
         pane.push_picker("Mode", items);
+    }
+
+    /// Shift+tab: step to the next mode in the footer order, wrapping around.
+    fn cycle_mode(&mut self) {
+        let at = MODE_ORDER.iter().position(|m| *m == self.mode).unwrap_or(0);
+        self.select_mode(MODE_ORDER[(at + 1) % MODE_ORDER.len()]);
     }
 
     fn open_effort_picker(&self, pane: &mut BottomPane<AppEvent>) {
@@ -1118,6 +1238,93 @@ impl ChatApp {
     }
 
     /// A model change takes effect next turn, since each turn clones the client.
+    fn set_model(&mut self, model: String, client: &mut AiClient) {
+        if model == self.model {
+            return;
+        }
+        client.model = model.clone();
+        self.flash = Some(if self.thinking {
+            format!("model {model} · applies to your next message")
+        } else {
+            format!("model {model}")
+        });
+        self.model = model;
+    }
+
+    /// Ask the provider what it serves. The picker opens when the list lands,
+    /// so a slow endpoint stalls nothing but itself.
+    fn request_models(&mut self, client: &AiClient, tx: mpsc::UnboundedSender<AppEvent>) {
+        self.flash = Some("fetching models…".into());
+        let client = client.clone();
+        tokio::spawn(async move {
+            match client.fetch_models().await {
+                Ok(models) => {
+                    let _ = tx.send(AppEvent::ModelsLoaded(models));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::ModelsFailed(format!("{e:#}")));
+                }
+            }
+        });
+    }
+
+    fn open_model_picker(&mut self, models: Vec<String>, pane: &mut BottomPane<AppEvent>) {
+        self.flash = None;
+        if models.is_empty() {
+            self.note("the provider returned no models; use /model <id>");
+            return;
+        }
+        let view = ModelPickerView::new(&self.model, models, pane.sender());
+        pane.push_view(Box::new(view));
+    }
+
+    /// Switch endpoint mid-session. The catalog is the same `providers.json`
+    /// the init wizard reads, so the two agree on names and defaults.
+    fn open_provider_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
+        let current = self.provider_base_url.clone();
+        let items: Vec<SelectionItem<AppEvent>> = crate::init::provider_choices()
+            .into_iter()
+            .map(|(name, base_url, model)| SelectionItem {
+                name,
+                description: base_url.clone(),
+                is_current: base_url.trim_end_matches('/') == current.trim_end_matches('/'),
+                event: AppEvent::ProviderPicked {
+                    base_url,
+                    model: model.clone(),
+                },
+            })
+            .collect();
+        if items.is_empty() {
+            self.note("no providers in the catalog");
+            return;
+        }
+        pane.push_picker("Provider", items);
+    }
+
+    /// Repoint the client, then offer that endpoint's models. A missing key is
+    /// said now rather than at the next turn's failure.
+    fn switch_provider(&mut self, base_url: String, model: String, client: &mut AiClient) {
+        let key = crate::init::provider_key(&base_url);
+        match key {
+            Some(key) => client.set_endpoint(&base_url, key),
+            None => {
+                // The shared key travels with the endpoint; providers that need
+                // their own are named above.
+                client.set_endpoint(&base_url, client.api_key().to_string());
+                self.note(&format!(
+                    "no provider-specific key found for {}; using ASTER_API_KEY",
+                    crate::init::provider_label(&base_url)
+                ));
+            }
+        }
+        self.provider_base_url = base_url.clone();
+        self.set_model(model, client);
+        self.flash = Some(format!(
+            "provider {}",
+            crate::init::provider_label(&base_url)
+        ));
+    }
+
     fn handle_command(
         &mut self,
         cmd: &str,
@@ -1129,12 +1336,11 @@ impl ChatApp {
         let arg = parts.next().map(str::trim).filter(|s| !s.is_empty());
         match name {
             "model" | "m" => match arg {
-                Some(model) => {
-                    client.model = model.to_string();
-                    self.model = model.to_string();
-                    self.note(&format!("model set to {model}"));
+                Some(model) => self.set_model(model.to_string(), client),
+                None => {
+                    let tx = pane.sender();
+                    self.request_models(client, tx);
                 }
-                None => self.note(&format!("current model: {}", self.model)),
             },
             "mode" => match arg.map(|a| MODE_ORDER.iter().find(|m| m.as_str() == a)) {
                 Some(Some(mode)) => self.select_mode(*mode),
@@ -1143,16 +1349,28 @@ impl ChatApp {
                 }
                 None => self.open_mode_picker(pane),
             },
+            "provider" | "p" => self.open_provider_picker(pane),
+            "resume" | "r" => self.open_session_picker(pane),
             "effort" => match arg.map(str::parse::<Effort>) {
                 Some(Ok(effort)) => self.set_effort(effort, client),
                 Some(Err(e)) => self.flash = Some(e),
                 None => self.open_effort_picker(pane),
             },
+            "yolo" => {
+                if self.mode == Mode::Yolo {
+                    self.mode = Mode::Edit;
+                    theme::set(theme::Theme::DEFAULT);
+                    self.note("YOLO mode OFF — sandbox restored, standard mode");
+                } else {
+                    self.mode = Mode::Yolo;
+                    theme::set(theme::Theme::YOLO);
+                    self.note("YOLO mode ON — sandbox bypassed, triple confirm, red theme");
+                }
+                self.note_edit_mode();
+            }
             "clear" | "c" => {
                 self.history.clear();
                 self.start_new_session();
-                // The loop wipes the screen and scrollback on the next pass;
-                // any note queued now would vanish with them.
                 self.queue.clear();
                 self.clear_requested = true;
             }
@@ -1164,8 +1382,19 @@ impl ChatApp {
                 ))];
                 for c in CHAT_COMMANDS {
                     lines.push(Line::from(vec![
-                        Span::styled(format!("/{:<7}", c.name), Style::default().fg(ACCENT)),
-                        Span::styled(format!("  {}", c.desc), theme::dim()),
+                        Span::styled(format!("/{:<9}", c.name), theme::get().accent_style()),
+                        Span::styled(format!("  {}", c.desc), theme::get().dim_style()),
+                    ]));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Keys",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                for (key, what) in KEY_HELP {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{key:<10}"), theme::get().accent_style()),
+                        Span::styled(format!("  {what}"), theme::get().dim_style()),
                     ]));
                 }
                 let block = history::assistant(lines, true, width);
@@ -1199,38 +1428,36 @@ impl ChatApp {
         });
     }
 
-    /* ---- footer ---- */
-
     fn footer_line(&self) -> Line<'static> {
-        let dark = theme::faint();
+        let dark = theme::get().faint_style();
         let mut spans = vec![
-            Span::styled(format!("  {}", self.model), dark),
             Span::styled(
-                format!("  ✎ {}", self.mode.as_str()),
+                format!("  {} {}", mode_glyph(self.mode), self.mode.as_str()),
                 Style::default().fg(mode_color(self.mode)),
             ),
+            Span::styled(format!("  ·  {}", self.model), dark),
             Span::styled(format!("  ⌁ {}", self.effort), dark),
         ];
-        if let Some(usage) = self.usage.filter(|u| u.total_tokens > 0) {
-            let approx = if usage.estimated { "~" } else { "" };
-            let cost = usage
-                .estimated_cost_usd
-                .map(|c| format!("  ·  ~${c:.4}"))
-                .unwrap_or_default();
-            spans.push(Span::styled(
-                format!(
-                    "  ·  ctx {approx}{} in / {approx}{} out{cost}",
-                    human_count(usage.prompt_tokens as usize),
-                    human_count(usage.completion_tokens as usize),
-                ),
-                dark,
-            ));
-        }
         if let Some(msg) = &self.flash {
             spans.push(Span::styled("  ·  ", dark));
-            spans.push(Span::styled(msg.clone(), Style::default().fg(ACCENT)));
+            spans.push(Span::styled(msg.clone(), theme::get().accent_style()));
         }
         Line::from(spans)
+    }
+
+    /// Build a token-usage flash string for a post-turn status update.
+    fn usage_flash(&self) -> Option<String> {
+        let usage = self.usage.filter(|u| u.total_tokens > 0)?;
+        let approx = if usage.estimated { "~" } else { "" };
+        let cost = usage
+            .estimated_cost_usd
+            .map(|c| format!("  ·  ~${c:.4}"))
+            .unwrap_or_default();
+        Some(format!(
+            "ctx {approx}{} in / {approx}{} out{cost}",
+            human_count(usage.prompt_tokens as usize),
+            human_count(usage.completion_tokens as usize),
+        ))
     }
 }
 
@@ -1690,7 +1917,7 @@ mod tests {
                 .unwrap();
         }
 
-        let (recorder, messages) = resume_or_new(&store, repo, "m", &Resume::Latest)
+        let (recorder, messages) = resume_or_new(&store, repo, &Resume::Latest)
             .unwrap()
             .unwrap();
         assert_eq!(messages.len(), 2);
@@ -1713,7 +1940,7 @@ mod tests {
         let repo = std::path::Path::new("/tmp/aster-pick-repo");
 
         assert!(
-            resume_or_new(&store, repo, "m", &Resume::Pick)
+            resume_or_new(&store, repo, &Resume::Pick)
                 .unwrap()
                 .is_none()
         );
@@ -1738,7 +1965,7 @@ mod tests {
                 .unwrap();
         }
 
-        let (_, messages) = resume_or_new(&store, repo, "m", &Resume::Id(id))
+        let (_, messages) = resume_or_new(&store, repo, &Resume::Id(id))
             .unwrap()
             .unwrap();
         assert_eq!(messages.len(), 1);
@@ -1751,7 +1978,7 @@ mod tests {
         let store = Store::open(home.path()).unwrap();
         let repo = std::path::Path::new("/tmp/aster-bad-id-repo");
 
-        let Err(err) = resume_or_new(&store, repo, "m", &Resume::Id("nope".into())) else {
+        let Err(err) = resume_or_new(&store, repo, &Resume::Id("nope".into())) else {
             panic!("an unknown id cannot be resumed");
         };
         assert!(err.to_string().contains("nope"), "{err}");
@@ -1841,14 +2068,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let store = Store::open(home.path()).unwrap();
         let repo = std::path::Path::new("/tmp/aster-record-repo");
-        let (recorder, _) = resume_or_new(&store, repo, "m", &Resume::Latest)
-            .unwrap()
-            .unwrap();
 
         let mut app = chat_app("m".into());
         app.store = Some(store.clone());
         app.repo_root = repo.to_path_buf();
-        app.recorder = Some(recorder);
+        app.start_new_session();
         app.record_user("remember me");
 
         let latest = store.latest(repo).unwrap().unwrap();

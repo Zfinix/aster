@@ -2,8 +2,9 @@
 
 use serde::Deserialize;
 
-/// How the agent is allowed to act. Deny rules always override the mode;
-/// protected paths override every mode but `auto`, which prompts for them.
+/// Agent permission mode. Controls the edit and execution guardrails.
+/// Deny rules always override the mode; modes higher in the order
+/// grant more freedom (plan < manual < auto < edit < yolo).
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -18,10 +19,14 @@ pub enum Mode {
     /// Apply edits without confirmation.
     #[default]
     Edit,
+    /// Bypass sandbox, skip policy checks. Triple-confirms each command.
+    /// Toggled with `/yolo`; turns the theme red.
+    #[serde(alias = "yolo")]
+    Yolo,
 }
 
 impl Mode {
-    /// The more restrictive of the two, `plan` < `manual` < `auto` < `edit`.
+    /// The more restrictive of the two.
     /// Used so a caller-supplied mode (e.g. a CLI flag) can only tighten
     /// aster.yaml's configured mode, never loosen it.
     pub fn stricter(self, other: Mode) -> Mode {
@@ -31,6 +36,7 @@ impl Mode {
                 Mode::Manual => 1,
                 Mode::Auto => 2,
                 Mode::Edit => 3,
+                Mode::Yolo => 4,
             }
         }
         if rank(self) <= rank(other) {
@@ -47,6 +53,7 @@ impl Mode {
             Mode::Manual => "manual",
             Mode::Auto => "auto",
             Mode::Edit => "edit",
+            Mode::Yolo => "yolo",
         }
     }
 
@@ -57,12 +64,13 @@ impl Mode {
             Mode::Manual => "ask for approval before each edit",
             Mode::Auto => "apply what passes the safety check, pause for anything risky",
             Mode::Edit => "edit files without asking",
+            Mode::Yolo => "sandbox off, triple confirm, no restrictions",
         }
     }
 
     /// True when the mode lets the agent write at all.
     pub fn can_edit(self) -> bool {
-        !matches!(self, Mode::Plan)
+        matches!(self, Mode::Manual | Mode::Auto | Mode::Edit | Mode::Yolo)
     }
 }
 
@@ -91,6 +99,13 @@ mod tests {
     }
 
     #[test]
+    fn yolo_is_least_strict() {
+        assert_eq!(Mode::Yolo.stricter(Mode::Edit), Mode::Edit);
+        assert_eq!(Mode::Yolo.stricter(Mode::Plan), Mode::Plan);
+        assert_eq!(Mode::Edit.stricter(Mode::Yolo), Mode::Edit);
+    }
+
+    #[test]
     fn deserializes_legacy_ask_and_deny_names() {
         assert_eq!(
             serde_json::from_str::<Mode>("\"ask\"").expect("ask parses"),
@@ -115,4 +130,12 @@ pub enum Decision {
     Prompt {
         preview: String,
     },
+}
+
+#[test]
+fn deserializes_yolo() {
+    assert_eq!(
+        serde_json::from_str::<Mode>("\"yolo\"").expect("yolo parses"),
+        Mode::Yolo
+    );
 }

@@ -4,11 +4,13 @@
 
 mod approval;
 mod list_selection;
+mod model_picker;
 mod status;
 mod view;
 
 pub(super) use approval::ApprovalView;
 pub(super) use list_selection::{ListSelectionView, SelectionItem};
+pub(super) use model_picker::ModelPickerView;
 pub(super) use status::StatusWidget;
 pub(super) use view::BottomPaneView;
 
@@ -18,7 +20,6 @@ use ignore::WalkBuilder;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use tokio::sync::mpsc;
@@ -26,8 +27,24 @@ use tokio::sync::mpsc;
 use super::composer::Composer;
 use super::render::{Column, Inset, Insets, Renderable};
 use super::terminal::FrameRequester;
+use super::theme;
 use crate::chat::{Answer, ApprovalRequest};
-use crate::tui::{ACCENT, PANE_BG};
+
+/// Rows a picker lists at once. The pane grows to whatever it renders, and
+/// growing it scrolls history into scrollback that shrinking cannot pull back,
+/// so an unbounded list leaves a blank band behind when the view closes.
+const VISIBLE_ROWS: usize = 8;
+
+/// First row of a picker's visible window: keeps the selection centred until
+/// it reaches either end of the list.
+fn window_start(selected: usize, len: usize) -> usize {
+    if len <= VISIBLE_ROWS {
+        return 0;
+    }
+    selected
+        .saturating_sub(VISIBLE_ROWS / 2)
+        .min(len - VISIBLE_ROWS)
+}
 
 pub(super) struct CommandDesc {
     pub name: &'static str,
@@ -42,6 +59,8 @@ pub(super) enum InputResult {
     Submitted(String),
     /// A slash command to run (leading `/` stripped).
     Command(String),
+    /// Enter on a draft while a turn is running; the draft is kept.
+    Busy,
 }
 
 /// Cap the file index so huge repos stay cheap.
@@ -90,6 +109,11 @@ impl<E: Clone + 'static> BottomPane<E> {
 
     pub(super) fn has_active_view(&self) -> bool {
         !self.views.is_empty()
+    }
+
+    /// For views built outside the pane, which still route through its channel.
+    pub(super) fn sender(&self) -> mpsc::UnboundedSender<E> {
+        self.tx.clone()
     }
 
     pub(super) fn push_view(&mut self, view: Box<dyn BottomPaneView<E>>) {
@@ -213,6 +237,7 @@ impl<E: Clone + 'static> BottomPane<E> {
                 if !self.task_running {
                     return InputResult::Submitted(self.composer.take());
                 }
+                return InputResult::Busy;
             }
 
             KeyCode::Up => {
@@ -252,8 +277,6 @@ impl<E: Clone + 'static> BottomPane<E> {
         }
         InputResult::None
     }
-
-    /* ---- slash menu ---- */
 
     fn command_matches(&self) -> Vec<&'static CommandDesc> {
         let Some(rest) = self.composer.text().strip_prefix('/') else {
@@ -323,21 +346,19 @@ impl<E: Clone + 'static> BottomPane<E> {
                 .enumerate()
                 .map(|(i, c)| {
                     let style = if i == sel {
-                        Style::default().fg(ACCENT).bg(super::theme::SEL_BG)
+                        theme::get().selected_style()
                     } else {
-                        super::theme::dimmer()
+                        theme::get().dimmer_style()
                     };
                     Line::from(vec![
                         Span::styled(if i == sel { "▸ " } else { "  " }, style),
                         Span::styled(format!("/{:<7}", c.name), style),
-                        Span::styled(format!("  {}", c.desc), super::theme::faint()),
+                        Span::styled(format!("  {}", c.desc), theme::get().faint_style()),
                     ])
                 })
                 .collect(),
         )
     }
-
-    /* ---- @‑file mentions ---- */
 
     /// Walk the repo root, respecting `.gitignore`, and collect up to
     /// `MAX_FILE_INDEX` repo-relative paths.
@@ -354,9 +375,11 @@ impl<E: Clone + 'static> BottomPane<E> {
                     .ok()
                     .map(|p| p.to_string_lossy().into_owned())
             })
-            .take(MAX_FILE_INDEX)
             .collect();
+        // Sort before capping, so a big repo loses the deepest paths rather
+        // than whatever the walk happened to reach last.
         paths.sort();
+        paths.truncate(MAX_FILE_INDEX);
         self.file_index = paths;
     }
 
@@ -413,9 +436,9 @@ impl<E: Clone + 'static> BottomPane<E> {
                 .enumerate()
                 .map(|(i, path)| {
                     let style = if i == sel {
-                        Style::default().fg(ACCENT).bg(super::theme::SEL_BG)
+                        theme::get().selected_style()
                     } else {
-                        super::theme::dimmer()
+                        theme::get().dimmer_style()
                     };
                     Line::from(vec![
                         Span::styled(if i == sel { "▸ " } else { "  " }, style),
@@ -473,7 +496,7 @@ impl<E: Clone + 'static> Renderable for BottomPane<E> {
             height: area.height.saturating_sub(skip),
             ..area
         };
-        buf.set_style(band, Style::default().bg(PANE_BG));
+        buf.set_style(band, theme::get().pane_bg_style());
         self.as_column().render(area, buf);
     }
     fn desired_height(&self, width: u16) -> u16 {

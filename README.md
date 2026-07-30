@@ -106,6 +106,7 @@ aster review --pr 42                       # a GitHub PR (needs `aster login`)
 aster review --pr 42 --comment             # post findings as inline PR comments
 
 aster review --json                        # machine-readable output
+aster review --json | aster fix --apply    # apply the fixes it suggests
 aster review --tui                         # browse findings interactively
 aster review -i "src/**/*.rs" -x "**/*.gen.rs"   # include / exclude globs
 ```
@@ -213,7 +214,12 @@ aster.yaml or `--permission-mode` on `aster chat`:
 | `edit` | Edits files without asking (the default). |
 
 In the chat TUI, `/mode` cycles them and `/effort` sets the reasoning budget.
-The old `ask` and `deny` names still parse, as `manual` and `plan`.
+`--permission-mode` replaces whatever aster.yaml says for that run. The old
+`ask` and `deny` names still parse, as `manual` and `plan`.
+
+Mid-session, `/provider` switches the endpoint Aster talks to and `/model`
+picks from what that endpoint serves. `/resume` reopens an earlier session,
+and `/help` lists every command and key.
 
 | Env var | Purpose | Default |
 | --- | --- | --- |
@@ -225,6 +231,8 @@ The old `ask` and `deny` names still parse, as `manual` and `plan`.
 | `ASTER_EFFORT` | Thinking budget: `off` / `low` / `medium` / `high` (also `--effort`, or `review.effort` in aster.yaml; `ASTER_REASONING_EFFORT` still works) | `low` |
 | `ASTER_MAX_TOKENS` | Cap generated tokens (`0` or `off` disables) | `8000` |
 | `ASTER_SEED` | Fixed sampling seed for reproducibility (`off` disables) | `0` |
+| `ASTER_MAX_TOOL_ROUNDS` | Tool rounds in one turn before the agent must answer (also `agent.max_tool_rounds`) | `60` |
+| `ASTER_COMMAND_TIMEOUT` | Seconds one `run_command` may run (also `agent.command_timeout_secs`) | `300` |
 
 For repo-level defaults (models, `min_confidence`, analyzers, include/exclude
 globs), copy [`aster.yaml.example`](./aster.yaml.example) to `aster.yaml` in your

@@ -1,4 +1,6 @@
 //! `aster init`: first-run onboarding that scaffolds `aster.yaml` and wires a key into `.env`.
+//! Writes to `~/.aster/` by default so the config applies to every repo.
+//! Pass `--local` to write into the current directory instead.
 
 use std::io::{self, IsTerminal};
 use std::path::Path;
@@ -6,21 +8,21 @@ use std::{env, fs};
 
 use anyhow::{Context, Result};
 use clap::Args;
-use cliclack::{intro, log, outro, outro_cancel, password, select, set_theme};
+use cliclack::{log, multiselect, outro, outro_cancel, password, select, set_theme};
 use console::Style;
 use serde::Deserialize;
 
-const DIM: &str = "\x1b[2m";
-const GREEN: &str = "\x1b[32m";
-const RESET: &str = "\x1b[0m";
+use crate::term::{DIM, GREEN, RESET};
+use crate::util::or_cancel;
+
 /// Closest 256-color palette match to the Aster accent.
 const ORANGE_256: u8 = 208;
 
 #[derive(Args)]
 pub struct InitArgs {
-    /// Write the global config (~/.config/aster/aster.yaml) instead of the repo root.
-    #[arg(long, short = 'g')]
-    global: bool,
+    /// Write config to the current directory instead of ~/.aster/.
+    #[arg(long, short = 'l')]
+    local: bool,
 
     /// Overwrite an existing aster.yaml instead of leaving it in place.
     #[arg(long)]
@@ -93,6 +95,37 @@ pub fn provider_label(base_url: &str) -> String {
     host_only(want).to_string()
 }
 
+/// One row for the TUI's `/provider` picker: name, endpoint, and the model to
+/// start from. Templated endpoints are dropped, since there is no one to fill
+/// the placeholder in mid-session.
+pub fn provider_choices() -> Vec<(String, String, String)> {
+    load_providers()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| !p.templated())
+        .map(|p| (p.name, p.base_url, p.example_model))
+        .collect()
+}
+
+/// The env var holding the key for `base_url`, when it is not the shared one.
+/// Lets a mid-session provider switch pick up a key that is already exported.
+pub fn provider_key(base_url: &str) -> Option<String> {
+    let host = host_only(base_url.trim_end_matches('/'));
+    let vars: &[&str] = match host {
+        h if h.contains("openrouter") => &["OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"],
+        h if h.contains("anthropic") => &["ANTHROPIC_API_KEY"],
+        h if h.contains("openai") => &["OPENAI_API_KEY"],
+        h if h.contains("groq") => &["GROQ_API_KEY"],
+        h if h.contains("mistral") => &["MISTRAL_API_KEY"],
+        h if h.contains("deepseek") => &["DEEPSEEK_API_KEY"],
+        h if h.contains("googleapis") => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        _ => &[],
+    };
+    vars.iter()
+        .filter_map(|v| env::var(v).ok())
+        .find(|v| !v.trim().is_empty())
+}
+
 fn host_only(url: &str) -> &str {
     url.split_once("://")
         .map(|(_, rest)| rest)
@@ -133,10 +166,11 @@ impl cliclack::Theme for AsterTheme {
 
 pub fn run(args: InitArgs) -> Result<()> {
     let repo_root = env::current_dir().context("resolving the current directory")?;
-    let yaml_path = if args.global {
-        dirs::config_dir()
-            .context("could not determine a config directory for this platform")?
-            .join("aster/aster.yaml")
+    let global_config = !args.local;
+    let yaml_path = if global_config {
+        dirs::home_dir()
+            .context("could not determine home directory")?
+            .join(".aster/aster.yaml")
     } else {
         repo_root.join("aster.yaml")
     };
@@ -154,7 +188,7 @@ pub fn run(args: InitArgs) -> Result<()> {
                 serde_json::json!({
                     "ok": true,
                     "path": yaml_path.display().to_string(),
-                    "scope": if args.global { "global" } else { "project" },
+                    "scope": if global_config { "global" } else { "project" },
                     "base_url": d.base_url,
                     "model": d.example_model,
                     "wrote": matches!(note, Note::Success(_)),
@@ -164,17 +198,12 @@ pub fn run(args: InitArgs) -> Result<()> {
             return Ok(());
         }
         emit(note, false)?;
-        finish_plain(args.global);
+        finish_plain(global_config);
         return Ok(());
     }
 
     set_theme(AsterTheme);
-    intro(
-        Style::new()
-            .color256(ORANGE_256)
-            .bold()
-            .apply_to(" ✳ aster init "),
-    )?;
+    print!("{}", crate::tui::mark_ansi());
 
     let Some(cfg) = wizard(&providers)? else {
         outro_cancel("Cancelled. Nothing was written.")?;
@@ -186,12 +215,14 @@ pub fn run(args: InitArgs) -> Result<()> {
         true,
     )?;
     let env_path = yaml_path.with_file_name(".env");
-    let gitignore = !args.global;
+    let gitignore = args.local;
+    let mut stored_key = false;
     if let Some(key) = cfg.api_key.filter(|k| !k.trim().is_empty()) {
         emit(
             store_key(&env_path, "ASTER_API_KEY", key.trim(), gitignore)?,
             true,
         )?;
+        stored_key = true;
     }
     if let Some(key) = cfg.context_dev_key.filter(|k| !k.trim().is_empty()) {
         emit(
@@ -199,11 +230,19 @@ pub fn run(args: InitArgs) -> Result<()> {
             true,
         )?;
     }
+    if let Some(key) = cfg.jina_key.filter(|k| !k.trim().is_empty()) {
+        emit(
+            store_key(&env_path, "JINA_API_KEY", key.trim(), gitignore)?,
+            true,
+        )?;
+    }
 
-    let next = if args.global {
-        "cd into a repo, then run: aster review"
+    let next = if !stored_key && !has_api_key() {
+        NO_KEY_HINT
+    } else if global_config {
+        "You're set. cd into any repo and run: aster"
     } else {
-        "You're set. Next: aster review"
+        "You're set. Next: aster"
     };
     outro(next)?;
     Ok(())
@@ -214,31 +253,85 @@ struct Configured {
     model: String,
     api_key: Option<String>,
     context_dev_key: Option<String>,
+    jina_key: Option<String>,
 }
 
-/// The prompt sequence: provider, base URL, model, key. `None` when the user cancels.
+/// What the user opted into on the first screen; nothing is prompted for the rest.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Setup {
+    Provider,
+    ContextDev,
+    Jina,
+}
+
+/// Pick what to set up first, then only prompt for what was picked.
+/// `None` when the user cancels.
 fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
-    let skip = providers.len();
-    let mut menu = select::<usize>("Which model provider?")
+    let Some(picked) = or_cancel(
+        multiselect("What do you want to set up? (space to toggle · enter to confirm)")
+            .initial_values(vec![Setup::Provider])
+            .required(false)
+            .item(Setup::Provider, "Model provider", "the model Aster runs on")
+            .item(Setup::ContextDev, "Web crawl", "Context.dev API key")
+            .item(Setup::Jina, "Web reading", "Jina API key")
+            .interact(),
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let default = default_provider(providers);
+    let mut cfg = Configured {
+        base_url: default.base_url.clone(),
+        model: default.example_model.clone(),
+        api_key: None,
+        context_dev_key: None,
+        jina_key: None,
+    };
+
+    if picked.contains(&Setup::Provider) {
+        let Some(chosen) = provider_setup(providers)? else {
+            return Ok(None);
+        };
+        cfg.base_url = chosen.0;
+        cfg.model = chosen.1;
+        cfg.api_key = chosen.2;
+    }
+
+    // Escaping an optional key prompt skips that key; the answers already given
+    // are kept rather than thrown away.
+    if picked.contains(&Setup::ContextDev) {
+        cfg.context_dev_key = or_cancel(
+            password("Context.dev API key (enter to skip)")
+                .mask('•')
+                .interact(),
+        )?;
+    }
+
+    if picked.contains(&Setup::Jina) {
+        cfg.jina_key = or_cancel(
+            password("Jina API key (enter to skip)")
+                .mask('•')
+                .interact(),
+        )?;
+    }
+
+    Ok(Some(cfg))
+}
+
+/// Provider, base URL, model, key. `None` when the user cancels.
+fn provider_setup(providers: &[Provider]) -> Result<Option<(String, String, Option<String>)>> {
+    let mut menu = select::<usize>("Which model provider? (type to search)")
         .initial_value(0)
+        .filter_mode()
         .max_rows(8);
     for (i, p) in providers.iter().enumerate() {
         menu = menu.item(i, &p.name, &p.base_url);
     }
-    menu = menu.item(skip, "Skip · set env vars myself", "");
     let Some(idx) = or_cancel(menu.interact())? else {
         return Ok(None);
     };
-
-    let Some(provider) = providers.get(idx) else {
-        let d = default_provider(providers);
-        return Ok(Some(Configured {
-            base_url: d.base_url.clone(),
-            model: d.example_model.clone(),
-            api_key: None,
-            context_dev_key: None,
-        }));
-    };
+    let provider = &providers[idx];
 
     let base_url = if provider.templated() {
         let Some(url) = or_cancel(
@@ -268,34 +361,14 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     } else {
         "API key (usually none · enter to skip)"
     };
-    let Some(key) = or_cancel(password(key_prompt).mask('•').interact())? else {
-        return Ok(None);
-    };
+    // Escaping the key prompt keeps the provider and model already chosen.
+    let key = or_cancel(password(key_prompt).mask('•').interact())?;
 
-    let Some(context_dev_key) = or_cancel(
-        password("Context.dev API key (optional · enables web crawl)")
-            .mask('•')
-            .interact(),
-    )?
-    else {
-        return Ok(None);
-    };
-
-    Ok(Some(Configured {
-        base_url: base_url.trim().to_string(),
-        model: model.trim().to_string(),
-        api_key: Some(key),
-        context_dev_key: Some(context_dev_key),
-    }))
-}
-
-/// Map a prompt result to `Option`: `Interrupted` means cancelled, any other error propagates.
-fn or_cancel<T>(result: io::Result<T>) -> Result<Option<T>> {
-    match result {
-        Ok(v) => Ok(Some(v)),
-        Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    Ok(Some((
+        base_url.trim().to_string(),
+        model.trim().to_string(),
+        key,
+    )))
 }
 
 /// A one-line status, emitted inside the clack frame or as a plain line.
@@ -322,11 +395,25 @@ fn emit(note: Note, framed: bool) -> Result<()> {
     Ok(())
 }
 
+/// True when a key is already reachable, so "you're set" is not a lie.
+fn has_api_key() -> bool {
+    ["ASTER_API_KEY", "OPEN_ROUTER_API_KEY"]
+        .iter()
+        .any(|k| env::var(k).is_ok_and(|v| !v.trim().is_empty()))
+}
+
+const NO_KEY_HINT: &str =
+    "No API key yet. Set ASTER_API_KEY in your shell, or run `aster init` again to store one.";
+
 fn finish_plain(global: bool) {
+    if !has_api_key() {
+        println!("  {DIM}{NO_KEY_HINT}{RESET}");
+        return;
+    }
     if global {
-        println!("  {DIM}cd into a repo, then run:{RESET} aster review");
+        println!("  {DIM}You're set. cd into any repo and run:{RESET} aster");
     } else {
-        println!("  {DIM}Next:{RESET} aster review");
+        println!("  {DIM}Next:{RESET} aster");
     }
 }
 
@@ -385,7 +472,26 @@ fn yaml_contents(base_url: &str, model: &str) -> String {
          \x20 include: []\n\
          \x20 exclude:\n\
          \x20   - \"target/**\"\n\
-         \x20   - \"node_modules/**\"\n"
+         \x20   - \"node_modules/**\"\n\n\
+         # MCP servers that give the agent extra tools. Disabled servers are\n\
+         # kept in the config but never started.\n\
+         mcp:\n\
+         \x20 servers:\n\
+         \x20   # Ships with Chrome. Let the agent browse, screenshot, and inspect pages.\n\
+         \x20   # Set `disabled: false` or remove the line to enable it.\n\
+         \x20   chrome:\n\
+         \x20     command: npx\n\
+         \x20     args:\n\
+         \x20       - \"-y\"\n\
+         \x20       - \"chrome-devtools-mcp@latest\"\n\
+         \x20     disabled: true\n\
+         \x20   # Headless browser via Playwright. Heavier but needs no Chrome flag tweaks.\n\
+         \x20   playwright:\n\
+         \x20     command: npx\n\
+         \x20     args:\n\
+         \x20       - \"-y\"\n\
+         \x20       - \"@playwright/mcp@latest\"\n\
+         \x20     disabled: true\n"
     )
 }
 

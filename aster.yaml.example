@@ -1,5 +1,5 @@
-# Aster review config. Copy to `aster.yaml` in your repo root (or
-# ~/.config/aster/aster.yaml for a global default). Every field is optional.
+# Aster config. Copy to `aster.yaml` in your repo root (or
+# ~/.aster/aster.yaml for a global default). Every field is optional.
 #
 # Precedence: CLI flags > shell env > this file > built-in defaults.
 # API keys are NEVER read from this file — use ASTER_API_KEY or `aster login`.
@@ -59,3 +59,20 @@ permissions:
   # The sandbox restricts filesystem writes and drops secrets regardless.
   allow_exec: []             # e.g. ["cargo", "rg", "fd", "npm", "node", "python"]
   deny_exec: []             # always blocked, e.g. ["rm", "sudo", "curl"]
+
+# Limits on one agent turn. Env overrides: ASTER_MAX_TOOL_ROUNDS, ASTER_COMMAND_TIMEOUT.
+agent:
+  # Tool rounds before the agent has to answer with what it has. It says so
+  # when it hits this, rather than quietly wrapping up.
+  max_tool_rounds: 60
+  # Seconds one `run_command` may take. Builds and test suites live here.
+  command_timeout_secs: 300
+
+# MCP servers that give the agent extra tools. `aster mcp list` shows what they
+# expose; `aster mcp enable|disable <name>` flips them without editing by hand.
+mcp:
+  servers:
+    chrome:
+      command: npx
+      args: ["-y", "chrome-devtools-mcp@latest"]
+      disabled: true

@@ -115,6 +115,24 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Delete a block by name or slug. `false` when there was no such block.
+    pub fn forget(&self, name: &str) -> Result<bool> {
+        let slug = slugify(name);
+        let direct = self.dir.join(format!("{slug}.md"));
+        if direct.exists() {
+            fs::remove_file(&direct).with_context(|| format!("removing {}", direct.display()))?;
+            return Ok(true);
+        }
+        for block in self.list()? {
+            if block.name.eq_ignore_ascii_case(name) || slugify(&block.name) == slug {
+                fs::remove_file(&block.path)
+                    .with_context(|| format!("removing {}", block.path.display()))?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn list(&self) -> Result<Vec<MemoryMeta>> {
         let mut blocks = Vec::new();
         let Ok(entries) = fs::read_dir(&self.dir) else {

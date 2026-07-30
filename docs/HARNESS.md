@@ -1,7 +1,7 @@
 # Harness design
 
 How Aster's harness semantics get fixed: sessions, memory, approvals, structured
-interaction, delegation, and scheduling. This document slots around
+interaction, delegation, scheduling, and background runs. This document slots around
 [ROADMAP.md](ROADMAP.md) rather than replacing it — the roadmap owns the tool
 registry, sandbox, dispatch, trace, and eval workstreams; this document owns the
 UX and semantics the roadmap does not cover, and says where each phase hangs off
@@ -330,6 +330,148 @@ scheduled agent is read-only unless its policy says otherwise.
 a tagged session, and a scheduled reviewer completes end to end with zero
 prompts.
 
+## Phase 10 — Background agents
+
+**Gap.** Phase 8 delegation blocks: `run_agent` holds the parent turn open
+until the subagent finishes, and `aster run` occupies the terminal. Phase 9
+covers work with nobody at the keyboard. Neither covers the case in between,
+where you want a long job started and want to keep working while it runs.
+
+**Shape.** A background agent is a Phase 8 delegation whose result is
+collected later instead of awaited. Everything about the contract is unchanged;
+only the timing and the reporting differ.
+
+- **Spawn.** `run_agent` gains `background: true` and returns a handle
+  immediately rather than the result: `{"agent", "run_id", "status":
+  "running"}`. `aster run <agent> "<task>" --detach` is the headless entry,
+  printing the run id.
+- **Identity.** Each background run gets its own session file with
+  `forked_from_id` pointing at the parent, the same lineage field Phase 1
+  already writes. A background run is a session, so `aster sessions list`,
+  retention, and `--resume` all apply to it without new machinery.
+- **Reporting.** Progress is condensed, never a live transcript. A background
+  run renders as one transcript cell that rewrites in place:
+
+  ```text
+  • explorer · 5m 16s · running
+    └ Thought for 4s, read 1 file, ran 1 shell command
+    └ Update(crates/aster-cli/src/tui/bottom_pane/model_picker.rs) +2 −1
+  ```
+
+  Thinking collapses to a duration, tool activity to a count per kind, and
+  writes to a path with a line delta. The rule is that a background agent
+  costs the reader a constant number of rows no matter how long it runs.
+- **Completion.** A finished run surfaces as a summary cell at the next turn
+  boundary, never mid-stream. Interleaving another agent's output into a
+  reply the user is reading is the one thing that makes concurrency
+  unreadable. The summary is the Phase 8 structured return rendered as
+  **Changes** (per file, with deltas) and **How it works**, which is what a
+  reader needs to decide whether to keep the work.
+- **Collection.** The parent reads a finished run with `agent_result(run_id)`.
+  Until then the result is not in the parent's context at all, which is the
+  point: ten background runs cost the parent ten handles, not ten
+  transcripts.
+- **Approvals.** A background run has no approver. Headless semantics from
+  Phase 9 apply unchanged: prompts deny, `ask_user` declines, so a background
+  agent is read-only unless its own policy grants otherwise. Queueing an
+  approval behind a run the user has stopped watching would stall it
+  invisibly, so it is refused instead.
+- **Isolation.** A background agent that writes gets its own git worktree,
+  shared with the roadmap's workstream 4. Two agents writing the same tree
+  concurrently is the failure this exists to prevent.
+- **Lifecycle.** `aster agents list | stop <run_id> | result <run_id>`, and
+  `/agents` in the TUI. Leaving the TUI with runs in flight prompts once and
+  either stops them or detaches them to finish on their own. A run whose
+  process dies leaves its session file, so the partial work is recoverable
+  rather than lost.
+- **Concurrency.** A cap from `aster.yaml`, defaulting low. Depth stays 1:
+  a background agent cannot spawn another, same as Phase 8.
+
+**What the literature says.** Every choice above has published evidence
+behind it, and two of them are settled by it rather than by taste.
+
+- **Concurrent agents conflict, and cross-agent pairs conflict worst.** In
+  33,596 agent-authored PRs across 2,807 repositories, 40.2% of repositories
+  contain temporally overlapping agent PR pairs, rising to 53.4% within a
+  one-week window. Replaying real three-way merges on 747 pairs, cross-agent
+  pairs textually conflicted at 41.7% against 19.8% for pairs from the same
+  agent, with non-overlapping confidence intervals; 84.4% of conflicted files
+  were source rather than dependency manifests, and nearly 42% of conflicts
+  were structural (modify/delete, add/add)
+  ([arXiv:2607.04697](https://arxiv.org/abs/2607.04697)). Worktree isolation
+  is not a precaution here, it is the measured failure mode.
+- **Integration cost belongs to the repository, not the agent.** Across
+  930,000+ agent PRs, roughly half the variance in integration friction stays
+  with the repository after controlling for contribution, author, size, and
+  agent, and agent-authored contributions concentrate that friction about
+  twice as much as human ones (ICC 0.30 against 0.16)
+  ([arXiv:2606.28235](https://arxiv.org/abs/2606.28235)). A concurrency cap is
+  therefore a repository-level setting, which is why it lives in `aster.yaml`
+  rather than in an agent definition.
+- **Asynchronous review detects; only synchronous review prevents.** Comparing
+  monitors of coding agents across both deployment modes, reviewing after the
+  fact still catches most sabotage (an untrained git-diff monitor misses 11.6%
+  of attempts at a 1% false-positive budget, a structural monitor 3.5%, a
+  trained one under 1%), but a monitor that runs synchronously and blocks
+  before execution or merge drove joint task-plus-covert success from 74.4% to
+  0.0% with no measurable loss of legitimate completion
+  ([arXiv:2607.14570](https://arxiv.org/abs/2607.14570)). The gap is not
+  detection rate, it is that an async monitor has nothing left to stop. Nobody
+  watches a background run while it works, so its output is gated at
+  integration and it stays read-only by default.
+- **Unbounded loops are the failure mode of unattended runs.** A static
+  analysis of 6,549 agent repositories confirmed 68 infinite agentic loops
+  across 47 projects, whose consequence is cost exhaustion and unbounded
+  context growth ([arXiv:2607.01641](https://arxiv.org/abs/2607.01641)). The
+  round cap, the depth-1 rule, and the concurrency cap are all bounds on this.
+- **Oversight should thin out, not stop.** Placing human oversight stages in a
+  long workflow is an optimization problem, and the optimal schedule spaces
+  them with non-decreasing gaps rather than uniformly
+  ([arXiv:2607.16530](https://arxiv.org/abs/2607.16530)). Turn-boundary
+  reporting approximates this: attention is cheap early, expensive later.
+- **Stale file snapshots are the concurrency bug agents hit.** Append-only
+  trajectories pin file contents at read time, so concurrent edits leave the
+  agent reasoning about a file that no longer exists in that form; keeping a
+  synchronized registry and injecting current contents instead cut input
+  tokens 9-50% and reasoning cycles up to 37%
+  ([arXiv:2607.22711](https://arxiv.org/abs/2607.22711)). A parent with
+  background writers running is exactly this situation.
+- **Orchestrator-guided parallelism beats a fixed fan-out.** A shepherd agent
+  steering a population of search agents, each on its own git branch, matched
+  or beat state-of-the-art on 13/15 open-ended tasks, and adapting parallelism
+  by depth beat fixed serial or parallel scaling
+  ([arXiv:2607.02807](https://arxiv.org/abs/2607.02807)). The cap should
+  eventually be adaptive rather than a constant.
+- **Structural enforcement beats instructions.** Twelve parallel agents stayed
+  reproducible because deterministic verifier scripts enforced isolation and
+  immutability in code that fails loudly, not in prose the agents were asked
+  to follow, at about 1% wall-clock overhead
+  ([arXiv:2606.27416](https://arxiv.org/abs/2606.27416)). This is the same
+  reason tool scoping is an allowlist rather than a prompt.
+
+Two designs worth tracking rather than adopting yet. **Claim Plane** treats
+concurrent change as a pre-write admission problem: workers declare a typed
+`ChangeIntent` before implementing, and a deterministic control plane admits
+compatible intents and serializes overlap
+([arXiv:2607.21909](https://arxiv.org/abs/2607.21909)). It is the right shape
+for the merge problem above, but its evaluation is six pairs and the author
+states the sample is too small for comparative claims. **MAST** gives 14
+failure modes over 1,600+ annotated multi-agent traces
+([arXiv:2503.13657](https://arxiv.org/abs/2503.13657)), and a protocol layer
+built on it cut failures up to 69.6% on function-level development
+([arXiv:2510.12120](https://arxiv.org/abs/2510.12120)). MAST is the taxonomy
+to classify background-run failures against once there are enough to count.
+
+**Done when.** A background explorer runs to completion while the parent
+answers two unrelated questions, its progress cell never grows past its
+row budget, its result arrives at a turn boundary rather than mid-reply,
+and a parallel writing agent's diff lands in its own worktree.
+
+**Evidence it leaves behind.** Parent context cost of N background runs
+against N inline delegations on the same tasks, the wall-clock saving against
+running them in sequence, and the observed conflict rate on concurrent writing
+runs against the 19.8% same-agent baseline above.
+
 ---
 
 ## Sequencing
@@ -345,6 +487,7 @@ prompts.
 | 7 | Skills budget, MCP wiring | 5 | registry gives MCP its registration path |
 | 8 | run_agent contract | 5, 1 | is roadmap phase 3 |
 | 9 | Scheduled runs | 8 | none |
+| 10 | Background agents | 8, 1 | needs roadmap 4 worktrees to write |
 
 Phases 1–4 ship independently and in parallel with the roadmap's sandbox
 work. Phase 5 is the shared hinge. The evidence rule from
@@ -368,3 +511,18 @@ MCP](https://www.anthropic.com/engineering/code-execution-with-mcp). Evidence:
 [arXiv:2607.17598](https://arxiv.org/abs/2607.17598) (one disclosure level),
 [arXiv:2607.22798](https://arxiv.org/abs/2607.22798) (StateAct),
 [arXiv:2607.13083](https://arxiv.org/abs/2607.13083) (Phantom Guardrails).
+
+Phase 10 evidence: [arXiv:2607.04697](https://arxiv.org/abs/2607.04697)
+(concurrent agent PRs and merge conflict rates),
+[arXiv:2606.28235](https://arxiv.org/abs/2606.28235) (integration friction is
+repository-level), [arXiv:2607.14570](https://arxiv.org/abs/2607.14570)
+(synchronous against asynchronous monitoring),
+[arXiv:2607.01641](https://arxiv.org/abs/2607.01641) (infinite agentic loops),
+[arXiv:2607.16530](https://arxiv.org/abs/2607.16530) (oversight placement),
+[arXiv:2607.22711](https://arxiv.org/abs/2607.22711) (CORVUS, stale
+trajectory snapshots), [arXiv:2607.02807](https://arxiv.org/abs/2607.02807)
+(SwarmResearch), [arXiv:2606.27416](https://arxiv.org/abs/2606.27416) (Glite
+ARF, verifier-driven parallel agents),
+[arXiv:2607.21909](https://arxiv.org/abs/2607.21909) (Claim Plane,
+preliminary), [arXiv:2503.13657](https://arxiv.org/abs/2503.13657) (MAST) and
+[arXiv:2510.12120](https://arxiv.org/abs/2510.12120) (SEMAP).

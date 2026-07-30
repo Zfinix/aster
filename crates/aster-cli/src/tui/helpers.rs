@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
 
-use super::{ACCENT, SPINNER};
+use super::{SPINNER, theme};
 
 pub(super) fn short_path(path: &std::path::Path) -> String {
     let full = path.display().to_string();
@@ -66,6 +66,30 @@ pub(super) fn mark_lines() -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The mark as plain ANSI escape codes, for non-ratatui output (e.g. `aster init`).
+pub(crate) fn mark_ansi() -> String {
+    let mut out = String::new();
+    for line in mark_lines() {
+        for span in &line.spans {
+            let style = span.style;
+            if let Some(fg) = style.fg
+                && let Color::Rgb(r, g, b) = fg
+            {
+                out.push_str(&format!("\x1b[38;2;{r};{g};{b}m"));
+            }
+            if let Some(bg) = style.bg
+                && let Color::Rgb(r, g, b) = bg
+            {
+                out.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
+            }
+            out.push_str(&span.content);
+            out.push_str("\x1b[0m");
+        }
+        out.push('\n');
+    }
+    out
+}
+
 pub(super) fn draw_banner(frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new(mark_lines()).alignment(Alignment::Center),
@@ -82,20 +106,17 @@ pub(super) fn draw_input_box(
     spinner: usize,
     placeholder: &str,
 ) {
-    let prompt = Span::styled(
-        "❯ ",
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    );
+    let prompt = Span::styled("❯ ", theme::get().accent_bold());
     let (line, border) = if thinking {
         (
             Line::from(vec![
                 Span::styled(
                     format!("{} ", SPINNER[spinner]),
-                    Style::default().fg(ACCENT),
+                    theme::get().accent_style(),
                 ),
-                Span::styled("Aster is thinking…", Style::default().fg(ACCENT)),
+                Span::styled("Aster is thinking…", theme::get().accent_style()),
             ]),
-            ACCENT,
+            theme::get().accent,
         )
     } else if input.is_empty() {
         (
@@ -104,20 +125,20 @@ pub(super) fn draw_input_box(
                 Span::styled(
                     placeholder.to_string(),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(theme::get().faint)
                         .add_modifier(Modifier::ITALIC),
                 ),
             ]),
-            ACCENT,
+            theme::get().accent,
         )
     } else {
         (
             Line::from(vec![
                 prompt,
                 Span::raw(input.to_string()),
-                Span::styled("▏", Style::default().fg(ACCENT)),
+                Span::styled("▏", theme::get().accent_style()),
             ]),
-            ACCENT,
+            theme::get().accent,
         )
     };
     frame.render_widget(
@@ -134,13 +155,9 @@ pub(super) fn draw_input_box(
     );
 }
 
-/// Compact number formatter (e.g. 1234 -> "1.2k"). Unitless; callers add the unit.
+/// Compact number formatter (e.g. 1234 -> "1.2k"). Delegates to the shared util.
 pub(super) fn human_count(n: usize) -> String {
-    if n >= 1000 {
-        format!("{:.1}k", n as f64 / 1000.0)
-    } else {
-        n.to_string()
-    }
+    crate::util::human(n as u64)
 }
 
 /// Clip a one-line label, on a char boundary so multi-byte text survives.
@@ -154,19 +171,17 @@ pub(super) fn truncate_label(text: &str, max: usize) -> String {
 }
 
 pub(super) fn dim(text: impl Into<String>) -> Line<'static> {
-    Line::from(Span::styled(
-        text.into(),
-        Style::default().fg(Color::DarkGray),
-    ))
+    Line::from(Span::styled(text.into(), theme::get().faint_style()))
 }
 
 pub(super) fn severity_chip(severity: &str) -> Span<'static> {
+    let t = theme::get();
     let (bg, label) = match severity {
-        "critical" => (Color::Red, "CRIT"),
-        "high" => (Color::LightRed, "HIGH"),
-        "medium" => (Color::Yellow, "MED"),
-        "low" => (Color::Blue, "LOW"),
-        _ => (Color::DarkGray, "INFO"),
+        "critical" => (t.severity_critical, "CRIT"),
+        "high" => (t.severity_high, "HIGH"),
+        "medium" => (t.severity_medium, "MED"),
+        "low" => (t.severity_low, "LOW"),
+        _ => (t.severity_info, "INFO"),
     };
     Span::styled(
         format!(" {label} "),

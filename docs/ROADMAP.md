@@ -11,8 +11,8 @@ the roadmap.
 
 The harness UX and semantics work — session resume and retention, memory
 scoping, structured questions, plan mode, delegation contracts, scheduled
-runs — is designed in [HARNESS.md](HARNESS.md) and slots around the
-sequencing below.
+runs, background agents — is designed in [HARNESS.md](HARNESS.md) and slots
+around the sequencing below.
 
 ---
 

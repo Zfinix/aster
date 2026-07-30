@@ -1,4 +1,4 @@
-//! Review config (`aster.yaml`), loaded from the repo root or `~/.config/aster/`.
+//! Review config (`aster.yaml`), loaded from the repo root or `~/.aster/`.
 
 use std::path::Path;
 
@@ -11,6 +11,19 @@ use serde::Deserialize;
 pub struct Settings {
     pub review: Review,
     pub permissions: aster_policy::PermissionsConfig,
+    pub mcp: crate::mcp::McpSettings,
+    pub agent: Agent,
+}
+
+/// Limits on one agent turn. Both are also settable per run via
+/// `ASTER_MAX_TOOL_ROUNDS` and `ASTER_COMMAND_TIMEOUT`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Agent {
+    /// Tool call rounds before the agent is forced to answer with what it has.
+    pub max_tool_rounds: Option<usize>,
+    /// Seconds a `run_command` call may run before it is killed.
+    pub command_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -43,7 +56,7 @@ impl Settings {
     /// The global config, then the repo's, with the repo's on top. Malformed
     /// files error rather than being skipped, so a typo is never silent.
     pub fn load(repo_root: Option<&Path>) -> Result<Self> {
-        let global = match dirs::config_dir().map(|d| d.join("aster/aster.yaml")) {
+        let global = match dirs::home_dir().map(|h| h.join(".aster/aster.yaml")) {
             Some(path) if path.exists() => Some(parse(&path)?),
             _ => None,
         };
@@ -73,8 +86,26 @@ impl Settings {
         Settings {
             review: self.review.overlaid_with(project.review),
             permissions: merge_permissions(self.permissions, project.permissions),
+            mcp: merge_mcp(self.mcp, project.mcp),
+            agent: Agent {
+                max_tool_rounds: project.agent.max_tool_rounds.or(self.agent.max_tool_rounds),
+                command_timeout_secs: project
+                    .agent
+                    .command_timeout_secs
+                    .or(self.agent.command_timeout_secs),
+            },
         }
     }
+}
+
+/// Servers union by name, the project's definition winning a collision, so a
+/// repo can point a shared server name at its own binary.
+fn merge_mcp(
+    mut global: crate::mcp::McpSettings,
+    project: crate::mcp::McpSettings,
+) -> crate::mcp::McpSettings {
+    global.servers.extend(project.servers);
+    global
 }
 
 fn merge_permissions(

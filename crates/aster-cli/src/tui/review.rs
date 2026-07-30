@@ -10,14 +10,14 @@ use aster_models::ReviewReport;
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 
 use super::guard::TuiGuard;
 use super::helpers::{dim, draw_banner, draw_input_box, human_count, severity_chip};
 use super::summary::print_summary;
-use super::{ACCENT, SPINNER};
+use super::{SPINNER, theme};
 use crate::review::{Job, execute};
 
 const AGENT_PROMPT: &str = include_str!("../../prompts/aster-agent.md");
@@ -67,7 +67,7 @@ pub async fn run(job: Job, min_confidence: f32) -> Result<()> {
     let usage_handle = job.ai_client.clone();
     let mut task = tokio::spawn(async move { execute(job, &Some(tx)).await });
 
-    // Restores the terminal on every exit path: normal return, early `?`, panic.
+    theme::set(theme::Theme::DEFAULT);
     let guard = TuiGuard::install(ratatui::restore);
 
     let mut terminal = ratatui::init();
@@ -265,7 +265,7 @@ impl App {
     fn push_user(&mut self, text: &str) {
         self.lines.push(Line::from(""));
         self.lines.push(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(ACCENT)),
+            Span::styled("❯ ", theme::get().accent_style()),
             Span::styled(
                 text.to_string(),
                 Style::default().add_modifier(Modifier::BOLD),
@@ -282,7 +282,7 @@ impl App {
         for (i, l) in reply.lines().enumerate() {
             if i == 0 {
                 self.lines.push(Line::from(vec![
-                    Span::styled("✳ ", Style::default().fg(Color::Green)),
+                    Span::styled("✳ ", Style::default().fg(theme::get().success)),
                     Span::raw(l.to_string()),
                 ]));
             } else {
@@ -294,7 +294,7 @@ impl App {
     fn push_error(&mut self, msg: &str) {
         self.lines.push(Line::from(Span::styled(
             format!("  ! {msg}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::get().error),
         )));
     }
 
@@ -314,10 +314,10 @@ impl App {
                 self.stream_chars = 0;
                 self.lines.push(Line::from(""));
                 self.lines.push(Line::from(vec![
-                    Span::styled("▶ ", Style::default().fg(ACCENT)),
+                    Span::styled("▶ ", theme::get().accent_style()),
                     Span::styled(
                         name,
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        theme::get().accent_style().add_modifier(Modifier::BOLD),
                     ),
                 ]));
             }
@@ -340,7 +340,7 @@ impl App {
                 self.lines.push(Line::from(vec![
                     Span::styled(
                         format!("  → [{index}/{total}] "),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme::get().faint),
                     ),
                     Span::raw(title),
                 ]));
@@ -358,7 +358,7 @@ impl App {
                     Span::styled(
                         "  ✓ ",
                         Style::default()
-                            .fg(Color::Green)
+                            .fg(theme::get().success)
                             .add_modifier(Modifier::BOLD),
                     ),
                     severity_chip(&f.severity),
@@ -371,17 +371,17 @@ impl App {
                     Span::raw("      "),
                     Span::styled(
                         format!("{}:{}{}", f.file_path, f.line, conf),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme::get().blue),
                     ),
                 ]));
                 self.lines.push(dim(format!("      {}", f.description)));
             }
             Progress::Refuted { title, .. } => {
                 self.lines.push(Line::from(vec![
-                    Span::styled("  ✗ ", Style::default().fg(Color::Red)),
+                    Span::styled("  ✗ ", Style::default().fg(theme::get().error)),
                     Span::styled(
                         format!("refuted  {title}"),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme::get().faint),
                     ),
                 ]));
             }
@@ -466,34 +466,34 @@ impl App {
             Layout::horizontal([Constraint::Min(0), Constraint::Length(12)]).areas(area);
 
         let mark = if self.finished {
-            Span::styled("✳ ", Style::default().fg(Color::Green))
+            Span::styled("✳ ", Style::default().fg(theme::get().success))
         } else {
             Span::styled(
                 format!("{} ", SPINNER[self.spinner]),
-                Style::default().fg(ACCENT),
+                theme::get().accent_style(),
             )
         };
         let mut spans = vec![mark];
         if show_name {
             spans.push(Span::styled(
                 "Aster",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                theme::get().accent_style().add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 format!("  {}", self.status),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::get().faint),
             ));
         } else {
             spans.push(Span::styled(
                 self.status.clone(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::get().faint),
             ));
         }
         // Continuously climbing meter so a long call visibly progresses. ~4 chars/token.
         if !self.finished && self.total_stream_chars > 0 {
             spans.push(Span::styled(
                 format!("  ▸ {} tokens", human_count(self.total_stream_chars / 4)),
-                Style::default().fg(ACCENT),
+                theme::get().accent_style(),
             ));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), left);
@@ -502,7 +502,7 @@ impl App {
         frame.render_widget(
             Paragraph::new(Line::from(elapsed))
                 .alignment(Alignment::Right)
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(Style::default().fg(theme::get().faint)),
             right,
         );
     }
@@ -527,7 +527,7 @@ impl App {
         };
         let text = format!("{lead}{}  ·  {hint}", self.usage_label());
         frame.render_widget(
-            Paragraph::new(Line::from(text)).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(Line::from(text)).style(Style::default().fg(theme::get().faint)),
             area,
         );
     }

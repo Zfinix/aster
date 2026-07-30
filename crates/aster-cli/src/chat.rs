@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::edits::{self, EditBlock};
 use crate::persist::Recorder;
+use crate::util::usage_json;
 
 /// Persistence handles threaded through a chat turn: the live append handle for
 /// this session's transcript, and the store used to read and write memory.
@@ -24,10 +25,52 @@ pub(crate) struct SessionCtx {
     pub recorder: Option<Recorder>,
     pub store: Option<Store>,
     pub skills: Arc<aster_skills::SkillSet>,
+    /// `AGENTS.md` and friends, read from the repo at session start.
+    pub instructions: Arc<crate::instructions::Instructions>,
     pub probe: Arc<bash_tools::ToolProbe>,
     /// Plan state maintained by the `update_plan` tool, rendered as a progress
     /// strip in the TUI and the desktop UI.
     pub plan: std::sync::Arc<std::sync::Mutex<PlanState>>,
+    /// Connected MCP servers, when any are configured and reachable.
+    pub mcp: Option<crate::mcp::McpRuntime>,
+    /// Per-turn caps, from aster.yaml `agent` and the environment.
+    pub limits: Limits,
+    /// YOLO mode: the session is running without sandbox restrictions.
+    pub yolo: bool,
+}
+
+/// How long a turn may work before it has to answer, and how long one command
+/// may run. Defaults suit real builds; `aster.yaml` and the env can lower them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    pub max_tool_rounds: usize,
+    pub command_timeout_secs: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+            command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
+        }
+    }
+}
+
+impl Limits {
+    /// aster.yaml first, then the environment, which wins so one run can differ.
+    pub(crate) fn resolve(agent: &crate::settings::Agent) -> Self {
+        let env_usize = |key: &str| std::env::var(key).ok().and_then(|v| v.parse().ok());
+        Self {
+            max_tool_rounds: env_usize("ASTER_MAX_TOOL_ROUNDS")
+                .or(agent.max_tool_rounds)
+                .unwrap_or(DEFAULT_MAX_TOOL_ROUNDS)
+                .max(1),
+            command_timeout_secs: env_usize("ASTER_COMMAND_TIMEOUT")
+                .or(agent.command_timeout_secs.map(|v| v as usize))
+                .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS)
+                .max(1),
+        }
+    }
 }
 
 /// Phased plan the agent builds and tracks with `update_plan`. Read by the
@@ -109,15 +152,29 @@ pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
     Arc::new(aster_skills::SkillSet::discover(&roots))
 }
 
-/// The agent persona plus the memory block, when any facts are stored.
+/// The agent persona, the repo's own instructions, and the memory block.
 fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     let mut prompt = String::from(AGENT_SYSTEM_PROMPT);
+    // Ahead of tools and memory: these are the repo's standing rules, and they
+    // shape how every other section gets used.
+    if let Some(project) = ctx.instructions.render() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&project);
+    }
     if tools {
         prompt.push_str(TOOLS_PROMPT);
         if let Some(index) = ctx.skills.render_index() {
             prompt.push_str("\n\n");
             prompt.push_str(&index);
         }
+    }
+    if tools && let Some(injection) = ctx.mcp.as_ref().and_then(|m| m.injection()) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&injection.prompt);
+    }
+    if tools && let Some(disabled) = ctx.mcp.as_ref().and_then(|m| m.disabled_servers_prompt()) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&disabled);
     }
     if let Some(memory) = ctx.memory_context() {
         prompt.push_str("\n\n");
@@ -208,18 +265,23 @@ pub(crate) type UiSender = mpsc::Sender<UiRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f32 = 0.4;
-/// Hard stop so a confused model cannot spin forever.
-const MAX_TOOL_ROUNDS: usize = 12;
+/// Hard stop so a confused model cannot spin forever. High enough that real
+/// multi-file work finishes inside it; `agent.max_tool_rounds` overrides.
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
 /// Caps tool output so one fat file cannot blow the context.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
 /// Caps command output (stdout + stderr combined).
 const MAX_SEARCH_HITS: usize = 80;
+/// Lines shown either side of a hit, so a search usually answers on its own
+/// instead of costing a follow-up `read_file`.
+const SEARCH_CONTEXT_LINES: usize = 3;
 const MAX_LIST_ENTRIES: usize = 200;
 const MAX_FIND_HITS: usize = 100;
 /// Nearby paths offered when a guessed path does not exist.
 const MAX_PATH_SUGGESTIONS: usize = 8;
-/// Maximum seconds a sandboxed command may run before it is killed.
-const COMMAND_TIMEOUT_SECS: u64 = 30;
+/// Maximum seconds a command may run before it is killed. Builds and test
+/// suites live here, so it is minutes; `agent.command_timeout_secs` overrides.
+const DEFAULT_COMMAND_TIMEOUT_SECS: usize = 300;
 /// Total history size (chars) above which older turns are folded into a summary.
 const COMPACT_BUDGET_CHARS: usize = 48_000;
 /// Recent turns kept verbatim when compacting; everything older is summarized.
@@ -235,10 +297,14 @@ A path that does not exist is a wrong guess, not a failure: take the nearby \
 paths the tool offers and try again. \
 `edit_file` also creates files: omit `search` and pass the whole contents as \
 `replace`. \
-`run_command` runs a CLI tool or build command in a sandbox. The sandbox \
-restricts filesystem writes to the repo and temp directories and drops \
-secrets from the environment. Use it for builds, tests, linters, and fast \
-search with `rg` or `fd` when available. \
+`run_command` runs a CLI tool or build command. Filesystem writes are \
+restricted to the repo and temp directories, and secrets are dropped from \
+the environment. Use it for builds, tests, and linters. Do not shell out \
+to `rg`, `grep`, `find`, or `fd`: `search_files` and `find_files` already \
+run them directly, without the overhead. \
+Set `turbo: true` when the user asks to work offline or in turbo mode \
+(blocks network access). Set `yolo: true` only when the user explicitly \
+asks for yolo mode (no restrictions, requires extra confirmations). \
 Ground every claim about the code in what you actually read. Only edit files when the \
 user asked for a change; keep edits minimal and in the file's existing style. \
 After editing, state plainly which files you changed and what the change does. \
@@ -353,13 +419,13 @@ fn ask_needs_front_end(mode: aster_policy::Mode, allow_edits: bool, can_prompt: 
 pub async fn run(args: ChatArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
+    let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
 
-    let llm = crate::provider::resolve(&settings.review, args.model.as_deref())?;
-    let client = AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort);
-
+    // The flag is the user asking for this run outright, so it replaces the
+    // configured mode rather than only tightening it.
     let mut permissions = settings.permissions.clone();
     if let Some(mode) = args.permission_mode {
-        permissions.mode = permissions.mode.stricter(mode.into());
+        permissions.mode = mode.into();
     }
 
     // The TUI answers its own prompts, so it is editable unless the config or
@@ -374,8 +440,9 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let allow_edits =
         if !args.no_tools && ask_needs_front_end(permissions.mode, allow_edits, can_prompt) {
             eprintln!(
-                "note: `ask` permissions confirm every edit and this run cannot ask, \
-             so the agent is read-only. Use --permission-mode edit to let it edit."
+                "note: `manual` permissions confirm every edit and this run cannot ask, \
+             so the agent is read-only. Pass --permission-mode edit (or auto), or run \
+             with --stream so approvals have somewhere to go."
             );
             false
         } else {
@@ -384,6 +451,13 @@ pub async fn run(args: ChatArgs) -> Result<()> {
 
     let policy = Arc::new(Policy::compile(&permissions)?);
     let grants = Arc::new(configured_grants(&permissions, &repo_root));
+
+    let (mcp, mcp_problems) = crate::mcp::McpRuntime::connect(&settings.mcp).await;
+    for problem in &mcp_problems {
+        eprintln!("note: MCP server unavailable, {problem}");
+    }
+
+    let limits = Limits::resolve(&settings.agent);
 
     if args.is_interactive() {
         let seed = args.prompt.clone();
@@ -394,6 +468,8 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             permissions,
             seed,
             args.resume_mode(),
+            mcp,
+            limits,
         )
         .await;
     }
@@ -406,10 +482,20 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     }
 
     if args.stream {
-        return run_stream(args, client, repo_root, policy, grants, allow_edits).await;
+        return run_stream(
+            args,
+            client,
+            repo_root,
+            policy,
+            grants,
+            allow_edits,
+            mcp,
+            limits,
+        )
+        .await;
     }
 
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client)?;
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits)?;
 
     let mut edited: Vec<String> = Vec::new();
     let reply = if args.no_tools {
@@ -445,14 +531,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         let out = json!({
             "reply": reply,
             "edits": edited,
-            "usage": {
-                "prompt_tokens": u.prompt_tokens,
-                "completion_tokens": u.completion_tokens,
-                "total_tokens": u.total_tokens,
-                "requests": u.requests,
-                "estimated_cost_usd": u.estimated_cost_usd,
-                "estimated": u.estimated,
-            },
+            "usage": usage_json(&u),
         });
         println!("{out}");
     } else {
@@ -470,6 +549,8 @@ fn prepare_turn(
     args: &ChatArgs,
     repo_root: &Path,
     client: &AiClient,
+    mcp: Option<crate::mcp::McpRuntime>,
+    limits: Limits,
 ) -> Result<(SessionCtx, Vec<ChatMessage>)> {
     let new_turns = read_history(args)?;
     let store = crate::persist::store().ok();
@@ -479,8 +560,12 @@ fn prepare_turn(
         recorder,
         store,
         skills: discover_skills(repo_root),
+        instructions: Arc::new(crate::instructions::discover(repo_root)),
         probe: Arc::new(bash_tools::ToolProbe::detect()),
         plan: Default::default(),
+        mcp,
+        limits,
+        yolo: false,
     };
     // Record only the new user turn. On the wire path `new_turns` is the full
     // replayed history, whose earlier turns were recorded on previous calls.
@@ -571,6 +656,7 @@ fn read_approval_reply() -> Answer {
 }
 
 /// Run a turn as NDJSON events on stdout, reading approval replies from stdin.
+#[allow(clippy::too_many_arguments)]
 async fn run_stream(
     args: ChatArgs,
     client: AiClient,
@@ -578,8 +664,10 @@ async fn run_stream(
     policy: Arc<Policy>,
     grants: Arc<Grants>,
     allow_edits: bool,
+    mcp: Option<crate::mcp::McpRuntime>,
+    limits: Limits,
 ) -> Result<()> {
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client)?;
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits)?;
 
     let sink: ChatEventSink = Box::new(|event| emit_line(&event));
     let mut edited: Vec<String> = Vec::new();
@@ -603,14 +691,7 @@ async fn run_stream(
             "type": "done",
             "reply": reply,
             "edits": edited,
-            "usage": {
-                "prompt_tokens": u.prompt_tokens,
-                "completion_tokens": u.completion_tokens,
-                "total_tokens": u.total_tokens,
-                "requests": u.requests,
-                "estimated_cost_usd": u.estimated_cost_usd,
-                "estimated": u.estimated,
-            },
+            "usage": usage_json(&u),
         })),
         Err(e) => emit_line(&json!({ "type": "error", "message": format!("{e:#}") })),
     }
@@ -654,13 +735,33 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
             .collect();
     }
 
-    match args.prompt.as_deref().map(str::trim) {
-        Some(prompt) if !prompt.is_empty() => Ok(vec![ChatMessage {
+    if let Some(prompt) = args
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        return Ok(vec![ChatMessage {
             role: "user".into(),
             content: prompt.into(),
-        }]),
-        _ => bail!("nothing to ask; pass a prompt (aster chat \"...\") or --messages-json"),
+        }]);
     }
+
+    // Piped input is the prompt: `echo "why?" | aster` should just work.
+    // Not on `--stream`, where stdin stays open for approval replies.
+    if !args.stream && !io::stdin().is_terminal() {
+        let mut buf = String::new();
+        io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading the prompt from stdin")?;
+        if !buf.trim().is_empty() {
+            return Ok(vec![ChatMessage {
+                role: "user".into(),
+                content: buf.trim().to_string(),
+            }]);
+        }
+    }
+    bail!("nothing to ask; pass a prompt (aster chat \"...\"), pipe one in, or use --messages-json")
 }
 
 /// Resolve the session a headless turn records into, and the prior history to
@@ -771,8 +872,11 @@ async fn agent_loop(
         wire.push(serde_json::to_value(m)?);
     }
 
-    for round in 0..MAX_TOOL_ROUNDS {
-        let tools = tool_defs(allow_edits, approver.is_some());
+    for round in 0..ctx.limits.max_tool_rounds {
+        let mut tools = tool_defs(allow_edits, approver.is_some());
+        if let Some(injection) = ctx.mcp.as_ref().and_then(|m| m.injection()) {
+            tools.push(injection.bridge_tool);
+        }
         // False when the endpoint ignored `stream` and the client fell back to a
         // whole response, which the commentary emit below has to make up for.
         let mut streamed = false;
@@ -872,10 +976,19 @@ async fn agent_loop(
         }
     }
 
-    // Round cap tripped: force a final plain answer out of what was gathered.
+    // Round cap tripped: force a final plain answer out of what was gathered,
+    // and say so, since a cut-off turn otherwise reads as the agent giving up.
+    let rounds = ctx.limits.max_tool_rounds;
+    emit(json!({
+        "type": "notice",
+        "message": format!(
+            "stopped after {rounds} tool rounds; answering with what it has \
+             (raise `agent.max_tool_rounds` in aster.yaml or ASTER_MAX_TOOL_ROUNDS)"
+        ),
+    }));
     wire.push(json!({
         "role": "user",
-        "content": "Stop using tools and answer now with what you have.",
+        "content": "Stop using tools and answer now with what you have. Say plainly what you did not get to.",
     }));
     let msg = client
         .complete_tools_stream_with(&client.model, wire, Vec::new(), CHAT_TEMPERATURE, |delta| {
@@ -980,7 +1093,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "search_files",
-                "description": "Case-insensitive content search across repository files. The query is a regex, falling back to a literal match when it is not valid regex. Returns path:line: text. A directory that does not exist is not an error: the whole repository is searched instead.",
+                "description": "Content search across repository files. The query is a regex, falling back to a literal match when it is not valid regex. Matching is smart-case: an all-lowercase query ignores case, a query with an uppercase letter is matched exactly. Results are grouped by file, with surrounding lines and a '>' on each matching line, so you usually do not need to read the file afterwards. At most 3 matches per file, so hits spread across the repository. A directory that does not exist is not an error: the whole repository is searched instead.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1132,7 +1245,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run a command in the sandbox. The sandbox restricts filesystem writes to the repository and temp directories, blocks network unless the command is allow-listed, and drops secrets from the environment. Returns stdout, stderr, and exit code. Use the best available CLI tool (rg for search, fd for file listing, cargo/npm/etc for builds and tests).",
+            "description": "Run a CLI command. Filesystem writes are restricted to the repository and temp directories, and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution (requires extra confirmations). Returns stdout, stderr, and exit code.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1141,7 +1254,9 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Arguments to pass to the command"
-                    }
+                    },
+                    "turbo": { "type": "boolean", "description": "Run without network access. Use when the user asks for turbo mode or wants to work offline." },
+                    "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode; triggers extra confirmations." }
                 },
                 "required": ["command"]
             }
@@ -1274,7 +1389,15 @@ async fn exec_tool(
         "edit_file" if !*allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),
-        "edit_file" => edit_file(repo_root, policy, approver, &args, edited).await,
+        "edit_file" => edit_file(repo_root, policy, approver, &args, edited)
+            .await
+            .map(|done| match governing_instructions(ctx, &args) {
+                // Nested instructions are advertised, not preloaded, so an edit
+                // is the last point at which the rules for that directory can
+                // still be raised.
+                Some(path) => format!("{done}\n\n{path} sets the rules for this directory. Read it if you have not, and revisit this edit if it conflicts."),
+                None => done,
+            }),
         "run_command" => match str_arg("command").context("run_command needs a `command`") {
             Ok(cmd) => {
                 let cmd_args: Vec<String> = args["args"]
@@ -1285,10 +1408,23 @@ async fn exec_tool(
                             .collect()
                     })
                     .unwrap_or_default();
-                run_command_tool(repo_root, policy, approver, &cmd, &cmd_args).await
+                let turbo = args["turbo"].as_bool().unwrap_or(false);
+                let yolo = args["yolo"].as_bool().unwrap_or(false) || ctx.yolo;
+                run_command_tool(
+                    repo_root,
+                    policy,
+                    approver,
+                    &cmd,
+                    &cmd_args,
+                    turbo,
+                    yolo,
+                    ctx.limits.command_timeout_secs as u64,
+                )
+                .await
             }
             Err(e) => Err(e),
         },
+        "aster_mcp" => mcp_bridge(policy, approver, ctx, arguments).await,
         other => Err(anyhow::anyhow!(
             "unknown tool: {other}. Available tools: {}",
             tool_names(*allow_edits, approver.is_some()).join(", ")
@@ -1318,24 +1454,56 @@ impl PlanStepStatus {
         }
     }
 
+    /// Matches the TUI's glyphs so every surface shows the same plan.
     fn glyph(self) -> &'static str {
         match self {
-            Self::Pending => "[ ]",
-            Self::InProgress => "[~]",
-            Self::Done => "[x]",
-            Self::Skipped => "[-]",
-            Self::Blocked => "[!]",
+            Self::Pending => "◻",
+            Self::InProgress => "◼",
+            Self::Done => "✔",
+            Self::Skipped => "⊘",
+            Self::Blocked => "✖",
         }
     }
 }
 
 impl PlanState {
+    fn count(&self, want: PlanStepStatus) -> usize {
+        self.steps.iter().filter(|s| s.status == want).count()
+    }
+
+    /// A count line over one row per step. Statuses nobody used stay off the
+    /// summary, so the common case reads as "3 done, 1 open".
     fn render(&self) -> String {
-        self.steps
+        let mut parts = vec![format!("{} done", self.count(PlanStepStatus::Done))];
+        if self.count(PlanStepStatus::InProgress) > 0 {
+            parts.push(format!(
+                "{} in progress",
+                self.count(PlanStepStatus::InProgress)
+            ));
+        }
+        parts.push(format!("{} open", self.count(PlanStepStatus::Pending)));
+        for (status, label) in [
+            (PlanStepStatus::Blocked, "blocked"),
+            (PlanStepStatus::Skipped, "skipped"),
+        ] {
+            if self.count(status) > 0 {
+                parts.push(format!("{} {label}", self.count(status)));
+            }
+        }
+
+        let head = format!(
+            "{} task{} ({})",
+            self.steps.len(),
+            if self.steps.len() == 1 { "" } else { "s" },
+            parts.join(", ")
+        );
+        let rows = self
+            .steps
             .iter()
-            .map(|step| format!("{} {}", step.status.glyph(), step.label))
+            .map(|step| format!("  {} {}", step.status.glyph(), step.label))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        format!("{head}\n{rows}")
     }
 }
 
@@ -1383,6 +1551,19 @@ async fn ask_user(
                 .to_string(),
         );
     };
+    // With zero or one choices there is nothing for the user to pick. Rather
+    // than bouncing the decision back to the model (which tends to retry the
+    // tool in a loop), commit to the single option or decline outright.
+    match options.len() {
+        0 => {
+            return Ok(
+                "the user declined to answer; proceed with your best judgement"
+                    .to_string(),
+            )
+        }
+        1 => return Ok(format!("the user chose: {}", options[0])),
+        _ => {} // fall through to the interactive path
+    }
 
     let (respond, rx) = oneshot::channel();
     let request = UiRequest::Question(QuestionRequest {
@@ -1461,13 +1642,76 @@ fn missing_path(repo_root: &Path, path: &str) -> String {
     )
 }
 
-/// Run a command in the sandbox, subject to policy and approval.
+/// Run a command, subject to policy and approval.
+/// The nested instruction file governing the path an edit just touched.
+fn governing_instructions(ctx: &SessionCtx, args: &Value) -> Option<String> {
+    let path = args["path"].as_str()?;
+    ctx.instructions
+        .nearest(Path::new(path))
+        .map(|p| p.display().to_string())
+}
+
+/// Route one `aster_mcp` call. Discovery answers from the local catalog;
+/// execution is authorized against the resolved `server/tool` id, never
+/// against the bridge, so allowing the bridge never allows every tool behind it.
+async fn mcp_bridge(
+    policy: &Policy,
+    approver: Option<&UiSender>,
+    ctx: &SessionCtx,
+    arguments: &str,
+) -> Result<String> {
+    let runtime = ctx
+        .mcp
+        .as_ref()
+        .context("no MCP servers are connected in this session")?;
+    let action = runtime.injector().route(arguments)?;
+    let (tool, call_args) = match action {
+        aster_mcp::BridgeAction::Search(matches) => {
+            return Ok(serde_json::to_string_pretty(
+                &json!({ "matches": matches }),
+            )?);
+        }
+        aster_mcp::BridgeAction::Describe(tool) => {
+            return Ok(serde_json::to_string_pretty(&json!({
+                "id": tool.id(),
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            }))?);
+        }
+        aster_mcp::BridgeAction::Execute { tool, arguments } => (tool, arguments),
+    };
+
+    let id = tool.id();
+    match policy.evaluate(&Action::Exec {
+        binary: "mcp",
+        args: &[&id],
+    }) {
+        Decision::Allow => {}
+        Decision::Deny { reason } => bail!("{reason}"),
+        Decision::Prompt { .. } => {
+            let preview = format!("call MCP tool {id}:\n{call_args:#}");
+            if !request_approval(approver, preview, None).await.allowed() {
+                bail!(
+                    "MCP tool `{id}` needs user approval; it was rejected or this run cannot ask"
+                );
+            }
+        }
+    }
+
+    let result = runtime.call(&tool, &call_args).await?;
+    Ok(crate::mcp::render_result(&result))
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_command_tool(
     repo_root: &Path,
     policy: &Policy,
     approver: Option<&UiSender>,
     binary: &str,
     args: &[String],
+    turbo: bool,
+    yolo: bool,
+    timeout_secs: u64,
 ) -> Result<String> {
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match policy.evaluate(&Action::Exec {
@@ -1485,7 +1729,20 @@ async fn run_command_tool(
         }
     }
 
-    let profile = aster_sandbox::SandboxProfile::new(repo_root).timeout(COMMAND_TIMEOUT_SECS);
+    if yolo {
+        for i in 1..=3 {
+            let preview =
+                format!("YOLO mode — run `{binary}` with no sandbox?\n\nConfirmation {i}/3");
+            if !request_approval(approver, preview, None).await.allowed() {
+                bail!("yolo mode rejected at confirmation {i}/3");
+            }
+        }
+        return run_direct(repo_root, binary, args).await;
+    }
+
+    let profile = aster_sandbox::SandboxProfile::new(repo_root)
+        .timeout(timeout_secs)
+        .network(!turbo);
     let config = aster_sandbox::SandboxConfig::new(profile);
     let output = aster_sandbox::run_command(&config, binary, args).await?;
     let mut result = String::new();
@@ -1501,6 +1758,40 @@ async fn run_command_tool(
         result.push_str(&output.stderr);
     }
     result.push_str(&format!("\nexit code: {}", output.exit_code.unwrap_or(-1)));
+    if result.is_empty() {
+        return Ok("(no output)".into());
+    }
+    Ok(result)
+}
+
+async fn run_direct(repo_root: &Path, binary: &str, args: &[String]) -> Result<String> {
+    let output = tokio::process::Command::new(binary)
+        .args(args)
+        .current_dir(repo_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .context("running command")?;
+    let mut result = String::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stdout.is_empty() {
+        result.push_str("stdout:\n");
+        result.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("stderr:\n");
+        result.push_str(&stderr);
+    }
+    result.push_str(&format!(
+        "\nexit code: {}",
+        output.status.code().unwrap_or(-1)
+    ));
     if result.is_empty() {
         return Ok("(no output)".into());
     }
@@ -1661,21 +1952,21 @@ fn search_files(
     query: &str,
     base: &Path,
 ) -> Result<String> {
-    let raw = bash_tools::search(probe, repo_root, base, query, MAX_SEARCH_HITS)?;
-    let filtered: Vec<&str> = raw
-        .lines()
-        .filter(|line| {
-            let path = line.split(':').next().unwrap_or("");
+    let hits = bash_tools::search(probe, repo_root, base, query, MAX_SEARCH_HITS)?;
+    let filtered: Vec<bash_tools::Hit> = hits
+        .into_iter()
+        .filter(|hit| {
             !matches!(
-                policy.evaluate(&Action::Read { path }),
+                policy.evaluate(&Action::Read { path: &hit.path }),
                 Decision::Deny { .. }
             )
         })
         .collect();
-    if filtered.is_empty() {
-        return Ok("no matches".into());
-    }
-    Ok(filtered.join("\n"))
+    Ok(bash_tools::render(
+        repo_root,
+        &filtered,
+        SEARCH_CONTEXT_LINES,
+    ))
 }
 
 async fn edit_file(
@@ -1784,6 +2075,32 @@ fn truncate(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn limits_come_from_the_agent_block() {
+        let agent = crate::settings::Agent {
+            max_tool_rounds: Some(9),
+            command_timeout_secs: Some(11),
+        };
+        let limits = Limits::resolve(&agent);
+        assert_eq!(limits.max_tool_rounds, 9);
+        assert_eq!(limits.command_timeout_secs, 11);
+    }
+
+    #[test]
+    fn limits_default_to_room_for_real_work() {
+        let limits = Limits::default();
+        assert!(limits.max_tool_rounds >= 60);
+        assert!(limits.command_timeout_secs >= 120);
+    }
+
+    /// A question with nothing to pick used to be shown and silently declined.
+    #[tokio::test]
+    async fn a_question_without_options_asks_the_model_for_some() {
+        let (tx, _rx) = mpsc::channel::<UiRequest>(1);
+        let result = ask_user(Some(&tx), "", "which one?", &[]).await.unwrap();
+        assert!(result.contains("2-4"), "{result}");
+    }
+
     fn args(path: &str, search: Option<&str>, replace: &str) -> Value {
         match search {
             Some(s) => json!({ "path": path, "search": s, "replace": replace }),
@@ -1861,8 +2178,12 @@ mod tests {
         )
         .await;
 
-        assert!(out.contains("[x] read the code"), "{out}");
-        assert!(out.contains("[~] write the fix"), "{out}");
+        assert!(out.contains("✔ read the code"), "{out}");
+        assert!(out.contains("◼ write the fix"), "{out}");
+        assert!(
+            out.contains("2 tasks (1 done, 1 in progress, 0 open)"),
+            "{out}"
+        );
         assert_eq!(ctx.plan.lock().unwrap().steps.len(), 2);
     }
 
@@ -1938,7 +2259,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
         let prompt = tokio::spawn(async move {
             let req = approval(rx.recv().await.unwrap());
-            assert!(req.preview.contains("[ ] ship it"), "{}", req.preview);
+            assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
             let _ = req.respond.send(Answer::Yes);
         });
 

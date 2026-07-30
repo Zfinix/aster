@@ -14,6 +14,8 @@ use clap::Args;
 use tempfile::TempDir;
 
 use crate::provider::env_or;
+use crate::term::{BOLD, CYAN, DIM, GREEN, ORANGE, RESET};
+use crate::util::{human, usage_json};
 use crate::{config, git, github};
 
 #[derive(Args)]
@@ -33,6 +35,14 @@ pub struct ReviewArgs {
     /// Post findings as inline comments on the PR (implies --pr).
     #[arg(long, requires = "pr")]
     comment: bool,
+
+    /// Skip the confirmation before posting comments to a PR.
+    #[arg(long, short = 'y', requires = "comment")]
+    yes: bool,
+
+    /// Model override (else ASTER_MODEL, aster.yaml, default).
+    #[arg(long, value_name = "MODEL")]
+    model: Option<String>,
 
     /// owner/repo for --pr. Defaults to the origin remote.
     #[arg(long, value_name = "OWNER/REPO")]
@@ -76,9 +86,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
     let settings = crate::settings::Settings::load(repo_root.as_deref())?;
     let review = &settings.review;
-
-    let llm = crate::provider::resolve(review, None)?;
-    let ai_client = AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort);
+    let ai_client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
 
     let (raw_diff, pr_target) = resolve_diff(&args).await?;
     // --include overrides the file's include list; --exclude adds to it.
@@ -174,6 +182,10 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         let (owner, repo, pr) = pr_target.expect("--comment requires --pr");
         let token = config::resolve_github_token(args.token.as_deref())
             .context("no GitHub token; run `aster login` or set GITHUB_TOKEN")?;
+        if !confirm_post(&findings, &owner, &repo, pr, args.yes)? {
+            println!("Nothing posted.");
+            return Ok(());
+        }
         github::post_review(&owner, &repo, pr, &token, &findings).await?;
         println!(
             "Posted {} comment(s) to {owner}/{repo}#{pr}.",
@@ -186,6 +198,30 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
     print_usage(usage_handle.usage_snapshot());
     Ok(())
+}
+
+/// Comments on a PR are public and cannot be taken back quietly, so show what
+/// is about to be posted and ask. `--yes` and non-terminal runs skip the ask.
+fn confirm_post(findings: &[Finding], owner: &str, repo: &str, pr: u64, yes: bool) -> Result<bool> {
+    if findings.is_empty() {
+        println!("No findings survived verification; nothing to post.");
+        return Ok(false);
+    }
+    if yes || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Ok(true);
+    }
+    println!(
+        "\n  About to post {} comment(s) to {owner}/{repo}#{pr}:\n",
+        findings.len()
+    );
+    for f in findings {
+        println!("    {} {}:{}  {}", f.severity, f.file_path, f.line, f.title);
+    }
+    print!("\n  Post them? [y/N] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
 /// Emits one NDJSON object per progress event to stdout, then a final `done` event.
@@ -227,14 +263,7 @@ async fn run_stream(job: Job, min_confidence: f32, usage_handle: AiClient) -> Re
         "type": "done",
         "summary": report.summary,
         "total": report.findings.len(),
-        "usage": {
-            "prompt_tokens": u.prompt_tokens,
-            "completion_tokens": u.completion_tokens,
-            "total_tokens": u.total_tokens,
-            "requests": u.requests,
-            "estimated_cost_usd": u.estimated_cost_usd,
-            "estimated": u.estimated,
-        },
+        "usage": usage_json(&u),
     });
     let _ = writeln!(out, "{done}");
     let _ = out.flush();
@@ -306,21 +335,6 @@ pub(crate) fn print_usage(u: aster_ai::UsageSnapshot) {
     );
 }
 
-/// Compact human-readable token counts: 1_234 -> "1.2k", 2_500_000 -> "2.5M".
-fn human(n: u64) -> String {
-    match n {
-        0..=999 => n.to_string(),
-        1_000..=999_999 => trim_zero(n as f64 / 1_000.0, 'k'),
-        _ => trim_zero(n as f64 / 1_000_000.0, 'M'),
-    }
-}
-
-fn trim_zero(v: f64, suffix: char) -> String {
-    let s = format!("{v:.1}");
-    let s = s.strip_suffix(".0").map(str::to_string).unwrap_or(s);
-    format!("{s}{suffix}")
-}
-
 pub struct Job {
     pub ai_client: AiClient,
     pub config: HarnessConfig,
@@ -366,15 +380,6 @@ fn emit(sink: &ProgressSink, event: Progress) {
         let _ = tx.send(event);
     }
 }
-
-// ANSI helpers for the plain (non-TUI) path, avoiding a styling dependency.
-const DIM: &str = "\x1b[2m";
-const CYAN: &str = "\x1b[36m";
-const GREEN: &str = "\x1b[32m";
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-/// Brand orange, matching the desktop app's `--accent` (#f2764f).
-const ORANGE: &str = "\x1b[38;2;242;118;79m";
 
 async fn run_streaming(job: Job, min_confidence: f32) -> Result<ReviewReport> {
     // Concurrent verify streams interleave into noise, so stream raw tokens
@@ -582,6 +587,13 @@ fn print_findings(summary: &str, findings: &[Finding]) {
         println!("  {} {}", paint(GREEN, "→ fix"), paint(DIM, &f.suggestion));
         println!();
     }
+    println!(
+        "  {}\n",
+        paint(
+            DIM,
+            "Apply these: aster review --json | aster fix  (add --apply to write)"
+        )
+    );
 }
 
 fn severity_badge(severity: &str, color: bool) -> String {
