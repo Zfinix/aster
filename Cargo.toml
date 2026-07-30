@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/zfinix/aster"
@@ -28,7 +28,7 @@ repository = "https://github.com/zfinix/aster"
 anyhow = "1.0.99"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "process", "sync"] }
 tracing = "0.1.41"
 chrono = { version = "0.4", features = ["serde"] }
 schemars = "1.0.4"

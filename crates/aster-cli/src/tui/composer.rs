@@ -5,10 +5,10 @@
 
 use std::ops::Range;
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::tui::ACCENT;
+use crate::tui::theme;
 use crate::tui::wrap;
 
 /// A paste longer than this is folded into a placeholder so it cannot swallow
@@ -38,8 +38,6 @@ impl Composer {
     pub(super) fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
-
-    /* ---- editing ---- */
 
     pub(super) fn insert(&mut self, c: char) {
         self.text.insert(self.cursor, c);
@@ -93,8 +91,6 @@ impl Composer {
         let end = self.row_bounds().end;
         self.text.replace_range(self.cursor..end, "");
     }
-
-    /* ---- motion ---- */
 
     pub(super) fn left(&mut self) {
         if let Some(prev) = self.prev_boundary(self.cursor) {
@@ -162,8 +158,6 @@ impl Composer {
         true
     }
 
-    /* ---- prompt history ---- */
-
     pub(super) fn recall_prev(&mut self) {
         if self.sent.is_empty() {
             return;
@@ -193,8 +187,6 @@ impl Composer {
         self.cursor = self.text.len();
     }
 
-    /* ---- lifecycle ---- */
-
     /// Hand the draft over for sending: folded pastes are expanded and the raw
     /// draft is remembered for recall.
     pub(super) fn take(&mut self) -> String {
@@ -216,8 +208,6 @@ impl Composer {
         self.recall = None;
         self.folded.clear();
     }
-
-    /* ---- layout ---- */
 
     /// Columns available to the text, after the `❯ ` prompt.
     pub(super) fn text_width(width: u16) -> usize {
@@ -290,8 +280,6 @@ impl Composer {
         (self.rows(width).len() as u16).clamp(1, 8)
     }
 
-    /* ---- @‑file mentions ---- */
-
     /// If the cursor sits right after an `@` with no intervening whitespace,
     /// return the byte position of the `@` and the query text after it (may be
     /// empty).  Returns `None` when the cursor is not inside a mention context.
@@ -331,7 +319,7 @@ impl Composer {
                 prompt_span(true),
                 Span::styled(
                     placeholder.to_string(),
-                    Style::default().fg(Color::Rgb(0x4d, 0x4d, 0x4d)),
+                    Style::default().fg(theme::get().placeholder),
                 ),
             ]);
             return (vec![line], (0, 2));
@@ -362,10 +350,7 @@ impl Composer {
 
 fn prompt_span(first: bool) -> Span<'static> {
     if first {
-        Span::styled(
-            "❯ ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )
+        Span::styled("❯ ", theme::get().accent_bold())
     } else {
         Span::raw("  ")
     }

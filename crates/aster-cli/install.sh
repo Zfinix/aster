@@ -3,11 +3,11 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/zfinix/aster/main/crates/aster-cli/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/zfinix/aster/main/crates/aster-cli/install.sh | bash -s -- --version v0.1.0
+#   curl -fsSL https://raw.githubusercontent.com/zfinix/aster/main/crates/aster-cli/install.sh | bash -s -- --version v0.3.0
 #   curl -fsSL https://raw.githubusercontent.com/zfinix/aster/main/crates/aster-cli/install.sh | bash -s -- --dir ~/.local/bin
 #
 # Environment:
-#   ASTER_VERSION   pin to a specific version (e.g. v0.1.0)
+#   ASTER_VERSION   pin to a specific version (e.g. v0.3.0)
 #   ASTER_PREFIX    install prefix (default: /usr/local, falls back to $HOME/.local)
 #   ASTER_REPO      override repo (default: zfinix/aster)
 

@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "aster-agents"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "aster-ai"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "aster-analyzers"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ast-grep-config",
@@ -204,11 +204,12 @@ dependencies = [
 
 [[package]]
 name = "aster-cli"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "aster-ai",
  "aster-harness",
+ "aster-mcp",
  "aster-models",
  "aster-persist",
  "aster-policy",
@@ -216,6 +217,7 @@ dependencies = [
  "aster-skills",
  "aster-tools",
  "aster-web",
+ "chrono",
  "clap",
  "cliclack",
  "console",
@@ -242,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "aster-harness"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "aster-ai",
@@ -264,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "aster-index"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "grep",
@@ -277,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "aster-mcp"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -286,14 +288,14 @@ dependencies = [
 
 [[package]]
 name = "aster-models"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "aster-persist"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "aster-ai",
@@ -307,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "aster-policy"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "globset",
@@ -317,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "aster-sandbox"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -328,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "aster-skills"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -337,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "aster-tools"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "globset",
@@ -350,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "aster-web"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "aster-mcp",
@@ -3073,7 +3075,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "symbol-extractor"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "aster-models",
  "tree-sitter",

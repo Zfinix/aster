@@ -14,7 +14,7 @@ mod suggest;
 
 pub use find::find;
 pub use list::list;
-pub use search::search;
+pub use search::{Hit, render, search};
 pub use suggest::suggest;
 
 use std::path::PathBuf;

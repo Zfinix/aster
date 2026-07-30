@@ -4,9 +4,9 @@
 use std::env;
 
 use anyhow::{Result, bail};
-use aster_ai::Effort;
+use aster_ai::{AiClient, Effort};
 
-use crate::settings::Review;
+use crate::settings::{Review, Settings};
 
 pub struct LlmConfig {
     pub api_key: String,
@@ -21,7 +21,7 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
         env_non_empty("ASTER_API_KEY").or_else(|| env_non_empty("OPEN_ROUTER_API_KEY"))
     else {
         bail!(
-            "no API key found. Run `aster init` to set one up, or set ASTER_API_KEY (or OPEN_ROUTER_API_KEY) in your shell or the repo's .env"
+            "no API key found. Run `aster init` to set one up globally, or set ASTER_API_KEY (or OPEN_ROUTER_API_KEY) in your shell environment"
         );
     };
     let base_url = env_or("ASTER_BASE_URL", review.base_url.as_deref())
@@ -40,13 +40,20 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
 
 /// `--effort` wins, then `ASTER_EFFORT`/`ASTER_REASONING_EFFORT`, then
 /// aster.yaml, then the client default. An unparseable value is ignored rather
-/// than fatal: a typo should not stop a run.
+/// than fatal: a typo should not stop a run, but it is said out loud.
 fn resolve_effort(review: &Review) -> Effort {
     crate::effort_flag()
         .or_else(|| {
-            env_or("ASTER_EFFORT", None)
-                .or_else(|| env_or("ASTER_REASONING_EFFORT", None))
-                .and_then(|v| v.parse().ok())
+            let raw = env_or("ASTER_EFFORT", None).or_else(|| env_or("ASTER_REASONING_EFFORT", None))?;
+            match raw.parse() {
+                Ok(effort) => Some(effort),
+                Err(_) => {
+                    eprintln!(
+                        "note: ignoring effort {raw:?} from the environment; expected off, low, medium, or high"
+                    );
+                    None
+                }
+            }
         })
         .or(review.effort)
         .unwrap_or_default()
@@ -54,6 +61,12 @@ fn resolve_effort(review: &Review) -> Effort {
 
 fn env_non_empty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|s| !s.trim().is_empty())
+}
+
+/// Build a configured `AiClient` from already-loaded settings.
+pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Result<AiClient> {
+    let llm = resolve(&settings.review, model_override)?;
+    Ok(AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort))
 }
 
 /// Shell env wins, then the aster.yaml value; None when neither is set.

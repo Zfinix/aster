@@ -9,8 +9,9 @@ use ratatui::text::{Line, Span};
 use tokio::sync::mpsc;
 
 use super::view::BottomPaneView;
+use super::{VISIBLE_ROWS, window_start};
 use crate::tui::render::{Inset, Insets, Renderable, wrapped};
-use crate::tui::{ACCENT, theme};
+use crate::tui::theme;
 
 pub(crate) struct SelectionItem<E> {
     pub name: String,
@@ -65,26 +66,37 @@ impl<E: Clone> ListSelectionView<E> {
             Style::default().add_modifier(Modifier::BOLD),
         ))];
         out.push(Line::from(""));
-        let name_w = self.items.iter().map(|i| i.name.len()).max().unwrap_or(0);
-        for (i, item) in self.items.iter().enumerate() {
+        let start = window_start(self.selected, self.items.len());
+        let shown = self.items.iter().enumerate().skip(start).take(VISIBLE_ROWS);
+        let name_w = shown.clone().map(|(_, i)| i.name.len()).max().unwrap_or(0);
+        for (i, item) in shown {
             let active = i == self.selected;
             let style = if active {
-                Style::default().fg(ACCENT).bg(theme::SEL_BG)
+                theme::get().selected_style()
             } else {
-                theme::dimmer()
+                theme::get().dimmer_style()
             };
             let current = if item.is_current { " (current)" } else { "" };
             out.push(Line::from(vec![
                 Span::styled(if active { "▸ " } else { "  " }, style),
                 Span::styled(format!("{}. ", i + 1), style),
                 Span::styled(format!("{:<name_w$}{current}", item.name), style),
-                Span::styled(format!("  {}", item.description), theme::faint()),
+                Span::styled(
+                    format!("  {}", item.description),
+                    theme::get().faint_style(),
+                ),
             ]));
+        }
+        if self.items.len() > VISIBLE_ROWS {
+            out.push(Line::from(Span::styled(
+                format!("  {} of {}", self.selected + 1, self.items.len()),
+                theme::get().faint_style(),
+            )));
         }
         out.push(Line::from(""));
         out.push(Line::from(Span::styled(
             "enter confirm · esc cancel",
-            theme::faint(),
+            theme::get().faint_style(),
         )));
         out
     }
@@ -158,6 +170,39 @@ mod tests {
             },
         ];
         ListSelectionView::new("Pick", items, tx)
+    }
+
+    fn long_view(count: usize) -> ListSelectionView<u8> {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let items = (0..count)
+            .map(|i| SelectionItem {
+                name: format!("session-{i}"),
+                description: "a saved session".into(),
+                is_current: false,
+                event: 0,
+            })
+            .collect();
+        ListSelectionView::new("Resume", items, tx)
+    }
+
+    #[test]
+    fn height_does_not_grow_with_the_item_count() {
+        let short = long_view(3).desired_height(80);
+        let long = long_view(400).desired_height(80);
+        assert!(long <= short + 7, "short {short}, long {long}");
+        assert!(long < 20, "the pane would eat the screen: {long}");
+    }
+
+    #[test]
+    fn the_window_follows_the_selection() {
+        let mut v = long_view(400);
+        v.selected = 300;
+        let shown = v.lines();
+        assert!(
+            shown.iter().any(|l| l.to_string().contains("session-300")),
+            "selection scrolled off: {shown:?}"
+        );
+        assert!(shown.iter().any(|l| l.to_string().contains("301 of 400")));
     }
 
     #[test]

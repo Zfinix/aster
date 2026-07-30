@@ -7,14 +7,14 @@ use std::path::PathBuf;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use tokio::sync::mpsc;
 
 use super::view::BottomPaneView;
 use crate::chat::{Answer, ApprovalRequest};
 use crate::tui::render::{Inset, Insets, Renderable, wrapped};
-use crate::tui::{ACCENT, history, theme};
+use crate::tui::{history, theme};
 
 /// Longest preview shown; older lines elide so the composer stays reachable.
 const MAX_PREVIEW_ROWS: usize = 12;
@@ -73,7 +73,7 @@ impl<E> ApprovalView<E> {
         let Some(req) = &self.current else {
             return Vec::new();
         };
-        let dim = theme::dimmer();
+        let dim = theme::get().dimmer_style();
         let (title, body) = req
             .preview
             .split_once('\n')
@@ -87,8 +87,8 @@ impl<E> ApprovalView<E> {
         };
 
         let mut out = vec![Line::from(vec![
-            Span::styled("? ", Style::default().fg(theme::AMBER)),
-            Span::styled(title, Style::default().fg(theme::AMBER)),
+            Span::styled("? ", theme::get().amber_style()),
+            Span::styled(title, theme::get().amber_style()),
         ])];
         let diff = history::diff_lines(body, (width as usize).saturating_sub(2).max(8));
         let hidden = diff.len().saturating_sub(MAX_PREVIEW_ROWS);
@@ -103,9 +103,9 @@ impl<E> ApprovalView<E> {
         for (i, (label, _)) in Self::options(req).iter().enumerate() {
             let active = i == self.selected;
             let style = if active {
-                Style::default().fg(ACCENT).bg(theme::SEL_BG)
+                theme::get().selected_style()
             } else {
-                theme::dimmer()
+                theme::get().dimmer_style()
             };
             out.push(Line::from(vec![
                 Span::styled(if active { "▸ " } else { "  " }, style),

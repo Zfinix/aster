@@ -58,6 +58,12 @@ impl Policy {
         }
     }
 
+    /// The compiled mode, for callers that need to check it directly
+    /// (e.g. yolo triple-confirm in the sandbox layer).
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
     /// `path` must be repo-relative and already validated against escape by the caller.
     pub fn evaluate(&self, action: &Action) -> Decision {
         match action {
@@ -68,6 +74,9 @@ impl Policy {
     }
 
     fn evaluate_exec(&self, binary: &str) -> Decision {
+        if self.mode == Mode::Yolo {
+            return Decision::Allow;
+        }
         if self.deny_exec.iter().any(|b| b == binary) {
             return Decision::Deny {
                 reason: format!("command `{binary}` is denied by permissions"),
@@ -80,7 +89,7 @@ impl Policy {
             Mode::Plan => Decision::Deny {
                 reason: "permissions mode is `plan`, so command execution is off".to_string(),
             },
-            Mode::Edit => Decision::Allow,
+            Mode::Edit | Mode::Yolo => Decision::Allow,
             Mode::Auto | Mode::Manual => Decision::Prompt {
                 preview: format!("run `{binary}`"),
             },
@@ -88,6 +97,9 @@ impl Policy {
     }
 
     fn evaluate_edit(&self, path: &str) -> Decision {
+        if self.mode == Mode::Yolo {
+            return Decision::Allow;
+        }
         // Explicit deny beats everything.
         if self.deny.is_match(path) {
             return Decision::Deny {
@@ -118,7 +130,7 @@ impl Policy {
             return Decision::Allow;
         }
         match self.mode {
-            Mode::Auto | Mode::Edit => Decision::Allow,
+            Mode::Auto | Mode::Edit | Mode::Yolo => Decision::Allow,
             Mode::Manual => Decision::Prompt {
                 preview: format!("edit {path}"),
             },
@@ -127,6 +139,9 @@ impl Policy {
     }
 
     fn evaluate_read(&self, path: &str) -> Decision {
+        if self.mode == Mode::Yolo {
+            return Decision::Allow;
+        }
         if self.secret_read.is_match(path) {
             return Decision::Deny {
                 reason: format!("`{path}` is a secret file; reading it is blocked by policy"),
@@ -350,6 +365,41 @@ mod tests {
         assert_eq!(
             p.evaluate(&Action::Edit {
                 path: ".git/hooks/pre-commit"
+            }),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn yolo_mode_allows_protected_edits() {
+        let mut c = cfg();
+        c.mode = Mode::Yolo;
+        let p = policy(c);
+        assert_eq!(
+            p.evaluate(&Action::Edit {
+                path: ".git/hooks/pre-commit"
+            }),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn yolo_mode_allows_secret_reads() {
+        let mut c = cfg();
+        c.mode = Mode::Yolo;
+        let p = policy(c);
+        assert_eq!(p.evaluate(&Action::Read { path: ".env" }), Decision::Allow);
+    }
+
+    #[test]
+    fn yolo_mode_allows_exec_by_default() {
+        let mut c = cfg();
+        c.mode = Mode::Yolo;
+        let p = policy(c);
+        assert_eq!(
+            p.evaluate(&Action::Exec {
+                binary: "rm",
+                args: &["-rf", "/"]
             }),
             Decision::Allow
         );

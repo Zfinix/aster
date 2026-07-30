@@ -8,6 +8,7 @@ mod cloudflare_br;
 mod config;
 mod context_dev;
 mod firecrawl;
+mod jina;
 mod plain_http;
 mod types;
 
@@ -37,6 +38,7 @@ pub struct WebBackend {
     firecrawl: Option<firecrawl::FirecrawlClient>,
     browserbase: Option<browserbase::BrowserbaseClient>,
     cloudflare: Option<cloudflare_br::CloudflareBrClient>,
+    jina: jina::JinaClient,
     plain_http: plain_http::PlainHttpClient,
 }
 
@@ -56,6 +58,7 @@ impl WebBackend {
             cloudflare: config.resolve_cloudflare_br_keys().map(|(account, token)| {
                 cloudflare_br::CloudflareBrClient::new(account, token, timeout_ms)
             }),
+            jina: jina::JinaClient::new(config.resolve_jina_key(), timeout_ms),
             plain_http: plain_http::PlainHttpClient::new(timeout_ms),
         }
     }
@@ -80,6 +83,9 @@ impl WebBackend {
         }
         if let Some(ref c) = self.browserbase {
             return c.fetch(url).await;
+        }
+        if let Ok(page) = self.jina.extract(url).await {
+            return Ok(page);
         }
         self.plain_http.extract(url).await
     }
@@ -138,6 +144,8 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
         candidates.push(browserbase::fetch_tool());
         candidates.push(browserbase::search_tool());
     }
+    // Jina needs no key; always available as the default extract provider.
+    candidates.push(jina::extract_tool());
     // Plain HTTP needs no key, so `extract` is always on offer.
     candidates.push(plain_http::extract_tool());
 

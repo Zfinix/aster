@@ -76,7 +76,21 @@ pub async fn run(args: WebArgs) -> Result<()> {
                 ..Default::default()
             };
 
+            // A crawl is one long provider call with nothing to show until it
+            // returns, so say what it is doing rather than look hung.
+            let started = std::time::Instant::now();
+            if !crate::json_mode() {
+                eprintln!(
+                    "Crawling {} (up to {} pages, {}s budget)…",
+                    a.url,
+                    a.max_pages,
+                    a.stop_after_ms / 1000
+                );
+            }
             let result = backend.crawl(&a.url, &opts).await?;
+            if !crate::json_mode() {
+                eprintln!("Done in {:.1}s", started.elapsed().as_secs_f32());
+            }
             if crate::json_mode() {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -103,6 +117,9 @@ pub async fn run(args: WebArgs) -> Result<()> {
             }
         }
         WebAction::Extract(a) => {
+            if !crate::json_mode() {
+                eprintln!("Reading {}…", a.url);
+            }
             let page = backend.extract(&a.url).await?;
             if crate::json_mode() {
                 println!("{}", serde_json::to_string_pretty(&page)?);

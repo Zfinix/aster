@@ -8,8 +8,6 @@ import {
   type ReactNode,
 } from "react";
 
-/* ---- Theme ---- */
-
 export type Theme = "dark" | "light";
 
 export function useTheme(): [Theme, (t: Theme) => void] {
@@ -23,8 +21,6 @@ export function useTheme(): [Theme, (t: Theme) => void] {
   }, []);
   return [theme, setTheme];
 }
-
-/* ---- Toast ---- */
 
 const ToastCtx = createContext<(message: string) => void>(() => {});
 export const useToast = () => useContext(ToastCtx);
@@ -52,8 +48,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     </ToastCtx.Provider>
   );
 }
-
-/* ---- Dropdown ---- */
 
 export interface DropdownOption {
   value: string;

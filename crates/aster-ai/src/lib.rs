@@ -182,6 +182,17 @@ impl AiClient {
         self.effort
     }
 
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    /// Point the client at another OpenAI-compatible endpoint, with the key
+    /// that endpoint needs. Clones made before this call keep the old one.
+    pub fn set_endpoint(&mut self, base_url: impl Into<String>, api_key: impl Into<String>) {
+        self.base_url = base_url.into();
+        self.api_key = api_key.into();
+    }
+
     fn build_request(
         &self,
         model: &str,
@@ -603,6 +614,47 @@ impl AiClient {
         }
         Ok(response)
     }
+
+    async fn get_with_retry(&self, path: &str, ctx: &str) -> Result<reqwest::Response> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .with_context(|| format!("{ctx} failed"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("{}", format_api_error(status, &body));
+        }
+        Ok(response)
+    }
+
+    /// Fetch available model IDs from the provider's `/models` endpoint, sorted.
+    pub async fn fetch_models(&self) -> Result<Vec<String>> {
+        let response = self
+            .get_with_retry("/models", "fetching model list")
+            .await?;
+        let body = response.text().await.context("reading models response")?;
+        let parsed: ModelListResponse = serde_json::from_str(&body)
+            .with_context(|| format!("parsing models response: {body}"))?;
+        let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+        ids.sort();
+        Ok(ids)
+    }
+}
+
+/// Minimal model-list entry from `GET /models`.
+#[derive(serde::Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ModelListResponse {
+    data: Vec<ModelEntry>,
 }
 
 /// A tool call being reassembled from streamed fragments.

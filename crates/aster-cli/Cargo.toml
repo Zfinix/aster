@@ -30,6 +30,7 @@ futures-util = { version = "0.3", default-features = false }
 pulldown-cmark = { version = "0.12", default-features = false }
 unicode-width = "0.2"
 serde_yaml = "0.9"
+chrono = { workspace = true }
 globset = { workspace = true }
 tempfile = "3"
 ignore = "0.4"
@@ -43,6 +44,7 @@ aster-persist = { path = "../aster-persist" }
 aster-skills = { path = "../aster-skills" }
 aster-tools = { path = "../aster-tools" }
 aster-web = { path = "../aster-web" }
+aster-mcp = { path = "../aster-mcp" }
 aster-sandbox = { path = "../aster-sandbox" }
 cliclack = "0.5.5"
 console = "0.16"

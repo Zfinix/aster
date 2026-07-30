@@ -15,15 +15,14 @@ pub struct Stored {
     pub github_token: Option<String>,
 }
 
-fn config_dir() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .context("could not determine a config directory for this platform")?
-        .join("aster");
-    Ok(dir)
+/// The user-global directory, which also carries over anything an older build
+/// left in `<config>/aster` the first time it is asked for.
+pub fn aster_dir() -> Result<PathBuf> {
+    crate::persist::home()
 }
 
 fn token_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("credentials.json"))
+    Ok(aster_dir()?.join("credentials.json"))
 }
 
 pub fn load() -> Stored {
@@ -37,7 +36,7 @@ pub fn load() -> Stored {
 }
 
 pub fn store_token(token: &str) -> Result<()> {
-    let dir = config_dir()?;
+    let dir = aster_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let stored = Stored {
         github_token: Some(token.to_string()),

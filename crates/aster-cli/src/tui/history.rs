@@ -8,8 +8,9 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::chat::PlanStepStatus;
+use crate::tui::theme;
 use crate::tui::wrap;
-use crate::tui::{ACCENT, theme};
 
 /// Columns reserved for the `• ` / `  ` gutter every cell hangs from.
 const GUTTER: usize = 2;
@@ -20,7 +21,7 @@ const TAIL: usize = 4;
 
 #[allow(dead_code)]
 fn dim() -> Style {
-    theme::dim()
+    theme::get().dim_style()
 }
 
 fn body_width(width: usize) -> usize {
@@ -50,14 +51,14 @@ fn hang(lines: Vec<Line<'static>>, bullet: Span<'static>, width: usize) -> Vec<L
 /// Every cell hangs off this bullet; it is quiet on purpose, so the headline
 /// beside it carries the emphasis.
 fn bullet() -> Span<'static> {
-    Span::styled("• ", theme::dimmer())
+    Span::styled("• ", theme::get().dimmer_style())
 }
 
 /// The branch a cell's children hang from: `└ ` on the first row, aligned
 /// blanks after it.
 fn branch(first: bool) -> Span<'static> {
     if first {
-        Span::styled("└ ", theme::faint())
+        Span::styled("└ ", theme::get().faint_style())
     } else {
         Span::raw("  ")
     }
@@ -67,14 +68,47 @@ fn branch(first: bool) -> Span<'static> {
 pub(super) fn rule(width: usize) -> Vec<Line<'static>> {
     prepend_blank(vec![Line::from(Span::styled(
         "─".repeat(width.max(1)),
-        theme::faint(),
+        theme::get().faint_style(),
     ))])
+}
+
+/// Turn summary: how long the work took and what it cost in tokens.
+#[allow(dead_code)]
+pub(super) fn worked_summary(
+    elapsed: std::time::Duration,
+    down: u64,
+    up: u64,
+    estimated: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let secs = elapsed.as_secs();
+    let time = if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    };
+    let approx = if estimated { "~" } else { "" };
+    let label = format!(
+        "Worked for {time} · ↓ {approx}{} ↑ {approx}{}",
+        super::helpers::human_count(down as usize),
+        super::helpers::human_count(up as usize),
+    );
+    let pad = width.saturating_sub(label.chars().count() + 1);
+    prepend_blank(vec![Line::from(vec![
+        Span::styled(label, theme::get().dimmer_style()),
+        Span::styled(
+            format!(" {}", "─".repeat(pad.max(1))),
+            theme::get().faint_style(),
+        ),
+    ])])
 }
 
 /// A message the user sent: a coral rail on a filled band, the only chapter
 /// mark in the transcript.
 pub(super) fn user(text: &str, width: usize) -> Vec<Line<'static>> {
-    let fill = Style::default().fg(theme::TEXT).bg(theme::RAIL_BG);
+    let fill = Style::default()
+        .fg(theme::get().text)
+        .bg(theme::get().rail_bg);
     let body = body_width(width);
     let mut out = Vec::new();
     let mut first = true;
@@ -82,8 +116,8 @@ pub(super) fn user(text: &str, width: usize) -> Vec<Line<'static>> {
         for chunk in wrap::lines(raw, body) {
             let lead = if first { "❯ " } else { "  " };
             let line = Line::from(vec![
-                Span::styled("▌", Style::default().fg(ACCENT).bg(theme::RAIL_BG)),
-                Span::styled(lead, Style::default().fg(ACCENT).bg(theme::RAIL_BG)),
+                Span::styled("▌", theme::get().accent_style().bg(theme::get().rail_bg)),
+                Span::styled(lead, theme::get().accent_style().bg(theme::get().rail_bg)),
                 Span::styled(chunk, fill),
             ]);
             out.push(wrap::pad_to(line, width.max(1), fill));
@@ -115,8 +149,11 @@ pub(super) fn assistant(
 /// A short status line from the harness rather than the model.
 pub(super) fn notice(text: &str, width: usize) -> Vec<Line<'static>> {
     hang(
-        vec![Line::from(Span::styled(text.to_string(), theme::dimmer()))],
-        Span::styled("· ", theme::dimmer()),
+        vec![Line::from(Span::styled(
+            text.to_string(),
+            theme::get().dimmer_style(),
+        ))],
+        Span::styled("· ", theme::get().dimmer_style()),
         width,
     )
 }
@@ -127,13 +164,13 @@ pub(super) fn error(text: &str, width: usize) -> Vec<Line<'static>> {
         .map(|l| {
             Line::from(Span::styled(
                 l.to_string(),
-                Style::default().fg(theme::ROSE),
+                Style::default().fg(theme::get().error),
             ))
         })
         .collect();
     prepend_blank(hang(
         lines,
-        Span::styled("✗ ", Style::default().fg(theme::ROSE)),
+        Span::styled("✗ ", Style::default().fg(theme::get().error)),
         width,
     ))
 }
@@ -147,41 +184,110 @@ pub(super) fn explored(labels: &[String], width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         "Explored".to_string(),
         Style::default()
-            .fg(theme::TEXT)
+            .fg(theme::get().text)
             .add_modifier(Modifier::BOLD),
     ))];
     for (i, label) in labels.iter().enumerate() {
         lines.push(Line::from(vec![
             branch(i == 0),
-            Span::styled(label.clone(), Style::default().fg(theme::BLUE)),
+            Span::styled(label.clone(), Style::default().fg(theme::get().blue)),
         ]));
     }
     prepend_blank(hang(lines, bullet(), width))
+}
+
+/// The agent's plan: a count line over one row per step. Done steps are struck
+/// back to dim, the running one is accented, so the eye lands on what is live.
+pub(super) fn plan(steps: &[(PlanStepStatus, String)], width: usize) -> Vec<Line<'static>> {
+    if steps.is_empty() {
+        return Vec::new();
+    }
+    let count = |want: PlanStepStatus| steps.iter().filter(|(s, _)| *s == want).count();
+    let mut parts = vec![format!("{} done", count(PlanStepStatus::Done))];
+    if count(PlanStepStatus::InProgress) > 0 {
+        parts.push(format!("{} in progress", count(PlanStepStatus::InProgress)));
+    }
+    parts.push(format!("{} open", count(PlanStepStatus::Pending)));
+    for (status, label) in [
+        (PlanStepStatus::Blocked, "blocked"),
+        (PlanStepStatus::Skipped, "skipped"),
+    ] {
+        if count(status) > 0 {
+            parts.push(format!("{} {label}", count(status)));
+        }
+    }
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!(
+                "{} task{}",
+                steps.len(),
+                if steps.len() == 1 { "" } else { "s" }
+            ),
+            Style::default()
+                .fg(theme::get().text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" ({})", parts.join(", ")),
+            theme::get().dimmer_style(),
+        ),
+    ])];
+
+    for (status, label) in steps {
+        let (glyph, style) = match status {
+            PlanStepStatus::Done => ("✔", theme::get().dimmer_style()),
+            PlanStepStatus::InProgress => ("◼", theme::get().accent_style()),
+            PlanStepStatus::Pending => ("◻", Style::default().fg(theme::get().dim)),
+            PlanStepStatus::Skipped => ("⊘", theme::get().faint_style()),
+            PlanStepStatus::Blocked => ("✖", Style::default().fg(theme::get().error)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{glyph} "), style),
+            Span::styled(label.clone(), step_style(*status)),
+        ]));
+    }
+    prepend_blank(hang(lines, bullet(), width))
+}
+
+/// Done and skipped steps recede; only what is left to do reads at full weight.
+fn step_style(status: PlanStepStatus) -> Style {
+    match status {
+        PlanStepStatus::Done => theme::get()
+            .dimmer_style()
+            .add_modifier(Modifier::CROSSED_OUT),
+        PlanStepStatus::Skipped => theme::get()
+            .faint_style()
+            .add_modifier(Modifier::CROSSED_OUT),
+        PlanStepStatus::InProgress => Style::default().fg(theme::get().text),
+        PlanStepStatus::Pending => Style::default().fg(theme::get().dim),
+        PlanStepStatus::Blocked => Style::default().fg(theme::get().error),
+    }
 }
 
 /// A tool call with its output, elided in the middle when it is long.
 pub(super) fn tool(label: &str, output: &str, failed: bool, width: usize) -> Vec<Line<'static>> {
     let head_style = if failed {
         Style::default()
-            .fg(theme::ROSE)
+            .fg(theme::get().error)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(theme::TEXT)
+            .fg(theme::get().text)
             .add_modifier(Modifier::BOLD)
     };
     let mut lines = vec![Line::from(Span::styled(label.to_string(), head_style))];
 
     let body: Vec<&str> = output.lines().collect();
     let out_style = if failed {
-        Style::default().fg(theme::ROSE)
+        Style::default().fg(theme::get().error)
     } else {
-        theme::dimmer()
+        theme::get().dimmer_style()
     };
     for (i, text) in elide(&body).into_iter().enumerate() {
         let style = match text {
             Elided::Text(_) => out_style,
-            Elided::Gap(_) => theme::faint(),
+            Elided::Gap(_) => theme::get().faint_style(),
         };
         lines.push(Line::from(vec![
             branch(i == 0),
@@ -205,14 +311,20 @@ pub(super) fn patch(verb: &str, path: &str, body: &str, width: usize) -> Vec<Lin
         Span::styled(
             format!("{verb} "),
             Style::default()
-                .fg(theme::TEXT)
+                .fg(theme::get().text)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(path.to_string(), Style::default().fg(theme::BLUE)),
+        Span::styled(path.to_string(), Style::default().fg(theme::get().blue)),
         Span::raw(" ".repeat(gap + 1)),
-        Span::styled(format!("+{added}"), Style::default().fg(theme::ADD_FG)),
+        Span::styled(
+            format!("+{added}"),
+            Style::default().fg(theme::get().add_fg),
+        ),
         Span::raw(" "),
-        Span::styled(format!("−{removed}"), Style::default().fg(theme::DEL_FG)),
+        Span::styled(
+            format!("−{removed}"),
+            Style::default().fg(theme::get().del_fg),
+        ),
     ]);
 
     let mut lines = vec![header];
@@ -226,9 +338,17 @@ pub(super) fn diff_lines(body: &str, width: usize) -> Vec<Line<'static>> {
     body.lines()
         .map(|raw| {
             let (fg, bg, mark) = match raw.chars().next() {
-                Some('+') => (theme::ADD_FG, theme::ADD_BG, Some(theme::ADD_MARK)),
-                Some('-') => (theme::DEL_FG, theme::DEL_BG, Some(theme::DEL_MARK)),
-                _ => (theme::FAINT, Color::Reset, None),
+                Some('+') => (
+                    theme::get().add_fg,
+                    theme::get().add_bg,
+                    Some(theme::get().add_mark),
+                ),
+                Some('-') => (
+                    theme::get().del_fg,
+                    theme::get().del_bg,
+                    Some(theme::get().del_mark),
+                ),
+                _ => (theme::get().faint, Color::Reset, None),
             };
             let style = Style::default().fg(fg).bg(bg);
             let text: String = wrap::lines(raw, width).first().cloned().unwrap_or_default();
@@ -254,16 +374,33 @@ pub(super) fn welcome(fields: &[(&str, String)], _width: usize) -> Vec<Line<'sta
     let mut lines: Vec<Line<'static>> = super::helpers::mark_lines();
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("aster", Style::default().fg(ACCENT)),
-        Span::styled(format!("  v{}", env!("CARGO_PKG_VERSION")), theme::dimmer()),
+        Span::styled("aster", theme::get().accent_style()),
+        Span::styled(
+            format!("  v{}", env!("CARGO_PKG_VERSION")),
+            theme::get().dimmer_style(),
+        ),
     ]));
     lines.push(Line::from(""));
+    // Widest key plus a gap, so a key as long as the column still separates.
+    let key_w = fields
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
     for (key, value) in fields {
         lines.push(Line::from(vec![
-            Span::styled(format!("{key:<8}"), theme::dimmer()),
-            Span::styled(value.clone(), Style::default().fg(theme::TEXT)),
+            Span::styled(format!("{key:<key_w$}"), theme::get().dimmer_style()),
+            Span::styled(value.clone(), Style::default().fg(theme::get().text)),
         ]));
     }
+    // None of the keys are on screen anywhere else, so the header is where a
+    // first-time reader finds out they exist.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "/help for commands and keys  ·  shift+tab changes mode  ·  esc esc quits",
+        theme::get().dimmer_style(),
+    )));
     prepend_blank(lines)
 }
 
@@ -273,9 +410,9 @@ pub(super) fn phase(name: &str, width: usize) -> Vec<Line<'static>> {
     prepend_blank(hang(
         vec![Line::from(Span::styled(
             name.to_string(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            theme::get().accent_style().add_modifier(Modifier::BOLD),
         ))],
-        Span::styled("▶ ", Style::default().fg(ACCENT)),
+        Span::styled("▶ ", theme::get().accent_style()),
         width,
     ))
 }
@@ -303,7 +440,7 @@ pub(super) fn finding(f: &aster_models::Finding, width: usize) -> Vec<Line<'stat
     }
     prepend_blank(hang(
         lines,
-        Span::styled("✓ ", Style::default().fg(Color::Green)),
+        Span::styled("✓ ", Style::default().fg(theme::get().success)),
         width,
     ))
 }
@@ -314,9 +451,9 @@ pub(super) fn refuted(title: &str, width: usize) -> Vec<Line<'static>> {
     hang(
         vec![Line::from(Span::styled(
             format!("refuted: {title}"),
-            theme::dimmer(),
+            theme::get().dimmer_style(),
         ))],
-        Span::styled("✗ ", theme::dimmer()),
+        Span::styled("✗ ", theme::get().dimmer_style()),
         width,
     )
 }
@@ -400,8 +537,31 @@ mod tests {
     fn diff_rows_are_padded_so_the_tint_spans_the_width() {
         let rows = diff_lines("+ new", 20);
         assert_eq!(rows[0].width(), 20);
-        assert_eq!(rows[0].spans[0].style.fg, Some(crate::tui::theme::ADD_MARK));
-        assert_eq!(rows[0].spans[1].style.fg, Some(crate::tui::theme::ADD_FG));
+        assert_eq!(
+            rows[0].spans[0].style.fg,
+            Some(crate::tui::theme::get().add_mark)
+        );
+        assert_eq!(
+            rows[0].spans[1].style.fg,
+            Some(crate::tui::theme::get().add_fg)
+        );
+    }
+
+    #[test]
+    fn a_key_as_wide_as_the_column_still_separates_from_its_value() {
+        let fields = [
+            ("model", "kimi-k3".to_string()),
+            ("provider", "OpenRouter".to_string()),
+        ];
+        let out = text_of(&welcome(&fields, 80));
+        assert!(
+            out.iter().any(|l| l.contains("provider  OpenRouter")),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l.contains("model     kimi-k3")),
+            "{out:?}"
+        );
     }
 
     #[test]

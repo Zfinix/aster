@@ -1,14 +1,16 @@
 //! `aster skills`: manage agent skills, mirroring the `npx skills@latest`
-//! surface. Skills install per-project (`.aster/skills`) by default or globally
-//! (`<config>/aster/skills`) with `-g`. A git source is fetched lazily: a
-//! treeless partial clone with only the `SKILL.md` manifests checked out, so
-//! browsing is cheap and a skill's full contents download only when chosen.
+//! surface. Skills install user-global (`<config>/aster/skills`) by default, or
+//! into this project (`.aster/skills`) with `-p`, where they shadow a global
+//! skill of the same name. A git source is fetched lazily: a treeless partial
+//! clone with only the `SKILL.md` manifests checked out, so browsing is cheap
+//! and a skill's full contents download only when chosen.
 
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::util::or_cancel;
 use anyhow::{Context, Result, bail};
 use aster_skills::{Skill, SkillSet, find_skills, install_skill, remove_skill};
 use clap::{Args, Subcommand};
@@ -29,8 +31,11 @@ enum SkillsCommand {
     Add {
         /// Source: `owner/repo`, a git URL, or a local path. Omit for the wizard.
         source: Option<String>,
-        /// Install into the user-global root instead of this project.
-        #[arg(short = 'g', long)]
+        /// Install into this project (`.aster/skills`) instead of the user-global root.
+        #[arg(short = 'p', long)]
+        project: bool,
+        /// Install into the user-global root. The default; accepted for symmetry.
+        #[arg(short = 'g', long, conflicts_with = "project")]
         global: bool,
         /// Install only these skills by name (repeat or comma-separate; `*` for all).
         #[arg(short = 's', long = "skill", value_delimiter = ',')]
@@ -54,8 +59,11 @@ enum SkillsCommand {
     /// List installed skills.
     #[command(visible_alias = "ls")]
     List {
-        /// List the user-global root instead of this project.
-        #[arg(short = 'g', long)]
+        /// List only this project's skills.
+        #[arg(short = 'p', long)]
+        project: bool,
+        /// List only user-global skills.
+        #[arg(short = 'g', long, conflicts_with = "project")]
         global: bool,
     },
     /// Remove installed skills (interactive when no name is given).
@@ -63,8 +71,11 @@ enum SkillsCommand {
     Remove {
         /// Skill names to remove.
         skills: Vec<String>,
-        /// Remove from the user-global root instead of this project.
-        #[arg(short = 'g', long)]
+        /// Remove from this project instead of the user-global root.
+        #[arg(short = 'p', long)]
+        project: bool,
+        /// Remove from the user-global root. The default; accepted for symmetry.
+        #[arg(short = 'g', long, conflicts_with = "project")]
         global: bool,
         /// Remove every installed skill.
         #[arg(long)]
@@ -91,8 +102,11 @@ enum SkillsCommand {
         /// Restrict to repositories from this GitHub owner.
         #[arg(long)]
         owner: Option<String>,
-        /// Install into the user-global root instead of this project.
-        #[arg(short = 'g', long)]
+        /// Install into this project instead of the user-global root.
+        #[arg(short = 'p', long)]
+        project: bool,
+        /// Install into the user-global root. The default; accepted for symmetry.
+        #[arg(short = 'g', long, conflicts_with = "project")]
         global: bool,
     },
     /// Update installed skills to their latest versions.
@@ -100,8 +114,11 @@ enum SkillsCommand {
     Update {
         /// Skill names to update; omit for all.
         skills: Vec<String>,
-        /// Update the user-global root instead of this project.
-        #[arg(short = 'g', long)]
+        /// Update this project's skills instead of the user-global ones.
+        #[arg(short = 'p', long)]
+        project: bool,
+        /// Update user-global skills. The default; accepted for symmetry.
+        #[arg(short = 'g', long, conflicts_with = "project")]
         global: bool,
     },
     /// Scaffold a new skill (creates <name>/SKILL.md).
@@ -112,13 +129,15 @@ enum SkillsCommand {
 }
 
 pub async fn run(args: SkillsArgs) -> Result<()> {
-    let command = args
-        .command
-        .unwrap_or(SkillsCommand::List { global: false });
+    let command = args.command.unwrap_or(SkillsCommand::List {
+        project: false,
+        global: false,
+    });
     match command {
         SkillsCommand::Add {
             source,
-            global,
+            project,
+            global: _,
             skill,
             all,
             yes,
@@ -126,8 +145,8 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
             full_depth,
             force,
         } => add(AddOpts {
+            project,
             source,
-            global,
             skill,
             all,
             yes,
@@ -135,13 +154,14 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
             full_depth,
             force,
         }),
-        SkillsCommand::List { global } => list(global),
+        SkillsCommand::List { project, global } => list(project, global),
         SkillsCommand::Remove {
             skills,
-            global,
+            project,
+            global: _,
             all,
             yes,
-        } => remove(skills, global, all, yes),
+        } => remove(skills, project, all, yes),
         SkillsCommand::Use {
             target,
             skill,
@@ -150,9 +170,14 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
         SkillsCommand::Find {
             query,
             owner,
-            global,
-        } => find(query, owner, global).await,
-        SkillsCommand::Update { skills, global } => update(skills, global),
+            project,
+            global: _,
+        } => find(query, owner, project).await,
+        SkillsCommand::Update {
+            skills,
+            project,
+            global: _,
+        } => update(skills, project),
         SkillsCommand::Init { name } => init(name.as_deref()),
     }
 }
@@ -165,11 +190,14 @@ enum Scope {
     Global,
 }
 
-fn scope_of(global: bool) -> Scope {
-    if global {
-        Scope::Global
-    } else {
+/// Global is the default: the agent reads both roots on every run, so a skill
+/// installed once is available in every repo. `--project` opts into pinning a
+/// skill to this checkout, where it shadows the global copy of the same name.
+fn scope_of(project: bool) -> Scope {
+    if project {
         Scope::Project
+    } else {
+        Scope::Global
     }
 }
 
@@ -190,11 +218,43 @@ fn scope_word(scope: Scope) -> &'static str {
     }
 }
 
+fn other_scope(scope: Scope) -> Scope {
+    match scope {
+        Scope::Project => Scope::Global,
+        Scope::Global => Scope::Project,
+    }
+}
+
+/// The flag that would have targeted the other root, for error messages.
+fn other_scope_flag(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Project => "--global",
+        Scope::Global => "--project",
+    }
+}
+
+/// Reads as a phrase in a sentence, unlike [`scope_word`].
+fn scope_phrase(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Project => "in this project",
+        Scope::Global => "globally",
+    }
+}
+
+fn other_scope_has(scope: Scope, name: &str) -> bool {
+    let Ok(root) = scope_root(other_scope(scope)) else {
+        return false;
+    };
+    SkillSet::discover(std::slice::from_ref(&root))
+        .iter()
+        .any(|s| s.name == name)
+}
+
 // ---- add ----
 
 struct AddOpts {
     source: Option<String>,
-    global: bool,
+    project: bool,
     skill: Vec<String>,
     all: bool,
     yes: bool,
@@ -204,7 +264,7 @@ struct AddOpts {
 }
 
 fn add(opts: AddOpts) -> Result<()> {
-    let scope = scope_of(opts.global);
+    let scope = scope_of(opts.project);
     let dest = scope_root(scope)?;
     let tty = is_tty();
 
@@ -387,37 +447,80 @@ fn print_available(skills: &[Skill]) {
 
 // ---- list ----
 
-fn list(global: bool) -> Result<()> {
-    let scope = scope_of(global);
-    let root = scope_root(scope)?;
-    let set = SkillSet::discover(std::slice::from_ref(&root));
+/// Both scopes by default, because that is what the agent loads. `-p` or `-g`
+/// narrows to one. A project skill shadowing a global one is called out, since
+/// otherwise the global copy looks active when it is not.
+fn list(project_only: bool, global_only: bool) -> Result<()> {
+    let scopes: &[Scope] = match (project_only, global_only) {
+        (true, _) => &[Scope::Project],
+        (_, true) => &[Scope::Global],
+        _ => &[Scope::Project, Scope::Global],
+    };
+
+    let mut sections = Vec::new();
+    for &scope in scopes {
+        let root = scope_root(scope)?;
+        let set = SkillSet::discover(std::slice::from_ref(&root));
+        sections.push((scope, root, set.iter().cloned().collect::<Vec<Skill>>()));
+    }
+
+    let shadowed: Vec<String> = match scopes.len() {
+        2 => {
+            let project: Vec<&str> = sections[0].2.iter().map(|s| s.name.as_str()).collect();
+            sections[1]
+                .2
+                .iter()
+                .filter(|s| project.contains(&s.name.as_str()))
+                .map(|s| s.name.clone())
+                .collect()
+        }
+        _ => Vec::new(),
+    };
 
     if crate::json_mode() {
-        let skills: Vec<Skill> = set.iter().cloned().collect();
         emit_json(serde_json::json!({
-            "scope": scope_word(scope),
-            "root": root.display().to_string(),
-            "skills": skill_values(&skills),
+            "scopes": sections
+                .iter()
+                .map(|(scope, root, skills)| serde_json::json!({
+                    "scope": scope_word(*scope),
+                    "root": root.display().to_string(),
+                    "skills": skill_values(skills),
+                }))
+                .collect::<Vec<_>>(),
+            "shadowed": shadowed,
         }));
         return Ok(());
     }
 
-    if set.is_empty() {
-        println!("no {} skills in {}", scope_word(scope), root.display());
+    let total: usize = sections.iter().map(|(_, _, s)| s.len()).sum();
+    if total == 0 {
+        for (scope, root, _) in &sections {
+            println!("no {} skills in {}", scope_word(*scope), root.display());
+        }
         println!("install some with: aster skills add");
         return Ok(());
     }
 
-    println!("{} {} skill(s):\n", set.len(), scope_word(scope));
-    let skills: Vec<Skill> = set.iter().cloned().collect();
-    print_available(&skills);
+    for (scope, root, skills) in &sections {
+        if skills.is_empty() {
+            println!("no {} skills in {}\n", scope_word(*scope), root.display());
+            continue;
+        }
+        println!("{} {} skill(s):\n", skills.len(), scope_word(*scope));
+        print_available(skills);
+        println!();
+    }
+
+    if !shadowed.is_empty() {
+        println!("shadowed by this project: {}", shadowed.join(", "));
+    }
     Ok(())
 }
 
 // ---- remove ----
 
-fn remove(names: Vec<String>, global: bool, all: bool, yes: bool) -> Result<()> {
-    let scope = scope_of(global);
+fn remove(names: Vec<String>, project: bool, all: bool, yes: bool) -> Result<()> {
+    let scope = scope_of(project);
     let root = scope_root(scope)?;
     let set = SkillSet::discover(std::slice::from_ref(&root));
     let tty = is_tty();
@@ -471,7 +574,17 @@ fn remove(names: Vec<String>, global: bool, all: bool, yes: bool) -> Result<()> 
         } else {
             missing.push(name.clone());
             if !json {
-                eprintln!("no installed skill named {name:?}");
+                // The scopes are separate roots, so name the other one rather
+                // than reporting a skill absent when it is merely elsewhere.
+                match other_scope_has(scope, name) {
+                    true => eprintln!(
+                        "no {} skill named {name:?}; it is installed {}. Retry with {}",
+                        scope_word(scope),
+                        scope_phrase(other_scope(scope)),
+                        other_scope_flag(scope)
+                    ),
+                    false => eprintln!("no installed skill named {name:?}"),
+                }
             }
         }
     }
@@ -550,7 +663,7 @@ fn looks_like_source(s: &str) -> bool {
 
 // ---- find ----
 
-async fn find(query: Option<String>, owner: Option<String>, global: bool) -> Result<()> {
+async fn find(query: Option<String>, owner: Option<String>, project: bool) -> Result<()> {
     let tty = is_tty();
     let query = match query {
         Some(q) => q,
@@ -595,7 +708,7 @@ async fn find(query: Option<String>, owner: Option<String>, global: bool) -> Res
 
     add(AddOpts {
         source: Some(repos[idx].full_name.clone()),
-        global,
+        project,
         skill: Vec::new(),
         all: false,
         yes: false,
@@ -650,8 +763,8 @@ async fn github_search(query: &str, owner: Option<&str>) -> Result<Vec<Repo>> {
 
 // ---- update ----
 
-fn update(names: Vec<String>, global: bool) -> Result<()> {
-    let scope = scope_of(global);
+fn update(names: Vec<String>, project: bool) -> Result<()> {
+    let scope = scope_of(project);
     let root = scope_root(scope)?;
     let lock = load_lock(&root);
     if lock.skills.is_empty() {
@@ -1140,15 +1253,6 @@ fn cancel() -> Result<()> {
     Ok(())
 }
 
-/// Map a prompt result to `Option`: `Interrupted` means cancelled.
-fn or_cancel<T>(result: io::Result<T>) -> Result<Option<T>> {
-    match result {
-        Ok(v) => Ok(Some(v)),
-        Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1201,5 +1305,30 @@ mod tests {
         let t = skill_template("my-skill");
         assert!(t.starts_with("---\nname: my-skill\n"));
         assert!(t.contains("description:"));
+    }
+
+    /// The agent loads both roots every run, so installing once globally is what
+    /// makes a skill available everywhere. Project scope is the opt-in.
+    #[test]
+    fn scope_defaults_to_global() {
+        assert!(matches!(scope_of(false), Scope::Global));
+        assert!(matches!(scope_of(true), Scope::Project));
+    }
+
+    #[test]
+    fn global_and_project_roots_are_distinct() {
+        let global = scope_root(Scope::Global).unwrap();
+        let project = scope_root(Scope::Project).unwrap();
+        assert_ne!(global, project);
+        assert!(project.ends_with(".aster/skills"), "{}", project.display());
+        assert!(global.ends_with("skills"), "{}", global.display());
+    }
+
+    #[test]
+    fn the_other_scope_is_named_for_error_messages() {
+        assert!(matches!(other_scope(Scope::Global), Scope::Project));
+        assert!(matches!(other_scope(Scope::Project), Scope::Global));
+        assert_eq!(other_scope_flag(Scope::Global), "--project");
+        assert_eq!(other_scope_flag(Scope::Project), "--global");
     }
 }

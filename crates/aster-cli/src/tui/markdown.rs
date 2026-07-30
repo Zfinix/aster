@@ -3,22 +3,18 @@
 //! pulldown-cmark. `push` emits lines as they complete; `flush` drains.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use super::theme;
 
 fn dim() -> Style {
-    theme::dim()
+    theme::get().dim_style()
 }
 
-/// Inline code: a shade brighter than body text on a quiet raised band. Colour
-/// is reserved for accents; identifiers appear too often to carry one.
 fn code_chip() -> Style {
-    Style::default()
-        .fg(Color::Rgb(0xdd, 0xdd, 0xd8))
-        .bg(Color::Rgb(0x20, 0x20, 0x20))
+    theme::get().code_style()
 }
 
 #[derive(Default)]
@@ -66,7 +62,7 @@ impl MarkdownStream {
         }
         if self.in_fence {
             self.end_table(out);
-            let mut spans = vec![Span::styled("│ ", theme::faint())];
+            let mut spans = vec![Span::styled("│ ", theme::get().faint_style())];
             spans.extend(super::syntax::highlight(src));
             out.push(Line::from(spans));
             return;
@@ -114,13 +110,19 @@ impl MarkdownStream {
             .find_map(|m| trimmed.strip_prefix(m))
         {
             let (marker, rest) = checkbox(rest);
-            let mut spans = vec![Span::raw(indent), Span::styled(marker, theme::dimmer())];
+            let mut spans = vec![
+                Span::raw(indent),
+                Span::styled(marker, theme::get().dimmer_style()),
+            ];
             spans.extend(inline(rest, Style::default()));
             out.push(Line::from(spans));
             return;
         }
         if let Some((marker, rest)) = ordered(trimmed) {
-            let mut spans = vec![Span::raw(indent), Span::styled(marker, theme::dimmer())];
+            let mut spans = vec![
+                Span::raw(indent),
+                Span::styled(marker, theme::get().dimmer_style()),
+            ];
             spans.extend(inline(rest, Style::default()));
             out.push(Line::from(spans));
             return;

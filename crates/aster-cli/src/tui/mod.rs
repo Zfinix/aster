@@ -13,16 +13,11 @@ mod summary;
 mod syntax;
 mod term;
 mod terminal;
-mod theme;
+pub(crate) mod theme;
 mod wrap;
 
 pub use chat::run_chat;
+pub(crate) use helpers::mark_ansi;
 pub use review::run;
 
-use ratatui::style::Color;
-
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-/// The shaded band the bottom pane sits on, the same tone as a turn rail.
-const PANE_BG: Color = Color::Rgb(0x19, 0x19, 0x19);
-/// Brand orange, matching the desktop app's `--accent` (#f2764f).
-const ACCENT: Color = Color::Rgb(242, 118, 79);
+pub(crate) const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
