@@ -400,6 +400,9 @@ function App() {
         case "approval_request":
           setApproval({ preview: ev.preview });
           break;
+        case "notice":
+          toast(ev.message);
+          break;
         case "done": {
           activeChatRef.current = null;
           chatUnlistenRef.current?.();

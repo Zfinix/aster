@@ -304,7 +304,7 @@ to `rg`, `grep`, `find`, or `fd`: `search_files` and `find_files` already \
 run them directly, without the overhead. \
 Set `turbo: true` when the user asks to work offline or in turbo mode \
 (blocks network access). Set `yolo: true` only when the user explicitly \
-asks for yolo mode (no restrictions, requires extra confirmations). \
+asks for yolo mode (no restrictions). \
 Ground every claim about the code in what you actually read. Only edit files when the \
 user asked for a change; keep edits minimal and in the file's existing style. \
 After editing, state plainly which files you changed and what the change does. \
@@ -1245,7 +1245,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run a CLI command. Filesystem writes are restricted to the repository and temp directories, and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution (requires extra confirmations). Returns stdout, stderr, and exit code.",
+            "description": "Run a CLI command. Filesystem writes are restricted to the repository and temp directories, and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution. Returns stdout, stderr, and exit code.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1256,7 +1256,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                         "description": "Arguments to pass to the command"
                     },
                     "turbo": { "type": "boolean", "description": "Run without network access. Use when the user asks for turbo mode or wants to work offline." },
-                    "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode; triggers extra confirmations." }
+                    "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode." }
                 },
                 "required": ["command"]
             }
@@ -1556,10 +1556,7 @@ async fn ask_user(
     // tool in a loop), commit to the single option or decline outright.
     match options.len() {
         0 => {
-            return Ok(
-                "the user declined to answer; proceed with your best judgement"
-                    .to_string(),
-            )
+            return Ok("the user declined to answer; proceed with your best judgement".to_string());
         }
         1 => return Ok(format!("the user chose: {}", options[0])),
         _ => {} // fall through to the interactive path
@@ -1730,13 +1727,6 @@ async fn run_command_tool(
     }
 
     if yolo {
-        for i in 1..=3 {
-            let preview =
-                format!("YOLO mode — run `{binary}` with no sandbox?\n\nConfirmation {i}/3");
-            if !request_approval(approver, preview, None).await.allowed() {
-                bail!("yolo mode rejected at confirmation {i}/3");
-            }
-        }
         return run_direct(repo_root, binary, args).await;
     }
 
@@ -2093,12 +2083,24 @@ mod tests {
         assert!(limits.command_timeout_secs >= 120);
     }
 
-    /// A question with nothing to pick used to be shown and silently declined.
+    /// Bouncing "give me options" back to the model made it retry the tool in
+    /// a loop, so a question with nothing to pick declines instead.
     #[tokio::test]
-    async fn a_question_without_options_asks_the_model_for_some() {
-        let (tx, _rx) = mpsc::channel::<UiRequest>(1);
+    async fn a_question_without_options_declines_rather_than_asking_again() {
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
         let result = ask_user(Some(&tx), "", "which one?", &[]).await.unwrap();
-        assert!(result.contains("2-4"), "{result}");
+        assert!(result.contains("declined"), "{result}");
+        assert!(rx.try_recv().is_err(), "the UI is never troubled");
+    }
+
+    /// One option is not a choice: it is answered without a round trip.
+    #[tokio::test]
+    async fn a_single_option_is_taken_without_asking() {
+        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+        let opts = ["sqlite".to_string()];
+        let result = ask_user(Some(&tx), "", "which one?", &opts).await.unwrap();
+        assert!(result.contains("sqlite"), "{result}");
+        assert!(rx.try_recv().is_err(), "the UI is never troubled");
     }
 
     fn args(path: &str, search: Option<&str>, replace: &str) -> Value {
@@ -2398,7 +2400,7 @@ mod tests {
             Some(&tx),
             &SessionCtx::default(),
             "ask_user",
-            json!({ "question": "Which database?", "options": ["sqlite"] }),
+            json!({ "question": "Which database?", "options": ["sqlite", "postgres"] }),
         )
         .await;
 

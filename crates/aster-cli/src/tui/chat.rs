@@ -56,6 +56,8 @@ pub(super) enum AppEvent {
         scope: Option<PathBuf>,
     },
     QuestionAnswered(String),
+    /// The sandbox-bypass prompt came back yes.
+    YoloConfirmed,
     SessionPicked(String),
     ModelChanged(String),
     /// The provider's catalog, fetched off the loop so `/model` never blocks
@@ -217,6 +219,9 @@ pub async fn run_chat(
                         app.flash = Some(flash);
                     }
                     draw(&mut tui, &app, &pane)?;
+                    if theme::is_transitioning() {
+                        frames.schedule_in(std::time::Duration::from_millis(16));
+                    }
                 }
             },
             Some(ev) = events_rx.recv() => {
@@ -230,6 +235,7 @@ pub async fn run_chat(
             },
             Some(ev) = app_rx.recv() => match ev {
                 AppEvent::ModelsLoaded(models) => app.open_model_picker(models, &mut pane),
+                AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
                 ev => app.on_app_event(ev, &mut client),
             },
             res = wait_turn(&mut turn) => {
@@ -354,6 +360,7 @@ fn on_key(
         InputResult::Submitted(text) => {
             *turn = Some(app.submit(&text, client, repo_root));
             pane.set_task_running(true);
+            app.flash = None;
         }
         InputResult::Command(cmd) => {
             app.handle_command(&cmd, client, pane);
@@ -362,9 +369,10 @@ fn on_key(
             app.flash = Some("still working · esc to interrupt, then send".into());
             return Flow::Continue;
         }
-        InputResult::None => {}
+        InputResult::None => {
+            app.flash = None;
+        }
     }
-    app.flash = None;
     Flow::Continue
 }
 
@@ -615,7 +623,7 @@ const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "yolo",
         takes_arg: false,
-        desc: "Toggle YOLO mode — no sandbox, red theme, triple confirm",
+        desc: "Toggle YOLO mode — no sandbox, red theme",
     },
     CommandDesc {
         name: "clear",
@@ -645,8 +653,9 @@ struct ChatApp {
     /// Everything the model streamed this turn, to tell a quiet endpoint (one
     /// that sends no deltas) from one that already rendered its reply.
     streamed: String,
-    /// Consecutive read-only calls, collapsed into one `Explored` cell.
-    explored: Vec<String>,
+    /// An `Explored` cell is open: further read-only rows hang off it instead
+    /// of opening a new one.
+    exploring: bool,
     running: Vec<RunningTool>,
     /// A tool cell was emitted since the last prose, so the next prose opens
     /// with a rule dividing the work from the answer.
@@ -709,7 +718,7 @@ impl ChatApp {
             markdown: MarkdownStream::default(),
             speaking: false,
             streamed: String::new(),
-            explored: Vec::new(),
+            exploring: false,
             running: Vec::new(),
             worked: false,
             thinking: false,
@@ -793,10 +802,14 @@ impl ChatApp {
 
     fn on_tool_result(&mut self, tool: RunningTool, result: &str, failed: bool) {
         if !failed && READ_ONLY.contains(&tool.name.as_str()) {
-            self.explored.push(match missed(result) {
+            let label = match missed(result) {
                 true => format!("{} (not found)", tool.label),
                 false => tool.label,
-            });
+            };
+            let block = history::explored_row(&label, self.exploring, self.width);
+            self.exploring = true;
+            self.emit(block);
+            self.worked = true;
             return;
         }
         self.end_explored();
@@ -845,14 +858,9 @@ impl ChatApp {
         self.speaking = false;
     }
 
+    /// Close the open `Explored` cell so the next read-only run opens its own.
     fn end_explored(&mut self) {
-        if self.explored.is_empty() {
-            return;
-        }
-        let labels = std::mem::take(&mut self.explored);
-        let block = history::explored(&labels, self.width);
-        self.emit(block);
-        self.worked = true;
+        self.exploring = false;
     }
 
     /// Draw the rule between what the agent did and what it has to say, once
@@ -1060,9 +1068,45 @@ impl ChatApp {
         pane.push_picker(&req.header, items);
     }
 
+    /// YOLO drops the sandbox, so it is the one mode the user is asked about
+    /// rather than switched into. The prompt is the same picker every other
+    /// question uses; declining is the resting choice.
+    fn confirm_yolo(&mut self, pane: &mut BottomPane<AppEvent>) {
+        if self.mode == Mode::Yolo {
+            return;
+        }
+        self.note(
+            "YOLO mode runs commands with no sandbox: no path limits, no network block, \
+             no secret scrubbing.",
+        );
+        pane.push_picker(
+            "Bypass the sandbox?",
+            vec![
+                SelectionItem {
+                    name: format!("No, stay in {}", self.mode.as_str()),
+                    description: "keep the sandbox".into(),
+                    is_current: true,
+                    event: AppEvent::SetMode(self.mode),
+                },
+                SelectionItem {
+                    name: "Yes, enable YOLO mode".into(),
+                    description: "run unrestricted".into(),
+                    is_current: false,
+                    event: AppEvent::YoloConfirmed,
+                },
+            ],
+        );
+    }
+
     fn on_app_event(&mut self, ev: AppEvent, client: &mut AiClient) {
         match ev {
+            // Entering YOLO goes through `confirm_yolo`, never straight here.
+            AppEvent::SetMode(Mode::Yolo) => {}
             AppEvent::SetMode(mode) => self.select_mode(mode),
+            AppEvent::YoloConfirmed => {
+                self.select_mode(Mode::Yolo);
+                self.note("YOLO mode ON — sandbox bypassed, red theme");
+            }
             AppEvent::SetEffort(effort) => self.set_effort(effort, client),
             AppEvent::ApprovalDecided { answer, scope } => {
                 let plan = std::mem::take(&mut self.pending_plan_approval);
@@ -1215,6 +1259,10 @@ impl ChatApp {
             return;
         }
         self.mode = mode;
+        theme::set(match mode {
+            Mode::Yolo => theme::Theme::YOLO,
+            Mode::Plan | Mode::Manual | Mode::Auto | Mode::Edit => theme::Theme::DEFAULT,
+        });
         self.note_edit_mode();
         // A footer flash, not a scrollback line, so the transcript stays a
         // record of the conversation rather than of settings.
@@ -1356,23 +1404,31 @@ impl ChatApp {
                 Some(Err(e)) => self.flash = Some(e),
                 None => self.open_effort_picker(pane),
             },
-            "yolo" => {
-                if self.mode == Mode::Yolo {
-                    self.mode = Mode::Edit;
-                    theme::set(theme::Theme::DEFAULT);
+            "yolo" => match self.mode {
+                Mode::Yolo => {
+                    self.select_mode(Mode::Edit);
                     self.note("YOLO mode OFF — sandbox restored, standard mode");
-                } else {
-                    self.mode = Mode::Yolo;
-                    theme::set(theme::Theme::YOLO);
-                    self.note("YOLO mode ON — sandbox bypassed, triple confirm, red theme");
                 }
-                self.note_edit_mode();
-            }
+                _ => self.confirm_yolo(pane),
+            },
             "clear" | "c" => {
                 self.history.clear();
                 self.start_new_session();
                 self.queue.clear();
                 self.clear_requested = true;
+                self.emit(history::welcome(
+                    &[
+                        ("model", self.model.clone()),
+                        (
+                            "provider",
+                            crate::init::provider_label(&self.provider_base_url),
+                        ),
+                        ("cwd", self.repo_root.display().to_string()),
+                        ("mode", mode_desc(self.mode)),
+                        ("effort", self.effort.to_string()),
+                    ],
+                    self.width,
+                ));
             }
             "help" | "h" => {
                 let width = self.width;
@@ -1454,7 +1510,7 @@ impl ChatApp {
             .map(|c| format!("  ·  ~${c:.4}"))
             .unwrap_or_default();
         Some(format!(
-            "ctx {approx}{} in / {approx}{} out{cost}",
+            "↑{approx}{} ↓{approx}{}{cost}",
             human_count(usage.prompt_tokens as usize),
             human_count(usage.completion_tokens as usize),
         ))
@@ -1739,7 +1795,7 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_reads_collapse_into_one_explored_cell() {
+    fn consecutive_reads_stream_into_one_explored_cell() {
         let mut app = chat_app("m1".into());
         for (i, path) in ["a.rs", "b.rs"].iter().enumerate() {
             let args = format!("{{\"path\":\"{path}\"}}");
@@ -1754,7 +1810,10 @@ mod tests {
                 error: false,
             });
         }
-        assert!(app.queue.is_empty(), "the group is still open");
+        assert!(
+            !app.queue.is_empty(),
+            "each read prints as it lands, not once the group closes"
+        );
 
         app.on_turn_event(TurnEvent::Token("done\n".into()));
         let out = rendered(&app);
@@ -1844,6 +1903,37 @@ mod tests {
             step_label("run_command", r#"{"command":"car"#),
             "Ran a command"
         );
+    }
+
+    #[test]
+    fn yolo_asks_before_it_switches() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Edit;
+        let mut client = AiClient::new("http://localhost", "k", "m1");
+        let (mut p, _rx) = pane();
+
+        app.handle_command("yolo", &mut client, &mut p);
+        assert_eq!(app.mode, Mode::Edit, "asking does not switch");
+        assert!(
+            p.has_active_view(),
+            "the prompt is a pane view, not a flash"
+        );
+        assert!(app.flash.is_none(), "{:?}", app.flash);
+
+        app.on_app_event(AppEvent::YoloConfirmed, &mut client);
+        assert_eq!(app.mode, Mode::Yolo);
+    }
+
+    #[test]
+    fn declining_yolo_leaves_the_mode_alone() {
+        let mut app = chat_app("m1".into());
+        app.mode = Mode::Edit;
+        let mut client = AiClient::new("http://localhost", "k", "m1");
+        let (mut p, _rx) = pane();
+
+        app.handle_command("yolo", &mut client, &mut p);
+        app.on_app_event(AppEvent::SetMode(Mode::Edit), &mut client);
+        assert_eq!(app.mode, Mode::Edit);
     }
 
     #[test]

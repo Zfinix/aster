@@ -46,6 +46,8 @@ export type ChatStreamEvent =
   | { type: "tool_result"; id: string; name: string; result: string; error: boolean }
   | { type: "approval_request"; preview: string }
   | { type: "done"; reply: string; edits: string[]; usage?: Usage }
+  /** Something the harness did to the turn, e.g. stopping at the round cap. */
+  | { type: "notice"; message: string }
   | { type: "error"; message: string };
 
 export type LineKind = "add" | "del" | "ctx" | "hunk";
