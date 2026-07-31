@@ -31,7 +31,7 @@ impl ThemeState {
                 let t = (start.elapsed().as_secs_f32() / TRANSITION.as_secs_f32()).min(1.0);
                 self.current.lerp(&self.target, overshoot(t))
             }
-            None => self.target.clone(),
+            None => self.target,
         }
     }
 }
