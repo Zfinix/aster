@@ -119,7 +119,7 @@ impl<E> ApprovalView<E> {
             )));
         }
         out.push(Line::from(Span::styled(
-            "y yes · a always · n/esc no · enter confirm",
+            "  y yes · a always · n/esc no",
             dim,
         )));
         out

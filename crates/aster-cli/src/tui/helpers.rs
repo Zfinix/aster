@@ -18,18 +18,7 @@ pub(super) fn short_path(path: &std::path::Path) -> String {
 
 /// The Aster mark: an asterisk in half-block glyphs, tinted with the gradient.
 pub(super) fn mark_lines() -> Vec<Line<'static>> {
-    const ROW: [Color; 10] = [
-        Color::Rgb(239, 90, 111),
-        Color::Rgb(239, 90, 111),
-        Color::Rgb(241, 110, 79),
-        Color::Rgb(243, 130, 79),
-        Color::Rgb(245, 152, 78),
-        Color::Rgb(246, 168, 84),
-        Color::Rgb(247, 182, 89),
-        Color::Rgb(247, 193, 95),
-        Color::Rgb(248, 203, 102),
-        Color::Rgb(248, 203, 102),
-    ];
+    let row = theme::get().mark;
     const ON: [&[usize]; 10] = [
         &[4],
         &[1, 4, 7],
@@ -53,10 +42,10 @@ pub(super) fn mark_lines() -> Vec<Line<'static>> {
                     let b = lit(bottom, col);
                     match (t, b) {
                         (true, true) => {
-                            Span::styled("▀", Style::default().fg(ROW[top]).bg(ROW[bottom]))
+                            Span::styled("▀", Style::default().fg(row[top]).bg(row[bottom]))
                         }
-                        (true, false) => Span::styled("▀", Style::default().fg(ROW[top])),
-                        (false, true) => Span::styled("▄", Style::default().fg(ROW[bottom])),
+                        (true, false) => Span::styled("▀", Style::default().fg(row[top])),
+                        (false, true) => Span::styled("▄", Style::default().fg(row[bottom])),
                         (false, false) => Span::raw(" "),
                     }
                 })

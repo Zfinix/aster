@@ -175,25 +175,24 @@ pub(super) fn error(text: &str, width: usize) -> Vec<Line<'static>> {
     ))
 }
 
-/// A run of read-only tool calls, collapsed into one cell so a twelve-file
-/// sweep reads as a single step.
-pub(super) fn explored(labels: &[String], width: usize) -> Vec<Line<'static>> {
-    if labels.is_empty() {
-        return Vec::new();
+/// One read-only tool call, emitted the moment it lands. The first row of a
+/// run opens the cell with its header; the rest hang off the same branch, so a
+/// twelve-file sweep still reads as a single step while it prints live.
+pub(super) fn explored_row(label: &str, open: bool, width: usize) -> Vec<Line<'static>> {
+    let row = Line::from(vec![
+        branch(!open),
+        Span::styled(label.to_string(), Style::default().fg(theme::get().blue)),
+    ]);
+    if open {
+        return hang(vec![row], Span::raw(" ".repeat(GUTTER)), width);
     }
-    let mut lines = vec![Line::from(Span::styled(
+    let header = Line::from(Span::styled(
         "Explored".to_string(),
         Style::default()
             .fg(theme::get().text)
             .add_modifier(Modifier::BOLD),
-    ))];
-    for (i, label) in labels.iter().enumerate() {
-        lines.push(Line::from(vec![
-            branch(i == 0),
-            Span::styled(label.clone(), Style::default().fg(theme::get().blue)),
-        ]));
-    }
-    prepend_blank(hang(lines, bullet(), width))
+    ));
+    prepend_blank(hang(vec![header, row], bullet(), width))
 }
 
 /// The agent's plan: a count line over one row per step. Done steps are struck
@@ -565,11 +564,12 @@ mod tests {
     }
 
     #[test]
-    fn explored_collapses_into_one_cell() {
-        let labels = vec!["Read a.rs".to_string(), "Read b.rs".to_string()];
-        let out = text_of(&explored(&labels, 80));
-        assert!(out.iter().any(|l| l.contains("Explored")));
+    fn explored_rows_stack_under_one_header() {
+        let mut out = text_of(&explored_row("Read a.rs", false, 80));
+        out.extend(text_of(&explored_row("Read b.rs", true, 80)));
+        assert_eq!(out.iter().filter(|l| l.contains("Explored")).count(), 1);
         assert_eq!(out.iter().filter(|l| l.contains("Read ")).count(), 2);
+        assert!(out.iter().any(|l| l.contains("└ Read a.rs")), "{out:?}");
     }
 
     #[test]

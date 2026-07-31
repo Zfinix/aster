@@ -182,8 +182,6 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
     }
 }
 
-// ---- scopes ----
-
 #[derive(Clone, Copy)]
 enum Scope {
     Project,
@@ -249,8 +247,6 @@ fn other_scope_has(scope: Scope, name: &str) -> bool {
         .iter()
         .any(|s| s.name == name)
 }
-
-// ---- add ----
 
 struct AddOpts {
     source: Option<String>,
@@ -445,8 +441,6 @@ fn print_available(skills: &[Skill]) {
     }
 }
 
-// ---- list ----
-
 /// Both scopes by default, because that is what the agent loads. `-p` or `-g`
 /// narrows to one. A project skill shadowing a global one is called out, since
 /// otherwise the global copy looks active when it is not.
@@ -516,8 +510,6 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
     }
     Ok(())
 }
-
-// ---- remove ----
 
 fn remove(names: Vec<String>, project: bool, all: bool, yes: bool) -> Result<()> {
     let scope = scope_of(project);
@@ -601,8 +593,6 @@ fn remove(names: Vec<String>, project: bool, all: bool, yes: bool) -> Result<()>
     Ok(())
 }
 
-// ---- use ----
-
 fn use_skill(target: &str, skill: Option<&str>, full_depth: bool) -> Result<()> {
     if let Some((pkg, name)) = target.split_once('@') {
         return print_from_source(pkg, Some(name), full_depth);
@@ -660,8 +650,6 @@ fn emit_body(name: &str, body: &str) {
 fn looks_like_source(s: &str) -> bool {
     s.contains('/') || s.starts_with("http") || s.starts_with("git@") || Path::new(s).exists()
 }
-
-// ---- find ----
 
 async fn find(query: Option<String>, owner: Option<String>, project: bool) -> Result<()> {
     let tty = is_tty();
@@ -761,8 +749,6 @@ async fn github_search(query: &str, owner: Option<&str>) -> Result<Vec<Repo>> {
         .collect())
 }
 
-// ---- update ----
-
 fn update(names: Vec<String>, project: bool) -> Result<()> {
     let scope = scope_of(project);
     let root = scope_root(scope)?;
@@ -829,8 +815,6 @@ fn update(names: Vec<String>, project: bool) -> Result<()> {
     Ok(())
 }
 
-// ---- init ----
-
 fn init(name: Option<&str>) -> Result<()> {
     let (dir, ident) = match name {
         Some(name) => (std::env::current_dir()?.join(name), name.to_string()),
@@ -875,8 +859,6 @@ fn skill_template(name: &str) -> String {
         Concrete examples of using this skill.\n"
     )
 }
-
-// ---- lockfile (provenance for `update`) ----
 
 const LOCK_FILE: &str = "skills-lock.json";
 
@@ -926,8 +908,6 @@ fn forget_installed(root: &Path, names: &[String]) {
     }
     save_lock(root, &lock);
 }
-
-// ---- interactive multiselect ----
 
 fn prompt_source() -> Result<Option<String>> {
     let kind = match or_cancel(
@@ -1054,8 +1034,6 @@ fn render_menu(
     )?;
     Ok(())
 }
-
-// ---- source resolution (lazy git) ----
 
 /// A git source is a treeless partial clone with only `SKILL.md` files checked
 /// out, so listing is cheap; a chosen skill's contents are fetched on demand.
@@ -1215,8 +1193,6 @@ fn git_try(args: &[&str]) -> Result<bool> {
     }
     Ok(true)
 }
-
-// ---- misc ----
 
 fn claude_skills_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("skills"))

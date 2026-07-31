@@ -539,7 +539,7 @@ impl App {
         };
         let approx = if u.estimated { "~" } else { "" };
         let mut s = format!(
-            "  ·  ctx {approx}{} in / {approx}{} out",
+            "  ·  ↑{approx}{} ↓{approx}{}",
             human_count(u.prompt_tokens as usize),
             human_count(u.completion_tokens as usize),
         );
