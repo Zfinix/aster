@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, TextArea } from "@heroui/react";
 import type { PermissionMode, ReviewOpts, SourceKind } from "../lib/types";
 import { listRepoFiles } from "../lib/aster";
-import { SOURCE_LABELS } from "../lib/session";
 import { Dropdown } from "./chrome";
 import { MentionMenu } from "./MentionMenu";
 import {
