@@ -249,7 +249,7 @@ async fn chat(
         "--stream".into(),
     ];
     match permission_mode.as_deref().filter(|m| !m.is_empty()) {
-        Some(mode @ ("plan" | "manual" | "auto" | "edit")) => {
+        Some(mode @ ("plan" | "manual" | "auto" | "edit" | "yolo")) => {
             args.push("--permission-mode".into());
             args.push(mode.into());
         }

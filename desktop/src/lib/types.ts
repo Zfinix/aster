@@ -34,7 +34,7 @@ export type StreamEvent =
   | { type: "done"; summary: string; total: number; usage: Usage };
 
 /** Mirrors `aster_policy::Mode`; see crates/aster-policy/src/decision.rs. */
-export type PermissionMode = "plan" | "manual" | "auto" | "edit";
+export type PermissionMode = "plan" | "manual" | "auto" | "edit" | "yolo";
 
 /** One line of `aster chat --stream` output. */
 export type ChatStreamEvent =

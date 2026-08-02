@@ -20,7 +20,7 @@ export function HomeView({
     <div className="hero">
       <Mark px={3.2} interactive />
       <h1>{intent === "review" ? "What should we review next?" : "What are we building?"}</h1>
-      <Composer variant="home" intent={intent} {...composer} />
+      <Composer variant="home" {...composer} />
 
       {conversations.length > 0 && (
         <div className="home-work">

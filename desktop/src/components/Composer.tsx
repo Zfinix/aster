@@ -9,6 +9,7 @@ import {
   HandIcon,
   PencilIcon,
   RepoIcon,
+  ScanIcon,
   ScrollIcon,
   SendIcon,
   ShieldCheckIcon,
@@ -19,24 +20,22 @@ import { PlusMenu } from "./PlusMenu";
 
 export type ComposerBinding = Omit<Props, "variant">;
 
-/** Aster's `permissions.mode` values, passed through as --permission-mode. */
-const PERMISSION_MODES: {
-  value: PermissionMode;
+/** Aster's `permissions.mode` values, passed through as --permission-mode.
+ *  "review" is a UI-only entry that switches the composer to review intent
+ *  rather than a backend permission mode. */
+type ModeEntry = {
+  value: PermissionMode | "review";
   label: string;
   hint: string;
   icon: React.ReactNode;
-}[] = [
+};
+
+const MODE_ENTRIES: ModeEntry[] = [
   {
-    value: "manual",
-    label: "Manual",
-    hint: "Approve each edit",
-    icon: <HandIcon size={17} />,
-  },
-  {
-    value: "edit",
-    label: "Edit",
-    hint: "Edit files without asking",
-    icon: <PencilIcon size={17} />,
+    value: "review",
+    label: "Review",
+    hint: "Run a code review on the diff",
+    icon: <ScanIcon size={17} />,
   },
   {
     value: "plan",
@@ -45,9 +44,27 @@ const PERMISSION_MODES: {
     icon: <ScrollIcon size={17} />,
   },
   {
+    value: "manual",
+    label: "Manual",
+    hint: "Approve each edit",
+    icon: <HandIcon size={17} />,
+  },
+  {
     value: "auto",
     label: "Auto",
     hint: "Apply safe edits, pause on risky ones",
+    icon: <ShieldCheckIcon size={17} />,
+  },
+  {
+    value: "edit",
+    label: "Edit",
+    hint: "Edit files without asking",
+    icon: <PencilIcon size={17} />,
+  },
+  {
+    value: "yolo",
+    label: "Yolo",
+    hint: "No guardrails: policy and isolation skipped",
     icon: <ShieldCheckIcon size={17} />,
   },
 ];
@@ -82,7 +99,7 @@ function rankFiles(files: string[], query: string): string[] {
 
 interface Props {
   variant: "home" | "foot";
-  intent?: "review" | "chat";
+  intent: "review" | "chat";
   prompt: string;
   setPrompt: (s: string) => void;
   onAsk: () => void;
@@ -103,13 +120,14 @@ interface Props {
   onAddModel: (value: string) => void;
   permissionMode: PermissionMode;
   onPermissionMode: (m: PermissionMode) => void;
+  onIntent: (i: "review" | "chat") => void;
   onAttach: () => void;
 }
 
 export function Composer(props: Props) {
   const {
     variant,
-    intent = "chat",
+    intent,
     prompt,
     setPrompt,
     onAsk,
@@ -130,6 +148,7 @@ export function Composer(props: Props) {
     onAddModel,
     permissionMode,
     onPermissionMode,
+    onIntent,
     onAttach,
   } = props;
 
@@ -208,8 +227,19 @@ export function Composer(props: Props) {
     }
   };
 
+  const activeModeValue: PermissionMode | "review" =
+    intent === "review" ? "review" : permissionMode;
   const activeMode =
-    PERMISSION_MODES.find((m) => m.value === permissionMode) ?? PERMISSION_MODES[0];
+    MODE_ENTRIES.find((m) => m.value === activeModeValue) ?? MODE_ENTRIES[0];
+
+  const onModeSelect = (v: string) => {
+    if (v === "review") {
+      onIntent("review");
+    } else {
+      onIntent("chat");
+      onPermissionMode(v as PermissionMode);
+    }
+  };
 
   const modePill = (
     <Dropdown
@@ -220,9 +250,9 @@ export function Composer(props: Props) {
           <ChevronIcon size={11} />
         </span>
       )}
-      options={PERMISSION_MODES}
-      value={permissionMode}
-      onSelect={(v) => onPermissionMode(v as PermissionMode)}
+      options={MODE_ENTRIES}
+      value={activeModeValue}
+      onSelect={onModeSelect}
       direction="up"
     />
   );
