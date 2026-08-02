@@ -6,7 +6,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use crate::action::Action;
 use crate::config::PermissionsConfig;
 use crate::decision::{Decision, Mode};
-use crate::defaults::{PROTECTED, SECRET_READ};
+use crate::defaults::{PROTECTED, RISKY_EXEC, SECRET_READ};
 
 /// A compiled, immutable set of rules. [`Policy::evaluate`] is pure and never
 /// touches disk.
@@ -70,11 +70,11 @@ impl Policy {
         match action {
             Action::Edit { path } => self.evaluate_edit(path),
             Action::Read { path } => self.evaluate_read(path),
-            Action::Exec { binary, .. } => self.evaluate_exec(binary),
+            Action::Exec { binary, args } => self.evaluate_exec(binary, args),
         }
     }
 
-    fn evaluate_exec(&self, binary: &str) -> Decision {
+    fn evaluate_exec(&self, binary: &str, args: &[&str]) -> Decision {
         if self.mode == Mode::Yolo {
             return Decision::Allow;
         }
@@ -91,12 +91,45 @@ impl Policy {
                 reason: "permissions mode is `plan`, so command execution is off".to_string(),
             },
             Mode::Edit | Mode::Yolo => Decision::Allow,
-            Mode::Auto | Mode::Manual => Decision::Prompt {
-                preview: format!("run `{binary}`"),
+            // Mirrors edits: risky is what `auto` pauses on, not everything.
+            Mode::Auto if !RISKY_EXEC.contains(&binary) => Decision::Allow,
+            Mode::Auto => Decision::Prompt {
+                preview: format!("run `{}` (risky command)", command_line(binary, args)),
+            },
+            Mode::Manual => Decision::Prompt {
+                preview: format!("run `{}`", command_line(binary, args)),
             },
         }
     }
+}
 
+/// The full command for approval previews, capped so a huge argument list
+/// cannot flood a prompt.
+fn command_line(binary: &str, args: &[&str]) -> String {
+    const PREVIEW_LIMIT: usize = 200;
+    let mut line = binary.to_string();
+    for arg in args {
+        line.push(' ');
+        if arg.contains(char::is_whitespace) {
+            line.push('"');
+            line.push_str(arg);
+            line.push('"');
+        } else {
+            line.push_str(arg);
+        }
+    }
+    if line.len() > PREVIEW_LIMIT {
+        let mut cut = PREVIEW_LIMIT;
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        line.truncate(cut);
+        line.push('…');
+    }
+    line
+}
+
+impl Policy {
     fn evaluate_edit(&self, path: &str) -> Decision {
         if self.mode == Mode::Yolo {
             return Decision::Allow;
@@ -390,6 +423,95 @@ mod tests {
         c.mode = Mode::Yolo;
         let p = policy(c);
         assert_eq!(p.evaluate(&Action::Read { path: ".env" }), Decision::Allow);
+    }
+
+    #[test]
+    fn auto_mode_allows_plain_exec() {
+        let mut c = cfg();
+        c.mode = Mode::Auto;
+        let p = policy(c);
+        assert_eq!(
+            p.evaluate(&Action::Exec {
+                binary: "npx",
+                args: &["vsce", "package"]
+            }),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn exec_prompt_preview_shows_the_full_command() {
+        let mut c = cfg();
+        c.mode = Mode::Manual;
+        let p = policy(c);
+        let decision = p.evaluate(&Action::Exec {
+            binary: "git",
+            args: &["commit", "-m", "fix things"],
+        });
+        let Decision::Prompt { preview } = decision else {
+            panic!("expected a prompt, got {decision:?}");
+        };
+        assert_eq!(preview, "run `git commit -m \"fix things\"`");
+    }
+
+    #[test]
+    fn exec_prompt_preview_caps_huge_argument_lists() {
+        let mut c = cfg();
+        c.mode = Mode::Manual;
+        let p = policy(c);
+        let long = "x".repeat(500);
+        let decision = p.evaluate(&Action::Exec {
+            binary: "git",
+            args: &[&long],
+        });
+        let Decision::Prompt { preview } = decision else {
+            panic!("expected a prompt, got {decision:?}");
+        };
+        assert!(preview.len() < 240);
+        assert!(preview.contains('…'));
+    }
+
+    #[test]
+    fn auto_mode_prompts_for_risky_exec() {
+        let mut c = cfg();
+        c.mode = Mode::Auto;
+        let p = policy(c);
+        assert!(matches!(
+            p.evaluate(&Action::Exec {
+                binary: "rm",
+                args: &["-rf", "dist"]
+            }),
+            Decision::Prompt { .. }
+        ));
+    }
+
+    #[test]
+    fn auto_mode_allow_exec_overrides_risky() {
+        let mut c = cfg();
+        c.mode = Mode::Auto;
+        c.allow_exec = vec!["curl".to_string()];
+        let p = policy(c);
+        assert_eq!(
+            p.evaluate(&Action::Exec {
+                binary: "curl",
+                args: &["https://example.com"]
+            }),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn manual_mode_prompts_for_plain_exec() {
+        let mut c = cfg();
+        c.mode = Mode::Manual;
+        let p = policy(c);
+        assert!(matches!(
+            p.evaluate(&Action::Exec {
+                binary: "ls",
+                args: &[]
+            }),
+            Decision::Prompt { .. }
+        ));
     }
 
     #[test]
