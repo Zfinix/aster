@@ -83,9 +83,81 @@ struct ChatState {
     mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    /// Saved settings are read from disk the first time a chat is touched.
+    loaded: bool,
+    /// A drafted commit message awaiting confirmation.
+    pending_commit: Option<PendingCommit>,
+}
+
+struct PendingCommit {
+    message: String,
+    /// Nothing was staged when the draft was made, so committing stages first.
+    stage_all: bool,
+}
+
+/// Get a chat's state, restoring its saved settings on first use.
+fn chat_state<T>(chats: &Chats, chat_id: i64, act: impl FnOnce(&mut ChatState) -> T) -> T {
+    let mut chats = chats.lock().expect("chats lock");
+    let state = chats.entry(chat_id).or_default();
+    if !state.loaded {
+        let (mode, model, effort) = load_settings(chat_id);
+        state.mode = mode;
+        state.model = model;
+        state.effort = effort;
+        state.loaded = true;
+    }
+    act(state)
 }
 
 type Chats = Arc<Mutex<HashMap<i64, ChatState>>>;
+
+/// Where a chat's mode/model/effort live between bridge restarts.
+fn settings_path(chat_id: i64) -> Option<PathBuf> {
+    let home = env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join(".aster/remote")
+            .join(format!("telegram-{chat_id}.json")),
+    )
+}
+
+/// Load a chat's saved settings, if any. Missing or unreadable files are
+/// simply "no overrides".
+fn load_settings(chat_id: i64) -> (Option<String>, Option<String>, Option<String>) {
+    let Some(path) = settings_path(chat_id) else {
+        return (None, None, None);
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return (None, None, None);
+    };
+    let Ok(saved) = serde_json::from_str::<Value>(&raw) else {
+        return (None, None, None);
+    };
+    let field = |key: &str| saved.get(key).and_then(Value::as_str).map(str::to_string);
+    (field("mode"), field("model"), field("effort"))
+}
+
+/// Persist a chat's settings so a bridge restart does not silently drop the
+/// user back to the default mode.
+fn save_settings(chats: &Chats, chat_id: i64) {
+    let Some(path) = settings_path(chat_id) else {
+        return;
+    };
+    let saved = {
+        let mut chats = chats.lock().expect("chats lock");
+        let state = chats.entry(chat_id).or_default();
+        json!({ "mode": state.mode, "model": state.model, "effort": state.effort })
+    };
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("could not create {}: {e}", parent.display());
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, saved.to_string()) {
+        tracing::warn!("could not save chat settings: {e}");
+    }
+}
 
 /// An installed skill surfaced as a Telegram /command.
 struct SkillCommand {
@@ -208,7 +280,7 @@ async fn handle_update(
     if let Some(message) = update.get("message") {
         handle_message(api, cfg, chats, skills, message).await;
     } else if let Some(callback) = update.get("callback_query") {
-        handle_callback(api, cfg, chats, callback).await;
+        handle_callback(api, cfg, chats, skills, callback).await;
     }
 }
 
@@ -333,10 +405,8 @@ async fn handle_command(
         },
         "model" => {
             if arg == "default" {
-                {
-                    let mut chats = chats.lock().expect("chats lock");
-                    chats.entry(chat_id).or_default().model = None;
-                }
+                chat_state(chats, chat_id, |state| state.model = None);
+                save_settings(chats, chat_id);
                 api.send_text(chat_id, "Model reset to the configured default.")
                     .await;
             } else {
@@ -345,9 +415,7 @@ async fn handle_command(
             }
         }
         "status" => {
-            let (mode, model, effort, turns, busy) = {
-                let mut chats = chats.lock().expect("chats lock");
-                let state = chats.entry(chat_id).or_default();
+            let (mode, model, effort, turns, busy) = chat_state(chats, chat_id, |state| {
                 (
                     state.mode.clone().unwrap_or_else(|| cfg.mode.clone()),
                     state.model.clone().unwrap_or_else(|| "default".into()),
@@ -355,7 +423,7 @@ async fn handle_command(
                     state.history.len(),
                     state.running.is_some(),
                 )
-            };
+            });
             let text = format!(
                 "Repo: {}\nSession: telegram-{chat_id}\nMode: {mode}\nModel: {model}\nEffort: {effort}\nHistory: {turns} messages\nState: {}",
                 cfg.repo_root.display(),
@@ -379,16 +447,12 @@ async fn handle_command(
                 api.send_html_or_plain(chat_id, &html).await;
             }
         }
+        "skills" => send_skill_picker(api, skills, chat_id, arg, 0, None).await,
+        "commit" => send_commit_proposal(api, cfg, chats, chat_id, arg).await,
         other => {
             // Installed skills are commands too: /rust_review -> that skill.
             if let Some(skill) = skills.get(other) {
-                let mut prompt = format!(
-                    "Load the skill `{}` with the read_skill tool and follow its instructions.",
-                    skill.name
-                );
-                if !arg.is_empty() {
-                    prompt.push_str(&format!(" Input: {arg}"));
-                }
+                let prompt = skill_prompt(skill, arg);
                 start_turn(api, cfg, chats, chat_id, message_id, &prompt).await;
             } else {
                 api.send_text(chat_id, "Unknown command; /help lists what I know.")
@@ -403,6 +467,224 @@ const EFFORTS: &[&str] = &["off", "low", "medium", "high"];
 
 /// Models shown per page of the /model picker.
 const MODEL_PAGE: usize = 8;
+
+/// Skills listed in Telegram's command menu; the rest live behind /skills.
+const SKILL_MENU_LIMIT: usize = 15;
+
+/// Skills shown per page of the /skills picker.
+const SKILL_PAGE: usize = 8;
+
+/// Browse installed skills as buttons; tapping one runs it.
+async fn send_skill_picker(
+    api: &Api,
+    skills: &Skills,
+    chat_id: i64,
+    filter: &str,
+    page: usize,
+    edit: Option<i64>,
+) {
+    let term = filter.to_lowercase();
+    let mut matches: Vec<(&String, &SkillCommand)> = skills
+        .iter()
+        .filter(|(command, skill)| {
+            term.is_empty()
+                || command.contains(&term)
+                || skill.description.to_lowercase().contains(&term)
+        })
+        .filter(|(command, _)| command.len() <= 58)
+        .collect();
+    matches.sort_by(|a, b| a.0.cmp(b.0));
+    if matches.is_empty() {
+        api.send_text(chat_id, &format!("No skills match \"{filter}\"."))
+            .await;
+        return;
+    }
+
+    let pages = matches.len().div_ceil(SKILL_PAGE);
+    let page = page.min(pages - 1);
+    let start = page * SKILL_PAGE;
+    let mut rows: Vec<Value> = matches[start..(start + SKILL_PAGE).min(matches.len())]
+        .iter()
+        .map(|(command, skill)| {
+            json!([{ "text": &skill.name, "callback_data": format!("S:{command}") }])
+        })
+        .collect();
+    if pages > 1 {
+        let mut nav = Vec::new();
+        if page > 0 {
+            nav.push(json!({
+                "text": "‹ Prev",
+                "callback_data": format!("Sp:{}:{filter}", page - 1),
+            }));
+        }
+        nav.push(json!({ "text": format!("{}/{pages}", page + 1), "callback_data": "Mp:noop" }));
+        if page + 1 < pages {
+            nav.push(json!({
+                "text": "Next ›",
+                "callback_data": format!("Sp:{}:{filter}", page + 1),
+            }));
+        }
+        rows.push(Value::Array(nav));
+    }
+
+    let text = format!(
+        "<b>Skills</b>\n{} installed{}",
+        matches.len(),
+        if filter.is_empty() {
+            String::new()
+        } else {
+            format!(" matching “{}”", markdown::escape(filter))
+        }
+    );
+    match edit {
+        Some(message_id) => {
+            api.edit_html_keyboard(chat_id, message_id, &text, Value::Array(rows))
+                .await
+        }
+        None => api.send_keyboard(chat_id, &text, Value::Array(rows)).await,
+    }
+}
+
+/// How much diff the commit-message prompt carries.
+const COMMIT_DIFF_LIMIT: usize = 12_000;
+
+/// Draft a commit message from the current diff in one model call, then offer
+/// to commit it. A full agent turn would spend rounds re-reading the diff.
+async fn send_commit_proposal(
+    api: &Api,
+    cfg: &Arc<TelegramConfig>,
+    chats: &Chats,
+    chat_id: i64,
+    hint: &str,
+) {
+    let git = |args: &[&str]| {
+        let mut command = tokio::process::Command::new("git");
+        command.arg("-C").arg(&cfg.repo_root).args(args);
+        async move {
+            command
+                .output()
+                .await
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                .unwrap_or_default()
+        }
+    };
+
+    if git(&["status", "--short"]).await.is_empty() {
+        api.send_text(chat_id, "Nothing to commit; the tree is clean.")
+            .await;
+        return;
+    }
+    // Staged changes win when present, matching what `git commit` would do.
+    let staged = !git(&["diff", "--cached", "--stat"]).await.is_empty();
+    let range: &[&str] = if staged { &["--cached"] } else { &[] };
+    let stat = git(&[&["diff"], range, &["--stat"]].concat()).await;
+    let diff = git(&[&["diff"], range].concat()).await;
+
+    api.send_typing(chat_id).await;
+    let mut prompt = format!(
+        "Write a single Conventional Commits message for this change: \
+         `type(scope): summary` in imperative mood, lowercase, no trailing period. \
+         Add a short body only if the summary cannot carry the change. \
+         Reply with the commit message alone, no code fences, no commentary.\n\n\
+         Files:\n{stat}\n\nDiff:\n{}",
+        truncate(&diff, COMMIT_DIFF_LIMIT)
+    );
+    if !hint.is_empty() {
+        prompt.push_str(&format!("\n\nThe user says this change is about: {hint}"));
+    }
+
+    let message = match aster_remote_ask(cfg, &prompt).await {
+        Ok(message) => message,
+        Err(e) => {
+            api.send_text(chat_id, &format!("Could not draft a message: {e:#}"))
+                .await;
+            return;
+        }
+    };
+    let subject = message.lines().next().unwrap_or_default().to_string();
+    if subject.is_empty() {
+        api.send_text(chat_id, "The model returned an empty message.")
+            .await;
+        return;
+    }
+
+    let scope = if staged {
+        "staged changes"
+    } else {
+        "all changes"
+    };
+    let text = format!(
+        "<b>Commit</b> — {scope}\n<pre>{}</pre>\n{}",
+        markdown::escape(&message),
+        markdown::escape(&truncate(&stat, 1000))
+    );
+    // The message rides in chat state; callback data caps at 64 bytes.
+    chat_state(chats, chat_id, |state| {
+        state.pending_commit = Some(PendingCommit {
+            message: message.clone(),
+            stage_all: !staged,
+        })
+    });
+    let keyboard = json!([[
+        {"text": "Commit", "callback_data": "C:ok"},
+        {"text": "Cancel", "callback_data": "C:cancel"},
+    ]]);
+    api.send_keyboard(chat_id, &text, keyboard).await;
+    let _ = subject;
+}
+
+/// Stage if needed and commit, reporting what git said.
+async fn run_commit(repo_root: &std::path::Path, commit: &PendingCommit) -> String {
+    let run = |args: Vec<String>| {
+        let mut command = tokio::process::Command::new("git");
+        command.arg("-C").arg(repo_root).args(args);
+        async move { command.output().await }
+    };
+    if commit.stage_all {
+        let staged = run(vec!["add".into(), "-A".into()]).await;
+        if let Ok(out) = &staged
+            && !out.status.success()
+        {
+            return format!("git add failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    match run(vec!["commit".into(), "-m".into(), commit.message.clone()]).await {
+        Ok(out) if out.status.success() => {
+            let summary = String::from_utf8_lossy(&out.stdout);
+            let head = summary.lines().next().unwrap_or("committed");
+            format!("✅ {head}")
+        }
+        Ok(out) => {
+            // Hooks write to both streams, so surface whichever explains it.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let detail = if stderr.trim().is_empty() {
+                stdout
+            } else {
+                stderr
+            };
+            format!("❌ commit failed\n{}", truncate(detail.trim(), 1500))
+        }
+        Err(e) => format!("❌ could not run git: {e}"),
+    }
+}
+
+/// One tool-free model call in the bridge's repo.
+async fn aster_remote_ask(cfg: &Arc<TelegramConfig>, prompt: &str) -> Result<String> {
+    crate::bridge::ask_once(&cfg.bin, &cfg.repo_root, prompt).await
+}
+
+/// The prompt that runs one skill.
+fn skill_prompt(skill: &SkillCommand, input: &str) -> String {
+    let mut prompt = format!(
+        "Load the skill `{}` with the read_skill tool and follow its instructions.",
+        skill.name
+    );
+    if !input.is_empty() {
+        prompt.push_str(&format!(" Input: {input}"));
+    }
+    prompt
+}
 
 /// Show the model catalog as tappable buttons, paged. `filter` narrows the
 /// list; `edit` replaces an existing picker message instead of sending a new one.
@@ -525,14 +807,15 @@ fn set_override(
     if !allowed.contains(&arg) {
         return Some(format!("Expected one of: {}.", allowed.join(", ")));
     }
-    let mut chats = chats.lock().expect("chats lock");
-    *slot(chats.entry(chat_id).or_default()) = Some(arg.to_string());
+    chat_state(chats, chat_id, |state| {
+        *slot(state) = Some(arg.to_string());
+    });
+    save_settings(chats, chat_id);
     Some(format!("Set to {arg}."))
 }
 
 fn get_override<T>(chats: &Chats, chat_id: i64, read: impl FnOnce(&ChatState) -> T) -> T {
-    let mut chats = chats.lock().expect("chats lock");
-    read(chats.entry(chat_id).or_default())
+    chat_state(chats, chat_id, |state| read(state))
 }
 
 /// Kick off one agent turn for this chat unless one is already running.
@@ -544,9 +827,7 @@ async fn start_turn(
     message_id: i64,
     prompt: &str,
 ) {
-    let prepared = {
-        let mut chats = chats.lock().expect("chats lock");
-        let state = chats.entry(chat_id).or_default();
+    let prepared = chat_state(chats, chat_id, |state| {
         if state.running.is_some() {
             None
         } else {
@@ -558,7 +839,7 @@ async fn start_turn(
                 state.effort.clone(),
             ))
         }
-    };
+    });
     let Some((history, mode, model, effort)) = prepared else {
         api.send_text(
             chat_id,
@@ -636,8 +917,16 @@ async fn drive_turn(
     let mut activity = Activity::new(api.clone(), chat_id);
     while let Some(event) = events.recv().await {
         match event {
-            TurnEvent::ToolCall { name, arguments } => {
-                activity.push(tool_line(&name, &arguments));
+            TurnEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                activity.push(id, tool_line(&name, &arguments));
+                activity.flush(false).await;
+            }
+            TurnEvent::ToolResult { id, error } => {
+                activity.complete(&id, error);
                 activity.flush(false).await;
             }
             TurnEvent::ApprovalRequest {
@@ -745,7 +1034,13 @@ fn set_pending(chats: &Chats, chat_id: i64, pending: Pending) {
     chats.entry(chat_id).or_default().pending = Some(pending);
 }
 
-async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, callback: &Value) {
+async fn handle_callback(
+    api: &Api,
+    cfg: &Arc<TelegramConfig>,
+    chats: &Chats,
+    skills: &Skills,
+    callback: &Value,
+) {
     let callback_id = callback
         .get("id")
         .and_then(Value::as_str)
@@ -775,20 +1070,20 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
     // Settings buttons are stateless and must not consume a pending prompt.
     // The tapped message is edited to state the outcome, not just toasted.
     if let Some(choice) = data.strip_prefix("m:").filter(|c| MODES.contains(c)) {
-        {
-            let mut chats = chats.lock().expect("chats lock");
-            chats.entry(chat_id).or_default().mode = Some(choice.to_string());
-        }
+        chat_state(chats, chat_id, |state| {
+            state.mode = Some(choice.to_string())
+        });
+        save_settings(chats, chat_id);
         let note = format!("Mode set to {choice}. It applies from the next message.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
         return;
     }
     if let Some(choice) = data.strip_prefix("e:").filter(|c| EFFORTS.contains(c)) {
-        {
-            let mut chats = chats.lock().expect("chats lock");
-            chats.entry(chat_id).or_default().effort = Some(choice.to_string());
-        }
+        chat_state(chats, chat_id, |state| {
+            state.effort = Some(choice.to_string())
+        });
+        save_settings(chats, chat_id);
         let note = format!("Effort set to {choice}.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
@@ -796,6 +1091,43 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
     }
     if data == "Mp:noop" {
         api.answer_callback(callback_id, "").await;
+        return;
+    }
+    if let Some(action) = data.strip_prefix("C:") {
+        let pending = chat_state(chats, chat_id, |state| state.pending_commit.take());
+        let Some(commit) = pending.filter(|_| action == "ok") else {
+            api.answer_callback(callback_id, "Cancelled").await;
+            api.settle_callback_message(callback, "Commit cancelled.")
+                .await;
+            return;
+        };
+        api.answer_callback(callback_id, "Committing…").await;
+        let outcome = run_commit(&cfg.repo_root, &commit).await;
+        api.settle_callback_message(callback, &outcome).await;
+        return;
+    }
+    if let Some(rest) = data.strip_prefix("Sp:") {
+        let (page, filter) = match rest.split_once(':') {
+            Some((page, filter)) => (page.parse().unwrap_or(0), filter),
+            None => (rest.parse().unwrap_or(0), ""),
+        };
+        api.answer_callback(callback_id, "").await;
+        let message_id = callback_message_ids(callback).map(|(_, id)| id);
+        send_skill_picker(api, skills, chat_id, filter, page, message_id).await;
+        return;
+    }
+    if let Some(command) = data.strip_prefix("S:") {
+        let Some(skill) = skills.get(command) else {
+            api.answer_callback(callback_id, "That skill is gone.")
+                .await;
+            return;
+        };
+        api.answer_callback(callback_id, &format!("Running {}", skill.name))
+            .await;
+        api.settle_callback_message(callback, &format!("▶️ {}", skill.name))
+            .await;
+        let prompt = skill_prompt(skill, "");
+        start_turn(api, cfg, chats, chat_id, 0, &prompt).await;
         return;
     }
     if let Some(rest) = data.strip_prefix("Mp:") {
@@ -809,10 +1141,10 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
         return;
     }
     if let Some(model) = data.strip_prefix("M:") {
-        {
-            let mut chats = chats.lock().expect("chats lock");
-            chats.entry(chat_id).or_default().model = Some(model.to_string());
-        }
+        chat_state(chats, chat_id, |state| {
+            state.model = Some(model.to_string())
+        });
+        save_settings(chats, chat_id);
         let note = format!("Model set to {model}.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
@@ -823,30 +1155,34 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
         let mut chats = chats.lock().expect("chats lock");
         chats.entry(chat_id).or_default().pending.take()
     };
-    // An answered approval becomes its own outcome line: `✅ git status`.
-    let (toast, settled) = match (pending, data) {
-        (Some(Pending::Approval { subject, respond }), "a:allow") => {
+    // An answered approval is deleted rather than settled: the activity list
+    // already shows the step, so a second message would just repeat it.
+    let (toast, answered) = match (pending, data) {
+        (Some(Pending::Approval { respond, .. }), "a:allow") => {
             let _ = respond.send(Answer::Allow);
-            ("Allowed", Some(format!("✅ {subject}")))
+            ("Allowed", true)
         }
-        (Some(Pending::Approval { subject, respond }), "a:always") => {
+        (Some(Pending::Approval { respond, .. }), "a:always") => {
             let _ = respond.send(Answer::AlwaysAllow);
-            ("Always allowed", Some(format!("✅ {subject}  (always)")))
+            ("Always allowed", true)
         }
         (Some(Pending::Approval { subject, respond }), "a:deny") => {
             let _ = respond.send(Answer::Deny);
-            ("Denied", Some(format!("🚫 {subject}")))
+            // A denial has no step to show, so it leaves a line behind.
+            api.settle_callback_message(callback, &format!("🚫 {subject}"))
+                .await;
+            ("Denied", false)
         }
-        (None, _) => ("This prompt already expired.", None),
+        (None, _) => ("This prompt already expired.", false),
         (Some(pending), _) => {
             // Unrecognized data: put the prompt back rather than dropping it.
             set_pending(chats, chat_id, pending);
-            ("Unknown action.", None)
+            ("Unknown action.", false)
         }
     };
     api.answer_callback(callback_id, toast).await;
-    if let Some(text) = settled {
-        api.settle_callback_message(callback, &text).await;
+    if answered {
+        api.delete_callback_message(callback).await;
     }
 }
 
@@ -855,8 +1191,36 @@ struct Activity {
     api: Api,
     chat_id: i64,
     message_id: Option<i64>,
-    lines: Vec<String>,
+    lines: Vec<Step>,
     last_flush: Instant,
+}
+
+/// One step in the activity list, ticked off when its tool call returns.
+/// The leading emoji is stored apart from the label so a finished step swaps
+/// its tool emoji for a check rather than carrying both.
+struct Step {
+    /// Tool call id, so the matching result can complete this step.
+    id: String,
+    emoji: String,
+    label: String,
+    status: Status,
+}
+
+impl Step {
+    fn marker(&self) -> &str {
+        match self.status {
+            Status::Running => &self.emoji,
+            Status::Done => "✅",
+            Status::Failed => "❌",
+        }
+    }
+}
+
+#[derive(PartialEq)]
+enum Status {
+    Running,
+    Done,
+    Failed,
 }
 
 impl Activity {
@@ -872,8 +1236,34 @@ impl Activity {
         }
     }
 
-    fn push(&mut self, line: String) {
-        self.lines.push(line);
+    fn push(&mut self, id: String, line: String) {
+        let (emoji, label) = match line.split_once(' ') {
+            Some((emoji, label)) => (emoji.to_string(), label.to_string()),
+            None => (String::from("◦"), line),
+        };
+        self.lines.push(Step {
+            id,
+            emoji,
+            label,
+            status: Status::Running,
+        });
+    }
+
+    /// Tick off the step this result belongs to.
+    fn complete(&mut self, id: &str, error: bool) {
+        // A tool that reports no id still completes the oldest running step.
+        let index = self
+            .lines
+            .iter()
+            .rposition(|step| step.id == id)
+            .or_else(|| {
+                self.lines
+                    .iter()
+                    .position(|step| matches!(step.status, Status::Running))
+            });
+        if let Some(step) = index.and_then(|i| self.lines.get_mut(i)) {
+            step.status = if error { Status::Failed } else { Status::Done };
+        }
     }
 
     fn render(&self, header: &str) -> String {
@@ -882,15 +1272,22 @@ impl Activity {
         if hidden > 0 {
             text.push_str(&format!("\n…  {hidden} earlier steps"));
         }
+        // Identical consecutive steps collapse, but only while they share a
+        // status, so a failure is never hidden inside a run.
         let visible = &self.lines[hidden..];
         let mut i = 0;
         while i < visible.len() {
             let mut run = 1;
-            while i + run < visible.len() && visible[i + run] == visible[i] {
+            while i + run < visible.len()
+                && visible[i + run].label == visible[i].label
+                && visible[i + run].status == visible[i].status
+            {
                 run += 1;
             }
             text.push('\n');
-            text.push_str(&visible[i]);
+            text.push_str(visible[i].marker());
+            text.push(' ');
+            text.push_str(&visible[i].label);
             if run > 1 {
                 text.push_str(&format!(" ×{run}"));
             }
@@ -942,16 +1339,34 @@ fn tool_line(name: &str, arguments: &str) -> String {
             .to_string()
     };
     let code = |text: &str| format!("<code>{}</code>", markdown::escape(&truncate(text, 80)));
+    // `📖 <b>Read</b> lib.rs`; an empty target degrades to just the verb.
+    let step = |emoji: &str, verb: &str, target: &str| {
+        if target.is_empty() {
+            format!("{emoji} <b>{verb}</b>")
+        } else {
+            format!("{emoji} <b>{verb}</b> {}", code(target))
+        }
+    };
     match name {
-        "read_file" => format!("📖 Read {}", code(&short_path(&field(&["path"])))),
-        "list_files" => format!("📂 List {}", code(&short_path(&field(&["path"])))),
-        "search_files" => format!(
-            "🔎 Search {}",
-            code(&pretty_query(&field(&["query", "pattern", "regex"])))
+        "read_file" => step("📖", "Read", &short_path(&field(&["path"]))),
+        "list_files" => {
+            let path = short_path(&field(&["path"]));
+            let target = if path.is_empty() {
+                "the repo root"
+            } else {
+                &path
+            };
+            step("📂", "List", target)
+        }
+        "search_files" => step(
+            "🔎",
+            "Search",
+            &pretty_query(&field(&["query", "pattern", "regex"])),
         ),
-        "find_files" => format!(
-            "🗂 Find {}",
-            code(&pretty_query(&field(&["pattern", "glob", "query"])))
+        "find_files" => step(
+            "🗂",
+            "Find",
+            &pretty_query(&field(&["pattern", "glob", "query"])),
         ),
         "run_command" => {
             let mut cmd = field(&["command"]);
@@ -962,27 +1377,44 @@ fn tool_line(name: &str, arguments: &str) -> String {
                     cmd.push_str(&extra.join(" "));
                 }
             }
-            format!("🖥 {}", code(&cmd))
+            step("🖥", "Run", &cmd)
         }
-        "run_tests" => "🧪 Running tests".into(),
-        "aster_mcp" => format!("🔌 {}", code(&field(&["id", "tool", "name", "query"]))),
-        "edit_file" => format!("✍️ Editing {}", code(&short_path(&field(&["path"])))),
-        "remember" => format!("🧠 Remember {}", code(&field(&["name"]))),
-        "recall" => format!("🧠 Recall {}", code(&field(&["name"]))),
-        "read_skill" => format!("📚 Skill {}", code(&field(&["name"]))),
-        "update_plan" => "📋 Updating the plan".into(),
-        "exit_plan_mode" => "📋 Plan ready".into(),
-        "ask_user" => "💬 Asking you".into(),
-        "giphy/search_gifs" => format!("🎞 Searching gifs for {}", code(&field(&["query"]))),
-        "giphy/get_random_gif" => "🎲 Picking a random gif".into(),
-        "giphy/get_trending_gifs" => "📈 Checking trending gifs".into(),
-        "telegram/react" => "😄 Reacting".into(),
-        "telegram/send_gif" => "🎞 Sending a gif".into(),
-        "telegram/send_photo" => "🖼 Sending a photo".into(),
-        "telegram/send_document" => "📎 Sending a file".into(),
-        "telegram/send_code_page" => "📄 Publishing a code page".into(),
-        "telegram/send_poll" => "📊 Asking a poll".into(),
-        other => format!("⚙️ {}", markdown::escape(&humanize_tool_name(other))),
+        "run_tests" => "🧪 <b>Running tests</b>".into(),
+        // MCP calls arrive through the bridge tool, so the real tool is an id
+        // in the arguments; label it like a first-class tool.
+        "aster_mcp" => {
+            let id = field(&["id", "tool", "name"]);
+            if id.is_empty() {
+                step("🔌", "Look up", &field(&["query"]))
+            } else {
+                mcp_line(&id, &args, &step)
+            }
+        }
+        "edit_file" => step("✍️", "Edit", &short_path(&field(&["path"]))),
+        "remember" => step("🧠", "Remember", &field(&["name"])),
+        "recall" => step("🧠", "Recall", &field(&["name"])),
+        "read_skill" => step("📚", "Skill", &field(&["name"])),
+        "update_plan" => "📋 <b>Updating the plan</b>".into(),
+        "exit_plan_mode" => "📋 <b>Plan ready</b>".into(),
+        "ask_user" => "💬 <b>Asking you</b>".into(),
+        other => mcp_line(other, &args, &step),
+    }
+}
+
+/// Friendly label for an MCP tool id like `telegram/send_code_page`.
+fn mcp_line(id: &str, args: &Value, step: &dyn Fn(&str, &str, &str) -> String) -> String {
+    let arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or_default();
+    match id {
+        "giphy/search_gifs" => step("🎞", "Search gifs", arg("query")),
+        "giphy/get_random_gif" => "🎲 <b>Picking a random gif</b>".into(),
+        "giphy/get_trending_gifs" => "📈 <b>Checking trending gifs</b>".into(),
+        "telegram/react" => "😄 <b>Reacting</b>".into(),
+        "telegram/send_gif" => "🎞 <b>Sending a gif</b>".into(),
+        "telegram/send_photo" => "🖼 <b>Sending a photo</b>".into(),
+        "telegram/send_document" => "📎 <b>Sending a file</b>".into(),
+        "telegram/send_code_page" => "📄 <b>Publishing a code page</b>".into(),
+        "telegram/send_poll" => "📊 <b>Asking a poll</b>".into(),
+        other => format!("⚙️ <b>{}</b>", markdown::escape(&humanize_tool_name(other))),
     }
 }
 
@@ -1135,6 +1567,7 @@ fn help(cfg: &TelegramConfig) -> String {
          /effort — reasoning budget (off, low, medium, high)\n\
          /status — session, mode, model, and history\n\
          /diff — uncommitted changes in the repo\n\
+         /commit — draft a commit message and commit\n\
          /help — this message\n\n\
          Installed skills show up as /commands too.",
         markdown::escape(
@@ -1227,10 +1660,14 @@ impl Api {
             json!({"command": "diff", "description": "Uncommitted changes in the repo"}),
             json!({"command": "help", "description": "How this bot works"}),
         ];
-        // Telegram caps the menu at 100 commands; skills fill what's left.
+        commands
+            .push(json!({"command": "skills", "description": "Browse and run installed skills"}));
+        commands
+            .push(json!({"command": "commit", "description": "Draft a commit message and commit"}));
+        // The menu is a shortlist, not a catalog: /skills browses the rest.
         let mut names: Vec<&String> = skills.keys().collect();
         names.sort();
-        for name in names.into_iter().take(100 - commands.len()) {
+        for name in names.into_iter().take(SKILL_MENU_LIMIT) {
             let skill = &skills[name];
             let description = if skill.description.trim().is_empty() {
                 format!("Run the {} skill", skill.name)
@@ -1335,6 +1772,14 @@ impl Api {
         }
     }
 
+    /// Remove a prompt once it has served its purpose.
+    async fn delete_callback_message(&self, callback: &Value) {
+        if let Some((chat_id, message_id)) = callback_message_ids(callback) {
+            let payload = json!({ "chat_id": chat_id, "message_id": message_id });
+            let _ = self.call("deleteMessage", payload).await;
+        }
+    }
+
     /// Replace a message's text and its inline keyboard in one call.
     async fn edit_html_keyboard(&self, chat_id: i64, message_id: i64, html: &str, keyboard: Value) {
         let payload = json!({
@@ -1368,24 +1813,6 @@ impl Api {
             let payload = json!({ "chat_id": chat_id, "message_id": message_id, "text": text });
             let _ = self.call("editMessageText", payload).await;
         }
-    }
-
-    /// Keep the tapped message's text and append the outcome under it.
-    async fn append_to_callback_message(&self, callback: &Value, outcome: &str) {
-        let Some((chat_id, message_id)) = callback_message_ids(callback) else {
-            return;
-        };
-        let original = callback
-            .get("message")
-            .and_then(|m| m.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let payload = json!({
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": format!("{original}\n\n— {outcome}"),
-        });
-        let _ = self.call("editMessageText", payload).await;
     }
 }
 
@@ -1427,7 +1854,7 @@ mod tests {
     #[test]
     fn tool_line_labels_known_tools() {
         let line = tool_line("read_file", r#"{"path":"src/main.rs"}"#);
-        assert_eq!(line, "📖 Read <code>main.rs</code>");
+        assert_eq!(line, "📖 <b>Read</b> <code>main.rs</code>");
     }
 
     #[test]
@@ -1471,7 +1898,7 @@ mod tests {
             "read_file",
             r#"{"path":"crates/aster-policy/src/grants.rs"}"#,
         );
-        assert_eq!(line, "📖 Read <code>grants.rs</code>");
+        assert_eq!(line, "📖 <b>Read</b> <code>grants.rs</code>");
     }
 
     #[test]
@@ -1480,12 +1907,15 @@ mod tests {
             "search_files",
             r#"{"query":"request_approval|Answer::Always|fn allowed"}"#,
         );
-        assert_eq!(line, "🔎 Search <code>request_approval +2 more</code>");
+        assert_eq!(
+            line,
+            "🔎 <b>Search</b> <code>request_approval +2 more</code>"
+        );
     }
 
     #[test]
     fn tool_line_falls_back_to_name() {
-        assert_eq!(tool_line("mystery", "{}"), "⚙️ mystery");
+        assert_eq!(tool_line("mystery", "{}"), "⚙️ <b>mystery</b>");
     }
 
     #[test]
