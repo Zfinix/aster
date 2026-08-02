@@ -35,6 +35,8 @@ pub(crate) struct SessionCtx {
     pub mcp: Option<crate::mcp::McpRuntime>,
     /// Per-turn caps, from aster.yaml `agent` and the environment.
     pub limits: Limits,
+    /// Lockfile-derived repo facts, rendered into the system prompt.
+    pub environment: Option<String>,
     /// YOLO mode: the session is running without sandbox restrictions.
     pub yolo: bool,
 }
@@ -176,6 +178,53 @@ pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
     Arc::new(aster_skills::SkillSet::discover(&roots))
 }
 
+/// Which JavaScript package manager each lockfile pins, so the model runs
+/// `bun`/`pnpm`/`yarn` where the repo does instead of defaulting to npm.
+pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
+    const LOCKS: &[(&str, &str)] = &[
+        ("bun.lock", "bun"),
+        ("bun.lockb", "bun"),
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+        ("package-lock.json", "npm"),
+    ];
+    let mut found: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+    let walk = ignore::WalkBuilder::new(repo_root)
+        .max_depth(Some(3))
+        .build();
+    for entry in walk.flatten() {
+        let Some(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        let Some((_, pm)) = LOCKS.iter().find(|(lock, _)| *lock == name) else {
+            continue;
+        };
+        let dir = entry
+            .path()
+            .parent()
+            .and_then(|p| p.strip_prefix(repo_root).ok())
+            .map(|p| p.display().to_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| ".".to_string());
+        let dirs = found.entry(pm).or_default();
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    if found.is_empty() {
+        return None;
+    }
+    let mut note = String::from("## Environment\n");
+    for (pm, dirs) in &found {
+        note.push_str(&format!(
+            "- JavaScript packages in {} use `{pm}`; run scripts and one-off tools with it, not npm/npx.\n",
+            dirs.join(", ")
+        ));
+    }
+    note.push_str("- Run package commands from the directory that owns the lockfile.");
+    Some(note)
+}
+
 /// The agent persona, the repo's own instructions, and the memory block.
 fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     let mut prompt = String::from(AGENT_SYSTEM_PROMPT);
@@ -184,6 +233,10 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     if let Some(project) = ctx.instructions.render() {
         prompt.push_str("\n\n");
         prompt.push_str(&project);
+    }
+    if let Some(environment) = &ctx.environment {
+        prompt.push_str("\n\n");
+        prompt.push_str(environment);
     }
     if tools {
         prompt.push_str(TOOLS_PROMPT);
@@ -219,6 +272,8 @@ pub(crate) enum PermissionModeArg {
     Auto,
     /// Edit files without asking.
     Edit,
+    /// Skip policy checks and isolation entirely. Use with extreme caution.
+    Yolo,
     #[value(hide = true)]
     Ask,
     #[value(hide = true)]
@@ -232,6 +287,7 @@ impl From<PermissionModeArg> for aster_policy::Mode {
             PermissionModeArg::Manual | PermissionModeArg::Ask => Self::Manual,
             PermissionModeArg::Auto => Self::Auto,
             PermissionModeArg::Edit => Self::Edit,
+            PermissionModeArg::Yolo => Self::Yolo,
         }
     }
 }
@@ -603,6 +659,7 @@ fn prepare_turn(
         plan: Default::default(),
         mcp,
         limits,
+        environment: environment_note(repo_root),
         yolo: false,
     };
     // Record only the new user turn. On the wire path `new_turns` is the full
@@ -2318,6 +2375,22 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_note_finds_nested_bun_lockfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("editors/vscode")).unwrap();
+        std::fs::write(dir.path().join("editors/vscode/bun.lock"), "").unwrap();
+        let note = environment_note(dir.path()).expect("a note");
+        assert!(note.contains("`bun`"));
+        assert!(note.contains("editors/vscode"));
+    }
+
+    #[test]
+    fn environment_note_is_none_without_lockfiles() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(environment_note(dir.path()).is_none());
+    }
 
     #[test]
     fn limits_come_from_the_agent_block() {

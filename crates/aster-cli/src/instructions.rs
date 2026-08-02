@@ -26,6 +26,9 @@ const MAX_TOTAL_CHARS: usize = 24_000;
 const MAX_NESTED_LISTED: usize = 40;
 /// How deep to look for nested instruction files.
 const MAX_DEPTH: usize = 8;
+/// Stop walking after this many entries; outside a repo (a launch from `~`,
+/// say) the tree is effectively unbounded and this runs before the UI is up.
+const MAX_WALK_ENTRIES: usize = 50_000;
 
 #[derive(Debug, Default, Clone)]
 pub struct Instructions {
@@ -107,7 +110,7 @@ fn find_nested(repo_root: &Path) -> Vec<PathBuf> {
         .require_git(false)
         .max_depth(Some(MAX_DEPTH))
         .build();
-    for entry in walk.flatten() {
+    for entry in walk.take(MAX_WALK_ENTRIES).flatten() {
         if found.len() >= MAX_NESTED_LISTED {
             break;
         }
