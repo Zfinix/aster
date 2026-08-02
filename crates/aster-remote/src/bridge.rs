@@ -2,7 +2,7 @@
 //! NDJSON events into typed [`TurnEvent`]s, the same contract the desktop and
 //! VS Code front-ends use.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -51,7 +51,13 @@ pub enum Answer {
 /// What the running turn needs from the channel adapter.
 pub enum TurnEvent {
     /// The agent started a tool call; `arguments` is the raw JSON string.
-    ToolCall { name: String, arguments: String },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    /// That tool call finished, so its step can be ticked off.
+    ToolResult { id: String, error: bool },
     /// The agent needs a yes/no from the user before it can continue.
     ApprovalRequest {
         preview: String,
@@ -149,8 +155,17 @@ pub async fn run_turn(
             Some("tool_call") => {
                 let _ = events
                     .send(TurnEvent::ToolCall {
+                        id: str_field(&event, "id"),
                         name: str_field(&event, "name"),
                         arguments: str_field(&event, "arguments"),
+                    })
+                    .await;
+            }
+            Some("tool_result") => {
+                let _ = events
+                    .send(TurnEvent::ToolResult {
+                        id: str_field(&event, "id"),
+                        error: event.get("error").and_then(Value::as_bool).unwrap_or(false),
                     })
                     .await;
             }
@@ -233,6 +248,23 @@ pub async fn run_turn(
         Some(outcome) => Ok(outcome),
         None => bail!("agent exited ({status}) without a done event"),
     }
+}
+
+/// Ask the model one question with no tools and no session, returning its
+/// plain-text answer. For side work like writing a commit message, where a
+/// full agent turn would cost tool rounds and approval prompts.
+pub async fn ask_once(bin: &Path, repo_root: &Path, prompt: &str) -> Result<String> {
+    let output = Command::new(bin)
+        .current_dir(repo_root)
+        .args(["chat", "--print", "--no-tools", prompt])
+        .output()
+        .await
+        .with_context(|| format!("spawning {}", bin.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("{}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Await a prompt reply, falling back when the adapter drops it or the user
