@@ -3,8 +3,9 @@
 //! into a live-edited activity message so the chat mirrors the CLI.
 
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -23,6 +24,9 @@ const ACTIVITY_WINDOW: usize = 12;
 
 /// Minimum gap between edits of the activity message (Telegram rate limit).
 const ACTIVITY_EDIT_GAP: Duration = Duration::from_millis(1500);
+
+/// Reply-keyboard row that answers an agent question with "no answer".
+const SKIP_LABEL: &str = "Skip";
 
 pub struct TelegramConfig {
     /// Bot token from @BotFather.
@@ -59,13 +63,15 @@ repo file), send_poll, and send_code_page (publish long code or reports as an \
 in-app page instead of flooding the chat). Prefer them over describing what \
 you would send.";
 
-/// A prompt waiting for a button tap.
+/// A prompt waiting for the user. Approvals resolve via inline buttons;
+/// questions resolve via the next text message (reply-keyboard tap or typed).
 enum Pending {
-    Approval(oneshot::Sender<Answer>),
-    Question {
-        options: Vec<String>,
-        respond: oneshot::Sender<Option<String>>,
+    Approval {
+        /// What is being approved, e.g. `git status`, kept to render the outcome.
+        subject: String,
+        respond: oneshot::Sender<Answer>,
     },
+    Question(oneshot::Sender<Option<String>>),
 }
 
 #[derive(Default)]
@@ -80,6 +86,72 @@ struct ChatState {
 }
 
 type Chats = Arc<Mutex<HashMap<i64, ChatState>>>;
+
+/// An installed skill surfaced as a Telegram /command.
+struct SkillCommand {
+    name: String,
+    description: String,
+}
+
+type Skills = Arc<HashMap<String, SkillCommand>>;
+
+/// Discover skills from the repo and global roots, keyed by a valid Telegram
+/// command name (lowercase, `a-z0-9_`, hyphens folded to underscores).
+fn discover_skill_commands(repo_root: &std::path::Path) -> HashMap<String, SkillCommand> {
+    let mut roots = vec![repo_root.join(".aster").join("skills")];
+    if let Ok(home) = env::var("HOME") {
+        roots.push(PathBuf::from(home).join(".aster").join("skills"));
+    }
+    let mut commands = HashMap::new();
+    for skill in aster_skills::SkillSet::discover(&roots).iter() {
+        let command: String = skill
+            .name
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .take(32)
+            .collect();
+        if command.is_empty() {
+            continue;
+        }
+        commands.entry(command).or_insert_with(|| SkillCommand {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+        });
+    }
+    commands
+}
+
+/// The provider's model catalog, fetched once per process for /model search.
+async fn model_catalog() -> Result<&'static Vec<String>> {
+    static MODEL_CACHE: OnceLock<Vec<String>> = OnceLock::new();
+    if let Some(models) = MODEL_CACHE.get() {
+        return Ok(models);
+    }
+    let base = env::var("ASTER_BASE_URL").unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
+    let key = env::var("ASTER_API_KEY")
+        .or_else(|_| env::var("OPEN_ROUTER_API_KEY"))
+        .ok();
+    let mut request = reqwest::Client::new()
+        .get(format!("{}/models", base.trim_end_matches('/')))
+        .timeout(Duration::from_secs(15));
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    let body: Value = request.send().await?.json().await?;
+    let mut models: Vec<String> = body
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|data| {
+            data.iter()
+                .filter_map(|m| m.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort();
+    Ok(MODEL_CACHE.get_or_init(|| models))
+}
 
 /// Run the Telegram bridge until the process is stopped.
 pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
@@ -102,7 +174,8 @@ pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
             "aster remote: no users allowed yet; message the bot once and restart with --user <your id>"
         );
     }
-    api.register_commands().await;
+    let skills: Skills = Arc::new(discover_skill_commands(&cfg.repo_root));
+    api.register_commands(&skills).await;
 
     let cfg = Arc::new(cfg);
     let chats: Chats = Arc::new(Mutex::new(HashMap::new()));
@@ -120,20 +193,32 @@ pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
             if let Some(id) = update.get("update_id").and_then(Value::as_i64) {
                 offset = offset.max(id + 1);
             }
-            handle_update(&api, &cfg, &chats, &update).await;
+            handle_update(&api, &cfg, &chats, &skills, &update).await;
         }
     }
 }
 
-async fn handle_update(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, update: &Value) {
+async fn handle_update(
+    api: &Api,
+    cfg: &Arc<TelegramConfig>,
+    chats: &Chats,
+    skills: &Skills,
+    update: &Value,
+) {
     if let Some(message) = update.get("message") {
-        handle_message(api, cfg, chats, message).await;
+        handle_message(api, cfg, chats, skills, message).await;
     } else if let Some(callback) = update.get("callback_query") {
         handle_callback(api, cfg, chats, callback).await;
     }
 }
 
-async fn handle_message(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, message: &Value) {
+async fn handle_message(
+    api: &Api,
+    cfg: &Arc<TelegramConfig>,
+    chats: &Chats,
+    skills: &Skills,
+    message: &Value,
+) {
     let Some(chat_id) = message
         .get("chat")
         .and_then(|c| c.get("id"))
@@ -159,27 +244,47 @@ async fn handle_message(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, mes
         return;
     };
     let trimmed = text.trim();
+    let message_id = message
+        .get("message_id")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
     if let Some(command) = trimmed.strip_prefix('/') {
         let (name, arg) = match command.split_once(char::is_whitespace) {
             Some((name, arg)) => (name, arg.trim()),
             None => (command, ""),
         };
-        handle_command(api, cfg, chats, chat_id, name, arg).await;
+        handle_command(api, cfg, chats, skills, chat_id, message_id, name, arg).await;
         return;
     }
-    let message_id = message
-        .get("message_id")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
+    // A pending agent question claims the next plain message as its answer.
+    let question = {
+        let mut chats = chats.lock().expect("chats lock");
+        let state = chats.entry(chat_id).or_default();
+        match state.pending.take() {
+            Some(Pending::Question(respond)) => Some(respond),
+            other => {
+                state.pending = other;
+                None
+            }
+        }
+    };
+    if let Some(respond) = question {
+        let answer = (trimmed != SKIP_LABEL).then(|| trimmed.to_string());
+        let _ = respond.send(answer);
+        return;
+    }
     start_turn(api, cfg, chats, chat_id, message_id, trimmed).await;
 }
 
 /// One /command, mirroring the TUI's command set where it makes sense remotely.
+#[allow(clippy::too_many_arguments)]
 async fn handle_command(
     api: &Api,
     cfg: &Arc<TelegramConfig>,
     chats: &Chats,
+    skills: &Skills,
     chat_id: i64,
+    message_id: i64,
     name: &str,
     arg: &str,
 ) {
@@ -227,27 +332,16 @@ async fn handle_command(
             }
         },
         "model" => {
-            if arg.is_empty() {
-                let current = get_override(chats, chat_id, |state| state.model.clone())
-                    .unwrap_or_else(|| "configured default".into());
-                api.send_text(
-                    chat_id,
-                    &format!(
-                        "Model: {current}. Set with /model <name>, reset with /model default."
-                    ),
-                )
-                .await;
-            } else {
-                let value = (arg != "default").then(|| arg.to_string());
-                let note = match &value {
-                    Some(model) => format!("Model set to {model}."),
-                    None => "Model reset to the configured default.".into(),
-                };
+            if arg == "default" {
                 {
                     let mut chats = chats.lock().expect("chats lock");
-                    chats.entry(chat_id).or_default().model = value;
+                    chats.entry(chat_id).or_default().model = None;
                 }
-                api.send_text(chat_id, &note).await;
+                api.send_text(chat_id, "Model reset to the configured default.")
+                    .await;
+            } else {
+                // Bare /model lists the catalog; an argument filters it.
+                send_model_picker(api, chats, chat_id, arg, 0, None).await;
             }
         }
         "status" => {
@@ -285,15 +379,120 @@ async fn handle_command(
                 api.send_html_or_plain(chat_id, &html).await;
             }
         }
-        _ => {
-            api.send_text(chat_id, "Unknown command; /help lists what I know.")
-                .await;
+        other => {
+            // Installed skills are commands too: /rust_review -> that skill.
+            if let Some(skill) = skills.get(other) {
+                let mut prompt = format!(
+                    "Load the skill `{}` with the read_skill tool and follow its instructions.",
+                    skill.name
+                );
+                if !arg.is_empty() {
+                    prompt.push_str(&format!(" Input: {arg}"));
+                }
+                start_turn(api, cfg, chats, chat_id, message_id, &prompt).await;
+            } else {
+                api.send_text(chat_id, "Unknown command; /help lists what I know.")
+                    .await;
+            }
         }
     }
 }
 
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 const EFFORTS: &[&str] = &["off", "low", "medium", "high"];
+
+/// Models shown per page of the /model picker.
+const MODEL_PAGE: usize = 8;
+
+/// Show the model catalog as tappable buttons, paged. `filter` narrows the
+/// list; `edit` replaces an existing picker message instead of sending a new one.
+async fn send_model_picker(
+    api: &Api,
+    chats: &Chats,
+    chat_id: i64,
+    filter: &str,
+    page: usize,
+    edit: Option<i64>,
+) {
+    let models = match model_catalog().await {
+        Ok(models) => models,
+        Err(e) => {
+            api.send_text(chat_id, &format!("Could not load the model list: {e:#}"))
+                .await;
+            return;
+        }
+    };
+    let term = filter.to_lowercase();
+    // Callback data caps at 64 bytes, so ids that would not fit are dropped.
+    let matches: Vec<&String> = models
+        .iter()
+        .filter(|m| term.is_empty() || m.to_lowercase().contains(&term))
+        .filter(|m| m.len() <= 60)
+        .collect();
+    if matches.is_empty() {
+        api.send_text(chat_id, &format!("No models match \"{filter}\"."))
+            .await;
+        return;
+    }
+
+    let pages = matches.len().div_ceil(MODEL_PAGE);
+    let page = page.min(pages - 1);
+    let start = page * MODEL_PAGE;
+    let current = get_override(chats, chat_id, |state| state.model.clone());
+    let mut rows: Vec<Value> = matches[start..(start + MODEL_PAGE).min(matches.len())]
+        .iter()
+        .map(|m| {
+            let label = match &current {
+                Some(active) if active == *m => format!("• {m}"),
+                _ => (*m).to_string(),
+            };
+            json!([{ "text": label, "callback_data": format!("M:{m}") }])
+        })
+        .collect();
+
+    // Paging keeps the filter so Next/Prev stay inside the same result set.
+    if pages > 1 {
+        let mut nav = Vec::new();
+        if page > 0 {
+            nav.push(json!({
+                "text": "‹ Prev",
+                "callback_data": format!("Mp:{}:{filter}", page - 1),
+            }));
+        }
+        nav.push(json!({
+            "text": format!("{}/{pages}", page + 1),
+            "callback_data": "Mp:noop",
+        }));
+        if page + 1 < pages {
+            nav.push(json!({
+                "text": "Next ›",
+                "callback_data": format!("Mp:{}:{filter}", page + 1),
+            }));
+        }
+        rows.push(Value::Array(nav));
+    }
+
+    let header = match current {
+        Some(model) => format!("<b>Model</b> — now {}", markdown::escape(&model)),
+        None => "<b>Model</b> — now the configured default".to_string(),
+    };
+    let text = format!(
+        "{header}\n{} models{}",
+        matches.len(),
+        if filter.is_empty() {
+            String::new()
+        } else {
+            format!(" matching “{}”", markdown::escape(filter))
+        }
+    );
+    match edit {
+        Some(message_id) => {
+            api.edit_html_keyboard(chat_id, message_id, &text, Value::Array(rows))
+                .await
+        }
+        None => api.send_keyboard(chat_id, &text, Value::Array(rows)).await,
+    }
+}
 
 /// One button per option, the current one marked with a dot.
 fn choice_keyboard(prefix: &str, options: &[&str], current: &str) -> Value {
@@ -447,9 +646,10 @@ async fn drive_turn(
                 respond,
             } => {
                 activity.flush(true).await;
+                let subject = approval_subject(&preview);
                 let mut text = format!(
                     "<b>Approval needed</b>\n<pre>{}</pre>",
-                    markdown::escape(&truncate(&preview, 3000))
+                    markdown::escape(&truncate(&subject, 3000))
                 );
                 if let Some(scope) = scope {
                     text.push_str(&format!("\n<code>{}</code>", markdown::escape(&scope)));
@@ -460,7 +660,7 @@ async fn drive_turn(
                     {"text": "Deny", "callback_data": "a:deny"},
                 ]]);
                 api.send_keyboard(chat_id, &text, keyboard).await;
-                set_pending(chats, chat_id, Pending::Approval(respond));
+                set_pending(chats, chat_id, Pending::Approval { subject, respond });
             }
             TurnEvent::Question {
                 header,
@@ -474,17 +674,22 @@ async fn drive_turn(
                     markdown::escape(&header),
                     markdown::escape(&question)
                 );
-                let buttons: Vec<Value> = options
+                // Native reply keyboard: options sit above the text field and
+                // a tap sends the option as a normal message; typing a custom
+                // answer works too.
+                let rows: Vec<Value> = options
                     .iter()
-                    .enumerate()
-                    .map(|(i, opt)| json!([{"text": opt, "callback_data": format!("q:{i}")}]))
-                    .chain(std::iter::once(
-                        json!([{"text": "Skip", "callback_data": "q:skip"}]),
-                    ))
+                    .map(|opt| json!([{ "text": opt }]))
+                    .chain(std::iter::once(json!([{ "text": SKIP_LABEL }])))
                     .collect();
-                api.send_keyboard(chat_id, &text, Value::Array(buttons))
-                    .await;
-                set_pending(chats, chat_id, Pending::Question { options, respond });
+                let keyboard = json!({
+                    "keyboard": rows,
+                    "one_time_keyboard": true,
+                    "resize_keyboard": true,
+                    "input_field_placeholder": "Pick an option or type an answer",
+                });
+                api.send_reply_keyboard(chat_id, &text, keyboard).await;
+                set_pending(chats, chat_id, Pending::Question(respond));
             }
         }
     }
@@ -568,14 +773,15 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
         .unwrap_or_default();
 
     // Settings buttons are stateless and must not consume a pending prompt.
+    // The tapped message is edited to state the outcome, not just toasted.
     if let Some(choice) = data.strip_prefix("m:").filter(|c| MODES.contains(c)) {
         {
             let mut chats = chats.lock().expect("chats lock");
             chats.entry(chat_id).or_default().mode = Some(choice.to_string());
         }
-        api.answer_callback(callback_id, &format!("Mode set to {choice}."))
-            .await;
-        api.remove_keyboard(callback).await;
+        let note = format!("Mode set to {choice}. It applies from the next message.");
+        api.answer_callback(callback_id, &note).await;
+        api.settle_callback_message(callback, &note).await;
         return;
     }
     if let Some(choice) = data.strip_prefix("e:").filter(|c| EFFORTS.contains(c)) {
@@ -583,9 +789,33 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
             let mut chats = chats.lock().expect("chats lock");
             chats.entry(chat_id).or_default().effort = Some(choice.to_string());
         }
-        api.answer_callback(callback_id, &format!("Effort set to {choice}."))
-            .await;
-        api.remove_keyboard(callback).await;
+        let note = format!("Effort set to {choice}.");
+        api.answer_callback(callback_id, &note).await;
+        api.settle_callback_message(callback, &note).await;
+        return;
+    }
+    if data == "Mp:noop" {
+        api.answer_callback(callback_id, "").await;
+        return;
+    }
+    if let Some(rest) = data.strip_prefix("Mp:") {
+        let (page, filter) = match rest.split_once(':') {
+            Some((page, filter)) => (page.parse().unwrap_or(0), filter),
+            None => (rest.parse().unwrap_or(0), ""),
+        };
+        api.answer_callback(callback_id, "").await;
+        let message_id = callback_message_ids(callback).map(|(_, id)| id);
+        send_model_picker(api, chats, chat_id, filter, page, message_id).await;
+        return;
+    }
+    if let Some(model) = data.strip_prefix("M:") {
+        {
+            let mut chats = chats.lock().expect("chats lock");
+            chats.entry(chat_id).or_default().model = Some(model.to_string());
+        }
+        let note = format!("Model set to {model}.");
+        api.answer_callback(callback_id, &note).await;
+        api.settle_callback_message(callback, &note).await;
         return;
     }
 
@@ -593,40 +823,31 @@ async fn handle_callback(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, ca
         let mut chats = chats.lock().expect("chats lock");
         chats.entry(chat_id).or_default().pending.take()
     };
-    let ack = match (pending, data) {
-        (Some(Pending::Approval(respond)), "a:allow") => {
+    // An answered approval becomes its own outcome line: `✅ git status`.
+    let (toast, settled) = match (pending, data) {
+        (Some(Pending::Approval { subject, respond }), "a:allow") => {
             let _ = respond.send(Answer::Allow);
-            "Allowed"
+            ("Allowed", Some(format!("✅ {subject}")))
         }
-        (Some(Pending::Approval(respond)), "a:always") => {
+        (Some(Pending::Approval { subject, respond }), "a:always") => {
             let _ = respond.send(Answer::AlwaysAllow);
-            "Always allowed"
+            ("Always allowed", Some(format!("✅ {subject}  (always)")))
         }
-        (Some(Pending::Approval(respond)), "a:deny") => {
+        (Some(Pending::Approval { subject, respond }), "a:deny") => {
             let _ = respond.send(Answer::Deny);
-            "Denied"
+            ("Denied", Some(format!("🚫 {subject}")))
         }
-        (Some(Pending::Question { respond, .. }), "q:skip") => {
-            let _ = respond.send(None);
-            "Skipped"
-        }
-        (Some(Pending::Question { options, respond }), choice) => {
-            let picked = choice
-                .strip_prefix("q:")
-                .and_then(|i| i.parse::<usize>().ok())
-                .and_then(|i| options.get(i).cloned());
-            let _ = respond.send(picked);
-            "Answered"
-        }
-        (None, _) => "This prompt already expired.",
+        (None, _) => ("This prompt already expired.", None),
         (Some(pending), _) => {
             // Unrecognized data: put the prompt back rather than dropping it.
             set_pending(chats, chat_id, pending);
-            "Unknown action."
+            ("Unknown action.", None)
         }
     };
-    api.answer_callback(callback_id, ack).await;
-    api.remove_keyboard(callback).await;
+    api.answer_callback(callback_id, toast).await;
+    if let Some(text) = settled {
+        api.settle_callback_message(callback, &text).await;
+    }
 }
 
 /// The live "what the agent is doing" message, edited in place as tools run.
@@ -722,10 +943,16 @@ fn tool_line(name: &str, arguments: &str) -> String {
     };
     let code = |text: &str| format!("<code>{}</code>", markdown::escape(&truncate(text, 80)));
     match name {
-        "read_file" => format!("📖 read {}", code(&field(&["path"]))),
-        "list_files" => format!("📂 list {}", code(&field(&["path"]))),
-        "search_files" => format!("🔎 search {}", code(&field(&["query", "pattern", "regex"]))),
-        "find_files" => format!("🗂 find {}", code(&field(&["pattern", "glob", "query"]))),
+        "read_file" => format!("📖 Read {}", code(&short_path(&field(&["path"])))),
+        "list_files" => format!("📂 List {}", code(&short_path(&field(&["path"])))),
+        "search_files" => format!(
+            "🔎 Search {}",
+            code(&pretty_query(&field(&["query", "pattern", "regex"])))
+        ),
+        "find_files" => format!(
+            "🗂 Find {}",
+            code(&pretty_query(&field(&["pattern", "glob", "query"])))
+        ),
         "run_command" => {
             let mut cmd = field(&["command"]);
             if let Some(args) = args.get("args").and_then(Value::as_array) {
@@ -737,24 +964,24 @@ fn tool_line(name: &str, arguments: &str) -> String {
             }
             format!("🖥 {}", code(&cmd))
         }
-        "run_tests" => "🧪 running tests".into(),
+        "run_tests" => "🧪 Running tests".into(),
         "aster_mcp" => format!("🔌 {}", code(&field(&["id", "tool", "name", "query"]))),
-        "edit_file" => format!("✍️ editing {}", code(&field(&["path"]))),
-        "remember" => format!("🧠 remember {}", code(&field(&["name"]))),
-        "recall" => format!("🧠 recall {}", code(&field(&["name"]))),
-        "read_skill" => format!("📚 skill {}", code(&field(&["name"]))),
-        "update_plan" => "📋 updating the plan".into(),
-        "exit_plan_mode" => "📋 plan ready".into(),
-        "ask_user" => "💬 asking you".into(),
-        "giphy/search_gifs" => format!("🎞 searching gifs for {}", code(&field(&["query"]))),
-        "giphy/get_random_gif" => "🎲 picking a random gif".into(),
-        "giphy/get_trending_gifs" => "📈 checking trending gifs".into(),
-        "telegram/react" => "😄 reacting".into(),
-        "telegram/send_gif" => "🎞 sending a gif".into(),
-        "telegram/send_photo" => "🖼 sending a photo".into(),
-        "telegram/send_document" => "📎 sending a file".into(),
-        "telegram/send_code_page" => "📄 publishing a code page".into(),
-        "telegram/send_poll" => "📊 asking a poll".into(),
+        "edit_file" => format!("✍️ Editing {}", code(&short_path(&field(&["path"])))),
+        "remember" => format!("🧠 Remember {}", code(&field(&["name"]))),
+        "recall" => format!("🧠 Recall {}", code(&field(&["name"]))),
+        "read_skill" => format!("📚 Skill {}", code(&field(&["name"]))),
+        "update_plan" => "📋 Updating the plan".into(),
+        "exit_plan_mode" => "📋 Plan ready".into(),
+        "ask_user" => "💬 Asking you".into(),
+        "giphy/search_gifs" => format!("🎞 Searching gifs for {}", code(&field(&["query"]))),
+        "giphy/get_random_gif" => "🎲 Picking a random gif".into(),
+        "giphy/get_trending_gifs" => "📈 Checking trending gifs".into(),
+        "telegram/react" => "😄 Reacting".into(),
+        "telegram/send_gif" => "🎞 Sending a gif".into(),
+        "telegram/send_photo" => "🖼 Sending a photo".into(),
+        "telegram/send_document" => "📎 Sending a file".into(),
+        "telegram/send_code_page" => "📄 Publishing a code page".into(),
+        "telegram/send_poll" => "📊 Asking a poll".into(),
         other => format!("⚙️ {}", markdown::escape(&humanize_tool_name(other))),
     }
 }
@@ -831,6 +1058,39 @@ fn is_gif_url(url: &str) -> bool {
             || url.contains("media.tenor.com"))
 }
 
+/// The thing being approved, without the policy's framing: `run \`git status\``
+/// becomes `git status`, `edit src/lib.rs (protected path)` keeps its note.
+fn approval_subject(preview: &str) -> String {
+    let subject = preview.strip_prefix("run ").unwrap_or(preview).trim();
+    match subject.strip_prefix('`').and_then(|s| s.split_once('`')) {
+        Some((command, rest)) => format!("{command}{rest}"),
+        None => subject.to_string(),
+    }
+}
+
+/// Just the file name; full paths read as noise on a phone.
+fn short_path(path: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Regex alternations read as noise in the feed; show the first term and count
+/// the rest: `request_approval +2 more`.
+fn pretty_query(query: &str) -> String {
+    let terms: Vec<&str> = query
+        .split('|')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+    match terms.as_slice() {
+        [] | [_] => truncate(query, 48),
+        [first, rest @ ..] => format!("{} +{} more", truncate(first, 40), rest.len()),
+    }
+}
+
 /// Truncate on a char boundary, marking the cut with an ellipsis.
 fn truncate(text: &str, limit: usize) -> String {
     if text.len() <= limit {
@@ -841,6 +1101,13 @@ fn truncate(text: &str, limit: usize) -> String {
         cut -= 1;
     }
     format!("{}…", &text[..cut])
+}
+
+fn callback_message_ids(callback: &Value) -> Option<(i64, i64)> {
+    let message = callback.get("message")?;
+    let chat_id = message.get("chat")?.get("id")?.as_i64()?;
+    let message_id = message.get("message_id")?.as_i64()?;
+    Some((chat_id, message_id))
 }
 
 /// Unwrap the Bot API's `{ok, result, description}` envelope.
@@ -868,7 +1135,8 @@ fn help(cfg: &TelegramConfig) -> String {
          /effort — reasoning budget (off, low, medium, high)\n\
          /status — session, mode, model, and history\n\
          /diff — uncommitted changes in the repo\n\
-         /help — this message",
+         /help — this message\n\n\
+         Installed skills show up as /commands too.",
         markdown::escape(
             &cfg.repo_root
                 .file_name()
@@ -948,20 +1216,30 @@ impl Api {
     }
 
     /// Show /new, /stop, and /help in Telegram's command menu.
-    async fn register_commands(&self) {
-        let payload = json!({
-            "commands": [
-                {"command": "new", "description": "Start a fresh conversation"},
-                {"command": "clear", "description": "Start a fresh conversation"},
-                {"command": "stop", "description": "Cancel the running turn"},
-                {"command": "mode", "description": "How the agent acts (plan/manual/auto/edit/yolo)"},
-                {"command": "model", "description": "Switch the model for this chat"},
-                {"command": "effort", "description": "Reasoning budget (off/low/medium/high)"},
-                {"command": "status", "description": "Session, mode, model, and history"},
-                {"command": "diff", "description": "Uncommitted changes in the repo"},
-                {"command": "help", "description": "How this bot works"},
-            ]
-        });
+    async fn register_commands(&self, skills: &Skills) {
+        let mut commands = vec![
+            json!({"command": "new", "description": "Start a fresh conversation"}),
+            json!({"command": "stop", "description": "Cancel the running turn"}),
+            json!({"command": "mode", "description": "How the agent acts (plan/manual/auto/edit/yolo)"}),
+            json!({"command": "model", "description": "Switch the model for this chat"}),
+            json!({"command": "effort", "description": "Reasoning budget (off/low/medium/high)"}),
+            json!({"command": "status", "description": "Session, mode, model, and history"}),
+            json!({"command": "diff", "description": "Uncommitted changes in the repo"}),
+            json!({"command": "help", "description": "How this bot works"}),
+        ];
+        // Telegram caps the menu at 100 commands; skills fill what's left.
+        let mut names: Vec<&String> = skills.keys().collect();
+        names.sort();
+        for name in names.into_iter().take(100 - commands.len()) {
+            let skill = &skills[name];
+            let description = if skill.description.trim().is_empty() {
+                format!("Run the {} skill", skill.name)
+            } else {
+                truncate(&skill.description, 250)
+            };
+            commands.push(json!({"command": name, "description": description}));
+        }
+        let payload = json!({ "commands": commands });
         if let Err(e) = self.call("setMyCommands", payload).await {
             tracing::warn!("setMyCommands failed: {e:#}");
         }
@@ -1057,26 +1335,57 @@ impl Api {
         }
     }
 
-    /// Best-effort removal of the tapped prompt's buttons.
-    async fn remove_keyboard(&self, callback: &Value) {
-        let Some(message) = callback.get("message") else {
-            return;
-        };
-        let (Some(chat_id), Some(message_id)) = (
-            message
-                .get("chat")
-                .and_then(|c| c.get("id"))
-                .and_then(Value::as_i64),
-            message.get("message_id").and_then(Value::as_i64),
-        ) else {
-            return;
-        };
+    /// Replace a message's text and its inline keyboard in one call.
+    async fn edit_html_keyboard(&self, chat_id: i64, message_id: i64, html: &str, keyboard: Value) {
         let payload = json!({
             "chat_id": chat_id,
             "message_id": message_id,
-            "reply_markup": { "inline_keyboard": [] },
+            "text": html,
+            "parse_mode": "HTML",
+            "reply_markup": { "inline_keyboard": keyboard },
         });
-        let _ = self.call("editMessageReplyMarkup", payload).await;
+        if let Err(e) = self.call("editMessageText", payload).await {
+            tracing::debug!("editMessageText failed: {e:#}");
+        }
+    }
+
+    /// Send text with a native reply keyboard (options above the text field).
+    async fn send_reply_keyboard(&self, chat_id: i64, html: &str, keyboard: Value) {
+        let payload = json!({
+            "chat_id": chat_id,
+            "text": html,
+            "parse_mode": "HTML",
+            "reply_markup": keyboard,
+        });
+        if let Err(e) = self.call("sendMessage", payload).await {
+            tracing::warn!("sendMessage failed: {e:#}");
+        }
+    }
+
+    /// Replace the tapped message's text with the outcome; buttons go away.
+    async fn settle_callback_message(&self, callback: &Value, text: &str) {
+        if let Some((chat_id, message_id)) = callback_message_ids(callback) {
+            let payload = json!({ "chat_id": chat_id, "message_id": message_id, "text": text });
+            let _ = self.call("editMessageText", payload).await;
+        }
+    }
+
+    /// Keep the tapped message's text and append the outcome under it.
+    async fn append_to_callback_message(&self, callback: &Value, outcome: &str) {
+        let Some((chat_id, message_id)) = callback_message_ids(callback) else {
+            return;
+        };
+        let original = callback
+            .get("message")
+            .and_then(|m| m.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let payload = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": format!("{original}\n\n— {outcome}"),
+        });
+        let _ = self.call("editMessageText", payload).await;
     }
 }
 
@@ -1118,7 +1427,7 @@ mod tests {
     #[test]
     fn tool_line_labels_known_tools() {
         let line = tool_line("read_file", r#"{"path":"src/main.rs"}"#);
-        assert_eq!(line, "📖 read <code>src/main.rs</code>");
+        assert_eq!(line, "📖 Read <code>main.rs</code>");
     }
 
     #[test]
@@ -1136,8 +1445,47 @@ mod tests {
     }
 
     #[test]
+    fn approval_subject_unwraps_the_run_preview() {
+        assert_eq!(super::approval_subject("run `git status`"), "git status");
+    }
+
+    #[test]
+    fn approval_subject_keeps_trailing_notes() {
+        assert_eq!(
+            super::approval_subject("run `rm -rf dist` (risky command)"),
+            "rm -rf dist (risky command)"
+        );
+    }
+
+    #[test]
+    fn approval_subject_passes_through_edit_previews() {
+        assert_eq!(
+            super::approval_subject("edit src/lib.rs (protected path)"),
+            "edit src/lib.rs (protected path)"
+        );
+    }
+
+    #[test]
+    fn tool_line_shortens_deep_paths() {
+        let line = tool_line(
+            "read_file",
+            r#"{"path":"crates/aster-policy/src/grants.rs"}"#,
+        );
+        assert_eq!(line, "📖 Read <code>grants.rs</code>");
+    }
+
+    #[test]
+    fn tool_line_compresses_regex_alternations() {
+        let line = tool_line(
+            "search_files",
+            r#"{"query":"request_approval|Answer::Always|fn allowed"}"#,
+        );
+        assert_eq!(line, "🔎 Search <code>request_approval +2 more</code>");
+    }
+
+    #[test]
     fn tool_line_falls_back_to_name() {
-        assert_eq!(tool_line("mystery", "{}"), "🔧 mystery");
+        assert_eq!(tool_line("mystery", "{}"), "⚙️ mystery");
     }
 
     #[test]

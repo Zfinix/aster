@@ -323,6 +323,7 @@ name = "aster-remote"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "aster-skills",
  "reqwest",
  "serde",
  "serde_json",

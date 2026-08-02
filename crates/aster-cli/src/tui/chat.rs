@@ -1163,6 +1163,7 @@ impl ChatApp {
             limits: self.limits,
             environment: crate::chat::environment_note(&repo_root),
             yolo: self.mode == Mode::Yolo,
+            reads: Default::default(),
         };
         tokio::spawn(async move {
             let sink: crate::chat::ChatEventSink = Box::new(move |event| {

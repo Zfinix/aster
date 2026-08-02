@@ -58,8 +58,10 @@ pub(crate) fn evict_tool_results(wire: &mut [Value], budget: usize) -> Vec<Evict
         if chars < MIN_EVICT_CHARS {
             continue;
         }
+        // Naming the narrower re-read keeps the model from pulling the whole
+        // file back in and evicting itself again on the next round.
         let stub = format!(
-            "[evicted to fit the context budget: {chars} chars dropped; re-run the tool if this is needed again]"
+            "[evicted to fit the context budget: {chars} chars dropped. Only re-run this tool if you still need it, and ask for the specific range or filter you are missing rather than the whole thing]"
         );
         over = over.saturating_sub(chars.saturating_sub(stub.len()));
         msg["content"] = Value::String(stub);
