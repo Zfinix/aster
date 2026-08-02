@@ -36,8 +36,13 @@ impl ThemeState {
     }
 }
 
-/// How long a theme swap takes to settle.
+/// How long a theme swap takes to settle. Zero under test: the palette is a
+/// process-global, so a transition in one test would bleed colours into every
+/// other test running beside it.
+#[cfg(not(test))]
 const TRANSITION: Duration = Duration::from_millis(450);
+#[cfg(test)]
+const TRANSITION: Duration = Duration::ZERO;
 
 /// Back-out ease: races past the target and settles back, so the swap reads as
 /// a flash rather than a fade nobody notices in a four-row viewport.
@@ -59,6 +64,15 @@ pub fn set(t: Theme) {
     state.current = state.get_interpolated();
     state.target = t;
     state.transition_start = Some(Instant::now());
+}
+
+/// End any transition now. Callers that repaint the whole screen use this so
+/// the blocks they rebuild are written in the final palette, not a blend of the
+/// way there.
+pub fn settle() {
+    let mut state = ACTIVE.write().unwrap();
+    state.current = state.target;
+    state.transition_start = None;
 }
 
 /// Returns a snapshot of the active theme. When a transition is in flight

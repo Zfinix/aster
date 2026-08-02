@@ -64,14 +64,6 @@ fn branch(first: bool) -> Span<'static> {
     }
 }
 
-/// A full-width divider between the agent's work and its answer.
-pub(super) fn rule(width: usize) -> Vec<Line<'static>> {
-    prepend_blank(vec![Line::from(Span::styled(
-        "─".repeat(width.max(1)),
-        theme::get().faint_style(),
-    ))])
-}
-
 /// Turn summary: how long the work took and what it cost in tokens.
 #[allow(dead_code)]
 pub(super) fn worked_summary(

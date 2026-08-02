@@ -10,6 +10,7 @@ use crate::defaults::{PROTECTED, SECRET_READ};
 
 /// A compiled, immutable set of rules. [`Policy::evaluate`] is pure and never
 /// touches disk.
+#[derive(Clone)]
 pub struct Policy {
     mode: Mode,
     protected: GlobSet,

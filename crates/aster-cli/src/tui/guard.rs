@@ -22,6 +22,10 @@ impl Drop for TuiGuard {
     fn drop(&mut self) {
         (self.restore)();
         // Drop our hook so a later panic can't emit stray restore sequences.
-        let _ = panic::take_hook();
+        // take_hook itself panics on a panicking thread, so skip it while
+        // unwinding; the process is on its way out anyway.
+        if !std::thread::panicking() {
+            let _ = panic::take_hook();
+        }
     }
 }

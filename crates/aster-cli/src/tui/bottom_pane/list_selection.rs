@@ -104,6 +104,18 @@ impl<E: Clone> ListSelectionView<E> {
     fn renderable(&self) -> impl Renderable {
         Inset::new(wrapped(self.lines()), Insets::tlbr(0, 0, 0, 0))
     }
+
+    /// Which item sits on `row` of the rendered view. `lines` puts the title on
+    /// row 0 and a blank on row 1, so the window starts at row 2.
+    fn item_at(&self, row: u16) -> Option<usize> {
+        const FIRST_ROW: u16 = 2;
+        let offset = row.checked_sub(FIRST_ROW)? as usize;
+        if offset >= VISIBLE_ROWS {
+            return None;
+        }
+        let index = window_start(self.selected, self.items.len()) + offset;
+        (index < self.items.len()).then_some(index)
+    }
 }
 
 impl<E: Clone> Renderable for ListSelectionView<E> {
@@ -136,6 +148,22 @@ impl<E: Clone> BottomPaneView<E> for ListSelectionView<E> {
 
     fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// One click picks the row outright, the way the number keys do.
+    fn handle_click(&mut self, row: u16) -> bool {
+        match self.item_at(row) {
+            Some(index) => {
+                self.selected = index;
+                self.accept(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn handle_scroll(&mut self, delta: isize) {
+        self.move_by(delta);
     }
 }
 

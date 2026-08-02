@@ -57,6 +57,32 @@ impl<R: Renderable> Renderable for Option<R> {
     }
 }
 
+/// Wraps a child and records the rect it was drawn into, so a later click can
+/// be mapped back to it. Layout stays the layout system's business.
+pub(super) struct Probe<'a, R> {
+    inner: R,
+    into: &'a std::cell::Cell<Option<Rect>>,
+}
+
+impl<'a, R: Renderable> Probe<'a, R> {
+    pub(super) fn new(inner: R, into: &'a std::cell::Cell<Option<Rect>>) -> Self {
+        Self { inner, into }
+    }
+}
+
+impl<R: Renderable> Renderable for Probe<'_, R> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.into.set(Some(area));
+        self.inner.render(area, buf);
+    }
+    fn desired_height(&self, width: u16) -> u16 {
+        self.inner.desired_height(width)
+    }
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        self.inner.cursor_pos(area)
+    }
+}
+
 /// Stacks children top to bottom, each getting its desired height.
 pub(super) struct Column<'a> {
     children: Vec<Box<dyn Renderable + 'a>>,

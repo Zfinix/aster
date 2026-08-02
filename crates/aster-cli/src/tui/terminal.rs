@@ -9,7 +9,8 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use ratatui::crossterm::cursor::MoveTo;
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEvent, KeyEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyEvent, KeyEventKind, MouseEvent,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode};
@@ -27,6 +28,8 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// One input to the UI loop, merged from the terminal and the frame scheduler.
 pub(super) enum TuiEvent {
     Key(KeyEvent),
+    /// Only ever arrives while a menu or picker is open; see [`Tui::set_mouse`].
+    Mouse(MouseEvent),
     Paste(String),
     Resize,
     /// A requested frame is due.
@@ -66,6 +69,7 @@ pub(super) struct Tui {
     /// Earliest requested deadline not yet drawn.
     next_frame: Option<Instant>,
     last_draw: Instant,
+    mouse: bool,
 }
 
 impl Tui {
@@ -80,7 +84,25 @@ impl Tui {
             frame_rx,
             next_frame: None,
             last_draw: Instant::now() - MIN_FRAME_INTERVAL,
+            mouse: false,
         })
+    }
+
+    /// Capture the mouse only while something is there to click. Held on, it
+    /// would take away the terminal's own selection and copy over the
+    /// transcript, which is the whole point of rendering into scrollback.
+    pub(super) fn set_mouse(&mut self, on: bool) {
+        if self.mouse == on {
+            return;
+        }
+        let result = match on {
+            true => execute!(io::stdout(), EnableMouseCapture),
+            false => execute!(io::stdout(), DisableMouseCapture),
+        };
+        match result {
+            Ok(()) => self.mouse = on,
+            Err(e) => tracing::debug!("could not toggle mouse capture: {e}"),
+        }
     }
 
     pub(super) fn frame_requester(&self) -> FrameRequester {
@@ -108,6 +130,7 @@ impl Tui {
                     Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
                         return TuiEvent::Key(key);
                     }
+                    Some(Ok(Event::Mouse(m))) => return TuiEvent::Mouse(m),
                     Some(Ok(Event::Paste(text))) => return TuiEvent::Paste(text),
                     Some(Ok(Event::Resize(..))) => return TuiEvent::Resize,
                     Some(_) => {}
@@ -167,6 +190,7 @@ impl Tui {
 impl Drop for Tui {
     fn drop(&mut self) {
         // Clear the viewport and hand the cursor back to the shell below it.
+        self.set_mouse(false);
         let mut out = io::stdout();
         let _ = execute!(
             out,
@@ -189,6 +213,7 @@ async fn sleep_until(deadline: Option<Instant>) {
 /// Emergency restore for the panic hook, which has no handle on the terminal.
 pub(super) fn restore_raw() {
     let mut out = io::stdout();
+    let _ = execute!(out, DisableMouseCapture);
     let _ = execute!(out, DisableBracketedPaste, ratatui::crossterm::cursor::Show);
     let _ = disable_raw_mode();
     let _ = out.flush();

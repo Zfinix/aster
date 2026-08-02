@@ -19,8 +19,8 @@ pub enum Mode {
     /// Apply edits without confirmation.
     #[default]
     Edit,
-    /// Bypass sandbox, skip policy checks. Triple-confirms each command.
-    /// Toggled with `/yolo`; turns the theme red.
+    /// No guardrails: policy checks and isolation are skipped entirely.
+    /// Toggled with `/yolo` behind a confirm; turns the theme red.
     #[serde(alias = "yolo")]
     Yolo,
 }
@@ -64,7 +64,7 @@ impl Mode {
             Mode::Manual => "ask for approval before each edit",
             Mode::Auto => "apply what passes the safety check, pause for anything risky",
             Mode::Edit => "edit files without asking",
-            Mode::Yolo => "sandbox off, triple confirm, no restrictions",
+            Mode::Yolo => "no guardrails, unrestricted",
         }
     }
 

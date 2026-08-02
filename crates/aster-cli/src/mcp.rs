@@ -473,10 +473,14 @@ impl McpRuntime {
             return None;
         }
         let mut prompt = String::from(
-            "Disabled MCP servers are available but not running. You can ask the user \
-             if they want you to enable one by editing its `disabled: true` line in \
-             aster.yaml to `disabled: false`. The user will need to restart the session \
-             for the change to take effect.\n\n",
+            "Disabled MCP servers are available but not running. Do not mention them \
+             unless the user asks about them, or a task genuinely cannot be done \
+             another way. For web fetches, prefer `run_command` with `curl` (or a \
+             similar CLI) first; only suggest enabling a browser server when the task \
+             needs a real browser (JavaScript-heavy pages, screenshots, interaction). \
+             To enable one, edit its `disabled: true` line in aster.yaml to \
+             `disabled: false`. The user will need to restart the session for the \
+             change to take effect.\n\n",
         );
         for ds in &self.disabled_servers {
             prompt.push_str(&format!("- {}: {}\n", ds.name, ds.description));

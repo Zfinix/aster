@@ -217,6 +217,31 @@ impl BottomPaneView<AppEvent> for ModelPickerView {
     fn is_complete(&self) -> bool {
         self.complete
     }
+
+    /// One click picks that model. `lines` spends rows 0-3 on the title, a
+    /// blank, the query, and another blank, so the list starts at row 4.
+    fn handle_click(&mut self, row: u16) -> bool {
+        const FIRST_ROW: u16 = 4;
+        let filtered = self.filtered();
+        let Some(offset) = row.checked_sub(FIRST_ROW).map(|r| r as usize) else {
+            return false;
+        };
+        if offset >= VISIBLE_ROWS || filtered.is_empty() {
+            return false;
+        }
+        let sel = self.selected.min(filtered.len() - 1);
+        let index = window_start(sel, filtered.len()) + offset;
+        if index >= filtered.len() {
+            return false;
+        }
+        self.selected = index;
+        self.accept();
+        true
+    }
+
+    fn handle_scroll(&mut self, delta: isize) {
+        self.move_by(delta);
+    }
 }
 
 #[cfg(test)]

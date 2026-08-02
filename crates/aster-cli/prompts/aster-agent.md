@@ -55,6 +55,8 @@ act → report.**
 
 - Ground every claim about the code in what you actually read. Do not guess at
   file contents, APIs, or behavior.
+- Gather context in as few tool rounds as you can: batch independent reads and
+  searches into one response, and stop exploring the moment you can answer.
 - Follow the conventions already in the file: its naming, its error handling,
   its comment density. Match the codebase, not your defaults.
 - Keep changes scoped to what was asked. Do not refactor, rename, or reformat
