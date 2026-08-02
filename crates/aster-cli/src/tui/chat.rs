@@ -19,7 +19,9 @@ use ratatui::widgets::{Paragraph, Widget};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::bottom_pane::{BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem};
+use super::bottom_pane::{
+    BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem, scan_mentions,
+};
 use super::guard::TuiGuard;
 use super::helpers::{human_count, short_path};
 use super::markdown::{self, MarkdownStream};
@@ -74,6 +76,13 @@ pub(super) enum AppEvent {
         base_url: String,
         model: String,
     },
+    /// The composer's `@` query changed; the owner searches off the loop.
+    MentionQueried(String),
+    /// Ranked matches for a query; the pane drops stale ones.
+    MentionResults {
+        query: String,
+        paths: Vec<String>,
+    },
     /// A manual `/compact` finished; swap in the folded history.
     Compacted {
         history: Vec<ChatMessage>,
@@ -81,6 +90,21 @@ pub(super) enum AppEvent {
         replaces_through: usize,
     },
     CompactFailed(String),
+}
+
+/// Search for `@`-mention matches off the loop; the result lands as
+/// [`AppEvent::MentionResults`]. Typing never blocks on the walk.
+fn spawn_mention_search(
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    root: &std::path::Path,
+    query: String,
+) {
+    let tx = tx.clone();
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let paths = scan_mentions(&root, &query);
+        let _ = tx.send(AppEvent::MentionResults { query, paths });
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -151,8 +175,8 @@ pub async fn run_chat(
         tui.frame_requester(),
         app_tx.clone(),
         |answer, scope| AppEvent::ApprovalDecided { answer, scope },
+        AppEvent::MentionQueried,
     );
-    pane.build_file_index(&repo_root);
 
     let endpoint = crate::init::provider_label(client.base_url());
     app.emit(history::welcome(
@@ -277,6 +301,12 @@ pub async fn run_chat(
             Some(ev) = app_rx.recv() => {
                 match ev {
                     AppEvent::ModelsLoaded(models) => app.open_model_picker(models, &mut pane),
+                    AppEvent::MentionQueried(query) => {
+                        spawn_mention_search(&app_tx, &repo_root, query)
+                    }
+                    AppEvent::MentionResults { query, paths } => {
+                        pane.set_mention_results(&query, paths)
+                    }
                     AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
                     ev => app.on_app_event(ev, &mut client),
                 }
@@ -287,11 +317,6 @@ pub async fn run_chat(
             res = wait_turn(&mut turn) => {
                 match res {
                     Ok(Ok((reply, edited, compacted))) => {
-                        // Files the turn created are only mentionable once the
-                        // index knows about them.
-                        if !edited.is_empty() {
-                            pane.build_file_index(&repo_root);
-                        }
                         app.finish_turn(&reply, &edited, compacted);
                     }
                     Ok(Err(e)) => app.fail_turn(&format!("{e:#}")),
@@ -1136,6 +1161,7 @@ impl ChatApp {
             plan: self.plan.clone(),
             mcp: self.mcp.clone(),
             limits: self.limits,
+            environment: crate::chat::environment_note(&repo_root),
             yolo: self.mode == Mode::Yolo,
         };
         tokio::spawn(async move {
@@ -1369,6 +1395,7 @@ impl ChatApp {
                 self.switch_provider(base_url, model, client)
             }
             AppEvent::ModelsLoaded(_) => {}
+            AppEvent::MentionQueried(_) | AppEvent::MentionResults { .. } => {}
             AppEvent::ModelsFailed(e) => self.note(&format!("failed to load model list: {e}")),
             AppEvent::Compacted {
                 history,
@@ -2016,9 +2043,14 @@ mod tests {
         let frames = super::super::terminal::FrameRequester::noop();
         let (tx, rx) = mpsc::unbounded_channel();
         (
-            BottomPane::new(CHAT_COMMANDS, "hint", frames, tx, |answer, scope| {
-                AppEvent::ApprovalDecided { answer, scope }
-            }),
+            BottomPane::new(
+                CHAT_COMMANDS,
+                "hint",
+                frames,
+                tx,
+                |answer, scope| AppEvent::ApprovalDecided { answer, scope },
+                AppEvent::MentionQueried,
+            ),
             rx,
         )
     }

@@ -20,7 +20,14 @@ const COMMANDS: &[CommandDesc] = &[
 
 fn pane() -> BottomPane<()> {
     let (tx, _rx) = mpsc::unbounded_channel();
-    BottomPane::new(COMMANDS, "hint", FrameRequester::noop(), tx, |_, _| ())
+    BottomPane::new(
+        COMMANDS,
+        "hint",
+        FrameRequester::noop(),
+        tx,
+        |_, _| (),
+        |_| (),
+    )
 }
 
 fn enter() -> KeyEvent {
@@ -89,6 +96,7 @@ fn every_chat_command_runs_when_typed_in_full() {
             FrameRequester::noop(),
             tx,
             |_, _| (),
+            |_| (),
         );
         let typed = format!("/{}", c.name);
         match type_and_enter(&mut p, &typed) {
