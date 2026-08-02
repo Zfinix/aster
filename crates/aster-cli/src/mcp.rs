@@ -405,7 +405,17 @@ impl McpRuntime {
         let mut problems = Vec::new();
         let mut disabled_servers = Vec::new();
 
-        for (name, config) in &settings.servers {
+        // Front-ends inject session-scoped servers via ASTER_MCP_EXTRA, a JSON
+        // map of server configs; the bridge uses it for its telegram tools.
+        let mut servers = settings.servers.clone();
+        if let Ok(raw) = std::env::var("ASTER_MCP_EXTRA") {
+            match serde_json::from_str::<BTreeMap<String, ServerConfig>>(&raw) {
+                Ok(extra) => servers.extend(extra),
+                Err(e) => problems.push(format!("ASTER_MCP_EXTRA is not valid: {e}")),
+            }
+        }
+
+        for (name, config) in &servers {
             if config.disabled || config.command.trim().is_empty() {
                 if config.disabled {
                     disabled_servers.push(DisabledServer {

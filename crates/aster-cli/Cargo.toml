@@ -41,6 +41,7 @@ aster-harness = { path = "../aster-harness" }
 aster-models = { path = "../aster-models" }
 aster-policy = { path = "../aster-policy" }
 aster-persist = { path = "../aster-persist" }
+aster-remote = { path = "../aster-remote" }
 aster-skills = { path = "../aster-skills" }
 aster-tools = { path = "../aster-tools" }
 aster-web = { path = "../aster-web" }
