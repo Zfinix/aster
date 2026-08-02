@@ -13,6 +13,7 @@ mod instructions;
 mod mcp;
 mod persist;
 mod provider;
+mod remote;
 mod review;
 mod sessions;
 mod settings;
@@ -81,6 +82,8 @@ enum Command {
     Web(web::WebArgs),
     /// Inspect the MCP servers configured for this repo.
     Mcp(mcp::McpArgs),
+    /// Drive the agent remotely from a messaging channel (Telegram).
+    Remote(remote::RemoteArgs),
 }
 
 /// Set once from the root `--json` flag, then read anywhere a command chooses
@@ -140,6 +143,7 @@ async fn main() -> Result<()> {
         Command::Skills(args) => skills::run(args).await,
         Command::Web(args) => web::run(args).await,
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
+        Command::Remote(args) => remote::run(args).await,
     };
 
     // In JSON mode a failure is data too, so callers parse one shape either way.
