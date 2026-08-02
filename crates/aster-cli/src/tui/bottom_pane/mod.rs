@@ -14,18 +14,21 @@ pub(super) use model_picker::ModelPickerView;
 pub(super) use status::StatusWidget;
 pub(super) use view::BottomPaneView;
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use tokio::sync::mpsc;
 
 use super::composer::Composer;
-use super::render::{Column, Inset, Insets, Renderable};
+use super::render::{Column, Inset, Insets, Probe, Renderable};
 use super::terminal::FrameRequester;
 use super::theme;
 use crate::chat::{Answer, ApprovalRequest};
@@ -34,6 +37,16 @@ use crate::chat::{Answer, ApprovalRequest};
 /// growing it scrolls history into scrollback that shrinking cannot pull back,
 /// so an unbounded list leaves a blank band behind when the view closes.
 const VISIBLE_ROWS: usize = 8;
+
+/// The row a click landed on, counted from the top of `area`, or `None` when
+/// it landed outside.
+fn row_within(area: Rect, ev: MouseEvent) -> Option<u16> {
+    let inside = ev.column >= area.x
+        && ev.column < area.x + area.width
+        && ev.row >= area.y
+        && ev.row < area.y + area.height;
+    inside.then(|| ev.row - area.y)
+}
 
 /// First row of a picker's visible window: keeps the selection centred until
 /// it reaches either end of the list.
@@ -55,8 +68,12 @@ pub(super) struct CommandDesc {
 /// What a keypress amounted to, once the pane has routed it.
 pub(super) enum InputResult {
     None,
-    /// A message to send.
-    Submitted(String),
+    /// A message to send, plus the `[@name]` → full-path references folded out
+    /// of it so the caller can attach them as a resolvable block.
+    Submitted {
+        text: String,
+        refs: Vec<(String, String)>,
+    },
     /// A slash command to run (leading `/` stripped).
     Command(String),
     /// Enter on a draft while a turn is running; the draft is kept.
@@ -81,6 +98,11 @@ pub(super) struct BottomPane<E> {
     task_running: bool,
     file_index: Vec<String>,
     mention_sel: usize,
+    /// Where the clickable things landed on the last draw. Rendering takes
+    /// `&self`, so these are recorded rather than returned.
+    view_area: Cell<Option<Rect>>,
+    menu_area: Cell<Option<Rect>>,
+    mention_area: Cell<Option<Rect>>,
 }
 
 impl<E: Clone + 'static> BottomPane<E> {
@@ -104,11 +126,87 @@ impl<E: Clone + 'static> BottomPane<E> {
             task_running: false,
             file_index: Vec::new(),
             mention_sel: 0,
+            view_area: Cell::new(None),
+            menu_area: Cell::new(None),
+            mention_area: Cell::new(None),
         }
     }
 
     pub(super) fn has_active_view(&self) -> bool {
         !self.views.is_empty()
+    }
+
+    /// True while something on screen is worth clicking. The caller captures
+    /// the mouse only then, so the transcript stays selectable the rest of the
+    /// time.
+    pub(super) fn wants_mouse(&self) -> bool {
+        self.has_active_view()
+            || !self.command_matches().is_empty()
+            || self.mention_lines().is_some()
+    }
+
+    /// Click or scroll inside an open menu or picker. Anything outside one is
+    /// ignored, so a stray click never disturbs the draft.
+    pub(super) fn handle_mouse(&mut self, ev: MouseEvent) -> InputResult {
+        let scroll = match ev.kind {
+            MouseEventKind::ScrollUp => Some(-1),
+            MouseEventKind::ScrollDown => Some(1),
+            _ => None,
+        };
+        let click = matches!(ev.kind, MouseEventKind::Down(MouseButton::Left));
+        if scroll.is_none() && !click {
+            return InputResult::None;
+        }
+        self.frames.schedule_now();
+
+        if let Some(top) = self.views.last_mut() {
+            let area = self.view_area.get();
+            if let Some(delta) = scroll {
+                top.handle_scroll(delta);
+                return InputResult::None;
+            }
+            if let Some(row) = area.and_then(|a| row_within(a, ev)) {
+                top.handle_click(row);
+                if top.is_complete() {
+                    self.views.pop();
+                }
+            }
+            return InputResult::None;
+        }
+
+        if !self.command_matches().is_empty()
+            && let Some(area) = self.menu_area.get()
+        {
+            if let Some(delta) = scroll {
+                self.menu_move(delta);
+                return InputResult::None;
+            }
+            if let Some(row) = row_within(area, ev) {
+                let len = self.command_matches().len();
+                if (row as usize) < len {
+                    self.menu_sel = row as usize;
+                    let cmd = self.command_to_run();
+                    self.composer.clear();
+                    self.menu_sel = 0;
+                    return InputResult::Command(cmd);
+                }
+            }
+            return InputResult::None;
+        }
+
+        if let Some((start, _)) = self.composer.mention_context()
+            && let Some(area) = self.mention_area.get()
+        {
+            if let Some(delta) = scroll {
+                self.mention_move(delta);
+                return InputResult::None;
+            }
+            if let Some(row) = row_within(area, ev) {
+                self.mention_sel = row as usize;
+                self.complete_selected_mention(start);
+            }
+        }
+        InputResult::None
     }
 
     /// For views built outside the pane, which still route through its channel.
@@ -227,15 +325,26 @@ impl<E: Clone + 'static> BottomPane<E> {
             KeyCode::Enter if alt || ctrl => self.composer.insert('\n'),
             KeyCode::Char('j') if ctrl => self.composer.insert('\n'),
             KeyCode::BackTab => self.composer.insert('\n'),
+            // The menu is open and a row is highlighted, so enter picks that
+            // row. Without this a bare `/` submits as a message, and arrowing
+            // to a command does nothing, since the draft is still just `/`.
+            KeyCode::Enter if menu_open => {
+                let cmd = self.command_to_run();
+                self.composer.clear();
+                self.menu_sel = 0;
+                return InputResult::Command(cmd);
+            }
             KeyCode::Enter if !self.composer.text().trim().is_empty() => {
-                if self.composer.text().trim_start().starts_with('/') {
+                if self.looks_like_command() {
                     let cmd = self.command_to_run();
                     self.composer.clear();
                     self.menu_sel = 0;
                     return InputResult::Command(cmd);
                 }
                 if !self.task_running {
-                    return InputResult::Submitted(self.composer.take());
+                    let text = self.composer.take();
+                    let refs = self.composer.take_refs();
+                    return InputResult::Submitted { text, refs };
                 }
                 return InputResult::Busy;
             }
@@ -315,11 +424,30 @@ impl<E: Clone + 'static> BottomPane<E> {
         }
     }
 
-    /// A typed command with args runs as-is; a bare prefix runs the selection.
+    /// True when the draft should run as a slash command rather than submit as
+    /// a message. A leading `/` alone is not enough: a dragged-in absolute
+    /// path (`/Users/chizi/…`) also starts with `/`. The first word must name
+    /// or prefix a known command.
+    fn looks_like_command(&self) -> bool {
+        let text = self.composer.text().trim_start();
+        let Some(rest) = text.strip_prefix('/') else {
+            return false;
+        };
+        let first = rest.split(char::is_whitespace).next().unwrap_or("");
+        // Command names are bare words; a second separator means a path.
+        if first.is_empty() || first.contains(['/', '\\']) {
+            return false;
+        }
+        self.commands.iter().any(|c| c.name.starts_with(first))
+    }
+
+    /// A typed command with args runs as-is; a bare prefix, or a bare `/`,
+    /// runs whichever row the menu has highlighted.
     fn command_to_run(&self) -> String {
         let rest = self
             .composer
             .text()
+            .trim_start()
             .trim_start_matches('/')
             .trim()
             .to_string();
@@ -453,17 +581,26 @@ impl<E: Clone + 'static> BottomPane<E> {
         let mut col = Column::new();
         col.push(Line::from(""));
         if let Some(view) = self.views.last() {
-            col.push(Inset::new(ViewRef(view.as_ref()), Insets::tlbr(1, 1, 1, 1)));
+            col.push(Probe::new(
+                Inset::new(ViewRef(view.as_ref()), Insets::tlbr(1, 1, 1, 1)),
+                &self.view_area,
+            ));
             return col;
         }
         if let Some(status) = &self.status {
             col.push(Inset::new(StatusRef(status), Insets::tlbr(0, 1, 1, 0)));
         }
         if let Some(menu) = self.menu_lines() {
-            col.push(Inset::new(menu, Insets::tlbr(1, 1, 0, 1)));
+            col.push(Probe::new(
+                Inset::new(menu, Insets::tlbr(1, 1, 0, 1)),
+                &self.menu_area,
+            ));
         }
         if let Some(mention_menu) = self.mention_lines() {
-            col.push(Inset::new(mention_menu, Insets::tlbr(1, 1, 0, 1)));
+            col.push(Probe::new(
+                Inset::new(mention_menu, Insets::tlbr(1, 1, 0, 1)),
+                &self.mention_area,
+            ));
         }
         col.push(Inset::new(
             ComposerRef {
@@ -560,3 +697,7 @@ impl ComposerRef<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "command_routing_tests.rs"]
+mod tests;

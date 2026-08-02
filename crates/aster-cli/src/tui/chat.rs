@@ -15,7 +15,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Paragraph, Widget};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -35,6 +35,9 @@ type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<
 
 /// Pressing ctrl-c once arms the quit; a second press within this window exits.
 const QUIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long the YOLO takeover animation holds the screen.
+const TAKEOVER: std::time::Duration = std::time::Duration::from_millis(1250);
 
 /// Read-only tools whose consecutive calls collapse into one `Explored` cell.
 const READ_ONLY: &[&str] = &[
@@ -71,6 +74,13 @@ pub(super) enum AppEvent {
         base_url: String,
         model: String,
     },
+    /// A manual `/compact` finished; swap in the folded history.
+    Compacted {
+        history: Vec<ChatMessage>,
+        summary: String,
+        replaces_through: usize,
+    },
+    CompactFailed(String),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -93,6 +103,8 @@ pub async fn run_chat(
     // smaller would make the first draw grow the viewport, and that growth
     // scrolls blank rows into the middle of the transcript.
     let mut tui = Tui::new(4)?;
+    // Wipe the terminal so Aster owns the full screen from the start.
+    tui.clear_screen()?;
 
     // Depth 1: the agent awaits each request before proposing the next.
     let (approval_tx, mut approval_rx) = mpsc::channel::<UiRequest>(1);
@@ -148,7 +160,7 @@ pub async fn run_chat(
             ("model", app.model.clone()),
             ("provider", endpoint),
             ("cwd", short_path(&repo_root)),
-            ("mode", mode_desc(app.mode)),
+            ("mode", app.mode.as_str().to_string()),
             ("effort", client.effort().to_string()),
         ],
         app.width,
@@ -176,7 +188,7 @@ pub async fn run_chat(
 
     let mut turn: Option<ChatTurn> = None;
     if let Some(seed) = seed.filter(|s| !s.trim().is_empty()) {
-        turn = Some(app.submit(&seed, &client, &repo_root));
+        turn = Some(app.submit(&seed, &[], &client, &repo_root));
         pane.set_task_running(true);
     }
 
@@ -196,6 +208,9 @@ pub async fn run_chat(
         if app.should_quit {
             break;
         }
+        // Only grab the mouse while a menu or picker is up; the rest of the
+        // time the terminal keeps its own selection and copy.
+        tui.set_mouse(pane.wants_mouse());
 
         tokio::select! {
             ev = tui.next_event() => match ev {
@@ -207,37 +222,68 @@ pub async fn run_chat(
                     }
                     frames.schedule_now();
                 }
-                TuiEvent::Paste(text) => pane.handle_paste(text),
+                TuiEvent::Mouse(m) => {
+                    if let InputResult::Command(cmd) = pane.handle_mouse(m) {
+                        app.handle_command(&cmd, &mut client, &mut pane);
+                    }
+                    frames.schedule_now();
+                }
+                TuiEvent::Paste(text) => {
+                    pane.handle_paste(text);
+                    frames.schedule_now();
+                }
                 TuiEvent::Resize => {
                     tui.resized()?;
                     app.width = tui.width() as usize;
                     frames.schedule_now();
                 }
                 TuiEvent::Draw => {
+                    if app
+                        .takeover
+                        .as_ref()
+                        .is_some_and(|t| t.start.elapsed() >= TAKEOVER)
+                    {
+                        app.finish_takeover();
+                        continue;
+                    }
                     app.usage = Some(client.usage_snapshot());
                     if let Some(flash) = app.usage_flash() {
                         app.flash = Some(flash);
                     }
                     draw(&mut tui, &app, &pane)?;
-                    if theme::is_transitioning() {
+                    if app.takeover.is_some() || theme::is_transitioning() {
                         frames.schedule_in(std::time::Duration::from_millis(16));
                     }
                 }
             },
             Some(ev) = events_rx.recv() => {
                 app.on_turn_event(ev);
-                pane.set_status_detail(app.running.last().map(|t| t.label.to_lowercase()));
+                let queue_label = match app.running.len() {
+                    0 => None,
+                    1 => app.running.last().map(|t| t.label.to_lowercase()),
+                    n => app.running.last().map(|t| format!("{} (+{} queued)", t.label.to_lowercase(), n - 1)),
+                };
+                pane.set_status_detail(queue_label);
+                frames.schedule_now();
             }
-            Some(req) = approval_rx.recv() => match req {
-                UiRequest::Approval(req) => app.on_approval_request(req, &mut pane),
-                UiRequest::PlanApproval(req) => app.on_plan_approval_request(req, &mut pane),
-                UiRequest::Question(req) => app.on_question_request(req, &mut pane),
-            },
-            Some(ev) = app_rx.recv() => match ev {
-                AppEvent::ModelsLoaded(models) => app.open_model_picker(models, &mut pane),
-                AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
-                ev => app.on_app_event(ev, &mut client),
-            },
+            Some(req) = approval_rx.recv() => {
+                match req {
+                    UiRequest::Approval(req) => app.on_approval_request(req, &mut pane),
+                    UiRequest::PlanApproval(req) => app.on_plan_approval_request(req, &mut pane),
+                    UiRequest::Question(req) => app.on_question_request(req, &mut pane),
+                }
+                frames.schedule_now();
+            }
+            Some(ev) = app_rx.recv() => {
+                match ev {
+                    AppEvent::ModelsLoaded(models) => app.open_model_picker(models, &mut pane),
+                    AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
+                    ev => app.on_app_event(ev, &mut client),
+                }
+                // A mode change swaps the theme here; without a frame the
+                // transition would expire before anything redrew.
+                frames.schedule_now();
+            }
             res = wait_turn(&mut turn) => {
                 match res {
                     Ok(Ok((reply, edited, compacted))) => {
@@ -281,8 +327,116 @@ async fn wait_turn(
     }
 }
 
+/// One YOLO animation frame: a shockwave with a fading banner and color gradient.
+fn takeover_frame(
+    entering: bool,
+    elapsed: std::time::Duration,
+    width: usize,
+) -> Vec<Line<'static>> {
+    const ROWS: usize = 12;
+    let t = (elapsed.as_secs_f32() / TAKEOVER.as_secs_f32()).clamp(0.0, 1.0);
+    let frame_n = (elapsed.as_millis() / 45) as u64;
+    let w = width.clamp(20, 240);
+
+    let (bright, hot, warm, ember) = match entering {
+        true => (
+            Color::Rgb(0xff, 0x45, 0x45),
+            Color::Rgb(0xf0, 0x38, 0x38),
+            Color::Rgb(0x8a, 0x1f, 0x1f),
+            Color::Rgb(0x4a, 0x12, 0x12),
+        ),
+        false => (
+            Color::Rgb(0xf8, 0xcb, 0x66),
+            Color::Rgb(0xf2, 0x76, 0x4f),
+            Color::Rgb(0x8a, 0x4a, 0x2a),
+            Color::Rgb(0x3f, 0x2a, 0x1a),
+        ),
+    };
+
+    let cx = w as f32 / 2.0;
+    let cy = ROWS as f32 / 2.0;
+    // x squashed: a terminal cell is over twice as tall as it is wide, so the
+    // wave reads as a circle rather than a flat ellipse.
+    let max_r = ((cx / 2.2).powi(2) + cy * cy).sqrt();
+    let front = t * 1.45 * max_r;
+
+    let banner: Vec<char> = match entering {
+        true => "☠  Y O L O   M O D E  ☠",
+        false => "✳  G U A R D R A I L S   O N  ✳",
+    }
+    .chars()
+    .collect();
+
+    (0..ROWS)
+        .map(|row| {
+            let spans = (0..w)
+                .map(|col| {
+                    let dx = (col as f32 - cx) / 2.2;
+                    let dy = row as f32 - cy + 0.5;
+                    let d = front - (dx * dx + dy * dy).sqrt();
+                    if row == ROWS / 2 && d > 3.0 {
+                        let start = w.saturating_sub(banner.len()) / 2;
+                        if col >= start && col < start + banner.len() {
+                            let ch = banner[col - start];
+                            let lit = t > 0.55 || noise(frame_n, u64::MAX, col as u64) > 0.25;
+                            if ch != ' ' && lit {
+                                return Span::styled(
+                                    ch.to_string(),
+                                    Style::default().fg(bright).add_modifier(Modifier::BOLD),
+                                );
+                            }
+                        }
+                    }
+                    let jitter = noise(frame_n, row as u64, col as u64);
+                    let (ch, fg) = if d < 0.0 {
+                        (' ', ember)
+                    } else if d < 1.3 {
+                        ('█', bright)
+                    } else if d < 2.6 {
+                        ('▓', hot)
+                    } else if d < 4.2 {
+                        (if jitter > 0.5 { '▒' } else { '▓' }, warm)
+                    } else if d < 6.5 {
+                        (if jitter > 0.6 { '░' } else { '▒' }, ember)
+                    } else if jitter > 0.93 {
+                        ('·', ember)
+                    } else {
+                        (' ', ember)
+                    };
+                    match ch {
+                        ' ' => Span::raw(" "),
+                        _ => Span::styled(ch.to_string(), Style::default().fg(fg)),
+                    }
+                })
+                .collect::<Vec<_>>();
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Deterministic per-cell noise, so a frame is stable within itself but
+/// flickers frame to frame.
+fn noise(a: u64, b: u64, c: u64) -> f32 {
+    let mut x = a
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(b.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        .wrapping_add(c.wrapping_mul(0x94D0_49BB_1331_11EB));
+    x ^= x >> 31;
+    x = x.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    x ^= x >> 27;
+    (x & 0xFFFF) as f32 / 65535.0
+}
+
 fn draw(tui: &mut Tui, app: &ChatApp, pane: &BottomPane<AppEvent>) -> Result<()> {
     let width = tui.width();
+    if let Some(t) = &app.takeover {
+        let lines = takeover_frame(t.entering, t.start.elapsed(), width as usize);
+        let h = lines.len() as u16;
+        tui.draw(h, |frame| {
+            Paragraph::new(lines).render(frame.area(), frame.buffer_mut());
+        })?;
+        return Ok(());
+    }
     let pane_h = pane.desired_height(width);
     let footer = app.footer_line();
     tui.draw(pane_h + 1, |frame| {
@@ -357,8 +511,8 @@ fn on_key(
     }
 
     match pane.handle_key(key, app.width as u16) {
-        InputResult::Submitted(text) => {
-            *turn = Some(app.submit(&text, client, repo_root));
+        InputResult::Submitted { text, refs } => {
+            *turn = Some(app.submit(&text, &refs, client, repo_root));
             pane.set_task_running(true);
             app.flash = None;
         }
@@ -374,6 +528,31 @@ fn on_key(
         }
     }
     Flow::Continue
+}
+
+/// The user message, plus a `[@name]: /full/path` block listing every path
+/// folded out of it. The model resolves a `[@name]` token from this block, and
+/// the block stays in the transcript so a resumed session still resolves it.
+fn render_user_content(text: &str, refs: &[(String, String)]) -> String {
+    if refs.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(
+        text.len()
+            + refs
+                .iter()
+                .map(|(m, p)| m.len() + p.len() + 3)
+                .sum::<usize>(),
+    );
+    out.push_str(text);
+    out.push_str("\n\n");
+    for (mark, path) in refs {
+        out.push_str(mark);
+        out.push_str(": ");
+        out.push_str(path);
+        out.push('\n');
+    }
+    out
 }
 
 fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<AppEvent>) {
@@ -570,11 +749,6 @@ fn mode_glyph(mode: Mode) -> &'static str {
     }
 }
 
-/// `name · what it does`, for the welcome header and footer flashes.
-fn mode_desc(mode: Mode) -> String {
-    format!("{} · {}", mode.as_str(), mode.description())
-}
-
 /// Opens every mid-conversation note about the edit tool, so a later toggle can
 /// find and replace the previous one.
 const EDIT_NOTE_PREFIX: &str = "Edits are now ";
@@ -594,7 +768,7 @@ const KEY_HELP: &[(&str, &str)] = &[
     ("↑ ↓", "move the cursor, then step through past messages"),
 ];
 
-const CHAT_COMMANDS: &[CommandDesc] = &[
+pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "model",
         takes_arg: true,
@@ -623,7 +797,37 @@ const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "yolo",
         takes_arg: false,
-        desc: "Toggle YOLO mode — no sandbox, red theme",
+        desc: "Toggle YOLO mode — guardrails off, red theme",
+    },
+    CommandDesc {
+        name: "compact",
+        takes_arg: false,
+        desc: "Fold earlier turns into a summary to free context",
+    },
+    CommandDesc {
+        name: "status",
+        takes_arg: false,
+        desc: "Show session, model, context, and token usage",
+    },
+    CommandDesc {
+        name: "diff",
+        takes_arg: false,
+        desc: "Show uncommitted changes in the repository",
+    },
+    CommandDesc {
+        name: "mcp",
+        takes_arg: false,
+        desc: "List connected MCP servers and their tools",
+    },
+    CommandDesc {
+        name: "skills",
+        takes_arg: false,
+        desc: "List the skills the agent can load",
+    },
+    CommandDesc {
+        name: "memory",
+        takes_arg: false,
+        desc: "List what Aster remembers about this project",
     },
     CommandDesc {
         name: "clear",
@@ -657,9 +861,9 @@ struct ChatApp {
     /// of opening a new one.
     exploring: bool,
     running: Vec<RunningTool>,
-    /// A tool cell was emitted since the last prose, so the next prose opens
-    /// with a rule dividing the work from the answer.
-    worked: bool,
+    /// Blank lines streamed mid-message, held back until real content follows
+    /// so a message never opens or closes with empty rows.
+    pending_blanks: usize,
 
     thinking: bool,
     started: Option<Instant>,
@@ -701,6 +905,14 @@ struct ChatApp {
     provider_base_url: String,
     /// When the last interrupt key landed, so quitting takes two presses.
     quit_armed: Option<Instant>,
+    /// A YOLO switch is playing its full-screen animation; cleared by
+    /// `finish_takeover`, which repaints the world in the new palette.
+    takeover: Option<Takeover>,
+}
+
+struct Takeover {
+    start: Instant,
+    entering: bool,
 }
 
 impl ChatApp {
@@ -720,7 +932,7 @@ impl ChatApp {
             streamed: String::new(),
             exploring: false,
             running: Vec::new(),
-            worked: false,
+            pending_blanks: 0,
             thinking: false,
             started: None,
             usage: None,
@@ -747,6 +959,7 @@ impl ChatApp {
             limits: crate::chat::Limits::default(),
             provider_base_url: String::new(),
             quit_armed: None,
+            takeover: None,
         }
     }
 
@@ -767,8 +980,8 @@ impl ChatApp {
                 self.end_explored();
                 self.streamed.push_str(&delta);
                 let lines = self.markdown.push(&delta);
+                let lines = self.hold_blank_edges(lines);
                 if !lines.is_empty() {
-                    self.divide_work_from_answer();
                     let block = history::assistant(lines, !self.speaking, self.width);
                     self.speaking = true;
                     self.emit(block);
@@ -809,7 +1022,6 @@ impl ChatApp {
             let block = history::explored_row(&label, self.exploring, self.width);
             self.exploring = true;
             self.emit(block);
-            self.worked = true;
             return;
         }
         self.end_explored();
@@ -831,7 +1043,6 @@ impl ChatApp {
             history::tool(&tool.label, result, false, self.width)
         };
         self.emit(block);
-        self.worked = true;
     }
 
     /// The plan as the agent last left it. Read from the shared state rather
@@ -850,12 +1061,33 @@ impl ChatApp {
     fn end_message(&mut self) {
         if !self.markdown.is_empty() {
             let lines = self.markdown.flush();
+            let lines = self.hold_blank_edges(lines);
             if !lines.is_empty() {
                 let block = history::assistant(lines, !self.speaking, self.width);
                 self.emit(block);
             }
         }
+        self.pending_blanks = 0;
         self.speaking = false;
+    }
+
+    /// Drop blank lines at a message's edges: leading ones vanish, interior
+    /// runs are held in `pending_blanks` until real content follows.
+    fn hold_blank_edges(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for line in lines {
+            let blank = line.spans.iter().all(|s| s.content.trim().is_empty());
+            if blank {
+                if self.speaking || !out.is_empty() {
+                    self.pending_blanks += 1;
+                }
+            } else {
+                out.extend(std::iter::repeat_with(|| Line::from("")).take(self.pending_blanks));
+                self.pending_blanks = 0;
+                out.push(line);
+            }
+        }
+        out
     }
 
     /// Close the open `Explored` cell so the next read-only run opens its own.
@@ -863,34 +1095,29 @@ impl ChatApp {
         self.exploring = false;
     }
 
-    /// Draw the rule between what the agent did and what it has to say, once
-    /// per stretch of work.
-    fn divide_work_from_answer(&mut self) {
-        if !self.worked || self.speaking {
-            return;
-        }
-        self.worked = false;
-        let block = history::rule(self.width);
-        self.emit(block);
-    }
-
-    fn submit(&mut self, text: &str, client: &AiClient, repo_root: &std::path::Path) -> ChatTurn {
+    fn submit(
+        &mut self,
+        text: &str,
+        refs: &[(String, String)],
+        client: &AiClient,
+        repo_root: &std::path::Path,
+    ) -> ChatTurn {
         // A dismissed session picker leaves no transcript open; start one now
         // rather than dropping the conversation on the floor.
         if self.recorder.is_none() {
             self.start_new_session();
         }
-        let block = history::user(text, self.width);
+        let content = render_user_content(text, refs);
+        let block = history::user(&content, self.width);
         self.emit(block);
         self.history.push(ChatMessage {
             role: "user".into(),
-            content: text.into(),
+            content: content.clone(),
         });
-        self.record_user(text);
+        self.record_user(&content);
         self.thinking = true;
         self.started = Some(Instant::now());
         self.streamed.clear();
-        self.worked = false;
 
         let client = client.clone();
         let repo_root = repo_root.to_path_buf();
@@ -957,7 +1184,6 @@ impl ChatApp {
         // A streamed reply is already on screen; only a quiet endpoint (one that
         // sends no deltas) still needs rendering.
         if self.streamed.trim().is_empty() && !reply.trim().is_empty() {
-            self.divide_work_from_answer();
             let block = history::assistant(markdown::render(reply), true, self.width);
             self.emit(block);
         }
@@ -1075,16 +1301,21 @@ impl ChatApp {
         if self.mode == Mode::Yolo {
             return;
         }
+        // Asking first and refusing after would be the worst of both.
+        if self.edits_locked {
+            self.flash = Some("edits are off for this run; yolo is unavailable".into());
+            return;
+        }
         self.note(
-            "YOLO mode runs commands with no sandbox: no path limits, no network block, \
-             no secret scrubbing.",
+            "YOLO mode gives Aster unrestricted access: any path, full network, \
+             your environment as-is.",
         );
         pane.push_picker(
-            "Bypass the sandbox?",
+            "Go unrestricted?",
             vec![
                 SelectionItem {
                     name: format!("No, stay in {}", self.mode.as_str()),
-                    description: "keep the sandbox".into(),
+                    description: "keep the guardrails".into(),
                     is_current: true,
                     event: AppEvent::SetMode(self.mode),
                 },
@@ -1103,10 +1334,7 @@ impl ChatApp {
             // Entering YOLO goes through `confirm_yolo`, never straight here.
             AppEvent::SetMode(Mode::Yolo) => {}
             AppEvent::SetMode(mode) => self.select_mode(mode),
-            AppEvent::YoloConfirmed => {
-                self.select_mode(Mode::Yolo);
-                self.note("YOLO mode ON — sandbox bypassed, red theme");
-            }
+            AppEvent::YoloConfirmed => self.select_mode(Mode::Yolo),
             AppEvent::SetEffort(effort) => self.set_effort(effort, client),
             AppEvent::ApprovalDecided { answer, scope } => {
                 let plan = std::mem::take(&mut self.pending_plan_approval);
@@ -1142,6 +1370,24 @@ impl ChatApp {
             }
             AppEvent::ModelsLoaded(_) => {}
             AppEvent::ModelsFailed(e) => self.note(&format!("failed to load model list: {e}")),
+            AppEvent::Compacted {
+                history,
+                summary,
+                replaces_through,
+            } => {
+                let ctx = SessionCtx {
+                    recorder: self.recorder.clone(),
+                    ..SessionCtx::default()
+                };
+                ctx.record_summary(&summary, replaces_through);
+                self.history = history;
+                self.flash = None;
+                self.note("compacted earlier turns to save context");
+            }
+            AppEvent::CompactFailed(e) => {
+                self.flash = None;
+                self.note(&format!("compact failed: {e}"));
+            }
         }
     }
 
@@ -1249,6 +1495,41 @@ impl ChatApp {
         pane.push_picker("Effort", items);
     }
 
+    /// The session header, in the palette current when it is called.
+    fn welcome_block(&self) -> Vec<Line<'static>> {
+        history::welcome(
+            &[
+                ("model", self.model.clone()),
+                (
+                    "provider",
+                    crate::init::provider_label(&self.provider_base_url),
+                ),
+                ("cwd", self.repo_root.display().to_string()),
+                ("mode", self.mode.as_str().to_string()),
+                ("effort", self.effort.to_string()),
+            ],
+            self.width,
+        )
+    }
+
+    /// The takeover has played out: land the screen in the new palette.
+    /// Scrollback cannot be repainted, so everything is cleared and the header
+    /// rebuilt after the theme settles, never mid-fade in neither colour.
+    fn finish_takeover(&mut self) {
+        let Some(t) = self.takeover.take() else {
+            return;
+        };
+        theme::settle();
+        self.queue.clear();
+        self.clear_requested = true;
+        let welcome = self.welcome_block();
+        self.emit(welcome);
+        self.note(match t.entering {
+            true => "YOLO mode ON — guardrails off, red theme",
+            false => "YOLO mode OFF — guardrails back on",
+        });
+    }
+
     /// Apply a picker choice. A locked run stays in `plan` and says why.
     fn select_mode(&mut self, mode: Mode) {
         if self.edits_locked && mode.can_edit() {
@@ -1258,19 +1539,26 @@ impl ChatApp {
         if mode == self.mode {
             return;
         }
+        let recolours = (mode == Mode::Yolo) != (self.mode == Mode::Yolo);
         self.mode = mode;
         theme::set(match mode {
             Mode::Yolo => theme::Theme::YOLO,
             Mode::Plan | Mode::Manual | Mode::Auto | Mode::Edit => theme::Theme::DEFAULT,
         });
+        if recolours {
+            self.takeover = Some(Takeover {
+                start: Instant::now(),
+                entering: mode == Mode::Yolo,
+            });
+        }
         self.note_edit_mode();
         // A footer flash, not a scrollback line, so the transcript stays a
         // record of the conversation rather than of settings.
         self.flash = Some(if self.thinking {
             // The running turn cloned its tool list already.
-            format!("mode {} · applies to your next message", mode_desc(mode))
+            format!("mode {} · applies to your next message", mode.as_str())
         } else {
-            format!("mode {}", mode_desc(mode))
+            format!("mode {}", mode.as_str())
         });
     }
 
@@ -1291,6 +1579,11 @@ impl ChatApp {
             return;
         }
         client.model = model.clone();
+        // Saved as well as applied, or the choice would silently reset next run.
+        if let Err(e) = crate::settings::persist_review(Some(&self.repo_root), &[("model", &model)])
+        {
+            self.note(&format!("could not save the model choice: {e:#}"));
+        }
         self.flash = Some(if self.thinking {
             format!("model {model} · applies to your next message")
         } else {
@@ -1366,6 +1659,13 @@ impl ChatApp {
             }
         }
         self.provider_base_url = base_url.clone();
+        // The endpoint is saved with the model: a restart pairing the new
+        // model with the old provider would be worse than either alone.
+        if let Err(e) =
+            crate::settings::persist_review(Some(&self.repo_root), &[("base_url", &base_url)])
+        {
+            self.note(&format!("could not save the provider choice: {e:#}"));
+        }
         self.set_model(model, client);
         self.flash = Some(format!(
             "provider {}",
@@ -1405,10 +1705,7 @@ impl ChatApp {
                 None => self.open_effort_picker(pane),
             },
             "yolo" => match self.mode {
-                Mode::Yolo => {
-                    self.select_mode(Mode::Edit);
-                    self.note("YOLO mode OFF — sandbox restored, standard mode");
-                }
+                Mode::Yolo => self.select_mode(Mode::Edit),
                 _ => self.confirm_yolo(pane),
             },
             "clear" | "c" => {
@@ -1416,19 +1713,8 @@ impl ChatApp {
                 self.start_new_session();
                 self.queue.clear();
                 self.clear_requested = true;
-                self.emit(history::welcome(
-                    &[
-                        ("model", self.model.clone()),
-                        (
-                            "provider",
-                            crate::init::provider_label(&self.provider_base_url),
-                        ),
-                        ("cwd", self.repo_root.display().to_string()),
-                        ("mode", mode_desc(self.mode)),
-                        ("effort", self.effort.to_string()),
-                    ],
-                    self.width,
-                ));
+                let welcome = self.welcome_block();
+                self.emit(welcome);
             }
             "help" | "h" => {
                 let width = self.width;
@@ -1456,6 +1742,12 @@ impl ChatApp {
                 let block = history::assistant(lines, true, width);
                 self.emit(block);
             }
+            "compact" => self.start_compact(client, pane.sender()),
+            "status" => self.show_status(),
+            "diff" | "d" => self.show_diff(),
+            "mcp" => self.show_mcp(),
+            "skills" => self.show_skills(),
+            "memory" => self.show_memory(),
             "quit" | "q" | "exit" => self.should_quit = true,
             other => self.note(&format!("unknown command: /{other} (try /help)")),
         }
@@ -1499,6 +1791,185 @@ impl ChatApp {
             spans.push(Span::styled(msg.clone(), theme::get().accent_style()));
         }
         Line::from(spans)
+    }
+
+    fn start_compact(&mut self, client: &AiClient, tx: mpsc::UnboundedSender<AppEvent>) {
+        if self.thinking {
+            self.note("wait for the current turn to finish before compacting");
+            return;
+        }
+        self.flash = Some("compacting…".into());
+        let client = client.clone();
+        let history = self.history.clone();
+        tokio::spawn(async move {
+            match crate::chat::compact_now(&client, &history).await {
+                Ok((history, summary, replaces_through)) => {
+                    let _ = tx.send(AppEvent::Compacted {
+                        history,
+                        summary,
+                        replaces_through,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::CompactFailed(format!("{e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Bold-label rows rendered like the /help block.
+    fn emit_rows(&mut self, title: &str, rows: Vec<(String, String)>) {
+        let width = self.width;
+        let mut lines = vec![Line::from(Span::styled(
+            title.to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        let pad = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (key, value) in rows {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{key:<pad$}"), theme::get().accent_style()),
+                Span::styled(format!("  {value}"), theme::get().dim_style()),
+            ]));
+        }
+        let block = history::assistant(lines, true, width);
+        self.emit(block);
+    }
+
+    fn show_status(&mut self) {
+        let chars: usize = self.history.iter().map(|m| m.content.len()).sum();
+        let session = self
+            .recorder
+            .as_ref()
+            .and_then(|r| r.lock().ok().map(|w| w.id().to_string()))
+            .unwrap_or_else(|| "not saved".into());
+        let mcp = match &self.mcp {
+            Some(rt) => format!(
+                "{} ({} tools)",
+                rt.server_names().join(", "),
+                rt.tool_count()
+            ),
+            None => "none".into(),
+        };
+        let usage = self.usage_flash().unwrap_or_else(|| "none yet".into());
+        self.emit_rows(
+            "Status",
+            vec![
+                ("model".into(), self.model.clone()),
+                (
+                    "provider".into(),
+                    crate::init::provider_label(&self.provider_base_url),
+                ),
+                ("mode".into(), self.mode.as_str().into()),
+                ("effort".into(), self.effort.to_string()),
+                ("session".into(), session),
+                (
+                    "context".into(),
+                    format!(
+                        "{} messages · {} of {} chars before auto-compact",
+                        self.history.len(),
+                        human_count(chars),
+                        human_count(self.limits.compact_budget_chars),
+                    ),
+                ),
+                ("mcp".into(), mcp),
+                ("usage".into(), usage),
+            ],
+        );
+    }
+
+    fn show_diff(&mut self) {
+        let out = std::process::Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(&self.repo_root)
+            .output();
+        let body = match out {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Ok(out) => {
+                self.note(&format!(
+                    "git diff failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+                return;
+            }
+            Err(e) => {
+                self.note(&format!("could not run git: {e}"));
+                return;
+            }
+        };
+        if body.trim().is_empty() {
+            self.note("no uncommitted changes");
+            return;
+        }
+        const MAX_DIFF_LINES: usize = 400;
+        let width = self.width;
+        let total = body.lines().count();
+        let shown: String = body
+            .lines()
+            .take(MAX_DIFF_LINES)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut lines = history::diff_lines(&shown, width);
+        if total > MAX_DIFF_LINES {
+            lines.extend(history::notice(
+                &format!("… {} more lines (run `git diff`)", total - MAX_DIFF_LINES),
+                width,
+            ));
+        }
+        self.emit(lines);
+    }
+
+    fn show_mcp(&mut self) {
+        let Some(rt) = &self.mcp else {
+            self.note("no MCP servers configured (add them under `mcp:` in aster.yaml)");
+            return;
+        };
+        let rows: Vec<(String, String)> = rt
+            .server_names()
+            .into_iter()
+            .map(|name| (name, String::new()))
+            .collect();
+        if rows.is_empty() {
+            self.note("no MCP servers connected");
+            return;
+        }
+        let title = format!("MCP servers ({} tools)", rt.tool_count());
+        self.emit_rows(&title, rows);
+    }
+
+    fn show_skills(&mut self) {
+        let skills = crate::chat::discover_skills(&self.repo_root);
+        if skills.is_empty() {
+            self.note("no skills installed (put SKILL.md folders under .aster/skills/)");
+            return;
+        }
+        let rows = skills
+            .iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect();
+        self.emit_rows("Skills", rows);
+    }
+
+    fn show_memory(&mut self) {
+        let Some(store) = &self.store else {
+            self.note("no store open, so nothing is remembered");
+            return;
+        };
+        let blocks = match store.memory().list() {
+            Ok(blocks) => blocks,
+            Err(e) => {
+                self.note(&format!("could not list memory: {e:#}"));
+                return;
+            }
+        };
+        if blocks.is_empty() {
+            self.note("nothing remembered yet (the agent saves facts with its remember tool)");
+            return;
+        }
+        let rows = blocks
+            .into_iter()
+            .map(|b| (b.name, b.description))
+            .collect();
+        self.emit_rows("Memory", rows);
     }
 
     /// Build a token-usage flash string for a post-turn status update.
@@ -1922,6 +2393,19 @@ mod tests {
 
         app.on_app_event(AppEvent::YoloConfirmed, &mut client);
         assert_eq!(app.mode, Mode::Yolo);
+        assert!(app.takeover.is_some(), "the switch plays the takeover");
+
+        app.finish_takeover();
+        assert!(app.takeover.is_none());
+        assert!(
+            app.clear_requested,
+            "the screen is repainted in the new palette"
+        );
+        let out = rendered(&app);
+        assert!(out.contains("aster"), "the header comes back: {out}");
+        assert!(out.contains("YOLO mode ON"), "{out}");
+
+        theme::set(theme::Theme::DEFAULT);
     }
 
     #[test]
@@ -1964,6 +2448,43 @@ mod tests {
         let mut app = chat_app("m1".into());
         app.finish_turn("the whole answer", &[], None);
         assert!(rendered(&app).contains("the whole answer"));
+    }
+
+    #[test]
+    fn blank_only_tokens_render_nothing() {
+        let mut app = chat_app("m1".into());
+        app.on_turn_event(TurnEvent::Token("\n\n\n".into()));
+        assert!(app.queue.is_empty(), "{:?}", rendered(&app));
+        app.end_message();
+        assert!(app.queue.is_empty(), "{:?}", rendered(&app));
+    }
+
+    #[test]
+    fn blank_lines_inside_a_message_survive() {
+        let mut app = chat_app("m1".into());
+        app.on_turn_event(TurnEvent::Token("first\n\nsecond\n".into()));
+        let out = rendered(&app);
+        assert!(out.contains("first"));
+        assert!(out.contains("second"));
+        assert_eq!(app.pending_blanks, 0);
+    }
+
+    #[test]
+    fn trailing_blank_lines_are_dropped_at_message_end() {
+        let mut app = chat_app("m1".into());
+        app.on_turn_event(TurnEvent::Token("done\n\n\n".into()));
+        app.end_message();
+        let rows: Vec<Line<'static>> = app.queue.iter().flatten().cloned().collect();
+        let last = rows
+            .last()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        assert!(last.contains("done"), "{last:?}");
     }
 
     #[test]

@@ -14,6 +14,12 @@ use crate::tui::wrap;
 /// A paste longer than this is folded into a placeholder so it cannot swallow
 /// the screen; the real text is restored on send.
 const FOLD_PASTE_OVER: usize = 240;
+/// A path token this long is folded into a `[@name]` reference so the composer
+/// and transcript stay readable. Short paths pass through untouched.
+const FOLD_PATH_MIN_LEN: usize = 28;
+/// Longest name shown inside a `[@name]` token; longer basenames are truncated
+/// with an ellipsis. The full path always survives in the reference block.
+const MAX_TOKEN_CHARS: usize = 40;
 
 #[derive(Default)]
 pub(super) struct Composer {
@@ -28,6 +34,9 @@ pub(super) struct Composer {
     stash: String,
     /// Placeholder text mapped to the full paste it stands for.
     folded: Vec<(String, String)>,
+    /// `[@name]` token mapped to the full cleaned path it stands for. The
+    /// tokens stay in the sent text; the paths ride along as a reference block.
+    refs: Vec<(String, String)>,
 }
 
 impl Composer {
@@ -188,7 +197,9 @@ impl Composer {
     }
 
     /// Hand the draft over for sending: folded pastes are expanded and the raw
-    /// draft is remembered for recall.
+    /// draft is remembered for recall. Returns the text with long paths folded
+    /// into `[@name]` tokens; call [`Self::take_refs`] for the paths they stand
+    /// for.
     pub(super) fn take(&mut self) -> String {
         let draft = std::mem::take(&mut self.text);
         self.cursor = 0;
@@ -197,9 +208,17 @@ impl Composer {
         if self.sent.last() != Some(&draft) {
             self.sent.push(draft.clone());
         }
-        self.folded
+        let expanded = self
+            .folded
             .drain(..)
-            .fold(draft, |acc, (mark, full)| acc.replace(&mark, &full))
+            .fold(draft, |acc, (mark, full)| acc.replace(&mark, &full));
+        self.fold_paths(&expanded)
+    }
+
+    /// Drain the `[@name]` → full-path references collected by folding, to be
+    /// attached to the message as a resolvable block.
+    pub(super) fn take_refs(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.refs)
     }
 
     pub(super) fn clear(&mut self) {
@@ -207,6 +226,53 @@ impl Composer {
         self.cursor = 0;
         self.recall = None;
         self.folded.clear();
+        self.refs.clear();
+    }
+
+    /// Replace path-like tokens with `[@name]` placeholders, recording each
+    /// token's full path in [`Self::refs`]. Tokens may contain shell-escaped
+    /// spaces (`Screen\ Recording\ 2026-08-01\ AM.mov`), so a space only ends a
+    /// token when it is not preceded by a backslash. Short paths, and anything
+    /// that does not look like a path, pass through untouched.
+    fn fold_paths(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let bytes = text.as_bytes();
+        let mut start = 0;
+        let mut i = 0;
+        while i < text.len() {
+            let ch = text[i..].chars().next().expect("i on a char boundary");
+            if ch.is_whitespace() {
+                // A backslash-escaped space is part of the same path token.
+                if i > 0 && bytes[i - 1] == b'\\' {
+                    i += ch.len_utf8();
+                    continue;
+                }
+                self.fold_token(&text[start..i], &mut out);
+                out.push(ch);
+                i += ch.len_utf8();
+                start = i;
+            } else {
+                i += ch.len_utf8();
+            }
+        }
+        self.fold_token(&text[start..], &mut out);
+        out
+    }
+
+    fn fold_token(&mut self, token: &str, out: &mut String) {
+        let Some(cleaned) = clean_path(token) else {
+            out.push_str(token);
+            return;
+        };
+        if cleaned.len() < FOLD_PATH_MIN_LEN && !token.contains('\\') {
+            out.push_str(token);
+            return;
+        }
+        let mark = format!("[@{}]", short_name(&cleaned));
+        if !self.refs.iter().any(|(t, _)| t == &mark) {
+            self.refs.push((mark.clone(), cleaned));
+        }
+        out.push_str(&mark);
     }
 
     /// Columns available to the text, after the `❯ ` prompt.
@@ -346,6 +412,76 @@ impl Composer {
 
         (lines, ((cursor_row - top) as u16, (cursor_col + 2) as u16))
     }
+}
+
+/// If `token` looks like a path, return it with shell escapes removed so it is
+/// a usable filesystem path; otherwise `None`. A token must contain a path
+/// separator and be absolute, relative (`./`, `../`, `~/`), a Windows drive, or
+/// end in a short file extension.
+fn clean_path(token: &str) -> Option<String> {
+    let has_sep = token.contains('/') || token.contains('\\');
+    if !has_sep {
+        return None;
+    }
+    let b = token.as_bytes();
+    let looks_like_path = token.starts_with('/')
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || token.starts_with('~')
+        || (b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+        || file_extension(token);
+    looks_like_path.then(|| unescape(token))
+}
+
+/// Drop a backslash that escapes a following space (`\ ` → space). Windows
+/// separator backslashes (`C:\Users`) are left intact.
+fn unescape(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut i = 0;
+    while i < token.len() {
+        let ch = token[i..].chars().next().expect("i on a char boundary");
+        if ch == '\\' {
+            let next = token[i + ch.len_utf8()..].chars().next();
+            if matches!(next, Some(c) if c.is_whitespace()) {
+                i += ch.len_utf8();
+                continue;
+            }
+        }
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// The basename of a path, truncated with an ellipsis (extension preserved)
+/// when it would overflow a `[@name]` token.
+fn short_name(cleaned: &str) -> String {
+    let base = cleaned.rsplit(['/', '\\']).next().unwrap_or(cleaned);
+    let chars: Vec<char> = base.chars().collect();
+    if chars.len() <= MAX_TOKEN_CHARS {
+        return base.to_string();
+    }
+    let ext: Vec<char> = match base.rsplit_once('.') {
+        Some((_, e)) if !e.is_empty() && e.chars().count() <= 8 => {
+            std::iter::once('.').chain(e.chars()).collect()
+        }
+        _ => Vec::new(),
+    };
+    let head = MAX_TOKEN_CHARS.saturating_sub(ext.len() + 1);
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(ext);
+    out
+}
+
+/// True when the final path segment ends in a short extension like `.mov` or
+/// `.rs`, which is a strong path signal even without a leading separator hint.
+fn file_extension(token: &str) -> bool {
+    let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    matches!(
+        base.rsplit_once('.'),
+        Some((name, ext)) if !name.is_empty() && !ext.is_empty() && ext.chars().count() <= 8
+    )
 }
 
 fn prompt_span(first: bool) -> Span<'static> {
@@ -511,5 +647,78 @@ mod tests {
         c.cancel_mention(start);
         assert_eq!(c.text(), "fix ");
         assert_eq!(c.cursor, "fix ".len());
+    }
+
+    #[test]
+    fn an_escaped_absolute_path_folds_and_records_a_clean_reference() {
+        let mut c = Composer::default();
+        c.insert_str(
+            "look at /Users/chizi/Desktop/Screen\\ Recording\\ 2026-08-01\\ at\\ 10.52.58\\ AM.mov ok",
+        );
+        let text = c.take();
+        assert!(text.contains("[@"), "got: {text}");
+        assert!(
+            !text.contains("Screen\\"),
+            "escape leaked into sent text: {text}"
+        );
+        let refs = c.take_refs();
+        assert_eq!(refs.len(), 1);
+        let (mark, path) = &refs[0];
+        assert_eq!(
+            path,
+            "/Users/chizi/Desktop/Screen Recording 2026-08-01 at 10.52.58 AM.mov"
+        );
+        assert!(
+            text.contains(mark),
+            "sent text missing its own token: {text}"
+        );
+    }
+
+    #[test]
+    fn a_short_repo_path_is_left_alone() {
+        let mut c = Composer::default();
+        c.insert_str("see src/main.rs");
+        let text = c.take();
+        assert_eq!(text, "see src/main.rs");
+        assert!(c.take_refs().is_empty());
+    }
+
+    #[test]
+    fn a_non_path_token_is_left_alone() {
+        let mut c = Composer::default();
+        c.insert_str("the ratio a/b is fine");
+        let text = c.take();
+        assert_eq!(text, "the ratio a/b is fine");
+        assert!(c.take_refs().is_empty());
+    }
+
+    #[test]
+    fn identical_paths_fold_to_one_reference() {
+        let mut c = Composer::default();
+        let p = "/a/very/long/directory/that/keeps/going/deep/file.rs";
+        c.insert_str(&format!("{p} then {p}"));
+        let text = c.take();
+        assert_eq!(c.take_refs().len(), 1);
+        assert_eq!(text.matches("[@file.rs]").count(), 2);
+    }
+
+    #[test]
+    fn a_windows_path_folds_to_its_basename() {
+        let mut c = Composer::default();
+        c.insert_str("open C:\\Users\\Alice\\Documents\\report.docx now");
+        let text = c.take();
+        assert!(text.contains("[@report.docx]"), "got: {text}");
+        let (mark, path) = c.take_refs().pop().unwrap();
+        assert_eq!(mark, "[@report.docx]");
+        assert_eq!(path, "C:\\Users\\Alice\\Documents\\report.docx");
+    }
+
+    #[test]
+    fn take_refs_is_drained_after_use() {
+        let mut c = Composer::default();
+        c.insert_str("open /some/long/directory/prefix/report.pdf now");
+        c.take();
+        assert_eq!(c.take_refs().len(), 1);
+        assert!(c.take_refs().is_empty());
     }
 }

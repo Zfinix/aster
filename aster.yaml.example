@@ -60,13 +60,17 @@ permissions:
   allow_exec: []             # e.g. ["cargo", "rg", "fd", "npm", "node", "python"]
   deny_exec: []             # always blocked, e.g. ["rm", "sudo", "curl"]
 
-# Limits on one agent turn. Env overrides: ASTER_MAX_TOOL_ROUNDS, ASTER_COMMAND_TIMEOUT.
+# Limits on one agent turn. Env overrides: ASTER_MAX_TOOL_ROUNDS,
+# ASTER_COMMAND_TIMEOUT, ASTER_COMPACT_BUDGET.
 agent:
   # Tool rounds before the agent has to answer with what it has. It says so
   # when it hits this, rather than quietly wrapping up.
   max_tool_rounds: 60
   # Seconds one `run_command` may take. Builds and test suites live here.
   command_timeout_secs: 300
+  # History size (chars) above which older turns are compacted into a summary.
+  # Lower it for small-context models.
+  compact_budget_chars: 192000
 
 # MCP servers that give the agent extra tools. `aster mcp list` shows what they
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.

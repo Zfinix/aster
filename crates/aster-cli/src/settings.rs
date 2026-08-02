@@ -24,6 +24,9 @@ pub struct Agent {
     pub max_tool_rounds: Option<usize>,
     /// Seconds a `run_command` call may run before it is killed.
     pub command_timeout_secs: Option<u64>,
+    /// History size (chars) above which older turns are compacted into a
+    /// summary. Lower it for small-context models.
+    pub compact_budget_chars: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -93,6 +96,10 @@ impl Settings {
                     .agent
                     .command_timeout_secs
                     .or(self.agent.command_timeout_secs),
+                compact_budget_chars: project
+                    .agent
+                    .compact_budget_chars
+                    .or(self.agent.compact_budget_chars),
             },
         }
     }
@@ -165,6 +172,80 @@ fn parse(path: &Path) -> Result<Settings> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     serde_yaml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Save review settings where the next start will read them: the repo's config
+/// when one exists, else the global one (created if need be). The file is
+/// edited line by line so comments and layout survive.
+pub fn persist_review(
+    repo_root: Option<&Path>,
+    pairs: &[(&str, &str)],
+) -> Result<std::path::PathBuf> {
+    let project = repo_root.and_then(|root| {
+        ["aster.yaml", "aster.yml", ".aster.yaml"]
+            .iter()
+            .map(|name| root.join(name))
+            .find(|path| path.exists())
+    });
+    let path = match project {
+        Some(path) => path,
+        None => dirs::home_dir()
+            .context("no home directory for the global config")?
+            .join(".aster/aster.yaml"),
+    };
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    for (key, value) in pairs {
+        text = with_review_key(&text, key, value);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Rewrite one `review.<key>` in place, adding the key or the whole block when
+/// missing. Everything else in the file is left byte for byte.
+fn with_review_key(text: &str, key: &str, value: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let Some(review) = lines
+        .iter()
+        .position(|l| l.trim_end() == "review:" && !l.starts_with([' ', '\t']))
+    else {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&format!("review:\n  {key}: {value}\n"));
+        return out;
+    };
+
+    let mut insert_at = lines.len();
+    for i in review + 1..lines.len() {
+        let line = &lines[i];
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            insert_at = i;
+            break;
+        }
+        if line.trim_start().starts_with(&format!("{key}:")) {
+            lines[i] = format!("{}{key}: {value}", " ".repeat(indent));
+            return rejoin(&lines, text);
+        }
+    }
+    lines.insert(insert_at, format!("  {key}: {value}"));
+    rejoin(&lines, text)
+}
+
+fn rejoin(lines: &[String], original: &str) -> String {
+    let mut out = lines.join("\n");
+    if original.ends_with('\n') || original.is_empty() {
+        out.push('\n');
+    }
+    out
 }
 
 /// Compiled include/exclude matcher for file paths.
@@ -266,6 +347,41 @@ pub fn filter_diff(diff: &str, filter: &PathFilter) -> String {
 mod tests {
     use super::*;
     use aster_policy::{Action, Decision, Policy};
+
+    #[test]
+    fn review_key_rewrite_keeps_comments() {
+        let yaml = "\
+# reviewed by the team
+review:
+  base_url: https://openrouter.ai/api/v1
+  model: old-model  # picked long ago
+permissions:
+  mode: auto
+";
+        let out = with_review_key(yaml, "model", "new-model");
+        assert!(out.contains("  model: new-model"), "{out}");
+        assert!(!out.contains("old-model"), "{out}");
+        assert!(out.contains("# reviewed by the team"), "{out}");
+        assert!(out.contains("mode: auto"), "{out}");
+    }
+
+    #[test]
+    fn review_key_is_added_inside_an_existing_block() {
+        let yaml = "review:\n  base_url: https://x.test/v1\npermissions:\n  mode: auto\n";
+        let out = with_review_key(yaml, "model", "m1");
+        let review = out.find("review:").unwrap();
+        let perms = out.find("permissions:").unwrap();
+        let model = out.find("  model: m1").unwrap();
+        assert!(review < model && model < perms, "{out}");
+    }
+
+    #[test]
+    fn review_block_is_created_when_the_file_lacks_one() {
+        assert_eq!(with_review_key("", "model", "m1"), "review:\n  model: m1\n");
+        let out = with_review_key("permissions:\n  mode: auto\n", "model", "m1");
+        assert!(out.ends_with("review:\n  model: m1\n"), "{out}");
+        assert!(out.starts_with("permissions:"), "{out}");
+    }
 
     #[test]
     fn permissions_absent_defaults_to_permissive_edits() {

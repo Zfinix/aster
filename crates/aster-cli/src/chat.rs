@@ -45,6 +45,9 @@ pub(crate) struct SessionCtx {
 pub(crate) struct Limits {
     pub max_tool_rounds: usize,
     pub command_timeout_secs: usize,
+    /// History size (chars) above which older turns are compacted. Lower it
+    /// for small-context models.
+    pub compact_budget_chars: usize,
 }
 
 impl Default for Limits {
@@ -52,6 +55,7 @@ impl Default for Limits {
         Self {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
+            compact_budget_chars: COMPACT_BUDGET_CHARS,
         }
     }
 }
@@ -69,6 +73,10 @@ impl Limits {
                 .or(agent.command_timeout_secs.map(|v| v as usize))
                 .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS)
                 .max(1),
+            compact_budget_chars: env_usize("ASTER_COMPACT_BUDGET")
+                .or(agent.compact_budget_chars)
+                .unwrap_or(COMPACT_BUDGET_CHARS)
+                .max(COMPACT_KEEP_TAIL * 1_000),
         }
     }
 }
@@ -114,7 +122,7 @@ impl SessionCtx {
         }
     }
 
-    fn record_summary(&self, content: &str, replaces_through: usize) {
+    pub(crate) fn record_summary(&self, content: &str, replaces_through: usize) {
         let Some(recorder) = &self.recorder else {
             return;
         };
@@ -282,8 +290,10 @@ const MAX_PATH_SUGGESTIONS: usize = 8;
 /// Maximum seconds a command may run before it is killed. Builds and test
 /// suites live here, so it is minutes; `agent.command_timeout_secs` overrides.
 const DEFAULT_COMMAND_TIMEOUT_SECS: usize = 300;
-/// Total history size (chars) above which older turns are folded into a summary.
-const COMPACT_BUDGET_CHARS: usize = 48_000;
+/// Total history size (chars) above which older turns are folded into a
+/// summary. Roughly 48k tokens: roomy for 128k-context models, since every
+/// compaction costs a summarize round-trip and loses detail the agent re-reads.
+const COMPACT_BUDGET_CHARS: usize = 192_000;
 /// Recent turns kept verbatim when compacting; everything older is summarized.
 const COMPACT_KEEP_TAIL: usize = 6;
 
@@ -299,9 +309,21 @@ paths the tool offers and try again. \
 `replace`. \
 `run_command` runs a CLI tool or build command. Filesystem writes are \
 restricted to the repo and temp directories, and secrets are dropped from \
-the environment. Use it for builds, tests, and linters. Do not shell out \
+the environment. Use it for builds, tests, and linters. It can also reach \
+the network: prefer `curl` (or a similar CLI) for fetching URLs and calling \
+APIs before suggesting a browser-based tool. Do not shell out \
 to `rg`, `grep`, `find`, or `fd`: `search_files` and `find_files` already \
 run them directly, without the overhead. \
+Tool rounds are the slow part of a turn: each one costs a full model \
+round-trip, while the tools themselves are nearly instant. Batch independent \
+tool calls into one response — read several files at once, run a search and \
+a find together — instead of one call per response. Read a generous line \
+range the first time instead of re-reading the same file window by window. \
+Stop gathering as soon as you can act or answer: do not re-verify what you \
+already read, and do not explore beyond what the task needs. \
+When a user message contains `[@name]` tokens, each token's full path is \
+listed beneath the message as `[@name]: /full/path`. Resolve the token from \
+that list rather than guessing a path. \
 Set `turbo: true` when the user asks to work offline or in turbo mode \
 (blocks network access). Set `yolo: true` only when the user explicitly \
 asks for yolo mode (no restrictions). \
@@ -946,18 +968,53 @@ async fn agent_loop(
                 "name": call.function.name,
                 "arguments": call.function.arguments,
             }));
-            let result = exec_tool(
-                repo_root,
-                &mut allow_edits,
-                policy,
-                grants,
-                approver,
-                &call.function.name,
-                &call.function.arguments,
-                edited,
-                ctx,
-            )
-            .await;
+        }
+        // A batch of pure reads runs on parallel threads. Any stateful call
+        // keeps the whole round sequential so this-then-that ordering holds.
+        let mut prefetched: Vec<Option<String>> = vec![None; msg.tool_calls.len()];
+        let all_reads = msg
+            .tool_calls
+            .iter()
+            .all(|c| PARALLEL_READ_TOOLS.contains(&c.function.name.as_str()));
+        if all_reads && msg.tool_calls.len() > 1 {
+            // spawn_blocking fans the synchronous reads out on the blocking
+            // pool, so this worker stays free to run other tasks meanwhile.
+            let handles: Vec<_> = msg
+                .tool_calls
+                .iter()
+                .map(|call| {
+                    let repo_root = repo_root.to_path_buf();
+                    let policy = policy.clone();
+                    let ctx = ctx.clone();
+                    let name = call.function.name.clone();
+                    let arguments = call.function.arguments.clone();
+                    tokio::task::spawn_blocking(move || {
+                        read_only_call(&repo_root, &policy, &ctx, &name, &arguments)
+                    })
+                })
+                .collect();
+            for (slot, handle) in prefetched.iter_mut().zip(handles) {
+                *slot = handle.await.unwrap_or_default();
+            }
+        }
+        for (call, prefetched) in msg.tool_calls.iter().zip(prefetched) {
+            let result = match prefetched {
+                Some(result) => result,
+                None => {
+                    exec_tool(
+                        repo_root,
+                        &mut allow_edits,
+                        policy,
+                        grants,
+                        approver,
+                        &call.function.name,
+                        &call.function.arguments,
+                        edited,
+                        ctx,
+                    )
+                    .await
+                }
+            };
             tracing::debug!(tool = %call.function.name, "tool call executed");
             let result = truncate(&result, MAX_TOOL_RESULT_CHARS);
             emit(json!({
@@ -1015,21 +1072,32 @@ async fn compact_if_needed(
     ctx: &SessionCtx,
 ) -> Result<(Vec<ChatMessage>, Option<Vec<ChatMessage>>)> {
     let total: usize = history.iter().map(|m| m.content.len()).sum();
-    if total <= COMPACT_BUDGET_CHARS || history.len() <= COMPACT_KEEP_TAIL + 2 {
+    if total <= ctx.limits.compact_budget_chars || history.len() <= COMPACT_KEEP_TAIL + 2 {
         return Ok((history.to_vec(), None));
     }
+    let (compacted, summary, split) = compact_now(client, history).await?;
+    ctx.record_summary(&summary, split);
+    Ok((compacted.clone(), Some(compacted)))
+}
 
+/// Fold everything but the last few turns into a summary, unconditionally.
+/// Returns the folded history plus the summary and split for the transcript.
+pub(crate) async fn compact_now(
+    client: &AiClient,
+    history: &[ChatMessage],
+) -> Result<(Vec<ChatMessage>, String, usize)> {
+    if history.len() <= COMPACT_KEEP_TAIL + 2 {
+        bail!("nothing to compact yet");
+    }
     let split = history.len().saturating_sub(COMPACT_KEEP_TAIL);
     let summary = summarize(client, &history[..split]).await?;
-    ctx.record_summary(&summary, split);
-
     let mut compacted = Vec::with_capacity(COMPACT_KEEP_TAIL + 1);
     compacted.push(ChatMessage {
         role: "assistant".into(),
         content: format!("Summary of earlier conversation:\n{summary}"),
     });
     compacted.extend(history[split..].iter().cloned());
-    Ok((compacted.clone(), Some(compacted)))
+    Ok((compacted, summary, split))
 }
 
 async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
@@ -1431,6 +1499,86 @@ async fn exec_tool(
         )),
     };
     result.unwrap_or_else(|e| format!("error: {e:#}"))
+}
+
+/// Tools a round may run on parallel threads: read-only, no approval prompts,
+/// no ordering against edits or commands.
+const PARALLEL_READ_TOOLS: [&str; 6] = [
+    "read_file",
+    "list_files",
+    "search_files",
+    "find_files",
+    "recall",
+    "read_skill",
+];
+
+/// Run one read-only call without the approval machinery. `None` sends the
+/// call back to the sequential pass, which can prompt for outside-repo paths
+/// and report argument errors.
+fn read_only_call(
+    repo_root: &Path,
+    policy: &Policy,
+    ctx: &SessionCtx,
+    name: &str,
+    arguments: &str,
+) -> Option<String> {
+    let args: Value = serde_json::from_str(arguments).ok()?;
+    let str_arg = |key: &str| args[key].as_str().map(str::to_string);
+    let resolve_dir =
+        |dir: &Option<String>| match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            Some(dir) => resolve_in_repo(repo_root, policy, dir),
+            None => Some(Ok(repo_root.to_path_buf())),
+        };
+
+    let result = match name {
+        "read_file" => {
+            let path = str_arg("path")?;
+            if !edits::exists_anywhere(repo_root, &path) {
+                return Some(missing_path(repo_root, &path));
+            }
+            match resolve_in_repo(repo_root, policy, &path)? {
+                Ok(target) => read_numbered(
+                    &target,
+                    args["start_line"].as_u64().map(|n| n as usize),
+                    args["end_line"].as_u64().map(|n| n as usize),
+                ),
+                Err(e) => Err(e),
+            }
+        }
+        "list_files" => match missing_dir(repo_root, &str_arg("dir")) {
+            Some(dir) => return Some(missing_path(repo_root, &dir)),
+            None => match resolve_dir(&str_arg("dir"))? {
+                Ok(base) => list_files(&ctx.probe, &base),
+                Err(e) => Err(e),
+            },
+        },
+        "search_files" => {
+            let query = str_arg("query")?;
+            match missing_dir(repo_root, &str_arg("dir")) {
+                Some(dir) => search_files(&ctx.probe, repo_root, policy, &query, repo_root)
+                    .map(|hits| widened(&dir, hits)),
+                None => match resolve_dir(&str_arg("dir"))? {
+                    Ok(base) => search_files(&ctx.probe, repo_root, policy, &query, &base),
+                    Err(e) => Err(e),
+                },
+            }
+        }
+        "find_files" => {
+            let pattern = str_arg("pattern")?;
+            match missing_dir(repo_root, &str_arg("dir")) {
+                Some(dir) => bash_tools::find(repo_root, repo_root, &pattern, MAX_FIND_HITS)
+                    .map(|hits| widened(&dir, hits)),
+                None => match resolve_dir(&str_arg("dir"))? {
+                    Ok(base) => bash_tools::find(repo_root, &base, &pattern, MAX_FIND_HITS),
+                    Err(e) => Err(e),
+                },
+            }
+        }
+        "recall" => recall(ctx, &str_arg("name")?),
+        "read_skill" => read_skill(ctx, &str_arg("name")?),
+        _ => return None,
+    };
+    Some(result.unwrap_or_else(|e| format!("error: {e:#}")))
 }
 
 fn tool_names(allow_edits: bool, has_approver: bool) -> Vec<String> {
@@ -1847,6 +1995,26 @@ fn grant_root(resolved: &Path) -> PathBuf {
     resolved.parent().unwrap_or(resolved).to_path_buf()
 }
 
+/// Sync resolution for in-repo reads, usable off the async loop. `None` means
+/// the path leaves the repo and needs the approval flow.
+fn resolve_in_repo(repo_root: &Path, policy: &Policy, path: &str) -> Option<Result<PathBuf>> {
+    let (resolved, scope) = match edits::resolve_anywhere(repo_root, path) {
+        Ok(pair) => pair,
+        Err(e) => return Some(Err(e)),
+    };
+    if !matches!(scope, edits::Scope::InRepo) {
+        return None;
+    }
+    let root = repo_root.canonicalize().unwrap_or_default();
+    let relative = resolved.strip_prefix(&root).unwrap_or(&resolved);
+    if let Decision::Deny { reason } = policy.evaluate(&Action::Read {
+        path: &relative.to_string_lossy(),
+    }) {
+        return Some(Err(anyhow::anyhow!("{reason}")));
+    }
+    Some(Ok(resolved))
+}
+
 /// Resolve a path the agent wants to read. In-repo paths go through the
 /// policy's secret-read rules; anything outside the repo is gated on the
 /// user's approval, which a headless run cannot give.
@@ -1858,17 +2026,12 @@ async fn resolve_for_read(
     ctx: &SessionCtx,
     path: &str,
 ) -> Result<PathBuf> {
+    if let Some(result) = resolve_in_repo(repo_root, policy, path) {
+        return result;
+    }
     let (resolved, scope) = edits::resolve_anywhere(repo_root, path)?;
     match scope {
-        edits::Scope::InRepo => {
-            let root = repo_root.canonicalize().unwrap_or_default();
-            let relative = resolved.strip_prefix(&root).unwrap_or(&resolved);
-            if let Decision::Deny { reason } = policy.evaluate(&Action::Read {
-                path: &relative.to_string_lossy(),
-            }) {
-                bail!("{reason}");
-            }
-        }
+        edits::Scope::InRepo => {}
         edits::Scope::Outside if !grants.allows(&resolved) => {
             // Grant the directory, not the file, so the rest of the session can
             // read its siblings without another prompt.
@@ -2070,10 +2233,12 @@ mod tests {
         let agent = crate::settings::Agent {
             max_tool_rounds: Some(9),
             command_timeout_secs: Some(11),
+            compact_budget_chars: Some(64_000),
         };
         let limits = Limits::resolve(&agent);
         assert_eq!(limits.max_tool_rounds, 9);
         assert_eq!(limits.command_timeout_secs, 11);
+        assert_eq!(limits.compact_budget_chars, 64_000);
     }
 
     #[test]
@@ -2155,6 +2320,36 @@ mod tests {
             ctx,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn read_only_call_matches_the_sequential_path() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+        let ctx = SessionCtx::default();
+        let args = json!({ "path": "a.txt" });
+        let parallel = read_only_call(
+            repo.path(),
+            &Policy::permissive(),
+            &ctx,
+            "read_file",
+            &args.to_string(),
+        )
+        .unwrap();
+        let sequential =
+            run_tool_with(repo.path(), &mut false, None, &ctx, "read_file", args).await;
+        assert_eq!(parallel, sequential);
+    }
+
+    #[test]
+    fn read_only_call_defers_outside_paths_and_stateful_tools() {
+        let repo = tempfile::tempdir().unwrap();
+        let ctx = SessionCtx::default();
+        let policy = Policy::permissive();
+        let outside = json!({ "path": "/etc/hosts" }).to_string();
+        assert!(read_only_call(repo.path(), &policy, &ctx, "read_file", &outside).is_none());
+        assert!(read_only_call(repo.path(), &policy, &ctx, "run_command", "{}").is_none());
+        assert!(read_only_call(repo.path(), &policy, &ctx, "edit_file", "{}").is_none());
     }
 
     fn steps(pairs: &[(&str, &str)]) -> Value {
