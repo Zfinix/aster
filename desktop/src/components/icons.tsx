@@ -194,6 +194,16 @@ export const ShieldCheckIcon = ({ size = 15 }: P) => (
   </svg>
 );
 
+export const ScanIcon = ({ size = 15 }: P) => (
+  <svg {...s(size)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2.5 5 V3.5 A1 1 0 0 1 3.5 2.5 H5" />
+    <path d="M11 2.5 H12.5 A1 1 0 0 1 13.5 3.5 V5" />
+    <path d="M13.5 11 V12.5 A1 1 0 0 1 12.5 13.5 H11" />
+    <path d="M5 13.5 H3.5 A1 1 0 0 1 2.5 12.5 V11" />
+    <line x1="2.5" y1="8" x2="13.5" y2="8" />
+  </svg>
+);
+
 export const GearIcon = ({ size = 16 }: P) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3" />

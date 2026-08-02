@@ -208,7 +208,7 @@ function App() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     () => {
       const m = localStorage.getItem("aster.permissionMode");
-      return m === "plan" || m === "auto" || m === "edit" ? m : "manual";
+      return m === "plan" || m === "auto" || m === "edit" || m === "yolo" ? m : "manual";
     },
   );
   const onPermissionMode = useCallback((m: PermissionMode) => {
@@ -792,6 +792,7 @@ function App() {
   const composer: ComposerBinding = useMemo(
     () => ({
       intent: homeIntent,
+      onIntent: setHomeIntent,
       prompt,
       setPrompt,
       onAsk,
