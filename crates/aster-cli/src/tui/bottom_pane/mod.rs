@@ -80,10 +80,57 @@ pub(super) enum InputResult {
     Busy,
 }
 
-/// Cap the file index so huge repos stay cheap.
-const MAX_FILE_INDEX: usize = 20_000;
 /// Max mention suggestions shown at once.
 const MAX_MENTION_MATCHES: usize = 8;
+/// Cap on walked entries per search; outside a repo (a launch from `~`, say)
+/// the tree is effectively unbounded and no `.gitignore` applies.
+const MAX_WALK_ENTRIES: usize = 20_000;
+/// Matches collected before ranking; enough to rank well, small enough to
+/// stop the walk early in a dense tree.
+const MAX_CANDIDATES: usize = 256;
+
+/// Search `root` for files matching the `@` query, best matches first: file
+/// names that start with it, then contain it, then paths that contain it.
+/// Bounded and blocking: run it off the UI task, once per keystroke.
+pub(super) fn scan_mentions(root: &Path, query: &str) -> Vec<String> {
+    let lower = query.to_lowercase();
+    let mut candidates: Vec<(u8, usize, String)> = Vec::new();
+    let walk = WalkBuilder::new(root)
+        .git_ignore(true)
+        .hidden(false)
+        .build();
+    for entry in walk.take(MAX_WALK_ENTRIES).flatten() {
+        if candidates.len() >= MAX_CANDIDATES {
+            break;
+        }
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        let path = rel.to_string_lossy().into_owned();
+        let rank = if lower.is_empty() {
+            2
+        } else {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.starts_with(&lower) {
+                0
+            } else if name.contains(&lower) {
+                1
+            } else if path.to_lowercase().contains(&lower) {
+                2
+            } else {
+                continue;
+            }
+        };
+        candidates.push((rank, rel.components().count(), path));
+    }
+    // Shallower paths win within a rank, so root-level files surface first.
+    candidates.sort();
+    candidates.truncate(MAX_MENTION_MATCHES);
+    candidates.into_iter().map(|(_, _, p)| p).collect()
+}
 
 pub(super) struct BottomPane<E> {
     pub(super) composer: Composer,
@@ -95,8 +142,12 @@ pub(super) struct BottomPane<E> {
     frames: FrameRequester,
     tx: mpsc::UnboundedSender<E>,
     on_approval: fn(Answer, Option<PathBuf>) -> E,
+    on_mention: fn(String) -> E,
     task_running: bool,
-    file_index: Vec<String>,
+    /// The `@` query the owner was last asked to search for.
+    mention_query: Option<String>,
+    /// Ranked results for `mention_query`, delivered asynchronously.
+    mention_results: Vec<String>,
     mention_sel: usize,
     /// Where the clickable things landed on the last draw. Rendering takes
     /// `&self`, so these are recorded rather than returned.
@@ -112,6 +163,7 @@ impl<E: Clone + 'static> BottomPane<E> {
         frames: FrameRequester,
         tx: mpsc::UnboundedSender<E>,
         on_approval: fn(Answer, Option<PathBuf>) -> E,
+        on_mention: fn(String) -> E,
     ) -> Self {
         Self {
             composer: Composer::default(),
@@ -123,8 +175,10 @@ impl<E: Clone + 'static> BottomPane<E> {
             frames,
             tx,
             on_approval,
+            on_mention,
             task_running: false,
-            file_index: Vec::new(),
+            mention_query: None,
+            mention_results: Vec::new(),
             mention_sel: 0,
             view_area: Cell::new(None),
             menu_area: Cell::new(None),
@@ -204,6 +258,7 @@ impl<E: Clone + 'static> BottomPane<E> {
             if let Some(row) = row_within(area, ev) {
                 self.mention_sel = row as usize;
                 self.complete_selected_mention(start);
+                self.sync_mentions();
             }
         }
         InputResult::None
@@ -261,6 +316,7 @@ impl<E: Clone + 'static> BottomPane<E> {
             top.handle_paste(text);
         } else {
             self.composer.paste(&text);
+            self.sync_mentions();
         }
         self.frames.schedule_now();
     }
@@ -274,7 +330,9 @@ impl<E: Clone + 'static> BottomPane<E> {
             }
             return InputResult::None;
         }
-        self.composer_key(key, width)
+        let result = self.composer_key(key, width);
+        self.sync_mentions();
+        result
     }
 
     fn composer_key(&mut self, key: KeyEvent, width: u16) -> InputResult {
@@ -286,9 +344,9 @@ impl<E: Clone + 'static> BottomPane<E> {
         // Mention menu owns these keys when open; slash menu is mutually exclusive.
         if mention_open
             && !menu_open
-            && let Some((start, query)) = self.composer.mention_context()
+            && let Some((start, _)) = self.composer.mention_context()
         {
-            let matches = self.mention_matches(query);
+            let matches = self.mention_matches();
             if !matches.is_empty() {
                 match key.code {
                     KeyCode::Up => {
@@ -488,72 +546,59 @@ impl<E: Clone + 'static> BottomPane<E> {
         )
     }
 
-    /// Walk the repo root, respecting `.gitignore`, and collect up to
-    /// `MAX_FILE_INDEX` repo-relative paths.
-    pub(super) fn build_file_index(&mut self, root: &Path) {
-        let mut paths: Vec<String> = WalkBuilder::new(root)
-            .git_ignore(true)
-            .hidden(false)
-            .build()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .filter_map(|e| {
-                e.path()
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|p| p.to_string_lossy().into_owned())
-            })
-            .collect();
-        // Sort before capping, so a big repo loses the deepest paths rather
-        // than whatever the walk happened to reach last.
-        paths.sort();
-        paths.truncate(MAX_FILE_INDEX);
-        self.file_index = paths;
+    /// Ask the owner to search when the `@` query changed since the last
+    /// look. Results land later via [`Self::set_mention_results`].
+    fn sync_mentions(&mut self) {
+        let query = self.composer.mention_context().map(|(_, q)| q.to_string());
+        if query == self.mention_query {
+            return;
+        }
+        self.mention_query = query.clone();
+        self.mention_sel = 0;
+        if let Some(q) = query {
+            let _ = self.tx.send((self.on_mention)(q));
+        } else {
+            self.mention_results.clear();
+        }
     }
 
-    /// Substring match against `file_index`, returning up to `MAX_MENTION_MATCHES`.
-    fn mention_matches(&self, query: &str) -> Vec<&str> {
-        if query.is_empty() {
-            return self
-                .file_index
-                .iter()
-                .take(MAX_MENTION_MATCHES)
-                .map(String::as_str)
-                .collect();
+    /// Stale answers (the query moved on while the walk ran) are dropped.
+    pub(super) fn set_mention_results(&mut self, query: &str, paths: Vec<String>) {
+        if self.mention_query.as_deref() == Some(query) {
+            self.mention_results = paths;
+            self.mention_sel = 0;
+            self.frames.schedule_now();
         }
-        let lower = query.to_lowercase();
-        self.file_index
+    }
+
+    fn mention_matches(&self) -> Vec<&str> {
+        self.mention_results
             .iter()
-            .filter(|p| p.to_lowercase().contains(&lower))
             .take(MAX_MENTION_MATCHES)
             .map(String::as_str)
             .collect()
     }
 
     fn mention_move(&mut self, delta: isize) {
-        if let Some((_, query)) = self.composer.mention_context() {
-            let len = self.mention_matches(query).len();
-            if len > 0 {
-                let cur = self.mention_sel.min(len - 1) as isize;
-                self.mention_sel = (cur + delta).rem_euclid(len as isize) as usize;
-            }
+        let len = self.mention_matches().len();
+        if len > 0 {
+            let cur = self.mention_sel.min(len - 1) as isize;
+            self.mention_sel = (cur + delta).rem_euclid(len as isize) as usize;
         }
     }
 
     fn complete_selected_mention(&mut self, start: usize) {
-        if let Some((_, query)) = self.composer.mention_context() {
-            let matches = self.mention_matches(query);
-            let sel = self.mention_sel.min(matches.len().saturating_sub(1));
-            if let Some(path) = matches.get(sel).map(|p| p.to_string()) {
-                self.composer.complete_mention(start, &path);
-            }
+        let matches = self.mention_matches();
+        let sel = self.mention_sel.min(matches.len().saturating_sub(1));
+        if let Some(path) = matches.get(sel).map(|p| p.to_string()) {
+            self.composer.complete_mention(start, &path);
         }
         self.mention_sel = 0;
     }
 
     fn mention_lines(&self) -> Option<Vec<Line<'static>>> {
-        let (_, query) = self.composer.mention_context()?;
-        let matches = self.mention_matches(query);
+        self.composer.mention_context()?;
+        let matches = self.mention_matches();
         if matches.is_empty() {
             return None;
         }
