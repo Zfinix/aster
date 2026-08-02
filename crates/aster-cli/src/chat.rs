@@ -1,8 +1,9 @@
 //! `aster chat`: a conversational turn with an agentic read/list/search/edit tool loop.
 
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
@@ -39,6 +40,10 @@ pub(crate) struct SessionCtx {
     pub environment: Option<String>,
     /// YOLO mode: the session is running without sandbox restrictions.
     pub yolo: bool,
+    /// Ranges already read this turn, keyed by path and range, with the file's
+    /// modification time. A repeat read of an unchanged range is answered with
+    /// a pointer instead of a second full copy in the history.
+    pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
 }
 
 /// How long a turn may work before it has to answer, and how long one command
@@ -350,7 +355,12 @@ const CHAT_TEMPERATURE: f32 = 0.4;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
 /// Caps tool output so one fat file cannot blow the context.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
-/// Caps command output (stdout + stderr combined).
+/// Lines one open-ended `read_file` returns. A window with a resume hint beats
+/// a whole file cut off mid-line, which costs a blind re-read.
+const READ_WINDOW_LINES: usize = 600;
+/// Caps each of a command's streams, so one noisy build cannot spend the whole
+/// tool-result budget before the combined cap even applies.
+const MAX_STREAM_CHARS: usize = 10_000;
 const MAX_SEARCH_HITS: usize = 80;
 /// Lines shown either side of a hit, so a search usually answers on its own
 /// instead of costing a follow-up `read_file`.
@@ -387,12 +397,22 @@ APIs before suggesting a browser-based tool. Do not shell out \
 to `rg`, `grep`, `find`, or `fd`: `search_files` and `find_files` already \
 run them directly, without the overhead. \
 Tool rounds are the slow part of a turn: each one costs a full model \
-round-trip, while the tools themselves are nearly instant. Batch independent \
-tool calls into one response — read several files at once, run a search and \
-a find together — instead of one call per response. Read a generous line \
-range the first time instead of re-reading the same file window by window. \
-Stop gathering as soon as you can act or answer: do not re-verify what you \
-already read, and do not explore beyond what the task needs. \
+round-trip, while the tools themselves are nearly instant. Work in as few \
+rounds as the task allows:\n\
+- Batch independent calls into one response: several reads, or a search and a \
+find together, instead of one call per response.\n\
+- Search before you read. `search_files` returns the matching lines with \
+context, which usually answers the question without reading the file at all.\n\
+- Never re-read what is already in this conversation. A file you read earlier \
+is still above you; scroll back instead of calling the tool again.\n\
+- When you do need more of a file, ask for the specific range you are missing \
+rather than the whole file again.\n\
+- Get everything one command can give you in a single call: `git status`, \
+`git log`, and `git diff` variants belong in one `run_command` with `&&`, not \
+one round each. Bound noisy output with flags like `--stat`, `-n 20`, or \
+`| head`.\n\
+- Stop gathering as soon as you can act or answer: do not re-verify what you \
+already read, and do not explore beyond what the task needs.\n\
 When a user message contains `[@name]` tokens, each token's full path is \
 listed beneath the message as `[@name]: /full/path`. Resolve the token from \
 that list rather than guessing a path. \
@@ -661,6 +681,7 @@ fn prepare_turn(
         limits,
         environment: environment_note(repo_root),
         yolo: false,
+        reads: Default::default(),
     };
     // Record only the new user turn. On the wire path `new_turns` is the full
     // replayed history, whose earlier turns were recorded on previous calls.
@@ -1062,17 +1083,22 @@ async fn agent_loop(
         // A batch of pure reads runs on parallel threads. Any stateful call
         // keeps the whole round sequential so this-then-that ordering holds.
         let mut prefetched: Vec<Option<String>> = vec![None; msg.tool_calls.len()];
-        let all_reads = msg
+        // The reads in a batch fan out even when a command or edit sits beside
+        // them; those still run in order afterwards.
+        let reads: Vec<usize> = msg
             .tool_calls
             .iter()
-            .all(|c| PARALLEL_READ_TOOLS.contains(&c.function.name.as_str()));
-        if all_reads && msg.tool_calls.len() > 1 {
+            .enumerate()
+            .filter(|(_, c)| PARALLEL_READ_TOOLS.contains(&c.function.name.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        if reads.len() > 1 {
             // spawn_blocking fans the synchronous reads out on the blocking
             // pool, so this worker stays free to run other tasks meanwhile.
-            let handles: Vec<_> = msg
-                .tool_calls
+            let handles: Vec<_> = reads
                 .iter()
-                .map(|call| {
+                .map(|&i| {
+                    let call = &msg.tool_calls[i];
                     let repo_root = repo_root.to_path_buf();
                     let policy = policy.clone();
                     let ctx = ctx.clone();
@@ -1083,8 +1109,8 @@ async fn agent_loop(
                     })
                 })
                 .collect();
-            for (slot, handle) in prefetched.iter_mut().zip(handles) {
-                *slot = handle.await.unwrap_or_default();
+            for (&i, handle) in reads.iter().zip(handles) {
+                prefetched[i] = handle.await.unwrap_or_default();
             }
         }
         for (call, prefetched) in msg.tool_calls.iter().zip(prefetched) {
@@ -1511,7 +1537,8 @@ async fn exec_tool(
             }
             Ok(path) => {
                 match resolve_for_read(repo_root, policy, grants, approver, ctx, &path).await {
-                    Ok(target) => read_numbered(
+                    Ok(target) => cached_read(
+                        ctx,
                         &target,
                         args["start_line"].as_u64().map(|n| n as usize),
                         args["end_line"].as_u64().map(|n| n as usize),
@@ -1652,7 +1679,8 @@ fn read_only_call(
                 return Some(missing_path(repo_root, &path));
             }
             match resolve_in_repo(repo_root, policy, &path)? {
-                Ok(target) => read_numbered(
+                Ok(target) => cached_read(
+                    ctx,
                     &target,
                     args["start_line"].as_u64().map(|n| n as usize),
                     args["end_line"].as_u64().map(|n| n as usize),
@@ -2055,14 +2083,15 @@ async fn run_command_tool(
     let mut result = String::new();
     if !stdout.is_empty() {
         result.push_str("stdout:\n");
-        result.push_str(&stdout);
+        result.push_str(&truncate(&stdout, MAX_STREAM_CHARS));
     }
     if !stderr.is_empty() {
         if !result.is_empty() {
             result.push('\n');
         }
         result.push_str("stderr:\n");
-        result.push_str(&stderr);
+        // Compilers and test runners put the verdict last, so keep the tail.
+        result.push_str(&truncate_head(&stderr, MAX_STREAM_CHARS));
     }
     result.push_str(&format!("\nexit code: {exit_code}"));
     if result.is_empty() {
@@ -2222,21 +2251,66 @@ async fn resolve_dir(
     }
 }
 
+/// `read_numbered`, but a repeat read of an unchanged range returns a pointer
+/// to the copy already in the conversation. Re-sending a file the model can
+/// still see is the single largest source of wasted context.
+fn cached_read(
+    ctx: &SessionCtx,
+    target: &Path,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Result<String> {
+    let modified = fs::metadata(target).and_then(|m| m.modified()).ok();
+    let key = format!("{}:{start:?}:{end:?}", target.display());
+    let seen = ctx
+        .reads
+        .lock()
+        .ok()
+        .and_then(|reads| reads.get(&key).copied());
+    // Only a byte-identical situation is skipped: no mtime, or a changed one,
+    // reads for real.
+    if let Some(previous) = seen
+        && previous.is_some()
+        && previous == modified
+    {
+        return Ok(format!(
+            "[unchanged since you read it earlier in this turn — scroll up for {}]",
+            target.display()
+        ));
+    }
+    let body = read_numbered(target, start, end)?;
+    if let Ok(mut reads) = ctx.reads.lock() {
+        reads.insert(key, modified);
+    }
+    Ok(body)
+}
+
 fn read_numbered(target: &Path, start: Option<usize>, end: Option<usize>) -> Result<String> {
     let content =
         fs::read_to_string(target).with_context(|| format!("reading {}", target.display()))?;
     let lines: Vec<&str> = content.lines().collect();
     let from = start.unwrap_or(1).max(1) - 1;
-    let to = end.unwrap_or(lines.len()).min(lines.len());
+    // An open-ended read is windowed rather than truncated mid-file, so the
+    // model knows exactly where to resume instead of re-reading blindly.
+    let requested_end = end.unwrap_or(lines.len());
+    let to = requested_end.min(lines.len()).min(from + READ_WINDOW_LINES);
     if from >= to {
         bail!("empty range: the file has {} lines", lines.len());
     }
-    let body = lines[from..to]
+    let mut body = lines[from..to]
         .iter()
         .enumerate()
         .map(|(i, l)| format!("{:>5} | {l}", from + i + 1))
         .collect::<Vec<_>>()
         .join("\n");
+    if to < lines.len() {
+        body.push_str(&format!(
+            "\n\n[showing lines {}-{to} of {}; call read_file again with start_line={} for more]",
+            from + 1,
+            lines.len(),
+            to + 1,
+        ));
+    }
     Ok(body)
 }
 
@@ -2372,9 +2446,85 @@ fn truncate(text: &str, max: usize) -> String {
     format!("{}\n... [truncated]", &text[..cut])
 }
 
+/// Keep the end instead of the beginning: build and test failures state the
+/// verdict last, and that is the part worth spending context on.
+fn truncate_head(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut cut = text.len() - max;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("... [truncated]\n{}", &text[cut..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_window_caps_an_open_ended_read_and_says_where_to_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.rs");
+        let body: String = (1..=READ_WINDOW_LINES + 50)
+            .map(|n| format!("line {n}\n"))
+            .collect();
+        std::fs::write(&path, body).unwrap();
+        let out = read_numbered(&path, None, None).unwrap();
+        assert!(out.contains(&format!("line {READ_WINDOW_LINES}")));
+        assert!(!out.contains(&format!("line {}", READ_WINDOW_LINES + 1)));
+        assert!(out.contains(&format!("start_line={}", READ_WINDOW_LINES + 1)));
+    }
+
+    #[test]
+    fn read_window_leaves_short_files_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.rs");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let out = read_numbered(&path, None, None).unwrap();
+        assert!(out.contains("three"));
+        assert!(!out.contains("start_line="));
+    }
+
+    #[test]
+    fn a_repeat_read_of_an_unchanged_file_points_at_the_earlier_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stable.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let ctx = SessionCtx::default();
+        let first = cached_read(&ctx, &path, None, None).unwrap();
+        assert!(first.contains("fn main"));
+        let second = cached_read(&ctx, &path, None, None).unwrap();
+        assert!(second.contains("unchanged since you read it"));
+        assert!(!second.contains("fn main"));
+    }
+
+    #[test]
+    fn a_changed_file_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edited.rs");
+        std::fs::write(&path, "before\n").unwrap();
+        let ctx = SessionCtx::default();
+        cached_read(&ctx, &path, None, None).unwrap();
+        // Rewind the recorded mtime rather than sleeping for the clock.
+        if let Ok(mut reads) = ctx.reads.lock() {
+            for value in reads.values_mut() {
+                *value = Some(std::time::SystemTime::UNIX_EPOCH);
+            }
+        }
+        std::fs::write(&path, "after\n").unwrap();
+        let again = cached_read(&ctx, &path, None, None).unwrap();
+        assert!(again.contains("after"));
+    }
+
+    #[test]
+    fn truncate_head_keeps_the_verdict_at_the_end() {
+        let noisy = format!("{}FAILED: 2 tests", "warning\n".repeat(500));
+        let kept = truncate_head(&noisy, 100);
+        assert!(kept.ends_with("FAILED: 2 tests"));
+        assert!(kept.starts_with("... [truncated]"));
+    }
 
     #[test]
     fn environment_note_finds_nested_bun_lockfile() {
@@ -2490,18 +2640,26 @@ mod tests {
     async fn read_only_call_matches_the_sequential_path() {
         let repo = tempfile::tempdir().unwrap();
         std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
-        let ctx = SessionCtx::default();
+        // A fresh context per path: the same one would answer the second read
+        // from its cache, which is the point of the cache, not a mismatch.
         let args = json!({ "path": "a.txt" });
         let parallel = read_only_call(
             repo.path(),
             &Policy::permissive(),
-            &ctx,
+            &SessionCtx::default(),
             "read_file",
             &args.to_string(),
         )
         .unwrap();
-        let sequential =
-            run_tool_with(repo.path(), &mut false, None, &ctx, "read_file", args).await;
+        let sequential = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &SessionCtx::default(),
+            "read_file",
+            args,
+        )
+        .await;
         assert_eq!(parallel, sequential);
     }
 
