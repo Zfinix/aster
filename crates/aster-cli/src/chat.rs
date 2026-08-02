@@ -7,7 +7,7 @@ use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
 use aster_ai::{AiClient, ChatMessage};
-use aster_persist::{MessageEvent, Store, SummaryEvent, TranscriptEvent};
+use aster_persist::{EvictionEvent, MessageEvent, Store, SummaryEvent, TranscriptEvent};
 use aster_policy::{Action, Decision, Grants, Policy};
 use clap::Args;
 use serde::Deserialize;
@@ -133,6 +133,22 @@ impl SessionCtx {
             )))
         {
             tracing::warn!("failed to record summary event: {e:#}");
+        }
+    }
+
+    fn record_eviction(&self, eviction: &crate::budget::Eviction) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        if let Ok(mut writer) = recorder.lock()
+            && let Err(e) = writer.append(&TranscriptEvent::Eviction(EvictionEvent::new(
+                eviction.reason,
+                eviction.role,
+                eviction.index,
+                eviction.chars,
+            )))
+        {
+            tracing::warn!("failed to record eviction event: {e:#}");
         }
     }
 
@@ -885,16 +901,33 @@ async fn agent_loop(
             sink(event);
         }
     };
-    let (history, compacted) = compact_if_needed(client, history, ctx).await?;
+    // Measured first so its reservation (persona, instructions, memory,
+    // skills) comes off the top of the budget the history may spend.
+    let system = system_prompt(ctx, true);
+    let (history, compacted) = compact_if_needed(client, history, ctx, system.len()).await?;
     let mut wire: Vec<Value> = vec![json!({
         "role": "system",
-        "content": system_prompt(ctx, true),
+        "content": system,
     })];
+    let system_chars = wire[0]["content"].as_str().map_or(0, str::len);
     for m in &history {
         wire.push(serde_json::to_value(m)?);
     }
 
     for round in 0..ctx.limits.max_tool_rounds {
+        // Tool results accumulate inside a turn too; evict by policy before
+        // each request and leave a trace of everything the model lost.
+        let budget = crate::budget::history_budget(ctx.limits.compact_budget_chars, system_chars)
+            + system_chars;
+        for eviction in crate::budget::evict_tool_results(&mut wire, budget) {
+            tracing::debug!(
+                reason = eviction.reason,
+                index = eviction.index,
+                chars = eviction.chars,
+                "evicted message to fit the context budget"
+            );
+            ctx.record_eviction(&eviction);
+        }
         let mut tools = tool_defs(allow_edits, approver.is_some());
         if let Some(injection) = ctx.mcp.as_ref().and_then(|m| m.injection()) {
             tools.push(injection.bridge_tool);
@@ -1070,9 +1103,11 @@ async fn compact_if_needed(
     client: &AiClient,
     history: &[ChatMessage],
     ctx: &SessionCtx,
+    system_chars: usize,
 ) -> Result<(Vec<ChatMessage>, Option<Vec<ChatMessage>>)> {
     let total: usize = history.iter().map(|m| m.content.len()).sum();
-    if total <= ctx.limits.compact_budget_chars || history.len() <= COMPACT_KEEP_TAIL + 2 {
+    let budget = crate::budget::history_budget(ctx.limits.compact_budget_chars, system_chars);
+    if total <= budget || history.len() <= COMPACT_KEEP_TAIL + 2 {
         return Ok((history.to_vec(), None));
     }
     let (compacted, summary, split) = compact_now(client, history).await?;
@@ -1330,6 +1365,22 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             }
         }
     }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "run_tests",
+            "description": "Run the repository's test suite and get structured results: pass/fail counts, failing test names, and the output tail. Detects cargo, npm/bun/pnpm/yarn, pytest, or go from the repo's manifests. Prefer this over run_command for running tests.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "runner": { "type": "string", "enum": ["cargo", "npm", "bun", "pnpm", "yarn", "pytest", "go"], "description": "Force a specific runner instead of detecting one" },
+                    "filter": { "type": "string", "description": "Only run tests matching this name or pattern" },
+                    "turbo": { "type": "boolean", "description": "Run without network access." },
+                    "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode." }
+                }
+            }
+        }
+    }));
     tools
 }
 
@@ -1476,22 +1527,29 @@ async fn exec_tool(
                             .collect()
                     })
                     .unwrap_or_default();
-                let turbo = args["turbo"].as_bool().unwrap_or(false);
-                let yolo = args["yolo"].as_bool().unwrap_or(false) || ctx.yolo;
-                run_command_tool(
+                let env = ExecEnv {
                     repo_root,
                     policy,
                     approver,
-                    &cmd,
-                    &cmd_args,
-                    turbo,
-                    yolo,
-                    ctx.limits.command_timeout_secs as u64,
-                )
-                .await
+                };
+                run_command_tool(&env, &cmd, &cmd_args, run_opts(&args, ctx)).await
             }
             Err(e) => Err(e),
         },
+        "run_tests" => {
+            let env = ExecEnv {
+                repo_root,
+                policy,
+                approver,
+            };
+            run_tests_tool(
+                &env,
+                str_arg("runner").as_deref(),
+                str_arg("filter").as_deref(),
+                run_opts(&args, ctx),
+            )
+            .await
+        }
         "aster_mcp" => mcp_bridge(policy, approver, ctx, arguments).await,
         other => Err(anyhow::anyhow!(
             "unknown tool: {other}. Available tools: {}",
@@ -1847,74 +1905,97 @@ async fn mcp_bridge(
     Ok(crate::mcp::render_result(&result))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_command_tool(
-    repo_root: &Path,
-    policy: &Policy,
-    approver: Option<&UiSender>,
-    binary: &str,
-    args: &[String],
+/// The sandbox switches as the model passed them, with the session's yolo state
+/// and configured timeout folded in.
+fn run_opts(args: &Value, ctx: &SessionCtx) -> RunOpts {
+    RunOpts {
+        turbo: args["turbo"].as_bool().unwrap_or(false),
+        yolo: args["yolo"].as_bool().unwrap_or(false) || ctx.yolo,
+        timeout_secs: ctx.limits.command_timeout_secs as u64,
+    }
+}
+
+/// Where a command runs and who can approve it, shared by every exec tool.
+struct ExecEnv<'a> {
+    repo_root: &'a Path,
+    policy: &'a Policy,
+    approver: Option<&'a UiSender>,
+}
+
+/// Sandbox switches and the per-command timeout.
+#[derive(Clone, Copy)]
+struct RunOpts {
     turbo: bool,
     yolo: bool,
     timeout_secs: u64,
-) -> Result<String> {
+}
+
+/// Every execution goes through the same `Decision` path as edits: deny rules
+/// override the mode, ask-style modes prompt, headless runs without an
+/// approver deny.
+async fn authorize_exec(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Result<()> {
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    match policy.evaluate(&Action::Exec {
+    match env.policy.evaluate(&Action::Exec {
         binary,
         args: &arg_refs,
     }) {
-        Decision::Allow => {}
+        Decision::Allow => Ok(()),
         Decision::Deny { reason } => bail!("{reason}"),
         Decision::Prompt { preview } => {
-            if !request_approval(approver, preview, None).await.allowed() {
+            if request_approval(env.approver, preview, None)
+                .await
+                .allowed()
+            {
+                Ok(())
+            } else {
                 bail!(
                     "command `{binary}` needs user approval; it was rejected or this run cannot ask"
-                );
+                )
             }
         }
     }
-
-    if yolo {
-        return run_direct(repo_root, binary, args).await;
-    }
-
-    let profile = aster_sandbox::SandboxProfile::new(repo_root)
-        .timeout(timeout_secs)
-        .network(!turbo);
-    let config = aster_sandbox::SandboxConfig::new(profile);
-    let output = aster_sandbox::run_command(&config, binary, args).await?;
-    let mut result = String::new();
-    if !output.stdout.is_empty() {
-        result.push_str("stdout:\n");
-        result.push_str(&output.stdout);
-    }
-    if !output.stderr.is_empty() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str("stderr:\n");
-        result.push_str(&output.stderr);
-    }
-    result.push_str(&format!("\nexit code: {}", output.exit_code.unwrap_or(-1)));
-    if result.is_empty() {
-        return Ok("(no output)".into());
-    }
-    Ok(result)
 }
 
-async fn run_direct(repo_root: &Path, binary: &str, args: &[String]) -> Result<String> {
-    let output = tokio::process::Command::new(binary)
-        .args(args)
-        .current_dir(repo_root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .context("running command")?;
+/// Run sandboxed unless yolo, returning the raw streams for the caller to shape.
+async fn run_raw(
+    env: &ExecEnv<'_>,
+    binary: &str,
+    args: &[String],
+    opts: RunOpts,
+) -> Result<(String, String, i32)> {
+    if opts.yolo {
+        let output = tokio::process::Command::new(binary)
+            .args(args)
+            .current_dir(env.repo_root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .context("running command")?;
+        return Ok((
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            output.status.code().unwrap_or(-1),
+        ));
+    }
+    let profile = aster_sandbox::SandboxProfile::new(env.repo_root)
+        .timeout(opts.timeout_secs)
+        .network(!opts.turbo);
+    let config = aster_sandbox::SandboxConfig::new(profile);
+    let output = aster_sandbox::run_command(&config, binary, args).await?;
+    Ok((output.stdout, output.stderr, output.exit_code.unwrap_or(-1)))
+}
+
+async fn run_command_tool(
+    env: &ExecEnv<'_>,
+    binary: &str,
+    args: &[String],
+    opts: RunOpts,
+) -> Result<String> {
+    authorize_exec(env, binary, args).await?;
+    let (stdout, stderr, exit_code) = run_raw(env, binary, args, opts).await?;
     let mut result = String::new();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
     if !stdout.is_empty() {
         result.push_str("stdout:\n");
         result.push_str(&stdout);
@@ -1926,14 +2007,24 @@ async fn run_direct(repo_root: &Path, binary: &str, args: &[String]) -> Result<S
         result.push_str("stderr:\n");
         result.push_str(&stderr);
     }
-    result.push_str(&format!(
-        "\nexit code: {}",
-        output.status.code().unwrap_or(-1)
-    ));
+    result.push_str(&format!("\nexit code: {exit_code}"));
     if result.is_empty() {
         return Ok("(no output)".into());
     }
     Ok(result)
+}
+
+async fn run_tests_tool(
+    env: &ExecEnv<'_>,
+    runner: Option<&str>,
+    filter: Option<&str>,
+    opts: RunOpts,
+) -> Result<String> {
+    let cmd = crate::test_runner::detect(env.repo_root, runner, filter)?;
+    authorize_exec(env, &cmd.binary, &cmd.args).await?;
+    let (stdout, stderr, exit_code) = run_raw(env, &cmd.binary, &cmd.args, opts).await?;
+    let result = crate::test_runner::parse(cmd.runner, &stdout, &stderr, exit_code);
+    serde_json::to_string_pretty(&result).context("serializing test results")
 }
 
 fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String> {

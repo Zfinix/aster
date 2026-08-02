@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod auth;
+mod budget;
 mod chat;
 mod config;
 mod edits;
@@ -17,6 +18,7 @@ mod sessions;
 mod settings;
 mod skills;
 mod term;
+mod test_runner;
 mod tui;
 mod util;
 mod web;
