@@ -154,6 +154,12 @@ fn print_transcript(transcript: &aster_persist::SessionTranscript) {
                 );
             }
             TranscriptEvent::Summary(s) => println!("\n[summary]\n{}", s.content),
+            TranscriptEvent::Eviction(e) => {
+                println!(
+                    "\n[evicted] {} at #{} ({} chars): {}",
+                    e.role, e.index, e.chars, e.reason
+                )
+            }
             TranscriptEvent::Message(msg) => {
                 if !msg.tool_calls.is_empty() {
                     let names: Vec<&str> = msg

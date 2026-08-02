@@ -7,8 +7,8 @@ mod transcript;
 pub use grants::GrantStore;
 pub use memory::{MemoryMeta, MemoryStore, PROJECT_MEMORY_FILE};
 pub use transcript::{
-    EventUsage, MessageEvent, SessionMeta, SessionTranscript, SessionWriter, SummaryEvent,
-    TRANSCRIPT_VERSION, TranscriptEvent,
+    EventUsage, EvictionEvent, MessageEvent, SessionMeta, SessionTranscript, SessionWriter,
+    SummaryEvent, TRANSCRIPT_VERSION, TranscriptEvent,
 };
 
 use std::path::{Path, PathBuf};

@@ -15,6 +15,7 @@ pub enum TranscriptEvent {
     Session(SessionMeta),
     Message(MessageEvent),
     Summary(SummaryEvent),
+    Eviction(EvictionEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +120,35 @@ impl SummaryEvent {
         Self {
             content: content.into(),
             replaces_through,
+            ts: Utc::now(),
+        }
+    }
+}
+
+/// One message dropped or stubbed out by the context budget, kept in the
+/// transcript so a run can explain exactly what the model no longer saw.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvictionEvent {
+    pub reason: String,
+    pub role: String,
+    /// Position in the request being built when the eviction happened.
+    pub index: usize,
+    pub chars: usize,
+    pub ts: DateTime<Utc>,
+}
+
+impl EvictionEvent {
+    pub fn new(
+        reason: impl Into<String>,
+        role: impl Into<String>,
+        index: usize,
+        chars: usize,
+    ) -> Self {
+        Self {
+            reason: reason.into(),
+            role: role.into(),
+            index,
+            chars,
             ts: Utc::now(),
         }
     }
