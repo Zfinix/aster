@@ -143,6 +143,22 @@ fn rg_and_the_embedded_walker_agree() {
 }
 
 #[test]
+fn a_single_file_base_still_returns_its_hits() {
+    let repo = tempdir().unwrap();
+    fs::create_dir(repo.path().join("src")).unwrap();
+    let file = repo.path().join("src/a.rs");
+    fs::write(&file, "one\nneedle\nthree\n").unwrap();
+    fs::write(repo.path().join("src/b.rs"), "needle\n").unwrap();
+
+    for probe in [ToolProbe::default(), ToolProbe::detect()] {
+        let hits = search(&probe, repo.path(), &file, "needle", 80).unwrap();
+        assert_eq!(hits.len(), 1, "{probe:?} {hits:?}");
+        assert_eq!(hits[0].path, "src/a.rs", "{probe:?} {hits:?}");
+        assert_eq!(hits[0].line, 2, "{probe:?} {hits:?}");
+    }
+}
+
+#[test]
 fn render_says_so_when_there_is_nothing() {
     let repo = tempdir().unwrap();
     assert_eq!(render(repo.path(), &[], 3), "no matches");

@@ -34,8 +34,8 @@ pub struct Hit {
     pub text: String,
 }
 
-/// Search `base` for `query`, at most [`PER_FILE`] matches per file and
-/// `max_hits` overall. Tries `rg`, then embedded ripgrep. Matching is
+/// Search `base`, a directory or a single file, for `query`, at most
+/// [`PER_FILE`] matches per file and `max_hits` overall. Matching is
 /// smart-case: lowercase queries ignore case, a query with any uppercase
 /// letter is taken literally.
 pub fn search(
@@ -139,6 +139,9 @@ fn search_with_rg(
         let mut cmd = Command::new(rg);
         cmd.args([
             "--line-number",
+            // rg drops the path when it is given a single file, which leaves
+            // `parse_rg_line` nothing to split on and silently loses every hit.
+            "--with-filename",
             "--no-heading",
             "--smart-case",
             "--color",
