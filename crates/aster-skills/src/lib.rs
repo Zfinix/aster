@@ -95,10 +95,45 @@ impl SkillSet {
             not relevant.\n",
         );
         for skill in &self.skills {
-            out.push_str(&format!("\n- **{}**: {}", skill.name, skill.description));
+            out.push_str(&format!(
+                "\n- **{}**: {}",
+                skill.name,
+                first_sentences(&skill.description, INDEX_DESCRIPTION_CHARS)
+            ));
         }
         Some(out)
     }
+}
+
+/// Description budget per skill in the index. The index is re-sent on every
+/// round, so a hundred installed skills otherwise cost more than the rest of
+/// the system prompt combined; `read_skill` still loads the full instructions.
+const INDEX_DESCRIPTION_CHARS: usize = 180;
+
+/// Trim to whole sentences under `max`, falling back to a word boundary. Keeps
+/// the trigger phrasing models match on rather than cutting mid-word.
+fn first_sentences(description: &str, max: usize) -> String {
+    let description = description.trim();
+    if description.len() <= max {
+        return description.to_string();
+    }
+    let window = &description[..ceil_boundary(description, max)];
+    if let Some(end) = window.rfind(". ") {
+        return description[..=end].trim_end().to_string();
+    }
+    match window.rfind(' ') {
+        Some(space) => format!("{}…", &description[..space]),
+        None => format!("{window}…"),
+    }
+}
+
+/// The largest char boundary at or below `max`.
+fn ceil_boundary(text: &str, max: usize) -> usize {
+    let mut cut = max.min(text.len());
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
 }
 
 /// Directories never worth descending into when searching a source tree.
@@ -348,6 +383,34 @@ fn validate_name(name: &str) -> Result<()> {
         bail!("`name` must contain only lowercase letters, digits, and hyphens");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::first_sentences;
+
+    #[test]
+    fn first_sentences_keeps_a_short_description_whole() {
+        let text = "Review Rust code for style.";
+        assert_eq!(first_sentences(text, 180), text);
+    }
+
+    #[test]
+    fn first_sentences_cuts_at_a_sentence_end() {
+        let long = format!("First sentence here. {}", "padding ".repeat(60));
+        let cut = first_sentences(&long, 180);
+        assert_eq!(cut, "First sentence here.");
+    }
+
+    #[test]
+    fn first_sentences_falls_back_to_a_word_boundary() {
+        let long = "word ".repeat(100);
+        let cut = first_sentences(&long, 180);
+        // The budget plus a three-byte ellipsis.
+        assert!(cut.len() <= 183, "was {}", cut.len());
+        assert!(cut.ends_with('…'));
+        assert!(!cut.contains("wor…"));
+    }
 }
 
 #[cfg(test)]
