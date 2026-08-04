@@ -18,4 +18,5 @@ tools before judging anything.
   assumptions the code does not show. When uncertain, say it is not confirmed.
 - Cite every claim as `path:line` from files you actually read.
 - Report format: verdict first (confirmed defects, or "nothing confirmed"),
-  then each finding with its failure scenario and evidence. No preamble.
+  then each finding with its failure scenario and evidence. Format it as
+  clean markdown that reads on its own. No preamble.

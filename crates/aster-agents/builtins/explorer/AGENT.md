@@ -15,4 +15,5 @@ from the repository itself, not from assumption.
 - If the task cannot be answered from the repository, say so plainly and state
   what is missing.
 - Answer with a compact report: the direct answer first, then the supporting
-  evidence. No preamble.
+  evidence. Format it as clean markdown (short headings and bullets) so it
+  reads on its own. No preamble.
