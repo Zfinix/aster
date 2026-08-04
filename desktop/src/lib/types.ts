@@ -44,6 +44,18 @@ export type ChatStreamEvent =
   | { type: "text"; content: string }
   | { type: "tool_call"; id: string; name: string; arguments: string }
   | { type: "tool_result"; id: string; name: string; result: string; error: boolean }
+  /** Live progress for one sub-agent in an `agent` tool call. */
+  | {
+      type: "agent_status";
+      call_id: string;
+      agent: string;
+      task?: string;
+      status: "running" | "done" | "error";
+      report?: string;
+      error?: string;
+      done: number;
+      total: number;
+    }
   | { type: "approval_request"; preview: string }
   | { type: "done"; reply: string; edits: string[]; usage?: Usage }
   /** Something the harness did to the turn, e.g. stopping at the round cap. */

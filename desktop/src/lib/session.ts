@@ -50,11 +50,53 @@ export type Turn =
       pending?: boolean;
       error?: boolean;
       steps?: ToolStep[];
+      /** Live per-sub-agent state from `agent_status` events. */
+      agents?: AgentRun[];
       usage?: Usage | null;
       /** Set when the user cancelled the turn mid-stream. */
       stopped?: boolean;
     }
   | { id: string; role: "review"; data: ReviewData; ts?: number };
+
+/** One sub-agent inside an `agent` tool call, fed by `agent_status` events. */
+export interface AgentRun {
+  callId: string;
+  agent: string;
+  task?: string;
+  status: "running" | "done" | "error";
+  report?: string;
+  error?: string;
+  done: number;
+  total: number;
+}
+
+/** Insert or replace a sub-agent's row, keyed by call id + agent name. */
+export function upsertAgent(
+  agents: AgentRun[] | undefined,
+  ev: {
+    call_id: string;
+    agent: string;
+    task?: string;
+    status: "running" | "done" | "error";
+    report?: string;
+    error?: string;
+    done: number;
+    total: number;
+  },
+): AgentRun[] {
+  const row: AgentRun = {
+    callId: ev.call_id,
+    agent: ev.agent,
+    task: ev.task,
+    status: ev.status,
+    report: ev.report,
+    error: ev.error,
+    done: ev.done,
+    total: ev.total,
+  };
+  const i = (agents ?? []).findIndex((r) => r.callId === ev.call_id && r.agent === ev.agent);
+  return i === -1 ? [...(agents ?? []), row] : agents!.map((r, k) => (k === i ? row : r));
+}
 
 /** "just now", "5 minutes ago", "2 hours ago", "3 days ago". */
 export function timeAgo(ts: number): string {
@@ -88,6 +130,19 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return `Recalled ${s(args.name)}`;
     case "read_skill":
       return `Read skill ${s(args.name)}`;
+    case "agent": {
+      const tasks = Array.isArray(args.tasks)
+        ? (args.tasks as { agent?: unknown }[])
+        : [];
+      const names = tasks
+        .map((t) => (typeof t.agent === "string" ? t.agent : ""))
+        .filter(Boolean);
+      const unique = [...new Set(names)];
+      if (names.length === 0) return "agent";
+      if (names.length === 1) return `agent: ${unique[0]}`;
+      if (unique.length === 1) return `agent ×${names.length}: ${unique[0]}`;
+      return `agent ×${names.length}: ${unique.join(", ")}`;
+    }
     default:
       return name.replace(/_/g, " ");
   }
