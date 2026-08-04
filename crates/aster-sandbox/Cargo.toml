@@ -12,8 +12,11 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 tracing = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util"] }
 dirs = "6.0"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
 tempfile = "3"

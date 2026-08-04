@@ -16,8 +16,6 @@ mod runner;
 pub use profile::SandboxProfile;
 pub use runner::{CommandOutput, SandboxConfig, run_command};
 
-use std::path::PathBuf;
-
 /// Which sandbox backend is active on this platform
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
@@ -51,30 +49,11 @@ pub fn has_os_sandbox() -> bool {
     !matches!(detect_backend(), SandboxBackend::ProcessLevel)
 }
 
-/// Check if a binary exists on PATH by running `which`.
+/// Check if a binary exists on PATH.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn binary_on_path(binary: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(binary)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// Resolve a binary path on PATH (used by the runner to find sandbox tools).
-#[allow(dead_code)]
-fn which_binary(binary: &str) -> Option<PathBuf> {
-    let output = std::process::Command::new("which")
-        .arg(binary)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(path))
-    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| dir.join(binary).is_file())
 }

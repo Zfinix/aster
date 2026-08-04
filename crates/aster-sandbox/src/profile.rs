@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 pub struct SandboxProfile {
     /// The repository root: readable and writable.
     pub repo_root: PathBuf,
-    /// Additional directories the command may read (e.g. granted paths).
+    /// Additional directories the command may read. Only enforced by bwrap;
+    /// Seatbelt allows reads everywhere and restricts writes and network.
     pub readable_dirs: Vec<PathBuf>,
     /// Additional directories the command may write to (beyond repo and temp).
     pub writable_dirs: Vec<PathBuf>,
@@ -79,6 +80,25 @@ impl SandboxProfile {
             profile.push_str(")\n");
         }
 
+        // After the repo allow, so the last-match rule makes these win.
+        let protected = self.protected_repo_paths();
+        if !protected.is_empty() {
+            profile.push_str("(deny file-write*");
+            for path in protected {
+                profile.push_str(&format!(" (subpath \"{}\")", escape(&path)));
+            }
+            profile.push_str(")\n");
+        }
+
+        let sensitive = sensitive_read_paths();
+        if !sensitive.is_empty() {
+            profile.push_str("(deny file-read* file-write*");
+            for path in sensitive {
+                profile.push_str(&format!(" (subpath \"{}\")", escape(&path)));
+            }
+            profile.push_str(")\n");
+        }
+
         if !self.network {
             profile.push_str("(deny network*)\n");
         }
@@ -86,10 +106,19 @@ impl SandboxProfile {
         profile
     }
 
+    /// Repo paths that stay read-only even though the repo is writable: a git
+    /// hook or CI workflow written in the sandbox would run unsandboxed later.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn protected_repo_paths(&self) -> Vec<PathBuf> {
+        resolve_existing(
+            [".git/hooks", ".git/config", ".github/workflows"]
+                .map(|p| self.repo_root.join(p))
+                .to_vec(),
+        )
+    }
+
     /// All directories the command may write to: repo root, temp dirs, and any
-    /// explicitly writable dirs. Paths are resolved through symlinks and
-    /// dropped when they do not exist: Seatbelt rejects the whole profile over
-    /// one unresolvable `subpath`, and on macOS `/tmp` and `/var` are symlinks.
+    /// explicitly writable dirs.
     #[cfg(target_os = "macos")]
     fn writable_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.repo_root.clone()];
@@ -102,17 +131,7 @@ impl SandboxProfile {
                 [".cargo", ".rustup", ".npm", ".cache", "Library/Caches"].map(|d| home.join(d)),
             );
         }
-
-        let mut out: Vec<PathBuf> = Vec::new();
-        for path in paths {
-            let Ok(resolved) = path.canonicalize() else {
-                continue;
-            };
-            if !out.contains(&resolved) {
-                out.push(resolved);
-            }
-        }
-        out
+        resolve_existing(paths)
     }
 
     /// Generate `bwrap` arguments for Linux.
@@ -152,6 +171,13 @@ impl SandboxProfile {
             args.push(dir.display().to_string());
         }
 
+        // Later binds mount over the repo bind, making these read-only.
+        for path in self.protected_repo_paths() {
+            args.push("--ro-bind".into());
+            args.push(path.display().to_string());
+            args.push(path.display().to_string());
+        }
+
         // Bind /tmp writable for builds and tests.
         args.push("--bind".into());
         args.push("/tmp".into());
@@ -165,6 +191,44 @@ impl SandboxProfile {
 
         args
     }
+}
+
+/// Credential stores a sandboxed command has no business reading. Under bwrap
+/// these need no rule: `$HOME` is simply not bound into the namespace.
+#[cfg(target_os = "macos")]
+fn sensitive_read_paths() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    resolve_existing(
+        [
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".config/gh",
+            ".kube",
+            "Library/Keychains",
+        ]
+        .map(|d| home.join(d))
+        .to_vec(),
+    )
+}
+
+/// Resolve paths through symlinks and drop the missing ones: Seatbelt rejects
+/// the whole profile over one unresolvable `subpath`, and on macOS `/tmp` and
+/// `/var` are symlinks into `/private`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn resolve_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        let Ok(resolved) = path.canonicalize() else {
+            continue;
+        };
+        if !out.contains(&resolved) {
+            out.push(resolved);
+        }
+    }
+    out
 }
 
 /// Quote a path for a Seatbelt string literal.
@@ -226,6 +290,20 @@ mod tests {
         assert!(!profile.contains("\"/tmp\""), "{profile}");
         assert!(profile.contains("/private/tmp"), "{profile}");
         assert!(!profile.contains("/nope/missing"), "{profile}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_profile_protects_git_dirs() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".github/workflows")).unwrap();
+        std::fs::write(repo.path().join(".git/config"), "").unwrap();
+        let p = SandboxProfile::new(repo.path());
+        let profile = p.seatbelt_profile();
+        assert!(profile.contains(".git/hooks"), "{profile}");
+        assert!(profile.contains(".git/config"), "{profile}");
+        assert!(profile.contains(".github/workflows"), "{profile}");
     }
 
     #[cfg(target_os = "macos")]

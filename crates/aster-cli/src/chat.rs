@@ -1,4 +1,4 @@
-//! `aster chat`: a conversational turn with an agentic read/list/search/edit tool loop.
+//! Bare `aster`: a conversational turn with an agentic read/list/search/edit tool loop.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
@@ -7,13 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
-use aster_ai::{AiClient, ChatMessage};
+use aster_ai::{AiClient, Annotation, ChatMessage};
 use aster_persist::{EvictionEvent, MessageEvent, Store, SummaryEvent, TranscriptEvent};
 use aster_policy::{Action, Decision, Grants, Policy};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::edits::{self, EditBlock};
 use crate::persist::Recorder;
@@ -44,6 +45,16 @@ pub(crate) struct SessionCtx {
     /// modification time. A repeat read of an unchanged range is answered with
     /// a pointer instead of a second full copy in the history.
     pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
+    /// User messages sent while the turn runs, absorbed at the next round
+    /// boundary instead of waiting out the whole turn.
+    pub injected: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Agents discovered at startup, rendered into the system prompt.
+    pub agents: Arc<aster_agents::AgentRegistry>,
+    /// Non-None when this is a sub-agent session.  Shapes the system prompt,
+    /// tool schema, and persistence.
+    pub sub_agent: Option<Arc<SubAgentOverrides>>,
+    /// Fan-out caps read from aster.yaml + env.
+    pub swarm: SwarmLimits,
 }
 
 /// How long a turn may work before it has to answer, and how long one command
@@ -88,6 +99,57 @@ impl Limits {
     }
 }
 
+/// Caps on the sub-agent fan-out.  aster.yaml first, then the environment.
+#[derive(Debug, Clone)]
+pub(crate) struct SwarmLimits {
+    pub max_concurrent: usize,
+    pub max_per_turn: usize,
+    pub agent_timeout_secs: u64,
+    pub collector_model: Option<String>,
+}
+
+impl SwarmLimits {
+    pub(crate) fn resolve(agents: &crate::settings::Agents) -> Self {
+        let env_usize = |key: &str| std::env::var(key).ok().and_then(|v| v.parse().ok());
+        let env_u64 = |key: &str| std::env::var(key).ok().and_then(|v| v.parse().ok());
+        Self {
+            max_concurrent: env_usize("ASTER_AGENT_MAX_CONCURRENT")
+                .or(agents.max_concurrent)
+                .unwrap_or(8)
+                .max(1),
+            max_per_turn: env_usize("ASTER_AGENT_MAX_PER_TURN")
+                .or(agents.max_per_turn)
+                .unwrap_or(24)
+                .max(1),
+            agent_timeout_secs: env_u64("ASTER_AGENT_TIMEOUT")
+                .or(agents.agent_timeout_secs)
+                .unwrap_or(300)
+                .max(1),
+            collector_model: std::env::var("ASTER_COLLECTOR_MODEL")
+                .ok()
+                .or_else(|| agents.collector_model.clone()),
+        }
+    }
+}
+
+impl Default for SwarmLimits {
+    fn default() -> Self {
+        Self {
+            max_concurrent: 8,
+            max_per_turn: 24,
+            agent_timeout_secs: 300,
+            collector_model: None,
+        }
+    }
+}
+
+/// Overrides applied to a sub-agent's session so it runs as a child.
+#[derive(Debug, Clone)]
+pub(crate) struct SubAgentOverrides {
+    pub prompt_body: String,
+    pub tool_allowlist: std::collections::HashSet<String>,
+}
+
 /// Phased plan the agent builds and tracks with `update_plan`. Read by the
 /// `exit_plan_mode` tool and rendered by both front-ends.
 #[derive(Debug, Default, Clone)]
@@ -112,6 +174,25 @@ pub(crate) enum PlanStepStatus {
     Done,
     Skipped,
     Blocked,
+}
+
+/// The plan as comparable data; `None` when empty or the lock is poisoned.
+fn plan_snapshot(ctx: &SessionCtx) -> Option<Vec<(String, PlanStepStatus)>> {
+    let plan = ctx.plan.lock().ok()?;
+    (!plan.steps.is_empty()).then(|| {
+        plan.steps
+            .iter()
+            .map(|s| (s.label.clone(), s.status))
+            .collect()
+    })
+}
+
+fn plan_unfinished(snapshot: &Option<Vec<(String, PlanStepStatus)>>) -> bool {
+    snapshot.as_ref().is_some_and(|steps| {
+        steps.iter().any(|(_, status)| {
+            matches!(status, PlanStepStatus::Pending | PlanStepStatus::InProgress)
+        })
+    })
 }
 
 impl SessionCtx {
@@ -232,6 +313,16 @@ pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
 
 /// The agent persona, the repo's own instructions, and the memory block.
 fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
+    // Sub-agents get only their prompt body and an environment note; the
+    // persona, instructions, memory, skills, and agent index are skipped.
+    if let Some(sub) = &ctx.sub_agent {
+        let mut prompt = sub.prompt_body.clone();
+        if let Some(environment) = &ctx.environment {
+            prompt.push_str("\n\n");
+            prompt.push_str(environment);
+        }
+        return prompt;
+    }
     let mut prompt = String::from(AGENT_SYSTEM_PROMPT);
     // Ahead of tools and memory: these are the repo's standing rules, and they
     // shape how every other section gets used.
@@ -246,6 +337,10 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     if tools {
         prompt.push_str(TOOLS_PROMPT);
         if let Some(index) = ctx.skills.render_index() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&index);
+        }
+        if let Some(index) = ctx.agents.render_index() {
             prompt.push_str("\n\n");
             prompt.push_str(&index);
         }
@@ -399,6 +494,11 @@ run them directly, without the overhead. \
 Tool rounds are the slow part of a turn: each one costs a full model \
 round-trip, while the tools themselves are nearly instant. Work in as few \
 rounds as the task allows:\n\
+- Look things up with `explore`, not one call at a time. If you are about to \
+send a single `read_file`, `search_files`, `find_files`, or `list_files`, \
+first ask what else you will want once you see it, and send them together as \
+`explore` steps. Two lookups in one `explore` are twice as fast as two \
+rounds; ten are ten times.\n\
 - Batch independent calls into one response: several reads, or a search and a \
 find together, instead of one call per response.\n\
 - Search before you read. `search_files` returns the matching lines with \
@@ -407,10 +507,11 @@ context, which usually answers the question without reading the file at all.\n\
 is still above you; scroll back instead of calling the tool again.\n\
 - When you do need more of a file, ask for the specific range you are missing \
 rather than the whole file again.\n\
-- Get everything one command can give you in a single call: `git status`, \
-`git log`, and `git diff` variants belong in one `run_command` with `&&`, not \
-one round each. Bound noisy output with flags like `--stat`, `-n 20`, or \
-`| head`.\n\
+- Get everything one command can give you in a single call. `run_command` \
+runs one binary directly, with no shell, so chain with \
+`bash -lc \"git status --short; git log --oneline -5; git diff --stat\"` \
+rather than spending a round on each. Bound noisy output with flags like \
+`--stat`, `-n 20`, or a `| head` inside that `bash -lc` string.\n\
 - Stop gathering as soon as you can act or answer: do not re-verify what you \
 already read, and do not explore beyond what the task needs.\n\
 When a user message contains `[@name]` tokens, each token's full path is \
@@ -426,7 +527,7 @@ If `edit_file` is unavailable, say so and describe the change instead.";
 
 #[derive(Args)]
 pub struct ChatArgs {
-    /// One-shot question, e.g. `aster chat "why is finding 2 critical?"`.
+    /// One-shot question, e.g. `aster "why is finding 2 critical?"`.
     #[arg(value_name = "PROMPT", conflicts_with = "messages_json")]
     prompt: Option<String>,
 
@@ -563,6 +664,9 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             allow_edits
         };
 
+    // `yolo` means no policy *and* no sandbox; the TUI already treats it that
+    // way, and a headless run must match or commands fail on writes.
+    let yolo = permissions.mode == aster_policy::Mode::Yolo;
     let policy = Arc::new(Policy::compile(&permissions)?);
     let grants = Arc::new(configured_grants(&permissions, &repo_root));
 
@@ -572,6 +676,8 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     }
 
     let limits = Limits::resolve(&settings.agent);
+    let swarm = SwarmLimits::resolve(&settings.agents);
+    let agents = crate::agents::discover_agents(&repo_root);
 
     if args.is_interactive() {
         let seed = args.prompt.clone();
@@ -584,6 +690,8 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             args.resume_mode(),
             mcp,
             limits,
+            swarm,
+            agents,
         )
         .await;
     }
@@ -591,7 +699,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     // A picker needs a terminal to draw in; naming the session is the way out.
     if matches!(args.resume_mode(), Resume::Pick) {
         anyhow::bail!(
-            "--resume needs a terminal to show the session list. Pass an id instead: `aster sessions list`, then `aster chat --resume <ID>`"
+            "--resume needs a terminal to show the session list. Pass an id instead: `aster sessions list`, then `aster --resume <ID>`"
         );
     }
 
@@ -605,11 +713,12 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             allow_edits,
             mcp,
             limits,
+            yolo,
         )
         .await;
     }
 
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits)?;
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo)?;
 
     let mut edited: Vec<String> = Vec::new();
     let reply = if args.no_tools {
@@ -654,6 +763,11 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             eprintln!("  ✎ edited {path}");
         }
         crate::review::print_usage(client.usage_snapshot());
+        if let Some(recorder) = &ctx.recorder
+            && let Ok(writer) = recorder.lock()
+        {
+            eprintln!("Resume this session with: aster --resume {}", writer.id());
+        }
     }
     Ok(())
 }
@@ -665,11 +779,14 @@ fn prepare_turn(
     client: &AiClient,
     mcp: Option<crate::mcp::McpRuntime>,
     limits: Limits,
+    yolo: bool,
 ) -> Result<(SessionCtx, Vec<ChatMessage>)> {
     let new_turns = read_history(args)?;
     let store = crate::persist::store().ok();
     let (recorder, prior) =
         resolve_headless_session(store.as_ref(), repo_root, args, &client.model)?;
+    let agents = crate::agents::discover_agents(repo_root);
+    let swarm = SwarmLimits::default();
     let ctx = SessionCtx {
         recorder,
         store,
@@ -680,8 +797,14 @@ fn prepare_turn(
         mcp,
         limits,
         environment: environment_note(repo_root),
-        yolo: false,
+        // Yolo is a mode, not just a per-call flag: asking for it once must
+        // drop the sandbox too, otherwise commands still fail on writes.
+        yolo,
         reads: Default::default(),
+        injected: Default::default(),
+        agents,
+        sub_agent: None,
+        swarm,
     };
     // Record only the new user turn. On the wire path `new_turns` is the full
     // replayed history, whose earlier turns were recorded on previous calls.
@@ -701,9 +824,52 @@ fn emit_line(value: &Value) {
     let _ = out.flush();
 }
 
+/// Emit a `citations` event carrying the web-search source URLs attached to
+/// the assistant message. Consumed by the TUI and the `--stream` front-ends.
+fn emit_citations(annotations: &[Annotation], emit: &impl Fn(Value)) {
+    let sources: Vec<Value> = annotations
+        .iter()
+        .map(|a| {
+            json!({
+                "url": a.url_citation.url,
+                "title": a.url_citation.title,
+            })
+        })
+        .collect();
+    emit(json!({ "type": "citations", "sources": sources }));
+}
+
+/// Read stdin forever, splitting lines by kind: `{"message"}` injections go
+/// into the running turn's queue, everything else is a prompt reply.
+fn spawn_stdin_router(injected: Arc<std::sync::Mutex<Vec<String>>>) -> mpsc::Receiver<Value> {
+    let (tx, rx) = mpsc::channel::<Value>(4);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if let Some(message) = value.get("message").and_then(Value::as_str) {
+                if let Ok(mut queue) = injected.lock() {
+                    queue.push(message.to_string());
+                }
+                continue;
+            }
+            if tx.blocking_send(value).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 /// Bridge prompts to the caller: write an `approval_request` or `question`
-/// line, then block on one reply line of JSON.
-fn stdio_approver() -> UiSender {
+/// line, then block on the next reply from the stdin router.
+fn stdio_approver(mut replies: mpsc::Receiver<Value>) -> UiSender {
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
@@ -714,9 +880,7 @@ fn stdio_approver() -> UiSender {
                         "preview": a.preview,
                         "scope": a.scope.as_ref().map(|p| p.display().to_string()),
                     }));
-                    let answer = tokio::task::spawn_blocking(read_approval_reply)
-                        .await
-                        .unwrap_or(Answer::No);
+                    let answer = replies.recv().await.map_or(Answer::No, parse_approval);
                     let _ = a.respond.send(answer);
                 }
                 UiRequest::Question(q) => {
@@ -726,9 +890,7 @@ fn stdio_approver() -> UiSender {
                         "question": q.question,
                         "options": q.options,
                     }));
-                    let answer = tokio::task::spawn_blocking(read_question_reply)
-                        .await
-                        .unwrap_or(None);
+                    let answer = replies.recv().await.and_then(parse_question);
                     let _ = q.respond.send(answer);
                 }
             }
@@ -737,31 +899,17 @@ fn stdio_approver() -> UiSender {
     tx
 }
 
-/// One line of `{"choice": "string"}` on stdin, or `{"choice": null}`.
-fn read_question_reply() -> Option<String> {
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
-        return None;
-    }
-    let Ok(reply) = serde_json::from_str::<Value>(&line) else {
-        return None;
-    };
+/// A `{"choice": "string"}` reply, or `{"choice": null}` to skip.
+fn parse_question(reply: Value) -> Option<String> {
     reply
         .get("choice")
         .and_then(Value::as_str)
         .map(str::to_string)
 }
 
-/// One line of `{"allow": bool}` on stdin, optionally with `"always": true` to
-/// persist the request's scope. A closed pipe or junk denies.
-fn read_approval_reply() -> Answer {
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
-        return Answer::No;
-    }
-    let Ok(reply) = serde_json::from_str::<Value>(&line) else {
-        return Answer::No;
-    };
+/// A `{"allow": bool}` reply, optionally with `"always": true` to persist the
+/// request's scope. A closed pipe or junk denies.
+fn parse_approval(reply: Value) -> Answer {
     if !reply.get("allow").and_then(Value::as_bool).unwrap_or(false) {
         return Answer::No;
     }
@@ -782,8 +930,12 @@ async fn run_stream(
     allow_edits: bool,
     mcp: Option<crate::mcp::McpRuntime>,
     limits: Limits,
+    yolo: bool,
 ) -> Result<()> {
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits)?;
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo)?;
+    // The router owns stdin from here: replies feed the approver, and typed-in
+    // `{"message"}` lines join the turn at the next round boundary.
+    let replies = spawn_stdin_router(ctx.injected.clone());
 
     let sink: ChatEventSink = Box::new(|event| emit_line(&event));
     let mut edited: Vec<String> = Vec::new();
@@ -794,7 +946,7 @@ async fn run_stream(
         allow_edits,
         &policy,
         &grants,
-        Some(&stdio_approver()),
+        Some(&stdio_approver(replies)),
         &mut edited,
         &ctx,
         Some(&sink),
@@ -877,7 +1029,7 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
             }]);
         }
     }
-    bail!("nothing to ask; pass a prompt (aster chat \"...\"), pipe one in, or use --messages-json")
+    bail!("nothing to ask; pass a prompt (aster \"...\"), pipe one in, or use --messages-json")
 }
 
 /// Resolve the session a headless turn records into, and the prior history to
@@ -902,6 +1054,17 @@ fn resolve_headless_session(
         };
         let writer = store.session_writer_for(repo_root, id, repo_root, Some(model.to_string()))?;
         return Ok((Some(recorder(writer)), Vec::new()));
+    }
+
+    // `--session` names a session to append to and creates it when it is not
+    // there yet. Only `--resume` insists the session already exists.
+    if let Some(id) = &args.session {
+        let prior = store
+            .resume(repo_root, id)
+            .map(|t| t.to_chat_messages())
+            .unwrap_or_default();
+        let writer = store.session_writer_for(repo_root, id, repo_root, Some(model.to_string()))?;
+        return Ok((Some(recorder(writer)), prior));
     }
 
     let base = match args.resume_mode() {
@@ -962,6 +1125,13 @@ pub(crate) async fn agent_turn_streaming(
 /// Drive the model's tool calls until it answers in plain text or the round cap trips.
 /// Tool failures return to the model as tool results so it can retry instead of dying.
 #[allow(clippy::too_many_arguments)]
+/// `rounds` and `calls` are the two numbers a slow turn is almost always made
+/// of, so they are recorded on the span rather than left to be counted later.
+#[tracing::instrument(
+    name = "turn",
+    skip_all,
+    fields(rounds = tracing::field::Empty, calls = tracing::field::Empty)
+)]
 async fn agent_loop(
     client: &AiClient,
     repo_root: &Path,
@@ -974,6 +1144,8 @@ async fn agent_loop(
     ctx: &SessionCtx,
     events: Option<&ChatEventSink>,
 ) -> Result<(String, Option<Vec<ChatMessage>>)> {
+    let mut calls = 0usize;
+    let turn_span = tracing::Span::current();
     let emit = |event: Value| {
         if let Some(sink) = events {
             sink(event);
@@ -992,7 +1164,36 @@ async fn agent_loop(
         wire.push(serde_json::to_value(m)?);
     }
 
-    for round in 0..ctx.limits.max_tool_rounds {
+    // The round cap is a runaway backstop, not a work limit: while the plan
+    // keeps moving, hitting it grants another allotment. A full allotment
+    // with no plan progress is the runaway case, and the loop ends.
+    let mut round_cap = ctx.limits.max_tool_rounds;
+    let mut plan_at_extension = plan_snapshot(ctx);
+    for round in 0.. {
+        if round >= round_cap {
+            let now = plan_snapshot(ctx);
+            if plan_unfinished(&now) && now != plan_at_extension {
+                tracing::debug!(
+                    round,
+                    "plan still in motion; extending the tool-round budget"
+                );
+                plan_at_extension = now;
+                round_cap += ctx.limits.max_tool_rounds;
+            } else {
+                break;
+            }
+        }
+        turn_span.record("rounds", round + 1);
+        // Messages the user sent mid-turn join here, before the next request.
+        let pending: Vec<String> = match ctx.injected.lock() {
+            Ok(mut queue) => queue.drain(..).collect(),
+            Err(_) => Vec::new(),
+        };
+        for content in pending {
+            emit(json!({ "type": "injected", "content": content }));
+            ctx.record(MessageEvent::user(content.clone()));
+            wire.push(json!({ "role": "user", "content": content }));
+        }
         // Tool results accumulate inside a turn too; evict by policy before
         // each request and leave a trace of everything the model lost.
         let budget = crate::budget::history_budget(ctx.limits.compact_budget_chars, system_chars)
@@ -1007,8 +1208,24 @@ async fn agent_loop(
             ctx.record_eviction(&eviction);
         }
         let mut tools = tool_defs(allow_edits, approver.is_some());
+        // Sub-agents only see their allowlisted tools.
+        if let Some(sub) = &ctx.sub_agent {
+            tools.retain(|t| {
+                t["function"]["name"]
+                    .as_str()
+                    .map(|n| sub.tool_allowlist.contains(n))
+                    .unwrap_or(false)
+            });
+        }
+        // Main session: push the agent tool when the registry is non-empty.
+        if ctx.sub_agent.is_none() && !ctx.agents.is_empty() {
+            tools.push(agent_tool_schema());
+        }
         if let Some(injection) = ctx.mcp.as_ref().and_then(|m| m.injection()) {
             tools.push(injection.bridge_tool);
+        }
+        if client.web_search() {
+            tools.push(json!({"type": "openrouter:web_search"}));
         }
         // False when the endpoint ignored `stream` and the client fell back to a
         // whole response, which the commentary emit below has to make up for.
@@ -1050,14 +1267,22 @@ async fn agent_loop(
                 .content
                 .filter(|c| !c.trim().is_empty())
                 .context("model returned an empty reply")?;
-            ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+            if !msg.annotations.is_empty() {
+                emit_citations(&msg.annotations, &emit);
+                ctx.record(
+                    MessageEvent::assistant(Some(reply.clone()), Vec::new())
+                        .with_annotations(msg.annotations.clone()),
+                );
+            } else {
+                ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+            }
             return Ok((reply, compacted));
         }
 
-        ctx.record(MessageEvent::assistant(
-            msg.content.clone(),
-            msg.tool_calls.clone(),
-        ));
+        ctx.record(
+            MessageEvent::assistant(msg.content.clone(), msg.tool_calls.clone())
+                .with_annotations(msg.annotations.clone()),
+        );
         // Text the model emitted alongside its tool calls: its running commentary.
         // Streaming already delivered it, so that path only needs the separator.
         if let Some(text) = msg.content.as_deref().filter(|c| !c.trim().is_empty()) {
@@ -1114,23 +1339,55 @@ async fn agent_loop(
             }
         }
         for (call, prefetched) in msg.tool_calls.iter().zip(prefetched) {
+            calls += 1;
+            turn_span.record("calls", calls);
+            let span = tracing::info_span!(
+                "tool_call",
+                tool = %call.function.name,
+                round,
+                cached = prefetched.is_some(),
+                result_chars = tracing::field::Empty,
+                barren = tracing::field::Empty,
+                error = tracing::field::Empty,
+            );
             let result = match prefetched {
                 Some(result) => result,
                 None => {
-                    exec_tool(
-                        repo_root,
-                        &mut allow_edits,
-                        policy,
-                        grants,
-                        approver,
-                        &call.function.name,
-                        &call.function.arguments,
-                        edited,
-                        ctx,
-                    )
-                    .await
+                    if call.function.name == "agent" {
+                        dispatch_agent_tool(
+                            repo_root,
+                            client,
+                            &call.function.arguments,
+                            policy,
+                            grants,
+                            ctx,
+                            &call.id,
+                            events,
+                        )
+                        .instrument(span.clone())
+                        .await
+                    } else {
+                        exec_tool(
+                            repo_root,
+                            &mut allow_edits,
+                            policy,
+                            grants,
+                            approver,
+                            &call.function.name,
+                            &call.function.arguments,
+                            edited,
+                            ctx,
+                        )
+                        .instrument(span.clone())
+                        .await
+                    }
                 }
             };
+            // The same rule aster-eval applies offline, so a live dashboard and
+            // a session report never disagree about what counted as barren.
+            span.record("result_chars", result.len());
+            span.record("barren", aster_eval::barren(&result));
+            span.record("error", result.starts_with("error: "));
             tracing::debug!(tool = %call.function.name, "tool call executed");
             let result = truncate(&result, MAX_TOOL_RESULT_CHARS);
             emit(json!({
@@ -1149,16 +1406,13 @@ async fn agent_loop(
         }
     }
 
-    // Round cap tripped: force a final plain answer out of what was gathered,
-    // and say so, since a cut-off turn otherwise reads as the agent giving up.
-    let rounds = ctx.limits.max_tool_rounds;
-    emit(json!({
-        "type": "notice",
-        "message": format!(
-            "stopped after {rounds} tool rounds; answering with what it has \
-             (raise `agent.max_tool_rounds` in aster.yaml or ASTER_MAX_TOOL_ROUNDS)"
-        ),
-    }));
+    // Round cap tripped with no plan progress: force a final plain answer out
+    // of what was gathered. Logged rather than shown; the answer itself says
+    // what was not finished.
+    tracing::warn!(
+        round_cap,
+        "stopped after the tool-round cap with no plan progress; forcing a final answer"
+    );
     wire.push(json!({
         "role": "user",
         "content": "Stop using tools and answer now with what you have. Say plainly what you did not get to.",
@@ -1278,13 +1532,45 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "explore",
+                "description": "Run several lookups in ONE round instead of one per round. Every step runs in parallel and all results come back together, labelled. Each model round-trip costs seconds while these lookups take microseconds, so reaching for this instead of a lone read or search is the single biggest thing you can do to answer faster. Use it whenever you need more than one thing before you can act: the file plus the two it references, a search plus the file it will point at, several searches for the same concept. Steps may mix tools freely. Only lookups inside the repository run here; anything else comes back marked, and you call that tool on its own.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "description": "Lookups to run together, in the order you want them reported",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tool": {
+                                        "type": "string",
+                                        "enum": ["read_file", "search_files", "find_files", "list_files", "recall", "read_skill"],
+                                        "description": "Which lookup to run"
+                                    },
+                                    "args": {
+                                        "type": "object",
+                                        "description": "That tool's own arguments, exactly as you would send them on their own"
+                                    }
+                                },
+                                "required": ["tool", "args"]
+                            }
+                        }
+                    },
+                    "required": ["steps"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "search_files",
                 "description": "Content search across repository files. The query is a regex, falling back to a literal match when it is not valid regex. Matching is smart-case: an all-lowercase query ignores case, a query with an uppercase letter is matched exactly. Results are grouped by file, with surrounding lines and a '>' on each matching line, so you usually do not need to read the file afterwards. At most 3 matches per file, so hits spread across the repository. A directory that does not exist is not an error: the whole repository is searched instead.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Text or regex to search for" },
-                        "dir": { "type": "string", "description": "Repo-relative directory to search under (optional)" }
+                        "dir": { "type": "string", "description": "Repo-relative directory to search under, or a single file to search within (optional)" }
                     },
                     "required": ["query"]
                 }
@@ -1431,7 +1717,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run a CLI command. Filesystem writes are restricted to the repository and temp directories, and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution. Returns stdout, stderr, and exit code.",
+            "description": "Run a CLI command. There is no shell: `&&`, `|`, `>`, `*`, and `cd` are not interpreted, so to chain or pipe pass command:`bash` with args `[\"-lc\", \"one && two | head\"]`. Filesystem writes are restricted to the repository and temp directories (`.git` and CI workflow files are not writable), and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution. Returns stdout, stderr, and exit code.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1469,6 +1755,60 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
 
 /// Execute one tool call. Failures come back as plain text so the model can react.
 #[allow(clippy::too_many_arguments)]
+/// The escapes JSON actually allows.
+const JSON_ESCAPES: &str = "\"\\/bfnrtu";
+
+/// Tool arguments, repaired if the model produced an escape JSON does not
+/// allow. Bouncing those back costs a whole round, and the intent is never in
+/// doubt, so they are fixed here instead.
+fn parse_arguments(raw: &str) -> Result<Value> {
+    match serde_json::from_str(raw) {
+        Ok(value) => Ok(value),
+        Err(original) => match serde_json::from_str(&repair_escapes(raw)) {
+            Ok(value) => {
+                tracing::debug!("repaired an invalid escape in tool arguments");
+                Ok(value)
+            }
+            // Report what the model actually sent, not the repair attempt.
+            Err(_) => Err(anyhow::anyhow!("{original}")),
+        },
+    }
+}
+
+/// `\s` and `\.` come from regexes, where the backslash was meant literally,
+/// so it is doubled. `\'` comes from shell quoting, where it was not meant at
+/// all, so it is dropped.
+fn repair_escapes(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 8);
+    let mut chars = raw.chars();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            in_string = !in_string;
+            out.push(c);
+            continue;
+        }
+        if c != '\\' || !in_string {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some(next) if JSON_ESCAPES.contains(next) => {
+                out.push('\\');
+                out.push(next);
+            }
+            Some('\'') => out.push('\''),
+            Some(next) => {
+                out.push_str("\\\\");
+                out.push(next);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn exec_tool(
     repo_root: &Path,
     allow_edits: &mut bool,
@@ -1480,7 +1820,7 @@ async fn exec_tool(
     edited: &mut Vec<String>,
     ctx: &SessionCtx,
 ) -> String {
-    let args: Value = match serde_json::from_str(arguments) {
+    let args: Value = match parse_arguments(arguments) {
         Ok(v) => v,
         Err(e) => return format!("error: tool arguments were not valid JSON: {e}"),
     };
@@ -1559,6 +1899,7 @@ async fn exec_tool(
         },
         // A directory that does not exist widens the search rather than
         // failing it: the hits are usually what the model was after anyway.
+        "explore" => explore(repo_root, policy, ctx, &args).await,
         "search_files" => match str_arg("query").context("search_files needs a `query`") {
             Ok(query) => match missing_dir(repo_root, &str_arg("dir")) {
                 Some(dir) => search_files(&ctx.probe, repo_root, policy, &query, repo_root)
@@ -1653,6 +1994,77 @@ const PARALLEL_READ_TOOLS: [&str; 6] = [
     "recall",
     "read_skill",
 ];
+
+/// Fan a batch of lookups out in one round. Every step goes through
+/// [`read_only_call`], so nothing here escapes the policy or runs anything
+/// stateful; a step it declines is reported rather than run another way.
+async fn explore(
+    repo_root: &Path,
+    policy: &Policy,
+    ctx: &SessionCtx,
+    args: &Value,
+) -> Result<String> {
+    let steps = args["steps"]
+        .as_array()
+        .context("explore needs a `steps` array")?;
+    if steps.is_empty() {
+        bail!("explore needs at least one step");
+    }
+    let handles: Vec<_> = steps
+        .iter()
+        .map(|step| {
+            let name = step["tool"].as_str().unwrap_or_default().to_string();
+            let arguments = step
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| json!({}))
+                .to_string();
+            let label = step_label(&name, &step["args"]);
+            let repo_root = repo_root.to_path_buf();
+            let policy = policy.clone();
+            let ctx = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                (
+                    label,
+                    read_only_call(&repo_root, &policy, &ctx, &name, &arguments),
+                )
+            })
+        })
+        .collect();
+
+    let mut out = String::new();
+    for (i, handle) in handles.into_iter().enumerate() {
+        let (label, result) = match handle.await {
+            Ok(pair) => pair,
+            Err(e) => (format!("step {}", i + 1), Some(format!("error: {e}"))),
+        };
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("[{}] {label}\n", i + 1));
+        match result {
+            Some(text) => out.push_str(&text),
+            None => out.push_str(
+                "not runnable in a batch (outside the repository, or not a lookup); \
+                 call this tool on its own",
+            ),
+        }
+        out.push('\n');
+    }
+    Ok(out.trim_end().to_string())
+}
+
+/// Name a step by its most identifying argument, so the model can tell which
+/// result is which without re-reading the arguments it sent.
+fn step_label(tool: &str, args: &Value) -> String {
+    match ["path", "query", "pattern", "dir", "name"]
+        .iter()
+        .find_map(|key| args.get(key).and_then(Value::as_str))
+    {
+        Some(detail) => format!("{tool} {detail}"),
+        None => tool.to_string(),
+    }
+}
 
 /// Run one read-only call without the approval machinery. `None` sends the
 /// call back to the sequential pass, which can prompt for outside-repo paths
@@ -2069,6 +2481,9 @@ async fn run_raw(
         .network(!opts.turbo);
     let config = aster_sandbox::SandboxConfig::new(profile);
     let output = aster_sandbox::run_command(&config, binary, args).await?;
+    if output.timed_out {
+        bail!("command timed out after {}s", opts.timeout_secs);
+    }
     Ok((output.stdout, output.stderr, output.exit_code.unwrap_or(-1)))
 }
 
@@ -2459,9 +2874,299 @@ fn truncate_head(text: &str, max: usize) -> String {
     format!("... [truncated]\n{}", &text[cut..])
 }
 
+/// Schema for the `agent` tool: fan out N tasks to sub-agents.
+fn agent_tool_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "agent",
+            "description": "Fan out self-contained tasks to named sub-agents in parallel. Each agent starts with a fresh context and cannot see this conversation. For broad investigation, fan several cheap explorer agents out in one call, then pass their raw reports to `synthesizer` in a second call. Limit batch size to avoid overwhelming the system.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "One or more agent tasks to run in parallel",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "agent": { "type": "string", "description": "Name of the agent to invoke" },
+                                "task": { "type": "string", "description": "Self-contained task for the agent" }
+                            },
+                            "required": ["agent", "task"]
+                        },
+                        "minItems": 1
+                    }
+                },
+                "required": ["tasks"]
+            }
+        }
+    })
+}
+
+/// Dispatch one `agent` tool call: run the swarm, cap reports, return JSON.
+/// Streams `agent_status` events so the UIs can render live per-agent progress.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_agent_tool(
+    repo_root: &Path,
+    client: &AiClient,
+    arguments: &str,
+    policy: &Policy,
+    _grants: &Grants,
+    ctx: &SessionCtx,
+    call_id: &str,
+    events: Option<&ChatEventSink>,
+) -> String {
+    let args: Value = match parse_arguments(arguments) {
+        Ok(v) => v,
+        Err(e) => return format!("error: agent arguments were not valid JSON: {e}"),
+    };
+    let Some(tasks_val) = args.get("tasks").and_then(Value::as_array) else {
+        return "error: agent tool requires a `tasks` array".to_string();
+    };
+    let mut tasks: Vec<crate::agents::AgentTask> = Vec::new();
+    let max_per_turn = ctx.swarm.max_per_turn;
+    for entry in tasks_val.iter().take(max_per_turn) {
+        let Some(agent) = entry.get("agent").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(task) = entry.get("task").and_then(Value::as_str) else {
+            continue;
+        };
+        tasks.push(crate::agents::AgentTask {
+            agent: agent.to_string(),
+            task: task.to_string(),
+        });
+    }
+    if tasks.is_empty() {
+        return "error: agent tool needs at least one valid task with `agent` and `task` fields"
+            .to_string();
+    }
+
+    let over_cap = tasks_val.len().saturating_sub(max_per_turn);
+    let deps = crate::agents::AgentDeps {
+        client: client.clone(),
+        repo_root: repo_root.to_path_buf(),
+        policy: Arc::new(policy.clone()),
+        grants: Arc::new(Grants::default()),
+        probe: ctx.probe.clone(),
+        environment: ctx.environment.clone(),
+        limits: ctx.limits,
+        swarm: ctx.swarm.clone(),
+        session_registry: ctx.agents.clone(),
+    };
+
+    // Seed the UI with the whole batch up front so it can show "2/3"-style
+    // progress; run_swarm then reports each task's completion as it lands.
+    if let Some(sink) = events {
+        let total = tasks.len();
+        for t in &tasks {
+            sink(json!({
+                "type": "agent_status",
+                "call_id": call_id,
+                "agent": t.agent,
+                "task": t.task,
+                "status": "running",
+                "done": 0,
+                "total": total,
+            }));
+        }
+    }
+    let on_complete = |p: crate::agents::AgentProgress| {
+        if let Some(sink) = events {
+            let mut ev = json!({
+                "type": "agent_status",
+                "call_id": call_id,
+                "agent": p.agent,
+                "task": p.task,
+                "status": match p.status {
+                    crate::agents::ProgressStatus::Done => "done",
+                    crate::agents::ProgressStatus::Failed => "error",
+                },
+                "done": p.done,
+                "total": p.total,
+            });
+            if let Some(report) = p.report {
+                ev["report"] = Value::String(report);
+            }
+            if let Some(err) = p.error {
+                ev["error"] = Value::String(err);
+            }
+            sink(ev);
+        }
+    };
+    let mut reports = crate::agents::run_swarm(tasks, &ctx.agents, &deps, on_complete).await;
+
+    // Cap each report so the total fits in MAX_TOOL_RESULT_CHARS.
+    let count = reports.len().max(1);
+    let per_report = MAX_TOOL_RESULT_CHARS / count;
+    for r in &mut reports {
+        if let Some(ref mut report) = r.report
+            && report.len() > per_report
+        {
+            *report = truncate(report, per_report);
+        }
+    }
+
+    let mut result = serde_json::to_string(&reports).unwrap_or_default();
+    if over_cap > 0 {
+        result.push_str(&format!(
+            "\n\n({over_cap} additional task(s) skipped: per-turn cap is {max_per_turn})"
+        ));
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explore_runs_mixed_lookups_in_one_call() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("a.rs"), "fn needle() {}\n").unwrap();
+        std::fs::write(repo.path().join("b.rs"), "mod other;\n").unwrap();
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &SessionCtx::default(),
+            "explore",
+            json!({ "steps": [
+                { "tool": "read_file", "args": { "path": "b.rs" } },
+                { "tool": "search_files", "args": { "query": "needle" } },
+            ]}),
+        )
+        .await;
+        assert!(out.contains("[1] read_file b.rs"), "{out}");
+        assert!(out.contains("mod other;"), "{out}");
+        assert!(out.contains("[2] search_files needle"), "{out}");
+        assert!(out.contains("a.rs"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn explore_reports_steps_in_the_order_they_were_sent() {
+        let repo = tempfile::tempdir().unwrap();
+        for name in ["one.rs", "two.rs", "three.rs"] {
+            std::fs::write(repo.path().join(name), format!("// {name}\n")).unwrap();
+        }
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &SessionCtx::default(),
+            "explore",
+            json!({ "steps": [
+                { "tool": "read_file", "args": { "path": "three.rs" } },
+                { "tool": "read_file", "args": { "path": "one.rs" } },
+                { "tool": "read_file", "args": { "path": "two.rs" } },
+            ]}),
+        )
+        .await;
+        let order: Vec<usize> = ["three.rs", "one.rs", "two.rs"]
+            .iter()
+            .map(|n| out.find(n).unwrap_or_else(|| panic!("{n} missing:\n{out}")))
+            .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{out}");
+    }
+
+    #[tokio::test]
+    async fn explore_refuses_to_run_what_needs_the_sequential_path() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &SessionCtx::default(),
+            "explore",
+            json!({ "steps": [
+                { "tool": "run_command", "args": { "command": "rm", "args": ["-rf", "/"] } },
+                { "tool": "read_file", "args": { "path": "/etc/hosts" } },
+            ]}),
+        )
+        .await;
+        assert_eq!(out.matches("call this tool on its own").count(), 2, "{out}");
+        assert!(!out.contains("localhost"), "outside read leaked: {out}");
+    }
+
+    #[tokio::test]
+    async fn explore_needs_at_least_one_step() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &SessionCtx::default(),
+            "explore",
+            json!({ "steps": [] }),
+        )
+        .await;
+        assert!(out.starts_with("error: "), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_step_does_not_sink_the_others() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("real.rs"), "fn real() {}\n").unwrap();
+        let out = run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &SessionCtx::default(),
+            "explore",
+            json!({ "steps": [
+                { "tool": "read_file", "args": { "path": "nope.rs" } },
+                { "tool": "read_file", "args": { "path": "real.rs" } },
+            ]}),
+        )
+        .await;
+        assert!(out.contains("does not exist"), "{out}");
+        assert!(out.contains("fn real()"), "{out}");
+    }
+
+    #[test]
+    fn valid_arguments_are_left_alone() {
+        let raw = r#"{"command":"bash","args":["-lc","echo \"hi\"\n"]}"#;
+        let parsed = parse_arguments(raw).unwrap();
+        assert_eq!(parsed["args"][1], "echo \"hi\"\n");
+    }
+
+    #[test]
+    fn a_shell_quote_escape_loses_the_backslash() {
+        let raw = r#"{"args":["-lc","git diff -- \'crates/aster-cli/src/tui/\' | head"]}"#;
+        let parsed = parse_arguments(raw).unwrap();
+        assert_eq!(
+            parsed["args"][1],
+            "git diff -- 'crates/aster-cli/src/tui/' | head"
+        );
+    }
+
+    #[test]
+    fn a_regex_escape_keeps_its_backslash() {
+        let raw = r#"{"args":["-lc","grep -E '^\s*fn \w+' src"]}"#;
+        let parsed = parse_arguments(raw).unwrap();
+        assert_eq!(parsed["args"][1], r"grep -E '^\s*fn \w+' src");
+    }
+
+    #[test]
+    fn a_backslash_outside_a_string_is_still_a_syntax_error() {
+        assert!(parse_arguments(r#"{"a": \1}"#).is_err());
+    }
+
+    #[test]
+    fn an_unrepairable_error_reports_what_the_model_sent() {
+        let error = parse_arguments(r#"{"a": "b""#).unwrap_err().to_string();
+        assert!(error.contains("EOF"), "{error}");
+    }
+
+    #[test]
+    fn an_escaped_quote_does_not_end_the_string_early() {
+        let raw = r#"{"args":["say \"hi\" then \s"]}"#;
+        assert_eq!(
+            parse_arguments(raw).unwrap()["args"][0],
+            r#"say "hi" then \s"#
+        );
+    }
 
     #[test]
     fn read_window_caps_an_open_ended_read_and_says_where_to_resume() {

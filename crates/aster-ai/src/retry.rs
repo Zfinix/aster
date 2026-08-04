@@ -98,7 +98,7 @@ fn has_retry_hint(headers: &HeaderMap) -> bool {
 }
 
 /// Server-requested delay: `Retry-After` seconds, or the gap until
-/// `x-ratelimit-reset` (epoch seconds). The HTTP-date form is not parsed.
+/// `x-ratelimit-reset`. The HTTP-date form is not parsed.
 fn header_delay(headers: &HeaderMap) -> Option<Duration> {
     if let Some(secs) = headers
         .get(RETRY_AFTER)
@@ -112,7 +112,25 @@ fn header_delay(headers: &HeaderMap) -> Option<Duration> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<u64>().ok())?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    (reset > now).then(|| Duration::from_secs(reset - now))
+    reset_delay(reset, now)
+}
+
+/// Providers disagree on the unit of `x-ratelimit-reset`: OpenRouter sends
+/// epoch milliseconds, others epoch seconds, and some a plain seconds-from-now.
+/// Reading milliseconds as seconds asks for a wait of millennia, which the
+/// cap then turns into a full-minute stall, so normalize before subtracting.
+fn reset_delay(reset: u64, now: u64) -> Option<Duration> {
+    // Anything an order of magnitude past "now" is a finer unit, not the year 55000.
+    let reset_secs = if reset > now.saturating_mul(10) {
+        reset / 1_000
+    } else {
+        reset
+    };
+    if reset_secs > now {
+        return Some(Duration::from_secs(reset_secs - now));
+    }
+    // Below `now` it is not an epoch at all but a relative delay.
+    (reset_secs > 0 && reset_secs < 3_600).then(|| Duration::from_secs(reset_secs))
 }
 
 fn backoff(attempt: u32) -> Duration {
@@ -124,6 +142,32 @@ fn backoff(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_delay_reads_epoch_milliseconds_as_a_short_wait() {
+        let now = 1_760_000_000;
+        // OpenRouter's form: epoch ms, two seconds out.
+        let delay = reset_delay(now * 1_000 + 2_000, now).expect("a delay");
+        assert_eq!(delay, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn reset_delay_reads_epoch_seconds() {
+        let now = 1_760_000_000;
+        let delay = reset_delay(now + 5, now).expect("a delay");
+        assert_eq!(delay, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn reset_delay_treats_a_small_value_as_relative_seconds() {
+        let delay = reset_delay(3, 1_760_000_000).expect("a delay");
+        assert_eq!(delay, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn reset_delay_ignores_a_reset_in_the_past() {
+        assert!(reset_delay(1_700_000_000, 1_760_000_000).is_none());
+    }
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();
