@@ -38,6 +38,7 @@ import {
   type Conversation,
   type ReviewData,
   type Turn,
+  upsertAgent,
 } from "./lib/session";
 import { severityOf } from "./lib/severity";
 import { Dropdown, ToastProvider, useTheme, useToast } from "./components/chrome";
@@ -391,6 +392,22 @@ function App() {
                               s.id === ev.id ? { ...s, output: ev.result } : s,
                             ),
                           }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        case "agent_status":
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? { ...t, agents: upsertAgent(t.agents, ev) }
                         : t,
                     ),
                   },

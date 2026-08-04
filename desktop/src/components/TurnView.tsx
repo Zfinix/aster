@@ -1,6 +1,7 @@
 import type { Turn } from "../lib/session";
 import type { Finding } from "../lib/types";
 import { ActivityPanel } from "./ActivityPanel";
+import { AgentPanel } from "./AgentPanel";
 import { AssistantText } from "./AssistantText";
 import { MessageActions } from "./MessageActions";
 import { ReviewTurn } from "./ReviewTurn";
@@ -38,6 +39,7 @@ export function TurnView({
       <div className="turn-wrap">
         <div className="a-turn">
           {turn.steps && turn.steps.length > 0 && <ActivityPanel steps={turn.steps} />}
+          {turn.agents && turn.agents.length > 0 && <AgentPanel agents={turn.agents} />}
           <AssistantText id={turn.id} text={turn.text} error={turn.error} />
           {turn.stopped && <div className="a-stopped">Stopped</div>}
         </div>
