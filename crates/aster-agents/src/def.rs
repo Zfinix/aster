@@ -109,33 +109,36 @@ pub(crate) fn parse_agent_md(raw: &str, dir_name: &str, source: AgentSource) -> 
     })
 }
 
-/// The text between the opening `---` and the next `---` line, if the file
-/// opens with a frontmatter fence.
-fn frontmatter(raw: &str) -> Option<&str> {
+/// Split `raw` into `(frontmatter_yaml, body)` when the file opens with a
+/// `---` fence.  The closing fence must be `\n---` at the start of a line,
+/// followed by a newline or EOF.  The body strips exactly one leading newline
+/// after the closing fence.  Returns `None` when the opening fence is missing.
+fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
     let rest = raw
         .strip_prefix("---\n")
         .or_else(|| raw.strip_prefix("---\r\n"))?;
     let end = rest.find("\n---")?;
-    Some(&rest[..end])
+    let yaml = &rest[..end];
+    let after = &rest[end + "\n---".len()..];
+    let body = after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix('\n'))
+        .unwrap_or(after);
+    Some((yaml, body))
 }
 
-/// Everything after the frontmatter fence, or the whole input when there is none.
+/// The YAML text between the opening `---` and the next `\n---` line.
+/// Returns `None` when the file does not start with a frontmatter fence.
+fn frontmatter(raw: &str) -> Option<&str> {
+    split_frontmatter(raw).map(|(yaml, _)| yaml)
+}
+
+/// Everything after the frontmatter fence, or the whole input when there is
+/// none.  Unlike the old code, this does NOT strip leading dashes/newlines
+/// from the body — the shared `split_frontmatter` handles that cleanly.
 fn strip_frontmatter(raw: &str) -> &str {
-    let Some(rest) = raw
-        .strip_prefix("---\n")
-        .or_else(|| raw.strip_prefix("---\r\n"))
-    else {
-        return raw;
-    };
-    match rest.find("\n---") {
-        Some(end) => {
-            let after = &rest[end + "\n---".len()..];
-            after
-                .strip_prefix("\r\n")
-                .or_else(|| after.strip_prefix('\n'))
-                .unwrap_or(after)
-                .trim_start_matches(['-', '\r', '\n'])
-        }
+    match split_frontmatter(raw) {
+        Some((_, body)) => body,
         None => raw,
     }
 }
@@ -198,5 +201,46 @@ mod tests {
     fn rejects_bad_name() {
         let raw = "---\nname: Not Kebab\ndescription: x.\n---\nbody";
         assert!(parse_agent_md(raw, "d", AgentSource::BuiltIn(raw)).is_err());
+    }
+
+    #[test]
+    fn bullet_led_body_survives() {
+        let raw = "---\ndescription: A helper.\n---\n- item one\n- item two\n";
+        let def = parse_agent_md(raw, "helper", AgentSource::BuiltIn(raw)).unwrap();
+        assert_eq!(def.load_body().unwrap(), "- item one\n- item two");
+    }
+
+    #[test]
+    fn hrule_in_body_survives() {
+        let raw = "---\ndescription: A helper.\n---\nSome text\n\n---\n\nMore text\n";
+        let def = parse_agent_md(raw, "helper", AgentSource::BuiltIn(raw)).unwrap();
+        assert_eq!(def.load_body().unwrap(), "Some text\n\n---\n\nMore text");
+    }
+
+    #[test]
+    fn missing_fence_is_whole_body() {
+        let raw = "No frontmatter here.\nJust a paragraph.\n";
+        assert_eq!(strip_frontmatter(raw), raw);
+    }
+
+    #[test]
+    fn crlf_fence_works() {
+        let raw = "---\r\ndescription: A helper.\r\n---\r\nbody line\r\n";
+        let def = parse_agent_md(raw, "helper", AgentSource::BuiltIn(raw)).unwrap();
+        assert_eq!(def.load_body().unwrap(), "body line");
+    }
+
+    #[test]
+    fn no_leading_newline_after_fence() {
+        let raw = "---\ndescription: A helper.\n---";
+        let def = parse_agent_md(raw, "helper", AgentSource::BuiltIn(raw)).unwrap();
+        assert_eq!(def.load_body().unwrap(), "");
+    }
+
+    #[test]
+    fn body_with_leading_dashes_not_eaten() {
+        let raw = "---\ndescription: A helper.\n---\n- bullet\n- bullet\n";
+        let def = parse_agent_md(raw, "helper", AgentSource::BuiltIn(raw)).unwrap();
+        assert_eq!(def.load_body().unwrap(), "- bullet\n- bullet");
     }
 }

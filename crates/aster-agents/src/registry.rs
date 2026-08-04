@@ -8,6 +8,10 @@ const BUILTINS: &[(&str, &str)] = &[
     ("explorer", include_str!("../builtins/explorer/AGENT.md")),
     ("reviewer", include_str!("../builtins/reviewer/AGENT.md")),
     ("fixer", include_str!("../builtins/fixer/AGENT.md")),
+    (
+        "synthesizer",
+        include_str!("../builtins/synthesizer/AGENT.md"),
+    ),
 ];
 
 // Registry of agents, deduped by name.
@@ -62,8 +66,9 @@ impl AgentRegistry {
             the `agent` tool. Each starts with a fresh context and cannot see this \
             conversation, so the task you give it must contain everything it needs. \
             Delegate when a sub-task is substantial and separable; otherwise work \
-            directly. Treat an agent's report as findings to weigh, not verified \
-            truth.\n",
+            directly. For broad work, fan several cheap agents out in one `agent` \
+            call, then pass their raw reports to `synthesizer` in a second call. \
+            Treat an agent's report as findings to weigh, not verified truth.\n",
         );
         for agent in &self.agents {
             out.push_str(&format!("\n- **{}**: {}", agent.name, agent.description));
@@ -130,12 +135,13 @@ mod tests {
     #[test]
     fn builtins_present_and_valid() {
         let registry = AgentRegistry::discover(&[]);
-        for name in ["explorer", "reviewer", "fixer"] {
+        for name in ["explorer", "reviewer", "fixer", "synthesizer"] {
             let agent = registry.get(name).unwrap();
             assert!(agent.is_builtin());
             assert!(!agent.load_body().unwrap().is_empty());
         }
         assert!(registry.get("reviewer").unwrap().verify);
+        assert!(registry.get("synthesizer").unwrap().verify);
         assert!(
             registry
                 .get("fixer")
@@ -199,5 +205,7 @@ mod tests {
         assert!(index.contains("**explorer**"));
         assert!(index.contains("**reviewer**"));
         assert!(index.contains("**fixer**"));
+        assert!(index.contains("**synthesizer**"));
+        assert!(index.contains("fan several cheap agents"));
     }
 }
