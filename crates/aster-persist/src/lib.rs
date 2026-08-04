@@ -22,6 +22,18 @@ pub struct Store {
     home: PathBuf,
 }
 
+/// Where aster keeps its data: the XDG data dir other coding tools share.
+/// `~/.aster` is the legacy location and is migrated into this one.
+pub fn default_home() -> Result<PathBuf> {
+    let root = match std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => dirs::home_dir()
+            .context("could not determine home directory")?
+            .join(".local/share"),
+    };
+    Ok(root.join("aster"))
+}
+
 impl Store {
     pub fn open(home: impl Into<PathBuf>) -> Result<Self> {
         let home = home.into();
@@ -110,11 +122,30 @@ impl Store {
         SessionWriter::reopen(path, transcript.meta)
     }
 
+    /// Create a session from an imported transcript's own metadata, keeping
+    /// its original id and timestamp. `None` when the id already exists, so
+    /// re-running an import never duplicates a session.
+    pub fn import_session(
+        &self,
+        repo_root: &Path,
+        mut meta: SessionMeta,
+    ) -> Result<Option<SessionWriter>> {
+        meta.id = slugify(&meta.id);
+        anyhow::ensure!(!meta.id.is_empty(), "imported session has an empty id");
+        let path = self
+            .sessions_dir(repo_root)
+            .join(format!("{}.jsonl", meta.id));
+        if path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(SessionWriter::create(path, meta)?))
+    }
+
     pub fn latest(&self, repo_root: &Path) -> Result<Option<SessionTranscript>> {
-        let Some(id) = self.session_ids(repo_root)?.pop() else {
+        let Some(meta) = self.list_sessions(repo_root)?.into_iter().next() else {
             return Ok(None);
         };
-        Ok(Some(self.resume(repo_root, &id)?))
+        Ok(Some(self.resume(repo_root, &meta.id)?))
     }
 
     pub fn list_sessions(&self, repo_root: &Path) -> Result<Vec<SessionMeta>> {
@@ -132,7 +163,9 @@ impl Store {
                 metas.push(header);
             }
         }
-        metas.sort_by(|a, b| b.id.cmp(&a.id));
+        // Imported sessions keep their original (older) timestamps, so recency
+        // has to come from `created_at`, not from id order.
+        metas.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
         Ok(metas)
     }
 
@@ -147,27 +180,6 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e).with_context(|| format!("deleting session {}", path.display())),
         }
-    }
-
-    fn session_ids(&self, repo_root: &Path) -> Result<Vec<String>> {
-        let dir = self.sessions_dir(repo_root);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Ok(Vec::new());
-        };
-        let mut ids: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let path = e.path();
-                if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
-                    return None;
-                }
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_string)
-            })
-            .collect();
-        ids.sort();
-        Ok(ids)
     }
 }
 

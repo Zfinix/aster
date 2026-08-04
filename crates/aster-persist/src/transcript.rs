@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use aster_ai::{ChatMessage, ToolCall};
+use aster_ai::{Annotation, ChatMessage, ToolCall};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +50,10 @@ pub struct MessageEvent {
     pub ts: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<EventUsage>,
+    /// Web-search source citations, attached to assistant turns by the
+    /// OpenRouter `web` plugin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
 }
 
 impl MessageEvent {
@@ -61,6 +65,7 @@ impl MessageEvent {
             tool_call_id: None,
             ts: Utc::now(),
             usage: None,
+            annotations: Vec::new(),
         }
     }
 
@@ -96,6 +101,11 @@ impl MessageEvent {
 
     pub fn with_usage(mut self, usage: Option<EventUsage>) -> Self {
         self.usage = usage;
+        self
+    }
+
+    pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
+        self.annotations = annotations;
         self
     }
 }
