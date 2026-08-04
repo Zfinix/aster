@@ -1,0 +1,25 @@
+[package]
+name = "aster-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+opentelemetry = "0.32.0"
+# The batch processor exports from its own thread, which has no Tokio reactor,
+# so the client must be the blocking one. rustls keeps HTTPS collectors working.
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-blocking-client",
+    "reqwest-rustls",
+] }
+opentelemetry_sdk = { version = "0.32.1", features = ["trace"] }
+tracing = { workspace = true }
+tracing-opentelemetry = "0.33.0"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+    "registry",
+    "std",
+] }
