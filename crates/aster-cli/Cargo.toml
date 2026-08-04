@@ -30,6 +30,7 @@ futures-util = { version = "0.3", default-features = false }
 pulldown-cmark = { version = "0.12", default-features = false }
 unicode-width = "0.2"
 serde_yaml = "0.9"
+toml = "0.8"
 chrono = { workspace = true }
 globset = { workspace = true }
 tempfile = "3"
@@ -42,6 +43,7 @@ aster-models = { path = "../aster-models" }
 aster-policy = { path = "../aster-policy" }
 aster-persist = { path = "../aster-persist" }
 aster-remote = { path = "../aster-remote" }
+aster-agents = { path = "../aster-agents" }
 aster-skills = { path = "../aster-skills" }
 aster-tools = { path = "../aster-tools" }
 aster-web = { path = "../aster-web" }
@@ -49,3 +51,5 @@ aster-mcp = { path = "../aster-mcp" }
 aster-sandbox = { path = "../aster-sandbox" }
 cliclack = "0.5.5"
 console = "0.16"
+aster-telemetry = { version = "0.3.0", path = "../aster-telemetry" }
+aster-eval = { version = "0.3.0", path = "../aster-eval" }

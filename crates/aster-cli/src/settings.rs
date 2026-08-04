@@ -13,6 +13,7 @@ pub struct Settings {
     pub permissions: aster_policy::PermissionsConfig,
     pub mcp: crate::mcp::McpSettings,
     pub agent: Agent,
+    pub agents: Agents,
 }
 
 /// Limits on one agent turn. Both are also settable per run via
@@ -27,6 +28,23 @@ pub struct Agent {
     /// History size (chars) above which older turns are compacted into a
     /// summary. Lower it for small-context models.
     pub compact_budget_chars: Option<usize>,
+}
+
+/// Swarm configuration for sub-agent fan-out.  Also settable per run via
+/// `ASTER_COLLECTOR_MODEL`, `ASTER_AGENT_MAX_CONCURRENT`,
+/// `ASTER_AGENT_MAX_PER_TURN`, and `ASTER_AGENT_TIMEOUT`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Agents {
+    /// Cheap model for collector agents.  Falls back to the session model
+    /// when unset.
+    pub collector_model: Option<String>,
+    /// Max sub-agents running concurrently (default 8).
+    pub max_concurrent: Option<usize>,
+    /// Max `agent` tool tasks per turn (default 24).
+    pub max_per_turn: Option<usize>,
+    /// Seconds a single sub-agent may run (default 300).
+    pub agent_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -49,6 +67,9 @@ pub struct Review {
     pub focus_areas: Vec<String>,
     /// Reasoning budget for thinking models: off, low, medium, or high.
     pub effort: Option<aster_ai::Effort>,
+    /// Enable OpenRouter web search: the agent gets a server tool, review
+    /// stages get the `web` plugin. No effect on non-OpenRouter endpoints.
+    pub web_search: Option<bool>,
     /// Globs of files to review. Empty = everything (minus `exclude`).
     pub include: Vec<String>,
     /// Globs of files to never review.
@@ -73,11 +94,26 @@ impl Settings {
             .map(|path| parse(&path))
             .transpose()?;
 
-        match (global, project) {
-            (Some(global), Some(project)) => Ok(global.overlaid_with(project)),
-            (Some(only), None) | (None, Some(only)) => Ok(only),
-            (None, None) => Ok(Self::default()),
+        let mut settings = match (global, project) {
+            (Some(global), Some(project)) => global.overlaid_with(project),
+            (Some(only), None) | (None, Some(only)) => only,
+            (None, None) => Self::default(),
+        };
+        // The cross-tool `.mcp.json` files are read natively, aster.yaml
+        // winning name collisions and the repo's file beating the global one.
+        let mut json_paths = Vec::new();
+        if let Some(root) = repo_root {
+            json_paths.push(root.join(".mcp.json"));
         }
+        if let Some(home) = dirs::home_dir() {
+            json_paths.push(home.join(".aster/mcp.json"));
+        }
+        for path in json_paths {
+            for (name, server) in crate::mcp::mcp_json_servers(&path)? {
+                settings.mcp.servers.entry(name).or_insert(server);
+            }
+        }
+        Ok(settings)
     }
 
     /// Layer `project` over `self`. Scalars are the project's when it sets
@@ -100,6 +136,18 @@ impl Settings {
                     .agent
                     .compact_budget_chars
                     .or(self.agent.compact_budget_chars),
+            },
+            agents: Agents {
+                collector_model: project
+                    .agents
+                    .collector_model
+                    .or(self.agents.collector_model),
+                max_concurrent: project.agents.max_concurrent.or(self.agents.max_concurrent),
+                max_per_turn: project.agents.max_per_turn.or(self.agents.max_per_turn),
+                agent_timeout_secs: project
+                    .agents
+                    .agent_timeout_secs
+                    .or(self.agents.agent_timeout_secs),
             },
         }
     }
@@ -155,6 +203,7 @@ impl Review {
             analyzers: pick(self.analyzers, project.analyzers),
             astgrep_rules: project.astgrep_rules.or(self.astgrep_rules),
             effort: project.effort.or(self.effort),
+            web_search: project.web_search.or(self.web_search),
             focus_areas: pick(self.focus_areas, project.focus_areas),
             include: pick(self.include, project.include),
             exclude: pick(self.exclude, project.exclude),
@@ -437,8 +486,53 @@ permissions:
     }
 
     #[test]
+    fn repo_mcp_json_servers_are_read_natively_and_yaml_wins_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers": {
+                "shared-xyz": {"command": "npx", "args": ["-y", "pkg"], "env": {"K": "v"}},
+                "yaml-owned-xyz": {"command": "wrong"},
+                "remote-xyz": {"type": "http", "url": "http://x/mcp"}
+            }}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("aster.yaml"),
+            "mcp:\n  servers:\n    yaml-owned-xyz:\n      command: right\n",
+        )
+        .unwrap();
+
+        let settings = Settings::load(Some(dir.path())).unwrap();
+        let shared = &settings.mcp.servers["shared-xyz"];
+        assert_eq!(shared.command, "npx");
+        assert_eq!(shared.args, ["-y", "pkg"]);
+        assert_eq!(shared.env["K"], "v");
+        assert_eq!(settings.mcp.servers["yaml-owned-xyz"].command, "right");
+        assert!(!settings.mcp.servers.contains_key("remote-xyz"));
+    }
+
+    #[test]
     fn effort_absent_leaves_the_client_default() {
         let s: Settings = serde_yaml::from_str("review: {}").expect("parse");
         assert_eq!(s.review.effort, None);
+    }
+
+    #[test]
+    fn web_search_parses_and_overlays_from_the_project_file() {
+        let global: Settings =
+            serde_yaml::from_str("review:\n  web_search: true\n").expect("parse");
+        assert_eq!(global.review.web_search, Some(true));
+
+        let project: Settings =
+            serde_yaml::from_str("review:\n  web_search: false\n").expect("parse");
+        let merged = global.overlaid_with(project);
+        assert_eq!(merged.review.web_search, Some(false));
+    }
+
+    #[test]
+    fn web_search_absent_leaves_none() {
+        let s: Settings = serde_yaml::from_str("review: {}").expect("parse");
+        assert_eq!(s.review.web_search, None);
     }
 }

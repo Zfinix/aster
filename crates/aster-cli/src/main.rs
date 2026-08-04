@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod agents;
 mod auth;
 mod budget;
 mod chat;
@@ -8,10 +9,13 @@ mod edits;
 mod fix;
 mod git;
 mod github;
+mod import;
 mod init;
 mod instructions;
 mod mcp;
+mod models;
 mod persist;
+mod picker;
 mod provider;
 mod remote;
 mod review;
@@ -40,12 +44,17 @@ use clap::Subcommand;
 #[command(
     name = "aster",
     version,
-    about = "A self-hostable agent harness for software work"
+    about = "A self-hostable agent harness for software work",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
-    /// Defaults to `chat`: bare `aster` opens the interactive TUI.
+    /// Bare `aster` chats: the interactive TUI in a terminal, one-shot otherwise.
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Chat flags accepted directly on the root: `aster --resume`, `aster -p "…"`.
+    #[command(flatten)]
+    chat: chat::ChatArgs,
 
     /// Emit JSON on stdout instead of human text. Accepted by every subcommand,
     /// before or after it, and turns errors into `{"ok":false,"error":…}`.
@@ -68,7 +77,8 @@ enum Command {
     Logout,
     /// Review a diff: the current branch, an explicit range, a file, or a PR.
     Review(review::ReviewArgs),
-    /// Chat with the Aster agent (interactive TUI by default; --print for one-shot).
+    /// Hidden alias for bare `aster`, kept so existing `aster chat …` scripts work.
+    #[command(hide = true)]
     Chat(chat::ChatArgs),
     /// Apply model-generated fixes for review findings (dry-run by default).
     Fix(fix::FixArgs),
@@ -82,6 +92,8 @@ enum Command {
     Web(web::WebArgs),
     /// Inspect the MCP servers configured for this repo.
     Mcp(mcp::McpArgs),
+    /// List the model IDs the configured provider serves.
+    Models(models::ModelsArgs),
     /// Drive the agent remotely from a messaging channel (Telegram).
     Remote(remote::RemoteArgs),
 }
@@ -114,22 +126,15 @@ async fn main() -> Result<()> {
     JSON.store(cli.json, Ordering::Relaxed);
     let _ = EFFORT.set(cli.effort);
 
-    // Bare `aster` is the interactive chat TUI; `aster --json` is one-shot chat.
-    let command = cli.command.unwrap_or_else(|| {
-        let argv: &[&str] = if cli.json {
-            &["aster", "chat"]
-        } else {
-            &["aster", "chat", "--tui"]
-        };
-        Cli::parse_from(argv).command.expect("chat is a subcommand")
-    });
+    // No subcommand means chat: the flattened root flags are the chat args.
+    let command = cli.command.unwrap_or(Command::Chat(cli.chat));
     // Full-screen TUI logs must go to a file, not stderr.
     let chat_tui = matches!(&command, Command::Chat(a) if a.is_interactive());
     let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui;
     let stream_mode = matches!(&command, Command::Review(a) if a.stream)
         || matches!(&command, Command::Fix(_))
         || matches!(&command, Command::Chat(a) if !a.is_interactive());
-    init_tracing(tui_mode, stream_mode);
+    let telemetry = init_tracing(tui_mode, stream_mode);
 
     let result = match command {
         Command::Init(args) => init::run(args),
@@ -143,8 +148,15 @@ async fn main() -> Result<()> {
         Command::Skills(args) => skills::run(args).await,
         Command::Web(args) => web::run(args).await,
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
+        Command::Models(args) => models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
     };
+
+    // Batched spans are still in memory at this point, including the ones a
+    // failing run produced, which are the interesting ones.
+    if let Some(telemetry) = &telemetry {
+        telemetry.shutdown();
+    }
 
     // In JSON mode a failure is data too, so callers parse one shape either way.
     match result {
@@ -159,21 +171,51 @@ async fn main() -> Result<()> {
     }
 }
 
-fn init_tracing(tui_mode: bool, stream_mode: bool) {
-    let filter = env::var("RUST_LOG").unwrap_or_else(|_| "aster_harness=info".into());
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false);
-    if tui_mode && let Ok(file) = fs::File::create(env::temp_dir().join("aster-tui.log")) {
-        builder
-            .with_ansi(false)
-            .with_writer(Mutex::new(file))
-            .init();
-        return;
+/// The console layer keeps obeying `RUST_LOG`; spans go to OTLP on their own
+/// filter, so turning export on never changes what is printed. Returns the
+/// exporter handle, which must outlive the run to flush what it batched.
+fn init_tracing(tui_mode: bool, stream_mode: bool) -> Option<aster_telemetry::Telemetry> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Layer, Registry};
+
+    let console = tracing_subscriber::fmt::layer().with_target(false);
+    let console: Box<dyn Layer<Registry> + Send + Sync> =
+        match fs::File::create(env::temp_dir().join("aster-tui.log")) {
+            // A full-screen TUI cannot share the terminal with log lines.
+            Ok(file) if tui_mode => {
+                Box::new(console.with_ansi(false).with_writer(Mutex::new(file)))
+            }
+            _ if stream_mode => Box::new(console.with_writer(stderr)),
+            _ => Box::new(console),
+        };
+    let console = console.with_filter(EnvFilter::new(
+        env::var("RUST_LOG").unwrap_or_else(|_| "aster_harness=info".into()),
+    ));
+
+    let (export, telemetry) = match aster_telemetry::from_env::<Registry>("aster") {
+        Ok(Some((layer, telemetry))) => (Some(layer), Some(telemetry)),
+        Ok(None) => (None, None),
+        // Bad endpoint, missing collector config: worth saying, not worth
+        // refusing to start over.
+        Err(e) => {
+            eprintln!("telemetry disabled: {e:#}");
+            (None, None)
+        }
+    };
+    // Both layers filter against `Registry`, so they go on as one set rather
+    // than stacking, which would type the second against the first.
+    let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = vec![console.boxed()];
+    if let Some(export) = export {
+        layers.push(
+            export
+                .with_filter(EnvFilter::new(
+                    env::var("OTEL_FILTER").unwrap_or_else(|_| "info".into()),
+                ))
+                .boxed(),
+        );
     }
-    if stream_mode {
-        builder.with_writer(stderr).init();
-        return;
-    }
-    builder.init();
+
+    tracing_subscriber::registry().with(layers).init();
+    telemetry
 }

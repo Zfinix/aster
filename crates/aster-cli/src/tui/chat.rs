@@ -1,4 +1,4 @@
-//! The chat TUI behind `aster` and `aster chat --tui`. Finished output goes
+//! The chat TUI behind bare `aster`. Finished output goes
 //! into the terminal's own scrollback ([`super::terminal`]); only the bottom
 //! pane (composer, status, modals) is managed, and it draws on demand.
 
@@ -64,6 +64,11 @@ pub(super) enum AppEvent {
     /// The sandbox-bypass prompt came back yes.
     YoloConfirmed,
     SessionPicked(String),
+    /// A server toggled from the `/mcp` panel: name plus its new state.
+    McpToggle {
+        name: String,
+        disabled: bool,
+    },
     ModelChanged(String),
     /// The provider's catalog, fetched off the loop so `/model` never blocks
     /// the UI on a round trip.
@@ -117,6 +122,8 @@ pub async fn run_chat(
     resume: Resume,
     mcp: Option<crate::mcp::McpRuntime>,
     limits: crate::chat::Limits,
+    swarm: crate::chat::SwarmLimits,
+    agents: std::sync::Arc<aster_agents::AgentRegistry>,
 ) -> Result<()> {
     if matches!(resume, Resume::Pick) && seed.as_deref().is_some_and(|s| !s.trim().is_empty()) {
         anyhow::bail!("--resume opens a session picker, so it cannot also take a prompt");
@@ -167,6 +174,8 @@ pub async fn run_chat(
     app.instructions = sync::Arc::new(crate::instructions::discover(&repo_root));
     app.mcp = mcp;
     app.limits = limits;
+    app.swarm = swarm;
+    app.agents = agents;
     app.provider_base_url = client.base_url().to_string();
 
     let mut pane: BottomPane<AppEvent> = BottomPane::new(
@@ -239,9 +248,15 @@ pub async fn run_chat(
         tokio::select! {
             ev = tui.next_event() => match ev {
                 TuiEvent::Key(key) => {
-                    if let Flow::Quit =
-                        on_key(&mut app, &mut pane, key, &mut client, &mut turn, &repo_root)
-                    {
+                    if let Flow::Quit = on_key(
+                        &mut app,
+                        &mut pane,
+                        key,
+                        &mut client,
+                        &mut turn,
+                        &mut events_rx,
+                        &repo_root,
+                    ) {
                         break;
                     }
                     frames.schedule_now();
@@ -331,6 +346,15 @@ pub async fn run_chat(
     // Leave the last of the conversation in the scrollback on the way out.
     while let Some(block) = app.queue.pop_front() {
         tui.insert_history(block)?;
+    }
+    // Only a session someone actually talked in is worth resuming.
+    if let Some(id) = app.session_id()
+        && app.history.iter().any(|m| m.role == "user")
+    {
+        tui.insert_history(history::notice(
+            &format!("Resume this session with: aster --resume {id}"),
+            app.width,
+        ))?;
     }
     Ok(())
 }
@@ -498,6 +522,7 @@ fn on_key(
     key: KeyEvent,
     client: &mut AiClient,
     turn: &mut Option<ChatTurn>,
+    events_rx: &mut mpsc::Receiver<TurnEvent>,
     repo_root: &std::path::Path,
 ) -> Flow {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -544,9 +569,19 @@ fn on_key(
         InputResult::Command(cmd) => {
             app.handle_command(&cmd, client, pane);
         }
-        InputResult::Busy => {
-            app.flash = Some("still working · esc to interrupt, then send".into());
-            return Flow::Continue;
+        InputResult::Busy { text, refs } => {
+            abort(app, turn, pane);
+            // The aborted turn's user message was never answered; drop it so
+            // the new message does not stack a duplicate user turn.
+            if app.history.last().is_some_and(|m| m.role == "user") {
+                app.history.pop();
+            }
+            // Drop stale events the old turn already pushed before it was
+            // cancelled, so they do not render as part of the new turn.
+            while events_rx.try_recv().is_ok() {}
+            *turn = Some(app.submit(&text, &refs, client, repo_root));
+            pane.set_task_running(true);
+            app.flash = None;
         }
         InputResult::None => {
             app.flash = None;
@@ -619,6 +654,35 @@ fn resume_or_new(
     Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), messages)))
 }
 
+/// The swarm's clean text: one status line per agent, then the curated report
+/// from the synthesizer (or the last collector to finish).
+fn agent_report_text(rows: &[AgentRow]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        match row.status {
+            AgentRowStatus::Running => out.push_str(&format!("◼ {} running\n", row.agent)),
+            AgentRowStatus::Done => out.push_str(&format!("✔ {} done\n", row.agent)),
+            AgentRowStatus::Failed => out.push_str(&format!(
+                "✖ {}: {}\n",
+                row.agent,
+                row.error.as_deref().unwrap_or("failed")
+            )),
+        }
+    }
+    if let Some(report) = rows
+        .iter()
+        .rev()
+        .find(|r| r.status == AgentRowStatus::Done)
+        .and_then(|r| r.report.as_deref())
+    {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(report);
+    }
+    out
+}
+
 /// Decode one event from the agent's `ChatEventSink` NDJSON into a UI event.
 fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
     match event.get("type")?.as_str()? {
@@ -646,6 +710,31 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
         "notice" => Some(TurnEvent::Notice(
             event.get("message")?.as_str()?.to_string(),
         )),
+        "agent_status" => Some(TurnEvent::AgentStatus {
+            call_id: event.get("call_id")?.as_str()?.to_string(),
+            agent: event.get("agent")?.as_str()?.to_string(),
+            status: event.get("status")?.as_str()?.to_string(),
+            report: event
+                .get("report")
+                .and_then(Value::as_str)
+                .map(String::from),
+            error: event.get("error").and_then(Value::as_str).map(String::from),
+            done: event.get("done").and_then(Value::as_u64).unwrap_or(0) as usize,
+            total: event.get("total").and_then(Value::as_u64).unwrap_or(0) as usize,
+        }),
+        "citations" => {
+            let sources = event.get("sources")?.as_array()?;
+            let citations = sources
+                .iter()
+                .filter_map(|s| {
+                    Some(Citation {
+                        url: s.get("url")?.as_str()?.to_string(),
+                        title: s.get("title").and_then(Value::as_str).map(String::from),
+                    })
+                })
+                .collect();
+            Some(TurnEvent::Citations(citations))
+        }
         _ => None,
     }
 }
@@ -676,6 +765,26 @@ fn step_label(name: &str, args: &str) -> String {
         "remember" => "Saved to memory".to_string(),
         "recall" => format!("Recalled {}", s("name")),
         "read_skill" => format!("Read skill {}", s("name")),
+        "agent" => {
+            let names: Vec<&str> = parsed["tasks"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|t| t["agent"].as_str()).collect())
+                .unwrap_or_default();
+            let total = names.len();
+            let unique: Vec<&str> = {
+                let mut seen = std::collections::BTreeSet::new();
+                names.into_iter().filter(|n| seen.insert(*n)).collect()
+            };
+            if total == 0 {
+                "agent".to_string()
+            } else if total == 1 {
+                format!("agent: {}", unique[0])
+            } else if unique.len() == 1 {
+                format!("agent ×{total}: {unique}", unique = unique[0])
+            } else {
+                format!("agent ×{total}: {}", unique.join(", "))
+            }
+        }
         other => other.replace('_', " "),
     }
 }
@@ -722,9 +831,27 @@ enum TurnEvent {
         result: String,
         error: bool,
     },
+    /// Web-search source citations from the OpenRouter `web` plugin.
+    Citations(Vec<Citation>),
     /// Something the harness did that the user has to know about, e.g. the
     /// turn being cut short at the tool-round cap.
     Notice(String),
+    /// Live progress for one sub-agent in an `agent` tool call.
+    AgentStatus {
+        call_id: String,
+        agent: String,
+        status: String,
+        report: Option<String>,
+        error: Option<String>,
+        done: usize,
+        total: usize,
+    },
+}
+
+/// One source URL returned by the web-search plugin.
+pub(super) struct Citation {
+    pub(super) url: String,
+    pub(super) title: Option<String>,
 }
 
 /// A tool call the agent has made but not yet finished.
@@ -733,6 +860,22 @@ struct RunningTool {
     name: String,
     label: String,
     path: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentRowStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+/// One sub-agent's state inside an `agent` tool call, accumulated from
+/// `agent_status` events so the finished call renders clean reports.
+struct AgentRow {
+    agent: String,
+    status: AgentRowStatus,
+    report: Option<String>,
+    error: Option<String>,
 }
 
 /// One compiled policy per gating mode, since the picker switches between
@@ -785,7 +928,7 @@ fn is_edit_note(msg: &ChatMessage) -> bool {
 /// Keys the composer answers to. None of them are visible on screen, so
 /// `/help` is where they get said.
 const KEY_HELP: &[(&str, &str)] = &[
-    ("enter", "send · esc interrupts a running turn"),
+    ("enter", "send · interrupts a running turn if needed"),
     ("esc esc", "quit (twice, so a stray press does not)"),
     ("shift+tab", "step to the next mode"),
     ("ctrl+j", "newline without sending"),
@@ -842,7 +985,7 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "mcp",
         takes_arg: false,
-        desc: "List connected MCP servers and their tools",
+        desc: "Enable or disable MCP servers",
     },
     CommandDesc {
         name: "skills",
@@ -886,6 +1029,9 @@ struct ChatApp {
     /// of opening a new one.
     exploring: bool,
     running: Vec<RunningTool>,
+    /// Live per-`agent`-tool-call rows, keyed by call id, fed by `agent_status`
+    /// events so a finished swarm renders cleanly instead of as a JSON dump.
+    agent_rows: std::collections::HashMap<String, Vec<AgentRow>>,
     /// Blank lines streamed mid-message, held back until real content follows
     /// so a message never opens or closes with empty rows.
     pending_blanks: usize,
@@ -933,6 +1079,10 @@ struct ChatApp {
     /// A YOLO switch is playing its full-screen animation; cleared by
     /// `finish_takeover`, which repaints the world in the new palette.
     takeover: Option<Takeover>,
+    /// Agents discovered at startup, cloned into each turn's context.
+    agents: sync::Arc<aster_agents::AgentRegistry>,
+    /// Fan-out caps, cloned into each turn's context.
+    swarm: crate::chat::SwarmLimits,
 }
 
 struct Takeover {
@@ -957,6 +1107,7 @@ impl ChatApp {
             streamed: String::new(),
             exploring: false,
             running: Vec::new(),
+            agent_rows: std::collections::HashMap::new(),
             pending_blanks: 0,
             thinking: false,
             started: None,
@@ -985,6 +1136,8 @@ impl ChatApp {
             provider_base_url: String::new(),
             quit_armed: None,
             takeover: None,
+            agents: sync::Arc::default(),
+            swarm: crate::chat::SwarmLimits::default(),
         }
     }
 
@@ -1035,6 +1188,60 @@ impl ChatApp {
                 self.end_explored();
                 self.note(&message);
             }
+            TurnEvent::AgentStatus {
+                call_id,
+                agent,
+                status,
+                report,
+                error,
+                done,
+                total,
+            } => {
+                let rows = self.agent_rows.entry(call_id).or_default();
+                match status.as_str() {
+                    "running" => {
+                        if !rows.iter().any(|r| r.agent == agent) {
+                            rows.push(AgentRow {
+                                agent: agent.clone(),
+                                status: AgentRowStatus::Running,
+                                report: None,
+                                error: None,
+                            });
+                        }
+                        self.note(&format!("agent {agent}: started"));
+                    }
+                    "done" => {
+                        if let Some(row) = rows.iter_mut().find(|r| r.agent == agent) {
+                            row.status = AgentRowStatus::Done;
+                            row.report = report;
+                        }
+                        let n = if done > 0 {
+                            format!(" ({done}/{total})")
+                        } else {
+                            String::new()
+                        };
+                        self.note(&format!("agent {agent}: done{n}"));
+                    }
+                    "error" => {
+                        if let Some(row) = rows.iter_mut().find(|r| r.agent == agent) {
+                            row.status = AgentRowStatus::Failed;
+                            row.error = error.clone();
+                        }
+                        let why = error
+                            .as_deref()
+                            .map(|e| e.lines().next().unwrap_or("failed"))
+                            .unwrap_or("failed");
+                        self.note(&format!("agent {agent}: failed: {why}"));
+                    }
+                    _ => {}
+                }
+            }
+            TurnEvent::Citations(sources) => {
+                self.end_message();
+                self.end_explored();
+                let block = history::citations(&sources, self.width);
+                self.emit(block);
+            }
         }
     }
 
@@ -1050,7 +1257,12 @@ impl ChatApp {
             return;
         }
         self.end_explored();
-        let block = if failed {
+        let block = if tool.name == "agent" {
+            // Render the swarm cleanly from the accumulated agent_status rows
+            // instead of the JSON array the model sees.
+            let rows = self.agent_rows.remove(&tool.id).unwrap_or_default();
+            history::tool(&tool.label, &agent_report_text(&rows), failed, self.width)
+        } else if failed {
             history::tool(&tool.label, result, true, self.width)
         } else if tool.name == "update_plan" {
             // The plan itself is the output; the tool's text just repeats it.
@@ -1164,6 +1376,10 @@ impl ChatApp {
             environment: crate::chat::environment_note(&repo_root),
             yolo: self.mode == Mode::Yolo,
             reads: Default::default(),
+            injected: Default::default(),
+            agents: self.agents.clone(),
+            sub_agent: None,
+            swarm: self.swarm.clone(),
         };
         tokio::spawn(async move {
             let sink: crate::chat::ChatEventSink = Box::new(move |event| {
@@ -1391,6 +1607,7 @@ impl ChatApp {
                 self.note(&format!("answered: {answer}"));
             }
             AppEvent::SessionPicked(id) => self.resume_session(&id),
+            AppEvent::McpToggle { name, disabled } => self.toggle_mcp(&name, disabled),
             AppEvent::ModelChanged(model) => self.set_model(model, client),
             AppEvent::ProviderPicked { base_url, model } => {
                 self.switch_provider(base_url, model, client)
@@ -1403,8 +1620,12 @@ impl ChatApp {
                 summary,
                 replaces_through,
             } => {
+                let agents = self.agents.clone();
+                let swarm = self.swarm.clone();
                 let ctx = SessionCtx {
                     recorder: self.recorder.clone(),
+                    agents,
+                    swarm,
                     ..SessionCtx::default()
                 };
                 ctx.record_summary(&summary, replaces_through);
@@ -1773,7 +1994,7 @@ impl ChatApp {
             "compact" => self.start_compact(client, pane.sender()),
             "status" => self.show_status(),
             "diff" | "d" => self.show_diff(),
-            "mcp" => self.show_mcp(),
+            "mcp" => self.show_mcp(pane),
             "skills" => self.show_skills(),
             "memory" => self.show_memory(),
             "quit" | "q" | "exit" => self.should_quit = true,
@@ -1863,13 +2084,14 @@ impl ChatApp {
         self.emit(block);
     }
 
+    fn session_id(&self) -> Option<String> {
+        let recorder = self.recorder.as_ref()?;
+        recorder.lock().ok().map(|w| w.id().to_string())
+    }
+
     fn show_status(&mut self) {
         let chars: usize = self.history.iter().map(|m| m.content.len()).sum();
-        let session = self
-            .recorder
-            .as_ref()
-            .and_then(|r| r.lock().ok().map(|w| w.id().to_string()))
-            .unwrap_or_else(|| "not saved".into());
+        let session = self.session_id().unwrap_or_else(|| "not saved".into());
         let mcp = match &self.mcp {
             Some(rt) => format!(
                 "{} ({} tools)",
@@ -1946,22 +2168,62 @@ impl ChatApp {
         self.emit(lines);
     }
 
-    fn show_mcp(&mut self) {
-        let Some(rt) = &self.mcp else {
-            self.note("no MCP servers configured (add them under `mcp:` in aster.yaml)");
-            return;
+    /// The `/mcp` control panel: every configured server with its state;
+    /// choosing one flips `disabled` in whichever config file declares it.
+    fn show_mcp(&mut self, pane: &mut BottomPane<AppEvent>) {
+        let settings = match crate::settings::Settings::load(Some(&self.repo_root)) {
+            Ok(s) => s,
+            Err(e) => {
+                self.note(&format!("could not read config: {e:#}"));
+                return;
+            }
         };
-        let rows: Vec<(String, String)> = rt
-            .server_names()
-            .into_iter()
-            .map(|name| (name, String::new()))
-            .collect();
-        if rows.is_empty() {
-            self.note("no MCP servers connected");
+        if settings.mcp.servers.is_empty() {
+            self.note("no MCP servers configured (add them to .mcp.json or `mcp:` in aster.yaml, or run `aster mcp import`)");
             return;
         }
-        let title = format!("MCP servers ({} tools)", rt.tool_count());
-        self.emit_rows(&title, rows);
+        let connected: Vec<String> = self
+            .mcp
+            .as_ref()
+            .map(|rt| rt.server_names())
+            .unwrap_or_default();
+        let items = settings
+            .mcp
+            .servers
+            .iter()
+            .map(|(name, config)| {
+                let state = if config.disabled {
+                    "disabled"
+                } else if connected.contains(name) {
+                    "connected"
+                } else {
+                    "enabled (not connected)"
+                };
+                SelectionItem {
+                    name: format!("{} {name}", if config.disabled { "◻" } else { "◼" }),
+                    description: format!("{state} · {} {}", config.command, config.args.join(" ")),
+                    is_current: false,
+                    event: AppEvent::McpToggle {
+                        name: name.clone(),
+                        disabled: !config.disabled,
+                    },
+                }
+            })
+            .collect();
+        pane.push_picker("MCP servers — enter toggles on/off", items);
+    }
+
+    fn toggle_mcp(&mut self, name: &str, disabled: bool) {
+        match crate::mcp::toggle_server(Some(&self.repo_root), name, disabled) {
+            Ok(path) => {
+                let verb = if disabled { "disabled" } else { "enabled" };
+                self.note(&format!(
+                    "{verb} {name} in {} (takes effect next session)",
+                    short_path(&path)
+                ));
+            }
+            Err(e) => self.note(&format!("could not toggle {name}: {e:#}")),
+        }
     }
 
     fn show_skills(&mut self) {
@@ -2343,6 +2605,44 @@ mod tests {
         assert!(out.contains("Edited"), "{out}");
         assert!(out.contains("src/lib.rs"));
         assert!(out.contains("+1 −1"), "{out}");
+    }
+
+    #[test]
+    fn a_swarm_renders_status_lines_then_the_curated_report() {
+        let mut app = chat_app("m1".into());
+        app.on_turn_event(TurnEvent::ToolCall {
+            id: "c1".into(),
+            name: "agent".into(),
+            args: "{\"tasks\":[{\"agent\":\"explorer\",\"task\":\"find\"}]}".into(),
+        });
+        app.on_turn_event(TurnEvent::AgentStatus {
+            call_id: "c1".into(),
+            agent: "explorer".into(),
+            status: "running".into(),
+            report: None,
+            error: None,
+            done: 0,
+            total: 1,
+        });
+        app.on_turn_event(TurnEvent::AgentStatus {
+            call_id: "c1".into(),
+            agent: "explorer".into(),
+            status: "done".into(),
+            report: Some("Found: auth lives in src/auth.rs".into()),
+            error: None,
+            done: 1,
+            total: 1,
+        });
+        app.on_turn_event(TurnEvent::ToolResult {
+            id: "c1".into(),
+            result: "[{\"agent\":\"explorer\",\"report\":\"...\"}]".into(),
+            error: false,
+        });
+        let out = rendered(&app);
+        assert!(out.contains("agent explorer: done"), "{out}");
+        assert!(out.contains("✔ explorer done"), "{out}");
+        assert!(out.contains("Found: auth lives in src/auth.rs"), "{out}");
+        assert!(!out.contains("agent ×"), "{out}");
     }
 
     #[test]

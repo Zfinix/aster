@@ -19,6 +19,15 @@ enum SessionsCmd {
     Show { id: String },
     /// Delete a saved session by id.
     Delete { id: String },
+    /// Copy this repo's conversations from another coding tool (Claude Code, Codex, Cursor, opencode, Hermes).
+    Import {
+        /// Which tool to read; omitted, all three are tried.
+        #[arg(long, value_enum)]
+        from: Option<crate::import::Source>,
+        /// Report what would be imported without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Delete stale sessions: empty ones always, plus anything past the limits.
     Prune {
         /// Keep only this many of the newest sessions with turns in them.
@@ -35,6 +44,9 @@ pub fn run_sessions(args: SessionsArgs) -> Result<()> {
     let store = crate::persist::store()?;
 
     match args.cmd.unwrap_or(SessionsCmd::List) {
+        SessionsCmd::Import { from, dry_run } => {
+            return crate::import::run_sessions_import(from, dry_run);
+        }
         SessionsCmd::List => {
             let metas = store.list_sessions(&repo_root)?;
             let rows: Vec<(_, usize, String)> = metas
@@ -176,6 +188,17 @@ fn print_transcript(transcript: &aster_persist::SessionTranscript) {
                         msg.role.as_str()
                     };
                     println!("\n{label}: {}", truncate(content.trim(), 2000));
+                }
+                if !msg.annotations.is_empty() {
+                    println!("  sources:");
+                    for a in &msg.annotations {
+                        let label = a
+                            .url_citation
+                            .title
+                            .as_deref()
+                            .unwrap_or(&a.url_citation.url);
+                        println!("    {label} — {url}", url = a.url_citation.url);
+                    }
                 }
             }
         }
