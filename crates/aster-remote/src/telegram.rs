@@ -19,8 +19,9 @@ use crate::markdown;
 /// Telegram caps messages at 4096 chars; leave headroom for tags.
 const CHUNK_LIMIT: usize = 4000;
 
-/// How many activity lines stay visible before older ones collapse.
-const ACTIVITY_WINDOW: usize = 12;
+/// Steps one activity message holds before the next batch starts its own, so a
+/// long turn reads as progress in the chat instead of one mutating block.
+const ACTIVITY_WINDOW: usize = 6;
 
 /// Minimum gap between edits of the activity message (Telegram rate limit).
 const ACTIVITY_EDIT_GAP: Duration = Duration::from_millis(1500);
@@ -888,9 +889,10 @@ async fn start_turn(
 
     let api = api.clone();
     let chats = chats.clone();
+    let repo_root = cfg.repo_root.clone();
     tokio::spawn(async move {
         let result = drive_turn(&api, &chats, chat_id, events_rx, turn_task).await;
-        finish_turn(&api, &chats, chat_id, result).await;
+        finish_turn(&api, &chats, chat_id, Some(&repo_root), result).await;
     });
 }
 
@@ -915,6 +917,7 @@ async fn drive_turn(
     });
 
     let mut activity = Activity::new(api.clone(), chat_id);
+    let mut plan_id: Option<i64> = None;
     while let Some(event) = events.recv().await {
         match event {
             TurnEvent::ToolCall {
@@ -922,6 +925,20 @@ async fn drive_turn(
                 name,
                 arguments,
             } => {
+                // The plan is the one thing worth its own message: it is the
+                // agent's intent, and it must not scroll away with the steps.
+                if name == "update_plan"
+                    && let Some(plan) = plan_message(&arguments)
+                {
+                    activity.flush(true).await;
+                    plan_id = match plan_id {
+                        Some(existing) => {
+                            api.edit_html(chat_id, existing, &plan).await;
+                            Some(existing)
+                        }
+                        None => api.send_html(chat_id, &plan).await,
+                    };
+                }
                 activity.push(id, tool_line(&name, &arguments));
                 activity.flush(false).await;
             }
@@ -991,7 +1008,13 @@ async fn drive_turn(
 }
 
 /// Record the outcome and report it back to the chat.
-async fn finish_turn(api: &Api, chats: &Chats, chat_id: i64, result: Result<TurnOutcome>) {
+async fn finish_turn(
+    api: &Api,
+    chats: &Chats,
+    chat_id: i64,
+    repo_root: Option<&std::path::Path>,
+    result: Result<TurnOutcome>,
+) {
     let result = {
         let mut chats = chats.lock().expect("chats lock");
         let state = chats.entry(chat_id).or_default();
@@ -1014,13 +1037,7 @@ async fn finish_turn(api: &Api, chats: &Chats, chat_id: i64, result: Result<Turn
                 api.send_animation(chat_id, &gif).await;
             }
             if !outcome.edits.is_empty() {
-                let files: Vec<String> = outcome
-                    .edits
-                    .iter()
-                    .map(|path| format!("•  <code>{}</code>", markdown::escape(path)))
-                    .collect();
-                let text = format!("<b>Edited files</b>\n{}", files.join("\n"));
-                api.send_html_or_plain(chat_id, &text).await;
+                send_edit_diff(api, chat_id, repo_root, &outcome.edits).await;
             }
         }
         Err(e) => {
@@ -1329,6 +1346,96 @@ impl Activity {
     }
 }
 
+/// Diff budget for the post-edit message; longer diffs go out as a code page.
+const DIFF_INLINE_LIMIT: usize = 3_000;
+
+/// Show what actually changed. A list of file names says an edit happened; the
+/// diff says whether it was the right one, which is the thing worth reviewing
+/// from a phone.
+async fn send_edit_diff(
+    api: &Api,
+    chat_id: i64,
+    repo_root: Option<&std::path::Path>,
+    edits: &[String],
+) {
+    let files: Vec<String> = edits
+        .iter()
+        .map(|path| format!("•  <code>{}</code>", markdown::escape(path)))
+        .collect();
+    let header = format!("✏️ <b>Edited</b>\n{}", files.join("\n"));
+
+    let Some(repo_root) = repo_root else {
+        api.send_html_or_plain(chat_id, &header).await;
+        return;
+    };
+    // Untracked files have no diff against HEAD, so stage intents first.
+    let mut args = vec!["-C".to_string(), repo_root.display().to_string()];
+    args.extend(["diff".into(), "--no-color".into(), "--".into()]);
+    args.extend(edits.iter().cloned());
+    let diff = tokio::process::Command::new("git")
+        .args(&args)
+        .output()
+        .await
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if diff.is_empty() {
+        api.send_html_or_plain(chat_id, &header).await;
+        return;
+    }
+    if diff.len() <= DIFF_INLINE_LIMIT {
+        let text = format!("{header}\n<pre>{}</pre>", markdown::escape(&diff));
+        api.send_html_or_plain(chat_id, &text).await;
+        return;
+    }
+    api.send_html_or_plain(chat_id, &header).await;
+    match crate::mcp_server::publish_telegraph_page("Changes", &diff).await {
+        Ok(url) => api.send_text(chat_id, &url).await,
+        Err(_) => {
+            let text = format!(
+                "<pre>{}</pre>",
+                markdown::escape(&truncate(&diff, DIFF_INLINE_LIMIT))
+            );
+            api.send_html_or_plain(chat_id, &text).await;
+        }
+    }
+}
+
+/// Render an `update_plan` call as its own checklist message.
+fn plan_message(arguments: &str) -> Option<String> {
+    let args: Value = serde_json::from_str(arguments).ok()?;
+    let steps = args.get("steps")?.as_array()?;
+    if steps.is_empty() {
+        return None;
+    }
+    let mut text = String::from("📋 <b>Plan</b>");
+    let mut done = 0;
+    for step in steps {
+        let label = step.get("label").and_then(Value::as_str).unwrap_or("");
+        let status = step.get("status").and_then(Value::as_str).unwrap_or("");
+        let marker = match status {
+            "done" => {
+                done += 1;
+                "✅"
+            }
+            "in_progress" => "▶️",
+            "blocked" => "⛔",
+            "skipped" => "⏭",
+            _ => "▫️",
+        };
+        let label = markdown::escape(label);
+        // The step in flight is bolded so the plan reads at a glance.
+        let line = if status == "in_progress" {
+            format!("\n{marker} <b>{label}</b>")
+        } else {
+            format!("\n{marker} {label}")
+        };
+        text.push_str(&line);
+    }
+    text.push_str(&format!("\n\n{done}/{} done", steps.len()));
+    Some(text)
+}
+
 /// One activity line for a tool call: emoji, verb, and the interesting argument.
 fn tool_line(name: &str, arguments: &str) -> String {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
@@ -1448,6 +1555,48 @@ pub(crate) const REACTIONS: &[&str] = &[
     "🤩",
     "🕊",
     "👨‍💻",
+    "😄",
+    "😆",
+    "😅",
+    "😍",
+    "😘",
+    "😜",
+    "😎",
+    "🙂",
+    "😊",
+    "😇",
+    "😡",
+    "😤",
+    "🥰",
+    "🥲",
+    "😬",
+    "😐",
+    "🙃",
+    "😏",
+    "😲",
+    "😳",
+    "😔",
+    "😮",
+    "😴",
+    "🥳",
+    "😋",
+    "😝",
+    "😗",
+    "🥺",
+    "🤗",
+    "🤨",
+    "🙌",
+    "👋",
+    "😶‍🌫️",
+    "😓",
+    "😠",
+    "⭐",
+    "🧡",
+    "💔",
+    "🖤",
+    "🥵",
+    "🥶",
+    "😈",
 ];
 
 /// How many gifs one reply may attach.
@@ -1890,6 +2039,25 @@ mod tests {
             super::approval_subject("edit src/lib.rs (protected path)"),
             "edit src/lib.rs (protected path)"
         );
+    }
+
+    #[test]
+    fn plan_message_marks_the_step_in_flight() {
+        let args = r#"{"steps":[
+            {"label":"read the code","status":"done"},
+            {"label":"write the fix","status":"in_progress"},
+            {"label":"run tests","status":"pending"}]}"#;
+        let plan = super::plan_message(args).expect("a plan");
+        assert!(plan.contains("✅ read the code"));
+        assert!(plan.contains("▶️ <b>write the fix</b>"));
+        assert!(plan.contains("▫️ run tests"));
+        assert!(plan.contains("1/3 done"));
+    }
+
+    #[test]
+    fn plan_message_is_none_without_steps() {
+        assert!(super::plan_message(r#"{"steps":[]}"#).is_none());
+        assert!(super::plan_message("not json").is_none());
     }
 
     #[test]
