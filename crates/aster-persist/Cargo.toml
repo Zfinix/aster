@@ -13,6 +13,7 @@ chrono = { workspace = true }
 ulid = { workspace = true }
 
 aster-ai = { path = "../aster-ai" }
+dirs = "6.0.0"
 
 [dev-dependencies]
 tempfile = "3"
