@@ -9,6 +9,8 @@ members = [
     "crates/aster-harness",
     "crates/aster-policy",
     "crates/aster-persist",
+    "crates/aster-eval",
+    "crates/aster-telemetry",
     "crates/aster-skills",
     "crates/aster-agents",
     "crates/aster-mcp",
