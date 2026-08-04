@@ -19,6 +19,25 @@ pub struct ChatRequest {
     /// Reasoning-token control for thinking models (OpenRouter shape).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    /// OpenRouter web-search plugin. Only serializes when set, so non-OpenRouter
+    /// endpoints are unaffected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<WebSearchPlugin>,
+}
+
+/// OpenRouter `web` plugin entry. Serialized as `{"id": "web"}` (plus optional
+/// engine/domain filters) inside the request's `plugins` array.
+#[derive(Serialize)]
+pub struct WebSearchPlugin {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include_domains: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_domains: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +88,10 @@ pub struct ToolChatRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    /// OpenRouter web-search plugin. Only serializes when set, so non-OpenRouter
+    /// endpoints are unaffected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<WebSearchPlugin>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +113,27 @@ pub struct AssistantMessage {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Source citations attached by the OpenRouter web-search plugin. Each
+    /// annotation carries a URL and optional title the UI can render as a
+    /// source link below the answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
+}
+
+/// A citation annotation on an assistant message. OpenRouter returns these as
+/// `{"type": "url_citation", "url_citation": {"url": "...", "title": "..."}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Annotation {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub url_citation: UrlCitation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UrlCitation {
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +183,9 @@ pub struct ChatDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCallDelta>,
+    /// Citations arrive on the final streaming chunk, not per-delta.
+    #[serde(default)]
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Deserialize)]

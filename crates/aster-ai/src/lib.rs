@@ -23,7 +23,10 @@ mod inline_tools;
 use inline_tools::{TokenGate, split_inline_tool_calls};
 
 mod models;
-pub use models::{AssistantMessage, ChatMessage, ToolCall, ToolCallFunction};
+pub use models::{
+    Annotation, AssistantMessage, ChatMessage, ToolCall, ToolCallFunction, UrlCitation,
+    WebSearchPlugin,
+};
 use models::{
     ChatRequest, ChatResponse, ChatStreamChunk, Reasoning, StreamOptions, ToolChatRequest,
     ToolChatResponse, Usage,
@@ -81,6 +84,10 @@ pub struct AiClient {
     seed: Option<u64>,
     max_tokens: Option<u32>,
     effort: Effort,
+    /// When true, non-tool requests carry the OpenRouter `web` plugin so the
+    /// provider runs a web search once per request. Tool-calling requests use
+    /// the `openrouter:web_search` server tool instead (see `chat.rs`).
+    web_search: bool,
 }
 
 impl AiClient {
@@ -163,12 +170,19 @@ impl AiClient {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_default(),
+            web_search: env_truthy("ASTER_WEB_SEARCH"),
         }
     }
 
     /// Builder form of [`AiClient::set_effort`], for a client built from config.
     pub fn with_effort(mut self, effort: Effort) -> Self {
         self.effort = effort;
+        self
+    }
+
+    /// Builder form of [`AiClient::set_web_search`], for a client built from config.
+    pub fn with_web_search(mut self, web_search: bool) -> Self {
+        self.web_search = web_search;
         self
     }
 
@@ -180,6 +194,16 @@ impl AiClient {
 
     pub fn effort(&self) -> Effort {
         self.effort
+    }
+
+    /// Change the web-search toggle for later requests. Clones made before this
+    /// call keep the old one, so set it before handing the client to a task.
+    pub fn set_web_search(&mut self, enabled: bool) {
+        self.web_search = enabled;
+    }
+
+    pub fn web_search(&self) -> bool {
+        self.web_search
     }
 
     pub fn api_key(&self) -> &str {
@@ -236,6 +260,7 @@ impl AiClient {
             seed: self.seed,
             max_tokens: self.max_tokens,
             reasoning: self.reasoning(),
+            plugins: self.plugins(),
         }
     }
 
@@ -249,6 +274,22 @@ impl AiClient {
                 effort: Some(effort.as_str().to_string()),
                 enabled: None,
             }),
+        }
+    }
+
+    /// The OpenRouter `web` plugin, only when web search is enabled. Empty vec
+    /// serializes to nothing, so non-OpenRouter endpoints are unaffected.
+    fn plugins(&self) -> Vec<WebSearchPlugin> {
+        if self.web_search {
+            vec![WebSearchPlugin {
+                id: "web".to_string(),
+                engine: None,
+                max_results: None,
+                include_domains: Vec::new(),
+                exclude_domains: Vec::new(),
+            }]
+        } else {
+            Vec::new()
         }
     }
 
@@ -385,6 +426,7 @@ impl AiClient {
             seed: self.seed,
             max_tokens: self.max_tokens,
             reasoning: self.reasoning(),
+            plugins: self.plugins(),
         };
 
         let response = self.send_with_retry(&request, "tool chat request").await?;
@@ -495,6 +537,7 @@ impl AiClient {
             seed: self.seed,
             max_tokens: self.max_tokens,
             reasoning: self.reasoning(),
+            plugins: self.plugins(),
         };
 
         let response = self
@@ -504,6 +547,7 @@ impl AiClient {
         let mut content = String::new();
         let mut usage: Option<Usage> = None;
         let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+        let mut annotations: Vec<Annotation> = Vec::new();
         // Some models write their tool calls into the content. The gate keeps
         // that markup off the screen; the block is parsed back out below.
         let mut gate = TokenGate::default();
@@ -521,6 +565,9 @@ impl AiClient {
             if let Some(delta) = choice.delta.content.filter(|d| !d.is_empty()) {
                 content.push_str(&delta);
                 gate.feed(&delta, &mut on_token);
+            }
+            if !choice.delta.annotations.is_empty() {
+                annotations = choice.delta.annotations;
             }
             for fragment in choice.delta.tool_calls {
                 let slot = partials.entry(fragment.index).or_default();
@@ -588,11 +635,17 @@ impl AiClient {
         Ok(AssistantMessage {
             content: (!content.is_empty()).then_some(content),
             tool_calls,
+            annotations,
         })
     }
 
     /// POST a chat request. Transient failures are retried by the middleware; a
     /// non-success status that survives fails here with the response body.
+    #[tracing::instrument(
+        name = "model_request",
+        skip_all,
+        fields(op = ctx, model = %self.model, status = tracing::field::Empty)
+    )]
     async fn send_with_retry<R: serde::Serialize>(
         &self,
         request: &R,
@@ -608,6 +661,7 @@ impl AiClient {
             .await
             .with_context(|| format!("{ctx} failed"))?;
         let status = response.status();
+        tracing::Span::current().record("status", status.as_u16());
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("{}", format_api_error(status, &body));
@@ -732,6 +786,14 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn env_f64(key: &str) -> Option<f64> {
     env::var(key).ok().and_then(|v| v.trim().parse().ok())
+}
+
+/// `ASTER_*` env flags: "1", "true", "yes", "on" (case-insensitive) are truthy.
+fn env_truthy(key: &str) -> bool {
+    matches!(
+        env::var(key).ok().as_deref().map(str::trim),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 #[cfg(test)]
