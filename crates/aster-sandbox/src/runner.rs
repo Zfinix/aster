@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
 use crate::SandboxBackend;
@@ -68,9 +69,31 @@ const DROPPED_ENV: &[&str] = &[
     "ASTER_SESSION",
 ];
 
+/// Environment variables re-added after `env_clear`, when set. The Windows
+/// names are absent on Unix; without `SystemRoot` and friends most Windows
+/// programs fail to start.
+const INHERITED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "SystemRoot",
+    "SystemDrive",
+    "ComSpec",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PATHEXT",
+];
+
 /// Run a command inside the sandbox. The command is specified as a binary
 /// path and a list of arguments. The working directory is set to the repo
-/// root.
+/// root. On timeout the child is killed and `timed_out` is set on the output.
 pub async fn run_command(
     config: &SandboxConfig,
     binary: &str,
@@ -97,7 +120,7 @@ pub async fn run_command(
         cmd.env(key, value);
     }
     // Re-add safe environment variables that commands commonly need.
-    for key in &["PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM"] {
+    for key in INHERITED_ENV {
         if let Ok(val) = std::env::var(key)
             && !config.unset_env.iter().any(|k| k == key)
         {
@@ -115,19 +138,89 @@ pub async fn run_command(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    // A fresh process group so a timeout can kill grandchildren too.
+    #[cfg(unix)]
+    cmd.process_group(0);
 
-    let output = tokio::time::timeout(timeout, cmd.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("command timed out after {}s", config.profile.timeout_secs))?
-        .context("running sandboxed command")?;
+    let mut child = cmd.spawn().context("spawning sandboxed command")?;
+    let pid = child.id();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let io = async {
+        let (stdout, stderr) = tokio::join!(read_capped(stdout_pipe), read_capped(stderr_pipe));
+        let status = child.wait().await?;
+        Ok::<_, std::io::Error>((stdout, stderr, status))
+    };
+
+    let Ok(result) = tokio::time::timeout(timeout, io).await else {
+        kill_process_group(pid);
+        return Ok(CommandOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            timed_out: true,
+        });
+    };
+    let (stdout, stderr, status) = result.context("running sandboxed command")?;
 
     Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
+        stdout,
+        stderr,
+        exit_code: status.code(),
         timed_out: false,
     })
 }
+
+/// Cap on captured bytes per stream; commands can emit gigabytes.
+const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Read a stream to the end, keeping at most [`MAX_CAPTURE_BYTES`] and
+/// draining the rest so the child never blocks on a full pipe.
+async fn read_capped<R>(reader: Option<R>) -> String
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let Some(mut reader) = reader else {
+        return String::new();
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) if buf.len() < MAX_CAPTURE_BYTES => {
+                let take = n.min(MAX_CAPTURE_BYTES - buf.len());
+                buf.extend_from_slice(&chunk[..take]);
+                truncated = take < n;
+            }
+            Ok(_) => truncated = true,
+            Err(_) => break,
+        }
+    }
+    let mut out = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        out.push_str("\n[output truncated]");
+    }
+    out
+}
+
+/// SIGKILL the child's whole process group: `kill_on_drop` only reaches the
+/// direct child, not grandchildren a shell left running in the background.
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+
+    let Some(pid) = pid else { return };
+    let Ok(pid) = i32::try_from(pid) else { return };
+    let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: Option<u32>) {}
 
 #[cfg(target_os = "macos")]
 fn build_seatbelt_command(
@@ -191,7 +284,7 @@ fn build_process_command(_config: &SandboxConfig, binary: &str, args: &[String])
     cmd
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -252,8 +345,110 @@ mod tests {
         let mut profile = SandboxProfile::new(Path::new("."));
         profile.timeout_secs = 1;
         let cfg = SandboxConfig::new(profile);
-        let result = run_command(&cfg, "sleep", &["10".into()]).await;
-        assert!(result.is_err(), "should have timed out");
+        let out = run_command(&cfg, "sleep", &["10".into()]).await.unwrap();
+        assert!(out.timed_out, "should have timed out");
+        assert!(!out.success());
+        assert_eq!(out.exit_code, None);
+    }
+
+    fn process_alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    #[tokio::test]
+    async fn run_command_times_out_kills_grandchildren() {
+        if !can_run_sandboxed().await {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let mut profile = SandboxProfile::new(repo.path());
+        profile.timeout_secs = 1;
+        let cfg = SandboxConfig::new(profile);
+        let script = "sleep 30 & echo $! > child.pid; wait";
+        let out = run_command(&cfg, "sh", &["-c".into(), script.into()])
+            .await
+            .unwrap();
+        assert!(out.timed_out);
+
+        let pid = std::fs::read_to_string(repo.path().join("child.pid")).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !process_alive(pid.trim()),
+            "grandchild survived the timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_output_is_capped() {
+        if !can_run_sandboxed().await {
+            return;
+        }
+        let cfg = config();
+        // ~4MiB against the 2MiB cap.
+        let script = "head -c 4194304 /dev/zero | tr '\\0' 'a'";
+        let out = run_command(&cfg, "sh", &["-c".into(), script.into()])
+            .await
+            .unwrap();
+        assert!(out.success(), "stderr={}", out.stderr);
+        assert!(out.stdout.ends_with("[output truncated]"));
+        assert!(out.stdout.len() < 3 * 1024 * 1024, "{}", out.stdout.len());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn writes_to_git_hooks_and_config_are_blocked() {
+        if !can_run_sandboxed().await {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git/hooks")).unwrap();
+        std::fs::write(repo.path().join(".git/config"), "[core]\n").unwrap();
+        let cfg = SandboxConfig::new(SandboxProfile::new(repo.path()));
+
+        let out = run_command(
+            &cfg,
+            "sh",
+            &["-c".into(), "echo x > .git/hooks/pre-commit".into()],
+        )
+        .await
+        .unwrap();
+        assert!(!out.success(), "hook write was allowed");
+        assert!(!repo.path().join(".git/hooks/pre-commit").exists());
+
+        let out = run_command(&cfg, "sh", &["-c".into(), "echo x >> .git/config".into()])
+            .await
+            .unwrap();
+        assert!(!out.success(), "config write was allowed");
+
+        let out = run_command(&cfg, "sh", &["-c".into(), "echo x > ok.txt".into()])
+            .await
+            .unwrap();
+        assert!(out.success(), "repo write broke: {}", out.stderr);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn sensitive_paths_are_unreadable() {
+        if !can_run_sandboxed().await {
+            return;
+        }
+        let Some(ssh) = dirs::home_dir().map(|h| h.join(".ssh")) else {
+            return;
+        };
+        if !ssh.exists() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let cfg = SandboxConfig::new(SandboxProfile::new(repo.path()));
+        let script = format!("ls {}", ssh.display());
+        let out = run_command(&cfg, "sh", &["-c".into(), script])
+            .await
+            .unwrap();
+        assert!(!out.success(), "read of ~/.ssh was allowed: {}", out.stdout);
     }
 
     #[tokio::test]
