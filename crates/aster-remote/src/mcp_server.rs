@@ -245,7 +245,7 @@ async fn dispatch(
 
 /// Publish preformatted text on telegra.ph and return the page URL.
 /// Anonymous account per call; pages are unlisted but public.
-async fn publish_telegraph_page(title: &str, code: &str) -> Result<String> {
+pub(crate) async fn publish_telegraph_page(title: &str, code: &str) -> Result<String> {
     let http = reqwest::Client::new();
     let account: Value = http
         .post("https://api.telegra.ph/createAccount")
