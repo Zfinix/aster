@@ -7,40 +7,78 @@ use aster_persist::{SessionWriter, Store};
 
 pub type Recorder = Arc<Mutex<SessionWriter>>;
 
-/// Everything user-global lives here: credentials, sessions, memory, skills.
+/// User-global data: credentials, sessions, memory, skills. Config
+/// (`aster.yaml`, `mcp.json`, `.env`) stays in `~/.aster`.
 pub fn home() -> Result<PathBuf> {
-    let dir = dirs::home_dir()
-        .context("could not determine home directory")?
-        .join(".aster");
-    migrate_legacy_home(&dir);
+    let dir = data_root()?.join("aster");
+    migrate_legacy_homes(&dir);
     Ok(dir)
 }
 
-/// Where this data used to live, before it moved under `~/.aster`.
-fn legacy_home() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("aster"))
+/// The XDG data dir other coding tools share: `~/.local/share` on every
+/// platform, unless `XDG_DATA_HOME` overrides it.
+fn data_root() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(dirs::home_dir()
+        .context("could not determine home directory")?
+        .join(".local/share"))
 }
 
-/// Move `<config>/aster` across the first time the new path is asked for, so a
+/// Where this data used to live: `~/.aster`, and `<config>/aster` before that.
+/// Newest first, so its files win a collision during migration.
+fn legacy_homes() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        out.push(home.join(".aster"));
+    }
+    if let Some(config) = dirs::config_dir() {
+        out.push(config.join("aster"));
+    }
+    out
+}
+
+/// Copy legacy data across the first time the new path is asked for, so a
 /// login, session, or memory from an older build is not silently orphaned.
 /// Runs once per process and never overwrites anything already migrated.
-fn migrate_legacy_home(new: &PathBuf) {
+fn migrate_legacy_homes(new: &PathBuf) {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let Some(old) = legacy_home() else {
-            return;
-        };
-        if !old.is_dir() || old == *new {
-            return;
-        }
-        if let Err(e) = merge_dir(&old, new) {
-            tracing::warn!(
-                "could not migrate {} to {}: {e:#}",
-                old.display(),
-                new.display()
-            );
+        for old in legacy_homes() {
+            if !old.is_dir() || old == *new {
+                continue;
+            }
+            if let Err(e) = migrate_data(&old, new) {
+                tracing::warn!(
+                    "could not migrate {} to {}: {e:#}",
+                    old.display(),
+                    new.display()
+                );
+            }
         }
     });
+}
+
+/// Copy a legacy home's data into the new one, leaving config files behind:
+/// they keep living in `~/.aster`, only data moves.
+fn migrate_data(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
+    const CONFIG: &[&str] = &["aster.yaml", "aster.yml", ".aster.yaml", "mcp.json", ".env"];
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if CONFIG.iter().any(|c| name == *c) {
+            continue;
+        }
+        let target = to.join(&name);
+        if entry.file_type()?.is_dir() {
+            merge_dir(&entry.path(), &target)?;
+        } else if !target.exists() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Copy every entry under `from` into `to`, keeping anything that is already
@@ -90,5 +128,24 @@ mod tests {
             "a"
         );
         assert!(old.exists(), "the old directory is left alone");
+    }
+
+    #[test]
+    fn migration_moves_data_but_leaves_config_behind() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let new = root.path().join("new");
+        fs::create_dir_all(old.join("sessions")).unwrap();
+        fs::write(old.join("sessions/a.jsonl"), "a").unwrap();
+        fs::write(old.join("credentials.json"), "cred").unwrap();
+        fs::write(old.join("aster.yaml"), "review: {}").unwrap();
+        fs::write(old.join("mcp.json"), "{}").unwrap();
+
+        migrate_data(&old, &new).unwrap();
+
+        assert!(new.join("sessions/a.jsonl").exists());
+        assert!(new.join("credentials.json").exists());
+        assert!(!new.join("aster.yaml").exists(), "config stays in ~/.aster");
+        assert!(!new.join("mcp.json").exists());
     }
 }

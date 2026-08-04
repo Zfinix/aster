@@ -13,6 +13,7 @@ pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
     pub effort: Effort,
+    pub web_search: bool,
 }
 
 /// Resolve endpoint, key, and model. `model_flag` wins over env and yaml; empty env counts as unset.
@@ -35,6 +36,7 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
         base_url,
         model,
         effort: resolve_effort(review),
+        web_search: resolve_web_search(review),
     })
 }
 
@@ -59,6 +61,13 @@ fn resolve_effort(review: &Review) -> Effort {
         .unwrap_or_default()
 }
 
+/// `ASTER_WEB_SEARCH` wins, then aster.yaml, then off.
+fn resolve_web_search(review: &Review) -> bool {
+    env_or("ASTER_WEB_SEARCH", None)
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(review.web_search.unwrap_or(false))
+}
+
 fn env_non_empty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|s| !s.trim().is_empty())
 }
@@ -66,7 +75,9 @@ fn env_non_empty(key: &str) -> Option<String> {
 /// Build a configured `AiClient` from already-loaded settings.
 pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Result<AiClient> {
     let llm = resolve(&settings.review, model_override)?;
-    Ok(AiClient::new(llm.base_url, llm.api_key, llm.model).with_effort(llm.effort))
+    Ok(AiClient::new(llm.base_url, llm.api_key, llm.model)
+        .with_effort(llm.effort)
+        .with_web_search(llm.web_search))
 }
 
 /// Shell env wins, then the aster.yaml value; None when neither is set.

@@ -150,6 +150,25 @@ pub(super) fn notice(text: &str, width: usize) -> Vec<Line<'static>> {
     )
 }
 
+/// Web-search source citations rendered as dim links below the answer.
+pub(super) fn citations(
+    sources: &[crate::tui::chat::Citation],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let dim = theme::get().dim_style();
+    let mut lines = vec![Line::from(Span::styled("Sources", dim))];
+    for src in sources {
+        let label = src.title.as_deref().unwrap_or(&src.url);
+        let text = format!("{label} — {url}", url = src.url);
+        lines.push(Line::from(Span::styled(text, dim)));
+    }
+    hang(
+        lines,
+        Span::styled("· ", theme::get().dimmer_style()),
+        width,
+    )
+}
+
 pub(super) fn error(text: &str, width: usize) -> Vec<Line<'static>> {
     let lines = text
         .lines()

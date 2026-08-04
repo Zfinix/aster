@@ -22,8 +22,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// whole session, so they get a tighter budget than a tool call.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// A legacy server may never answer `server/discover`, so the probe waits only
-/// long enough to tell silence from slowness.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// long enough to tell silence from slowness. A server that speaks the modern
+/// protocol answers in single-digit milliseconds, so this is a hair-trigger:
+/// every legacy server pays it in full, on every session.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 /// Backstop against a server that paginates without ever ending.
 const MAX_TOOLS_PER_SERVER: usize = 2_000;
 /// How long a server gets to exit on its own after its stdin closes.
@@ -415,20 +417,33 @@ impl McpRuntime {
             }
         }
 
-        for (name, config) in &servers {
-            if config.disabled || config.command.trim().is_empty() {
-                if config.disabled {
-                    disabled_servers.push(DisabledServer {
-                        name: name.clone(),
-                        description: describe_disabled_server(name),
-                    });
+        // Servers start concurrently: each costs a process spawn and a probe,
+        // and serially that is the whole session's startup budget.
+        let starting: Vec<_> = servers
+            .iter()
+            .filter(|(_, config)| {
+                if config.disabled || config.command.trim().is_empty() {
+                    return false;
                 }
-                continue;
+                true
+            })
+            .map(
+                |(name, config)| async move { (name.clone(), Self::start_one(name, config).await) },
+            )
+            .collect();
+        for (name, config) in &servers {
+            if config.disabled {
+                disabled_servers.push(DisabledServer {
+                    name: name.clone(),
+                    description: describe_disabled_server(name),
+                });
             }
-            match Self::start_one(name, config).await {
+        }
+        for (name, started) in futures_util::future::join_all(starting).await {
+            match started {
                 Ok((connection, listed)) => {
                     tools.extend(listed);
-                    connections.insert(name.clone(), connection);
+                    connections.insert(name, connection);
                 }
                 Err(e) => problems.push(format!("{name}: {e:#}")),
             }
@@ -620,6 +635,14 @@ pub enum McpAction {
     Enable { name: String },
     /// Stop starting a server, keeping its configuration in place.
     Disable { name: String },
+    /// Copy MCP servers from another coding tool (Claude Code, Codex, Cursor, opencode, Hermes) into .mcp.json.
+    Import {
+        /// Which tool to read; omitted, all of them are tried.
+        #[arg(long, value_enum)]
+        from: Option<crate::import::Source>,
+    },
+    /// Delete servers from the config files declaring them. Without a name, pick interactively.
+    Remove { name: Option<String> },
 }
 
 /// `aster mcp list`: start the configured servers, report what they expose,
@@ -630,6 +653,8 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
         McpAction::List => {}
         McpAction::Enable { name } => return set_disabled(repo_root, name, false),
         McpAction::Disable { name } => return set_disabled(repo_root, name, true),
+        McpAction::Import { from } => return crate::import::run_mcp_import(*from, repo_root),
+        McpAction::Remove { name } => return remove_servers(repo_root, name.as_deref()),
     }
     let settings = crate::settings::Settings::load(repo_root)?;
     if settings.mcp.servers.is_empty() {
@@ -688,10 +713,7 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
                         }
                     );
                 }
-                println!();
-                for tool in tools {
-                    println!("  {}  {}", tool.id(), tool.description);
-                }
+                print_tool_tree(tools);
             }
             None if problems.is_empty() => println!("No servers advertised any tools."),
             None => {}
@@ -704,20 +726,73 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
     Ok(())
 }
 
-/// Flip `disabled` for one server, in whichever config file declares it. The
-/// file is edited as text so comments and ordering survive.
-fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool) -> Result<()> {
-    let path = config_declaring(repo_root, name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no MCP server named {name:?} in aster.yaml. `aster mcp list` shows what is configured"
-        )
-    })?;
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let updated = toggled(&text, name, disabled)
-        .ok_or_else(|| anyhow::anyhow!("could not find {name:?} in {}", path.display()))?;
-    std::fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))?;
+/// One tree per server: tool names aligned under the server heading, each
+/// description cut to its first line and the terminal width.
+fn print_tool_tree(tools: Vec<&McpTool>) {
+    use std::collections::BTreeMap;
+    let width = console::Term::stdout().size().1 as usize;
+    let mut by_server: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    let ids: Vec<String> = tools.iter().map(|t| t.id()).collect();
+    for (tool, id) in tools.iter().zip(&ids) {
+        let (server, name) = id.split_once('/').unwrap_or(("", id.as_str()));
+        let first = tool.description.lines().next().unwrap_or_default().trim();
+        by_server.entry(server).or_default().push((name, first));
+    }
+    for (server, mut rows) in by_server {
+        rows.sort();
+        println!(
+            "\n{} {}",
+            console::style(server).bold(),
+            console::style(format!("({} tools)", rows.len())).dim()
+        );
+        let pad = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        for (i, (name, desc)) in rows.iter().enumerate() {
+            let glyph = if i + 1 == rows.len() {
+                "└─"
+            } else {
+                "├─"
+            };
+            let head = format!("{glyph} {name:<pad$}  ");
+            let room = width
+                .saturating_sub(console::measure_text_width(&head) + 1)
+                .clamp(20, 100);
+            println!(
+                "{glyph} {name:<pad$}  {}",
+                console::style(console::truncate_str(desc, room, "…")).dim()
+            );
+        }
+    }
+}
 
+/// Flip `disabled` for one server without printing, returning the file
+/// edited. YAML is edited as text so comments and ordering survive;
+/// `.mcp.json` as JSON. Shared by the CLI and the TUI control panel.
+pub fn toggle_server(
+    repo_root: Option<&std::path::Path>,
+    name: &str,
+    disabled: bool,
+) -> Result<std::path::PathBuf> {
+    match config_declaring(repo_root, name) {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let updated = toggled(&text, name, disabled)
+                .ok_or_else(|| anyhow::anyhow!("could not find {name:?} in {}", path.display()))?;
+            std::fs::write(&path, updated)
+                .with_context(|| format!("writing {}", path.display()))?;
+            Ok(path)
+        }
+        None => mcp_json_set_disabled(repo_root, name, disabled)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "no MCP server named {name:?} in aster.yaml or .mcp.json. \
+                 `aster mcp list` shows what is configured"
+            )
+        }),
+    }
+}
+
+fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool) -> Result<()> {
+    let path = toggle_server(repo_root, name, disabled)?;
     let verb = if disabled { "disabled" } else { "enabled" };
     if crate::json_mode() {
         println!(
@@ -732,6 +807,257 @@ fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool)
         }
     }
     Ok(())
+}
+
+/// `aster mcp remove`: delete servers from every config file declaring them,
+/// picking interactively when no name was given.
+fn remove_servers(repo_root: Option<&std::path::Path>, name: Option<&str>) -> Result<()> {
+    let settings = crate::settings::Settings::load(repo_root)?;
+    let chosen: Vec<String> = match name {
+        Some(name) => {
+            anyhow::ensure!(
+                settings.mcp.servers.contains_key(name),
+                "no MCP server named {name:?}. `aster mcp list` shows what is configured"
+            );
+            vec![name.to_string()]
+        }
+        None if crate::picker::is_tty() => {
+            let items: Vec<crate::picker::Item> = settings
+                .mcp
+                .servers
+                .iter()
+                .map(|(name, config)| crate::picker::Item {
+                    name: name.clone(),
+                    detail: format!("{} {}", config.command, config.args.join(" ")),
+                })
+                .collect();
+            if items.is_empty() {
+                println!("no MCP servers configured");
+                return Ok(());
+            }
+            let Some(chosen) =
+                crate::picker::multi_select("Select MCP servers to remove", &items, false)?
+            else {
+                println!("cancelled, nothing removed");
+                return Ok(());
+            };
+            let names: Vec<String> = settings.mcp.servers.keys().cloned().collect();
+            chosen.into_iter().map(|i| names[i].clone()).collect()
+        }
+        None => anyhow::bail!("a server name is required outside a terminal"),
+    };
+    if chosen.is_empty() {
+        println!("nothing selected, nothing removed");
+        return Ok(());
+    }
+
+    let mut removed = Vec::new();
+    for name in &chosen {
+        let paths = remove_everywhere(repo_root, name)?;
+        anyhow::ensure!(
+            !paths.is_empty(),
+            "{name:?} is not declared in any aster.yaml or .mcp.json this repo reads"
+        );
+        removed.push((name.clone(), paths));
+    }
+
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "removed": removed.iter().map(|(name, paths)| json!({
+                    "server": name,
+                    "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            })
+        );
+        return Ok(());
+    }
+    for (name, paths) in removed {
+        for path in paths {
+            println!("removed {name} from {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Every config file this repo reads that declares `name`, edited in place.
+fn remove_everywhere(
+    repo_root: Option<&std::path::Path>,
+    name: &str,
+) -> Result<Vec<std::path::PathBuf>> {
+    let mut edited = Vec::new();
+    for path in yaml_config_paths(repo_root) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(updated) = without_server(&text, name) {
+            std::fs::write(&path, updated)
+                .with_context(|| format!("writing {}", path.display()))?;
+            edited.push(path);
+        }
+    }
+    for path in mcp_json_paths(repo_root) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut config: Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) else {
+            continue;
+        };
+        if servers.remove(name).is_none() {
+            continue;
+        }
+        let out = serde_json::to_string_pretty(&config)?;
+        std::fs::write(&path, out + "\n").with_context(|| format!("writing {}", path.display()))?;
+        edited.push(path);
+    }
+    Ok(edited)
+}
+
+/// Delete a server's block under `servers:`, or `None` when it is not there.
+fn without_server(text: &str, name: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let key = format!("{name}:");
+    let servers = lines.iter().position(|l| l.trim() == "servers:")?;
+    let start = lines
+        .iter()
+        .skip(servers + 1)
+        .position(|l| l.trim() == key && l.starts_with(' '))
+        .map(|i| i + servers + 1)?;
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.len() - line.trim_start().len() <= indent {
+            end = i;
+            break;
+        }
+    }
+    let kept: Vec<&str> = lines[..start]
+        .iter()
+        .chain(lines[end..].iter())
+        .copied()
+        .collect();
+    let mut out = kept.join("\n");
+    if text.ends_with('\n') && !out.is_empty() {
+        out.push('\n');
+    }
+    Some(out)
+}
+
+fn yaml_config_paths(repo_root: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = repo_root
+        .map(|root| {
+            ["aster.yaml", "aster.yml", ".aster.yaml"]
+                .iter()
+                .map(|f| root.join(f))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(home) = dirs::home_dir() {
+        out.push(home.join(".aster/aster.yaml"));
+    }
+    out
+}
+
+fn mcp_json_paths(repo_root: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Some(root) = repo_root {
+        out.push(root.join(".mcp.json"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        out.push(home.join(".aster/mcp.json"));
+    }
+    out
+}
+
+/// Stdio servers from a cross-tool `.mcp.json` (`mcpServers` key). Url-only
+/// entries are skipped: they need a transport aster does not have.
+pub fn mcp_json_servers(path: &std::path::Path) -> Result<Vec<(String, ServerConfig)>> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(Vec::new());
+    };
+    let config: Value =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let Some(map) = config.get("mcpServers").and_then(|v| v.as_object()) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (name, v) in map {
+        let Some(command) = v.get("command").and_then(|c| c.as_str()) else {
+            continue;
+        };
+        let args = v
+            .get("args")
+            .and_then(|a| a.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env = v
+            .get("env")
+            .and_then(|e| e.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, x)| x.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let disabled = v.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false);
+        out.push((
+            name.clone(),
+            ServerConfig {
+                command: command.to_string(),
+                args,
+                env,
+                disabled,
+            },
+        ));
+    }
+    Ok(out)
+}
+
+/// Toggle `disabled` in the first `.mcp.json` declaring `name`, returning the
+/// file edited, or `None` when no file declares it.
+fn mcp_json_set_disabled(
+    repo_root: Option<&std::path::Path>,
+    name: &str,
+    disabled: bool,
+) -> Result<Option<std::path::PathBuf>> {
+    let mut candidates = Vec::new();
+    if let Some(root) = repo_root {
+        candidates.push(root.join(".mcp.json"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".aster/mcp.json"));
+    }
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut config: Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let Some(server) = config
+            .get_mut("mcpServers")
+            .and_then(|v| v.get_mut(name))
+            .and_then(|v| v.as_object_mut())
+        else {
+            continue;
+        };
+        server.insert("disabled".into(), Value::Bool(disabled));
+        let out = serde_json::to_string_pretty(&config)?;
+        std::fs::write(&path, out + "\n").with_context(|| format!("writing {}", path.display()))?;
+        return Ok(Some(path));
+    }
+    Ok(None)
 }
 
 /// The config file whose `mcp.servers` declares `name`: the project's first,
@@ -849,6 +1175,19 @@ mcp:
     #[test]
     fn an_unknown_server_is_not_a_silent_rewrite() {
         assert!(toggled(SAMPLE_YAML, "slack", true).is_none());
+    }
+
+    #[test]
+    fn removing_a_server_deletes_its_whole_block_and_nothing_else() {
+        let out = without_server(SAMPLE_YAML, "chrome").expect("chrome is configured");
+        assert!(!out.contains("chrome:"), "{out}");
+        assert!(!out.contains("disabled: true"), "{out}");
+        assert!(out.contains("github:\n      command: npx\n"), "{out}");
+        assert!(without_server(SAMPLE_YAML, "slack").is_none());
+
+        let out = without_server(SAMPLE_YAML, "github").expect("github is configured");
+        assert!(!out.contains("github:"), "{out}");
+        assert!(out.contains("chrome:"), "{out}");
     }
 
     #[test]

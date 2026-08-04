@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail};
 use aster_skills::{Skill, SkillSet, find_skills, install_skill, remove_skill};
 use clap::{Args, Subcommand};
 use cliclack::{confirm, input, intro, log, outro, outro_cancel, select};
-use console::{Key, Term, style};
+use console::{Term, style};
 use serde::{Deserialize, Serialize};
 
 #[derive(Args)]
@@ -942,97 +942,17 @@ fn prompt_source() -> Result<Option<String>> {
     Ok(Some(source))
 }
 
-/// A multi-select list with `npx skills`-style shortcuts: arrows or j/k to move,
-/// space to toggle, `a` to toggle all, `i` to invert, enter to confirm, esc to
-/// cancel. cliclack's own multiselect has no select-all and can't be extended,
-/// so this is a small custom widget over `console` (its same rendering backend).
+/// The shared multi-select over the source's skills, none preselected.
 fn choose_skills(title: &str, skills: &[Skill]) -> Result<Option<Vec<Skill>>> {
-    let term = Term::stderr();
-    let rows = skills.len() + 2;
-    let mut cursor = 0usize;
-    let mut checked = vec![false; skills.len()];
-
-    term.hide_cursor()?;
-    let mut drawn = false;
-    let result = loop {
-        if drawn {
-            term.clear_last_lines(rows)?;
-        }
-        render_menu(&term, title, skills, &checked, cursor)?;
-        drawn = true;
-
-        match term.read_key()? {
-            Key::ArrowUp | Key::Char('k') => {
-                cursor = cursor.checked_sub(1).unwrap_or(skills.len() - 1);
-            }
-            Key::ArrowDown | Key::Char('j') => {
-                cursor = (cursor + 1) % skills.len();
-            }
-            Key::Char(' ') => checked[cursor] = !checked[cursor],
-            Key::Char('a') | Key::Char('A') => {
-                let all = checked.iter().all(|&c| c);
-                checked.iter_mut().for_each(|c| *c = !all);
-            }
-            Key::Char('i') | Key::Char('I') => checked.iter_mut().for_each(|c| *c = !*c),
-            Key::Enter => {
-                let chosen = skills
-                    .iter()
-                    .zip(&checked)
-                    .filter(|&(_, &c)| c)
-                    .map(|(s, _)| s.clone())
-                    .collect();
-                break Some(chosen);
-            }
-            Key::Escape | Key::CtrlC => break None,
-            _ => {}
-        }
-    };
-    term.clear_last_lines(rows)?;
-    term.show_cursor()?;
-    Ok(result)
-}
-
-fn render_menu(
-    term: &Term,
-    title: &str,
-    skills: &[Skill],
-    checked: &[bool],
-    cursor: usize,
-) -> io::Result<()> {
-    let width = term.size().1 as usize;
-    let selected = checked.iter().filter(|&&c| c).count();
-    term.write_line(&format!(
-        "{}  {}",
-        style(title).bold(),
-        style(format!("({selected}/{} selected)", skills.len())).dim()
-    ))?;
-    for (i, skill) in skills.iter().enumerate() {
-        let pointer = if i == cursor {
-            style("❯").cyan().to_string()
-        } else {
-            " ".to_string()
-        };
-        let mark = if checked[i] {
-            style("◼").green().to_string()
-        } else {
-            style("◻").dim().to_string()
-        };
-        let name = if i == cursor {
-            style(&skill.name).cyan().bold().to_string()
-        } else {
-            skill.name.clone()
-        };
-        let head = format!("{pointer} {mark} {name}  ");
-        let room = width.saturating_sub(console::measure_text_width(&head) + 1);
-        let desc = console::truncate_str(first_line(&skill.description), room, "…");
-        term.write_line(&format!("{head}{}", style(desc).dim()))?;
-    }
-    term.write_line(
-        &style("space toggle · a all · i invert · enter confirm · esc cancel")
-            .dim()
-            .to_string(),
-    )?;
-    Ok(())
+    let items: Vec<crate::picker::Item> = skills
+        .iter()
+        .map(|s| crate::picker::Item {
+            name: s.name.clone(),
+            detail: first_line(&s.description).to_string(),
+        })
+        .collect();
+    Ok(crate::picker::multi_select(title, &items, false)?
+        .map(|chosen| chosen.into_iter().map(|i| skills[i].clone()).collect()))
 }
 
 /// A git source is a treeless partial clone with only `SKILL.md` files checked

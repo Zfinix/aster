@@ -76,8 +76,12 @@ pub(super) enum InputResult {
     },
     /// A slash command to run (leading `/` stripped).
     Command(String),
-    /// Enter on a draft while a turn is running; the draft is kept.
-    Busy,
+    /// Enter on a draft while a turn is running; the draft is taken so the
+    /// caller can abort the running turn and submit it immediately.
+    Busy {
+        text: String,
+        refs: Vec<(String, String)>,
+    },
 }
 
 /// Max mention suggestions shown at once.
@@ -404,7 +408,9 @@ impl<E: Clone + 'static> BottomPane<E> {
                     let refs = self.composer.take_refs();
                     return InputResult::Submitted { text, refs };
                 }
-                return InputResult::Busy;
+                let text = self.composer.take();
+                let refs = self.composer.take_refs();
+                return InputResult::Busy { text, refs };
             }
 
             KeyCode::Up => {
