@@ -163,3 +163,26 @@ fn render_says_so_when_there_is_nothing() {
     let repo = tempdir().unwrap();
     assert_eq!(render(repo.path(), &[], 3), "no matches");
 }
+
+#[test]
+fn search_reaches_a_gitignored_path_when_nothing_else_matches() {
+    let repo = tempdir().unwrap();
+    fs::write(repo.path().join(".gitignore"), "editors/\n").unwrap();
+    fs::create_dir_all(repo.path().join("editors/vscode")).unwrap();
+    fs::write(
+        repo.path().join("editors/vscode/extension.ts"),
+        "export function activate() {}\n",
+    )
+    .unwrap();
+
+    let hits = search(
+        &ToolProbe::detect(),
+        repo.path(),
+        repo.path(),
+        "activate",
+        10,
+    )
+    .unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].path, "editors/vscode/extension.ts");
+}

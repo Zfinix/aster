@@ -216,3 +216,118 @@ mod mouse {
         assert_eq!(p.menu_sel, 1);
     }
 }
+
+const MANY: &[CommandDesc] = &[
+    CommandDesc {
+        name: "a1",
+        takes_arg: false,
+        desc: "one",
+    },
+    CommandDesc {
+        name: "a2",
+        takes_arg: false,
+        desc: "two",
+    },
+    CommandDesc {
+        name: "a3",
+        takes_arg: false,
+        desc: "three",
+    },
+    CommandDesc {
+        name: "a4",
+        takes_arg: false,
+        desc: "four",
+    },
+    CommandDesc {
+        name: "a5",
+        takes_arg: false,
+        desc: "five",
+    },
+    CommandDesc {
+        name: "a6",
+        takes_arg: false,
+        desc: "six",
+    },
+    CommandDesc {
+        name: "a7",
+        takes_arg: false,
+        desc: "seven",
+    },
+    CommandDesc {
+        name: "a8",
+        takes_arg: false,
+        desc: "eight",
+    },
+    CommandDesc {
+        name: "a9",
+        takes_arg: false,
+        desc: "nine",
+    },
+    CommandDesc {
+        name: "b10",
+        takes_arg: false,
+        desc: "ten",
+    },
+    CommandDesc {
+        name: "b11",
+        takes_arg: false,
+        desc: "eleven",
+    },
+    CommandDesc {
+        name: "b12",
+        takes_arg: false,
+        desc: "twelve",
+    },
+];
+
+fn long_pane() -> BottomPane<()> {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    BottomPane::new(MANY, "hint", FrameRequester::noop(), tx, |_, _| (), |_| ())
+}
+
+#[test]
+fn typing_a_skill_name_suggests_it_but_a_bare_slash_stays_commands_only() {
+    let mut p = long_pane();
+    p.set_skills(vec![("academic-paper".into(), "writes papers".into())]);
+    p.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), 80);
+    let lines = p.menu_lines().expect("menu open");
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.to_string().contains("academic-paper")),
+        "a bare slash must stay commands-only: {lines:?}"
+    );
+    for c in "acad".chars() {
+        p.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), 80);
+    }
+    let lines = p.menu_lines().expect("skill suggested");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.to_string().contains("academic-paper")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn the_slash_menu_windows_instead_of_growing() {
+    let mut p = long_pane();
+    p.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), 80);
+    let lines = p.menu_lines().expect("menu open");
+    assert_eq!(lines.len(), MENU_ROWS + 1, "rows plus the overflow footer");
+    assert!(lines.last().unwrap().to_string().contains("+2 more"));
+}
+
+#[test]
+fn the_slash_menu_window_follows_the_selection() {
+    let mut p = long_pane();
+    p.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), 80);
+    // Up from the first row wraps to the last, which starts outside the window.
+    p.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 80);
+    let shown = p.menu_lines().unwrap();
+    assert!(
+        shown.iter().any(|l| l.to_string().contains("/b12")),
+        "selection scrolled out of the window: {shown:?}"
+    );
+    assert!(shown.last().unwrap().to_string().contains("+2 more"));
+}

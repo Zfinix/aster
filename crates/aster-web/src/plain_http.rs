@@ -1,4 +1,5 @@
 //! Plain HTTP fallback: fetch a URL and convert HTML to basic Markdown.
+//! Document responses (PDF, Office, EPUB) are converted via anydoc.
 //! Used when no specialized API key is configured.
 
 use std::time::Duration;
@@ -46,12 +47,8 @@ impl WebExtract for PlainHttpClient {
             .unwrap_or("")
             .to_string();
 
-        let html = res.text().await.context("reading response body")?;
-        let markdown = if ct.contains("text/html") || ct.is_empty() {
-            html_to_markdown(&html)
-        } else {
-            html
-        };
+        let bytes = res.bytes().await.context("reading response body")?;
+        let markdown = body_to_markdown(&ct, &bytes, url)?;
 
         Ok(ExtractedPage {
             markdown,
@@ -65,6 +62,22 @@ impl WebExtract for PlainHttpClient {
                 language: None,
             },
         })
+    }
+}
+
+/// Route a response body: document formats (PDF, Office, EPUB, RTF) through
+/// anydoc, HTML through the tag stripper, anything else as-is. Magic bytes
+/// decide, not Content-Type: servers routinely mislabel documents.
+fn body_to_markdown(ct: &str, bytes: &[u8], url: &str) -> Result<String> {
+    if let Some(format) = anydoc::Format::from_bytes(bytes) {
+        return anydoc::to_markdown_bytes(bytes, format)
+            .map_err(|e| anyhow::anyhow!("converting document at {url} to Markdown: {e}"));
+    }
+    let text = String::from_utf8_lossy(bytes);
+    if ct.contains("text/html") || ct.is_empty() {
+        Ok(html_to_markdown(&text))
+    } else {
+        Ok(text.into_owned())
     }
 }
 
@@ -155,7 +168,7 @@ pub fn extract_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
         name: "extract".into(),
-        description: "Fetch a single web page and return its content as Markdown. Handles HTML-to-Markdown conversion. Use for simple, JavaScript-light pages; for dynamic content, prefer web/crawl with Context.dev.".into(),
+        description: "Fetch a single web page or document and return its content as Markdown. Handles HTML and document formats (PDF, Word, PowerPoint, Excel, EPUB). Use for simple, JavaScript-light pages; for dynamic content, prefer web/crawl with Context.dev.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -196,5 +209,25 @@ mod tests {
     fn empty_html_gives_placeholder() {
         let md = html_to_markdown("<html><head></head><body></body></html>");
         assert_eq!(md, "[no text content extracted]");
+    }
+
+    #[test]
+    fn body_routing_detects_documents_by_magic_bytes() {
+        let rtf = br"{\rtf1\ansi Hello from RTF}";
+        let md = body_to_markdown("application/octet-stream", rtf, "https://x.test/doc").unwrap();
+        assert!(md.contains("Hello from RTF"), "{md}");
+    }
+
+    #[test]
+    fn body_routing_strips_html_bodies() {
+        let md = body_to_markdown("text/html", b"<p>hi</p>", "https://x.test").unwrap();
+        assert!(md.contains("hi"));
+        assert!(!md.contains("<p>"));
+    }
+
+    #[test]
+    fn body_routing_passes_other_text_through() {
+        let md = body_to_markdown("application/json", br#"{"a":1}"#, "https://x.test").unwrap();
+        assert_eq!(md, r#"{"a":1}"#);
     }
 }

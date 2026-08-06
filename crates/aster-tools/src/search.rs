@@ -7,20 +7,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::ToolProbe;
-
-/// Directories never worth walking; mirrors the review path filter's defaults.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-    "out",
-    "vendor",
-    ".hg",
-    ".svn",
-];
+use crate::{SKIP_DIRS, ToolProbe};
 
 /// Matches taken from one file before moving on. Without it a single hot file
 /// spends the whole hit budget and the caller never sees the other matches.
@@ -49,9 +36,26 @@ pub fn search(
         bail!("empty search query");
     }
 
+    let hits = run(probe, repo_root, base, query, max_hits, true)?;
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+    // Same reasoning as `find`: an ignored path is still part of the repo, so
+    // a query that matches nothing else falls back to searching it.
+    run(probe, repo_root, base, query, max_hits, false)
+}
+
+fn run(
+    probe: &ToolProbe,
+    repo_root: &Path,
+    base: &Path,
+    query: &str,
+    max_hits: usize,
+    respect_ignore: bool,
+) -> Result<Vec<Hit>> {
     match &probe.rg {
-        Some(rg) => search_with_rg(rg, repo_root, base, query, max_hits),
-        None => search_embedded(repo_root, base, query, max_hits),
+        Some(rg) => search_with_rg(rg, repo_root, base, query, max_hits, respect_ignore),
+        None => search_embedded(repo_root, base, query, max_hits, respect_ignore),
     }
 }
 
@@ -134,6 +138,7 @@ fn search_with_rg(
     base: &Path,
     query: &str,
     max_hits: usize,
+    respect_ignore: bool,
 ) -> Result<Vec<Hit>> {
     let run = |literal: bool| {
         let mut cmd = Command::new(rg);
@@ -151,6 +156,12 @@ fn search_with_rg(
         ]);
         if literal {
             cmd.arg("--fixed-strings");
+        }
+        if !respect_ignore {
+            cmd.arg("--no-ignore").arg("--hidden");
+            for dir in SKIP_DIRS {
+                cmd.arg("--glob").arg(format!("!{dir}/"));
+            }
         }
         cmd.arg(query)
             .arg(base)
@@ -214,6 +225,7 @@ fn search_embedded(
     base: &Path,
     query: &str,
     max_hits: usize,
+    respect_ignore: bool,
 ) -> Result<Vec<Hit>> {
     use grep::regex::RegexMatcherBuilder;
     use grep::searcher::Searcher;
@@ -234,48 +246,51 @@ fn search_embedded(
     let hits: Arc<Mutex<BTreeMap<String, Vec<Hit>>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let count = Arc::new(AtomicUsize::new(0));
 
-    WalkBuilder::new(base)
-        .hidden(true)
-        .git_ignore(true)
+    let mut builder = WalkBuilder::new(base);
+    builder
+        .hidden(respect_ignore)
+        .git_ignore(respect_ignore)
         .require_git(false)
-        .git_exclude(true)
-        .build_parallel()
-        .run(|| {
-            let matcher = Arc::clone(&matcher);
-            let hits = Arc::clone(&hits);
-            let count = Arc::clone(&count);
-            Box::new(move |result| {
-                if count.load(Ordering::Relaxed) >= max_hits {
-                    return ignore::WalkState::Quit;
-                }
-                let Ok(entry) = result else {
-                    return ignore::WalkState::Continue;
-                };
-                if !entry.file_type().is_some_and(|t| t.is_file()) {
-                    return ignore::WalkState::Continue;
-                }
-                let path = entry.path();
-                let rel = relative(repo_root, &path.to_string_lossy());
-                let mut found: Vec<Hit> = Vec::new();
-                let _ = Searcher::new().search_path(
-                    matcher.as_ref(),
-                    path,
-                    UTF8(|line_no, text| {
-                        found.push(Hit {
-                            path: rel.clone(),
-                            line: line_no as usize,
-                            text: text.trim_end().to_string(),
-                        });
-                        Ok(found.len() < PER_FILE)
-                    }),
-                );
-                if !found.is_empty() {
-                    count.fetch_add(found.len(), Ordering::Relaxed);
-                    hits.lock().unwrap().insert(rel, found);
-                }
-                ignore::WalkState::Continue
-            })
-        });
+        .git_exclude(respect_ignore);
+    if !respect_ignore {
+        builder.filter_entry(|entry| !crate::is_skipped(entry));
+    }
+    builder.build_parallel().run(|| {
+        let matcher = Arc::clone(&matcher);
+        let hits = Arc::clone(&hits);
+        let count = Arc::clone(&count);
+        Box::new(move |result| {
+            if count.load(Ordering::Relaxed) >= max_hits {
+                return ignore::WalkState::Quit;
+            }
+            let Ok(entry) = result else {
+                return ignore::WalkState::Continue;
+            };
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                return ignore::WalkState::Continue;
+            }
+            let path = entry.path();
+            let rel = relative(repo_root, &path.to_string_lossy());
+            let mut found: Vec<Hit> = Vec::new();
+            let _ = Searcher::new().search_path(
+                matcher.as_ref(),
+                path,
+                UTF8(|line_no, text| {
+                    found.push(Hit {
+                        path: rel.clone(),
+                        line: line_no as usize,
+                        text: text.trim_end().to_string(),
+                    });
+                    Ok(found.len() < PER_FILE)
+                }),
+            );
+            if !found.is_empty() {
+                count.fetch_add(found.len(), Ordering::Relaxed);
+                hits.lock().unwrap().insert(rel, found);
+            }
+            ignore::WalkState::Continue
+        })
+    });
 
     let grouped = Arc::try_unwrap(hits)
         .map(|m| m.into_inner().unwrap())
@@ -347,5 +362,5 @@ fn search_manual(repo_root: &Path, base: &Path, query: &str, max_hits: usize) ->
 }
 
 #[cfg(test)]
-#[path = "search_tests.rs"]
+#[path = "tests/search_test.rs"]
 mod tests;

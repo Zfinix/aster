@@ -1,0 +1,944 @@
+use super::*;
+
+fn snapshot(prompt: u64, completion: u64) -> UsageSnapshot {
+    UsageSnapshot {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+        requests: 1,
+        estimated_cost_usd: None,
+        cost_is_estimate: false,
+        estimated: false,
+    }
+}
+
+#[test]
+fn round_usage_is_the_delta_between_snapshots() {
+    let usage = round_usage(snapshot(100, 10), snapshot(450, 35)).unwrap();
+    assert_eq!(usage.prompt_tokens, 350);
+    assert_eq!(usage.completion_tokens, 25);
+}
+
+#[test]
+fn round_usage_is_none_when_the_counter_did_not_move() {
+    assert!(round_usage(snapshot(100, 10), snapshot(100, 10)).is_none());
+}
+
+#[tokio::test]
+async fn explore_runs_mixed_lookups_in_one_call() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("a.rs"), "fn needle() {}\n").unwrap();
+    std::fs::write(repo.path().join("b.rs"), "mod other;\n").unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [
+            { "tool": "read_file", "args": { "path": "b.rs" } },
+            { "tool": "search_files", "args": { "query": "needle" } },
+        ]}),
+    )
+    .await;
+    assert!(out.contains("[1] read_file b.rs"), "{out}");
+    assert!(out.contains("mod other;"), "{out}");
+    assert!(out.contains("[2] search_files needle"), "{out}");
+    assert!(out.contains("a.rs"), "{out}");
+}
+
+#[tokio::test]
+async fn explore_reports_steps_in_the_order_they_were_sent() {
+    let repo = tempfile::tempdir().unwrap();
+    for name in ["one.rs", "two.rs", "three.rs"] {
+        std::fs::write(repo.path().join(name), format!("// {name}\n")).unwrap();
+    }
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [
+            { "tool": "read_file", "args": { "path": "three.rs" } },
+            { "tool": "read_file", "args": { "path": "one.rs" } },
+            { "tool": "read_file", "args": { "path": "two.rs" } },
+        ]}),
+    )
+    .await;
+    let order: Vec<usize> = ["three.rs", "one.rs", "two.rs"]
+        .iter()
+        .map(|n| out.find(n).unwrap_or_else(|| panic!("{n} missing:\n{out}")))
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{out}");
+}
+
+#[tokio::test]
+async fn explore_refuses_to_run_what_needs_the_sequential_path() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [
+            { "tool": "run_command", "args": { "command": "rm", "args": ["-rf", "/"] } },
+            { "tool": "read_file", "args": { "path": "/etc/hosts" } },
+        ]}),
+    )
+    .await;
+    assert_eq!(out.matches("call this tool on its own").count(), 2, "{out}");
+    assert!(!out.contains("localhost"), "outside read leaked: {out}");
+}
+
+#[tokio::test]
+async fn explore_needs_at_least_one_step() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [] }),
+    )
+    .await;
+    assert!(out.starts_with("error: "), "{out}");
+}
+
+#[tokio::test]
+async fn a_failing_step_does_not_sink_the_others() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("real.rs"), "fn real() {}\n").unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [
+            { "tool": "read_file", "args": { "path": "nope.rs" } },
+            { "tool": "read_file", "args": { "path": "real.rs" } },
+        ]}),
+    )
+    .await;
+    assert!(out.contains("does not exist"), "{out}");
+    assert!(out.contains("fn real()"), "{out}");
+}
+
+#[test]
+fn valid_arguments_are_left_alone() {
+    let raw = r#"{"command":"bash","args":["-lc","echo \"hi\"\n"]}"#;
+    let parsed = parse_arguments(raw).unwrap();
+    assert_eq!(parsed["args"][1], "echo \"hi\"\n");
+}
+
+#[test]
+fn a_shell_quote_escape_loses_the_backslash() {
+    let raw = r#"{"args":["-lc","git diff -- \'crates/aster-cli/src/tui/\' | head"]}"#;
+    let parsed = parse_arguments(raw).unwrap();
+    assert_eq!(
+        parsed["args"][1],
+        "git diff -- 'crates/aster-cli/src/tui/' | head"
+    );
+}
+
+#[test]
+fn a_regex_escape_keeps_its_backslash() {
+    let raw = r#"{"args":["-lc","grep -E '^\s*fn \w+' src"]}"#;
+    let parsed = parse_arguments(raw).unwrap();
+    assert_eq!(parsed["args"][1], r"grep -E '^\s*fn \w+' src");
+}
+
+#[test]
+fn a_backslash_outside_a_string_is_still_a_syntax_error() {
+    assert!(parse_arguments(r#"{"a": \1}"#).is_err());
+}
+
+#[test]
+fn an_unrepairable_error_reports_what_the_model_sent() {
+    let error = parse_arguments(r#"{"a": "b""#).unwrap_err().to_string();
+    assert!(error.contains("EOF"), "{error}");
+}
+
+#[test]
+fn an_escaped_quote_does_not_end_the_string_early() {
+    let raw = r#"{"args":["say \"hi\" then \s"]}"#;
+    assert_eq!(
+        parse_arguments(raw).unwrap()["args"][0],
+        r#"say "hi" then \s"#
+    );
+}
+
+#[test]
+fn read_window_caps_an_open_ended_read_and_says_where_to_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.rs");
+    let body: String = (1..=READ_WINDOW_LINES + 50)
+        .map(|n| format!("line {n}\n"))
+        .collect();
+    std::fs::write(&path, body).unwrap();
+    let out = read_numbered(&path, None, None).unwrap();
+    assert!(out.contains(&format!("line {READ_WINDOW_LINES}")));
+    assert!(!out.contains(&format!("line {}", READ_WINDOW_LINES + 1)));
+    assert!(out.contains(&format!("start_line={}", READ_WINDOW_LINES + 1)));
+}
+
+#[test]
+fn read_window_leaves_short_files_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("small.rs");
+    std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    let out = read_numbered(&path, None, None).unwrap();
+    assert!(out.contains("three"));
+    assert!(!out.contains("start_line="));
+}
+
+#[test]
+fn a_repeat_read_of_an_unchanged_file_points_at_the_earlier_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("stable.rs");
+    std::fs::write(&path, "fn main() {}\n").unwrap();
+    let ctx = SessionCtx::default();
+    let first = cached_read(&ctx, &path, None, None).unwrap();
+    assert!(first.contains("fn main"));
+    let second = cached_read(&ctx, &path, None, None).unwrap();
+    assert!(second.contains("unchanged since you read it"));
+    assert!(!second.contains("fn main"));
+}
+
+#[test]
+fn a_changed_file_is_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edited.rs");
+    std::fs::write(&path, "before\n").unwrap();
+    let ctx = SessionCtx::default();
+    cached_read(&ctx, &path, None, None).unwrap();
+    // Rewind the recorded mtime rather than sleeping for the clock.
+    if let Ok(mut reads) = ctx.reads.lock() {
+        for value in reads.values_mut() {
+            *value = Some(std::time::SystemTime::UNIX_EPOCH);
+        }
+    }
+    std::fs::write(&path, "after\n").unwrap();
+    let again = cached_read(&ctx, &path, None, None).unwrap();
+    assert!(again.contains("after"));
+}
+
+#[test]
+fn document_read_converts_rtf_to_markdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("note.rtf");
+    std::fs::write(&path, r"{\rtf1\ansi Hello aster}").unwrap();
+    let out = read_numbered(&path, None, None).unwrap();
+    assert!(out.contains("Hello aster"), "{out}");
+    assert!(!out.contains(r"\rtf1"), "{out}");
+}
+
+#[test]
+fn document_read_leaves_csv_raw() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data.csv");
+    std::fs::write(&path, "a,b\n1,2\n").unwrap();
+    let out = read_numbered(&path, None, None).unwrap();
+    // The numbered line holds the raw bytes, not a rendered markdown table.
+    assert!(out.contains("| a,b"), "{out}");
+    assert!(!out.contains("---"), "{out}");
+}
+
+#[test]
+fn document_read_reports_unknown_binary_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blob.bin");
+    std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01, 0x80]).unwrap();
+    let err = read_numbered(&path, None, None).unwrap_err();
+    assert!(format!("{err:#}").contains("binary file"), "{err:#}");
+}
+
+#[test]
+fn truncate_head_keeps_the_verdict_at_the_end() {
+    let noisy = format!("{}FAILED: 2 tests", "warning\n".repeat(500));
+    let kept = truncate_head(&noisy, 100);
+    assert!(kept.ends_with("FAILED: 2 tests"));
+    assert!(kept.starts_with("... [truncated]"));
+}
+
+#[test]
+fn environment_note_finds_nested_bun_lockfile() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("editors/vscode")).unwrap();
+    std::fs::write(dir.path().join("editors/vscode/bun.lock"), "").unwrap();
+    let note = environment_note(dir.path()).expect("a note");
+    assert!(note.contains("`bun`"));
+    assert!(note.contains("editors/vscode"));
+}
+
+#[test]
+fn environment_note_is_none_without_lockfiles() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(environment_note(dir.path()).is_none());
+}
+
+#[test]
+fn limits_come_from_the_agent_block() {
+    let agent = crate::settings::Agent {
+        max_tool_rounds: Some(9),
+        command_timeout_secs: Some(11),
+        compact_budget_chars: Some(64_000),
+    };
+    let limits = Limits::resolve(&agent);
+    assert_eq!(limits.max_tool_rounds, 9);
+    assert_eq!(limits.command_timeout_secs, 11);
+    assert_eq!(limits.compact_budget_chars, 64_000);
+}
+
+#[test]
+fn limits_default_to_room_for_real_work() {
+    let limits = Limits::default();
+    assert!(limits.max_tool_rounds >= 60);
+    assert!(limits.command_timeout_secs >= 120);
+}
+
+/// Bouncing "give me options" back to the model made it retry the tool in
+/// a loop, so a question with nothing to pick declines instead.
+#[tokio::test]
+async fn a_question_without_options_declines_rather_than_asking_again() {
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let result = ask_user(Some(&tx), "", "which one?", &[]).await.unwrap();
+    assert!(result.contains("declined"), "{result}");
+    assert!(rx.try_recv().is_err(), "the UI is never troubled");
+}
+
+/// One option is not a choice: it is answered without a round trip.
+#[tokio::test]
+async fn a_single_option_is_taken_without_asking() {
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let opts = ["sqlite".to_string()];
+    let result = ask_user(Some(&tx), "", "which one?", &opts).await.unwrap();
+    assert!(result.contains("sqlite"), "{result}");
+    assert!(rx.try_recv().is_err(), "the UI is never troubled");
+}
+
+fn args(path: &str, search: Option<&str>, replace: &str) -> Value {
+    match search {
+        Some(s) => json!({ "path": path, "search": s, "replace": replace }),
+        None => json!({ "path": path, "replace": replace }),
+    }
+}
+
+/// Unwraps the approval these tests expect; a question here is a bug.
+fn approval(req: UiRequest) -> ApprovalRequest {
+    match req {
+        UiRequest::Approval(req) | UiRequest::PlanApproval(req) => req,
+        UiRequest::Question(_) => panic!("expected an approval, got a question"),
+    }
+}
+
+async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
+    exec_tool(
+        repo,
+        &mut false,
+        &Policy::permissive(),
+        &Grants::default(),
+        None,
+        name,
+        &arguments.to_string(),
+        &mut Vec::new(),
+        &SessionCtx::default(),
+    )
+    .await
+}
+
+/// Runs a tool against a shared ctx and mutable edit gate, for the plan
+/// tools whose whole point is the state they leave behind.
+async fn run_tool_with(
+    repo: &Path,
+    allow_edits: &mut bool,
+    approver: Option<&UiSender>,
+    ctx: &SessionCtx,
+    name: &str,
+    arguments: Value,
+) -> String {
+    exec_tool(
+        repo,
+        allow_edits,
+        &Policy::permissive(),
+        &Grants::default(),
+        approver,
+        name,
+        &arguments.to_string(),
+        &mut Vec::new(),
+        ctx,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn read_only_call_matches_the_sequential_path() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+    // A fresh context per path: the same one would answer the second read
+    // from its cache, which is the point of the cache, not a mismatch.
+    let args = json!({ "path": "a.txt" });
+    let parallel = read_only_call(
+        repo.path(),
+        &Policy::permissive(),
+        &SessionCtx::default(),
+        "read_file",
+        &args.to_string(),
+    )
+    .unwrap();
+    let sequential = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &SessionCtx::default(),
+        "read_file",
+        args,
+    )
+    .await;
+    assert_eq!(parallel, sequential);
+}
+
+#[test]
+fn read_only_call_defers_outside_paths_and_stateful_tools() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let policy = Policy::permissive();
+    let outside = json!({ "path": "/etc/hosts" }).to_string();
+    assert!(read_only_call(repo.path(), &policy, &ctx, "read_file", &outside).is_none());
+    assert!(read_only_call(repo.path(), &policy, &ctx, "run_command", "{}").is_none());
+    assert!(read_only_call(repo.path(), &policy, &ctx, "edit_file", "{}").is_none());
+}
+
+fn steps(pairs: &[(&str, &str)]) -> Value {
+    json!({
+        "steps": pairs
+            .iter()
+            .map(|(label, status)| json!({ "label": label, "status": status }))
+            .collect::<Vec<_>>()
+    })
+}
+
+#[tokio::test]
+async fn update_plan_stores_every_step_with_its_status() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("read the code", "done"), ("write the fix", "in_progress")]),
+    )
+    .await;
+
+    assert!(out.contains("✔ read the code"), "{out}");
+    assert!(out.contains("◼ write the fix"), "{out}");
+    assert!(
+        out.contains("2 tasks (1 done, 1 in progress, 0 open)"),
+        "{out}"
+    );
+    assert_eq!(ctx.plan.lock().unwrap().steps.len(), 2);
+}
+
+#[tokio::test]
+async fn update_plan_replaces_rather_than_appends() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    for pairs in [
+        &[("first", "pending")][..],
+        &[("second", "pending"), ("third", "pending")][..],
+    ] {
+        run_tool_with(
+            repo.path(),
+            &mut false,
+            None,
+            &ctx,
+            "update_plan",
+            steps(pairs),
+        )
+        .await;
+    }
+
+    let plan = ctx.plan.lock().unwrap();
+    assert_eq!(plan.steps.len(), 2, "the second call replaced the first");
+    assert_eq!(plan.steps[0].label, "second");
+}
+
+#[tokio::test]
+async fn update_plan_rejects_an_unknown_status() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("do it", "almost")]),
+    )
+    .await;
+
+    assert!(out.starts_with("error:"), "{out}");
+    assert!(
+        out.contains("in_progress"),
+        "the error lists valid ones: {out}"
+    );
+    assert!(
+        ctx.plan.lock().unwrap().steps.is_empty(),
+        "nothing was stored"
+    );
+}
+
+#[tokio::test]
+async fn update_plan_needs_at_least_one_step() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool(repo.path(), "update_plan", json!({ "steps": [] })).await;
+    assert!(out.starts_with("error:"), "{out}");
+}
+
+#[tokio::test]
+async fn exit_plan_mode_needs_a_plan_first() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool(repo.path(), "exit_plan_mode", json!({})).await;
+    assert!(out.contains("update_plan"), "{out}");
+}
+
+#[tokio::test]
+async fn approving_the_plan_unlocks_editing() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let mut allow_edits = false;
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let req = approval(rx.recv().await.unwrap());
+        assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
+        let _ = req.respond.send(Answer::Yes);
+    });
+
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "pending")]),
+    )
+    .await;
+    let out = run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        Some(&tx),
+        &ctx,
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+
+    prompt.await.unwrap();
+    assert!(out.contains("edit mode is now active"), "{out}");
+    assert!(allow_edits, "approval promotes the turn to edit mode");
+}
+
+#[tokio::test]
+async fn rejecting_the_plan_leaves_editing_locked() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let mut allow_edits = false;
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let _ = approval(rx.recv().await.unwrap()).respond.send(Answer::No);
+    });
+
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "pending")]),
+    )
+    .await;
+    let out = run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        Some(&tx),
+        &ctx,
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+
+    prompt.await.unwrap();
+    assert!(out.contains("stay in plan mode"), "{out}");
+    assert!(!allow_edits);
+}
+
+#[tokio::test]
+async fn exit_plan_mode_is_refused_once_already_editing() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut true,
+        None,
+        &SessionCtx::default(),
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+    assert!(out.contains("already in edit mode"), "{out}");
+}
+
+#[tokio::test]
+async fn ask_user_relays_the_chosen_option() {
+    let repo = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let UiRequest::Question(req) = rx.recv().await.unwrap() else {
+            panic!("expected a question");
+        };
+        assert_eq!(req.header, "Storage");
+        assert_eq!(req.options, ["sqlite", "postgres"]);
+        let _ = req.respond.send(Some("postgres".to_string()));
+    });
+
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        Some(&tx),
+        &SessionCtx::default(),
+        "ask_user",
+        json!({
+            "header": "Storage",
+            "question": "Which database?",
+            "options": ["sqlite", "postgres"]
+        }),
+    )
+    .await;
+
+    prompt.await.unwrap();
+    assert!(out.contains("postgres"), "{out}");
+}
+
+#[tokio::test]
+async fn ask_user_tells_the_agent_to_decide_when_headless() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool(
+        repo.path(),
+        "ask_user",
+        json!({ "question": "Which database?", "options": ["sqlite"] }),
+    )
+    .await;
+
+    assert!(
+        !out.starts_with("error:"),
+        "a missing UI is not an error: {out}"
+    );
+    assert!(out.contains("no interactive UI"), "{out}");
+}
+
+#[tokio::test]
+async fn a_declined_question_does_not_stall_the_turn() {
+    let repo = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    // Dropping the responder is how a dismissed picker answers.
+    let prompt = tokio::spawn(async move { drop(rx.recv().await.unwrap()) });
+
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        Some(&tx),
+        &SessionCtx::default(),
+        "ask_user",
+        json!({ "question": "Which database?", "options": ["sqlite", "postgres"] }),
+    )
+    .await;
+
+    prompt.await.unwrap();
+    assert!(out.contains("declined"), "{out}");
+}
+
+fn sample_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().unwrap();
+    fs::create_dir_all(repo.path().join("crates/aster-cli/src/tui")).unwrap();
+    fs::write(
+        repo.path().join("crates/aster-cli/src/tui/composer.rs"),
+        "fn compose() {}\n",
+    )
+    .unwrap();
+    repo
+}
+
+#[tokio::test]
+async fn a_missing_read_path_suggests_real_ones_instead_of_failing() {
+    let repo = sample_repo();
+
+    let out = run_tool(
+        repo.path(),
+        "read_file",
+        json!({ "path": "crates/ui/src/composer.rs" }),
+    )
+    .await;
+
+    assert!(!out.starts_with("error: "), "{out}");
+    assert!(
+        out.contains("crates/aster-cli/src/tui/composer.rs"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_search_dir_widens_to_the_whole_repo() {
+    let repo = sample_repo();
+
+    let out = run_tool(
+        repo.path(),
+        "search_files",
+        json!({ "query": "compose", "dir": "crates/aster-tui" }),
+    )
+    .await;
+
+    assert!(
+        out.starts_with("note: crates/aster-tui does not exist"),
+        "{out}"
+    );
+    assert!(out.contains("composer.rs"), "{out}");
+}
+
+#[tokio::test]
+async fn find_files_locates_a_file_by_name() {
+    let repo = sample_repo();
+
+    let out = run_tool(
+        repo.path(),
+        "find_files",
+        json!({ "pattern": "composer.rs" }),
+    )
+    .await;
+
+    assert_eq!(out, "crates/aster-cli/src/tui/composer.rs");
+}
+
+#[tokio::test]
+async fn an_unknown_tool_names_the_real_ones() {
+    let repo = tempfile::tempdir().unwrap();
+
+    let out = run_tool(repo.path(), "search_file", json!({ "query": "x" })).await;
+
+    assert!(out.starts_with("error: unknown tool: search_file"), "{out}");
+    assert!(out.contains("search_files"), "{out}");
+    assert!(out.contains("find_files"), "{out}");
+}
+
+#[tokio::test]
+async fn edit_file_creates_a_missing_file_without_search() {
+    let repo = tempfile::tempdir().unwrap();
+    let policy = Policy::permissive();
+    let mut edited = Vec::new();
+
+    let out = edit_file(
+        repo.path(),
+        &policy,
+        None,
+        &args("docs/notes/test.md", None, "# Test\n"),
+        &mut edited,
+    )
+    .await
+    .unwrap();
+
+    assert!(out.starts_with("created docs/notes/test.md"), "{out}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join("docs/notes/test.md")).unwrap(),
+        "# Test\n"
+    );
+    assert_eq!(edited, ["docs/notes/test.md"]);
+}
+
+#[tokio::test]
+async fn outside_reads_are_approved_by_the_front_end() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("notes.txt");
+    fs::write(&target, "hello").unwrap();
+    let policy = Policy::permissive();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let answer = tokio::spawn(async move {
+        let req = approval(rx.recv().await.unwrap());
+        assert!(
+            req.preview.contains("outside the repository"),
+            "{}",
+            req.preview
+        );
+        let _ = req.respond.send(Answer::Yes);
+    });
+
+    let resolved = resolve_for_read(
+        repo.path(),
+        &policy,
+        &Grants::default(),
+        Some(&tx),
+        &SessionCtx::default(),
+        &target.to_string_lossy(),
+    )
+    .await
+    .unwrap();
+
+    answer.await.unwrap();
+    assert_eq!(resolved, target.canonicalize().unwrap());
+}
+
+#[tokio::test]
+async fn a_grant_covers_the_rest_of_the_directory() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("a.txt"), "a").unwrap();
+    fs::write(outside.path().join("b.txt"), "b").unwrap();
+    let policy = Policy::permissive();
+    let grants = Grants::default();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompts = tokio::spawn(async move {
+        let mut seen = 0;
+        while let Some(req) = rx.recv().await {
+            seen += 1;
+            let _ = approval(req).respond.send(Answer::Yes);
+        }
+        seen
+    });
+
+    for name in ["a.txt", "b.txt"] {
+        let path = outside.path().join(name);
+        resolve_for_read(
+            repo.path(),
+            &policy,
+            &grants,
+            Some(&tx),
+            &SessionCtx::default(),
+            &path.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+    }
+    drop(tx);
+
+    assert_eq!(
+        prompts.await.unwrap(),
+        1,
+        "the second read should be covered"
+    );
+    assert_eq!(grants.granted(), [outside.path().canonicalize().unwrap()]);
+}
+
+#[tokio::test]
+async fn configured_directories_never_prompt() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("a.txt"), "a").unwrap();
+
+    let permissions = aster_policy::PermissionsConfig {
+        additional_directories: vec![outside.path().to_string_lossy().into_owned()],
+        ..Default::default()
+    };
+
+    let resolved = resolve_for_read(
+        repo.path(),
+        &Policy::permissive(),
+        &configured_grants(&permissions, repo.path()),
+        None,
+        &SessionCtx::default(),
+        &outside.path().join("a.txt").to_string_lossy(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resolved,
+        outside.path().join("a.txt").canonicalize().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn outside_reads_are_denied_without_an_approver() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("notes.txt");
+    fs::write(&target, "hello").unwrap();
+
+    let err = resolve_for_read(
+        repo.path(),
+        &Policy::permissive(),
+        &Grants::default(),
+        None,
+        &SessionCtx::default(),
+        &target.to_string_lossy(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("needs the user's approval"), "{err}");
+}
+
+#[tokio::test]
+async fn edit_file_refuses_to_clobber_an_existing_file() {
+    let repo = tempfile::tempdir().unwrap();
+    fs::write(repo.path().join("test.md"), "keep me").unwrap();
+    let policy = Policy::permissive();
+
+    let err = edit_file(
+        repo.path(),
+        &policy,
+        None,
+        &args("test.md", None, "gone"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join("test.md")).unwrap(),
+        "keep me"
+    );
+}
+
+#[test]
+fn a_repeat_lookup_is_answered_with_a_pointer() {
+    let ctx = SessionCtx::default();
+    let args = r#"{"query":"emit","dir":"src"}"#;
+    assert!(!is_repeat_lookup(&ctx, "search_files", args));
+    assert!(is_repeat_lookup(&ctx, "search_files", args));
+}
+
+#[test]
+fn different_arguments_are_not_a_repeat() {
+    let ctx = SessionCtx::default();
+    assert!(!is_repeat_lookup(&ctx, "search_files", r#"{"query":"a"}"#));
+    assert!(!is_repeat_lookup(&ctx, "search_files", r#"{"query":"b"}"#));
+}
+
+#[test]
+fn a_command_clears_the_lookup_cache() {
+    let ctx = SessionCtx::default();
+    let args = r#"{"pattern":"*.rs"}"#;
+    assert!(!is_repeat_lookup(&ctx, "find_files", args));
+    // A command may have created or deleted files, so the earlier answer is
+    // no longer trustworthy and the repeat has to run for real.
+    assert!(!is_repeat_lookup(&ctx, "run_command", "{}"));
+    assert!(!is_repeat_lookup(&ctx, "find_files", args));
+}
+
+#[test]
+fn read_file_is_left_to_its_own_mtime_cache() {
+    let ctx = SessionCtx::default();
+    let args = r#"{"path":"a.rs"}"#;
+    assert!(!is_repeat_lookup(&ctx, "read_file", args));
+    assert!(!is_repeat_lookup(&ctx, "read_file", args));
+}

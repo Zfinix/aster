@@ -47,5 +47,5 @@ impl GrantStore {
 }
 
 #[cfg(test)]
-#[path = "grants_tests.rs"]
+#[path = "tests/grants_test.rs"]
 mod tests;
