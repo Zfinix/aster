@@ -5,6 +5,23 @@ All notable changes to Aster are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Three new Context.dev web tools. `web/search` searches the web and returns
+  each result scraped to Markdown, `web/sitemap` lists a domain's sitemap URLs
+  without scraping any pages, and `web/screenshot` captures a rendered page as
+  a PNG and returns its CDN URL. All three ship as `aster web search`,
+  `aster web sitemap`, and `aster web screenshot` subcommands, and search now
+  prefers Context.dev over Firecrawl and Browserbase when its key is set.
+- Document reading via [anydoc](https://github.com/firecrawl/anydoc).
+  `read_file` converts PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, and
+  RTF files to Markdown, and sniffs documents hiding behind wrong extensions.
+  CSV stays raw so line numbers keep matching the bytes on disk. The keyless
+  `web/extract` fallback applies the same conversion to document URLs,
+  detected by magic bytes rather than Content-Type.
+
 ## [0.3.0] - 2026-07-30
 
 Aster stops being a review tool that can chat and becomes a general coding
@@ -87,7 +104,7 @@ and the web, and drives a rebuilt terminal UI.
   finished blocks into real scrollback, Markdown rendering with syntax
   highlighting, `@`-mentions backed by a file index, and bracketed paste.
 - Slash commands: `/model`, `/provider`, `/resume`, `/mode`, `/effort`,
-  `/yolo`, `/clear`, `/help`, `/quit`.
+  `/yolo`, `/clear`, `/help`, `/quit` or `/exit`.
 - Approval, plan-approval, and question prompts render as pane views with
   keyboard selection.
 - Consecutive read-only tool calls collapse into a single `Explored` cell.

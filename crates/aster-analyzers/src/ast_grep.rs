@@ -107,8 +107,7 @@ fn lang_of(path: &Path) -> Option<SupportLang> {
 
 fn source_files(root: &Path) -> Vec<PathBuf> {
     fn skip_dir(name: &str) -> bool {
-        matches!(name, "target" | "node_modules" | "dist" | "build" | ".venv")
-            || name.starts_with('.')
+        aster_models::SKIP_DIRS.contains(&name) || name.starts_with('.')
     }
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];

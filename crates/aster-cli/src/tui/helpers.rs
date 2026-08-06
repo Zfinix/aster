@@ -149,6 +149,29 @@ pub(super) fn human_count(n: usize) -> String {
     crate::util::human(n as u64)
 }
 
+/// Join names with commas, keeping the first `max` and counting the rest.
+pub(super) fn listed<'a>(names: impl Iterator<Item = &'a str>, max: usize) -> String {
+    let all: Vec<&str> = names.collect();
+    if all.len() <= max {
+        return all.join(", ");
+    }
+    format!("{} … +{} more", all[..max].join(", "), all.len() - max)
+}
+
+/// Clip to `max` display columns with an ellipsis. Measured in columns, not
+/// chars, so wide CJK text still lands on one row.
+pub(super) fn clip_row(text: &str, max: usize) -> String {
+    let flat = text.replace('\n', " ");
+    if super::wrap::width(&flat) <= max {
+        return flat;
+    }
+    let head = super::wrap::rows(&flat, max.saturating_sub(1).max(1))
+        .first()
+        .map(|r| flat[r.clone()].to_string())
+        .unwrap_or_default();
+    format!("{}…", head.trim_end())
+}
+
 /// Clip a one-line label, on a char boundary so multi-byte text survives.
 pub(super) fn truncate_label(text: &str, max: usize) -> String {
     let flat = text.replace('\n', " ");
@@ -179,4 +202,30 @@ pub(super) fn severity_chip(severity: &str) -> Span<'static> {
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_row_keeps_short_text_and_cuts_long_text_at_the_column_budget() {
+        assert_eq!(clip_row("short", 20), "short");
+        let long = clip_row("a".repeat(50).as_str(), 20);
+        assert!(long.ends_with('…'), "{long}");
+        assert!(crate::tui::wrap::width(&long) <= 20, "{long}");
+    }
+
+    #[test]
+    fn clip_row_measures_wide_glyphs_in_columns_not_chars() {
+        let cjk = "寫論文學術論文引導我寫論文審查意見評估回覆論文審查";
+        let clipped = clip_row(cjk, 20);
+        assert!(clipped.ends_with('…'), "{clipped}");
+        assert!(crate::tui::wrap::width(&clipped) <= 20, "{clipped}");
+    }
+
+    #[test]
+    fn clip_row_flattens_newlines_into_one_row() {
+        assert_eq!(clip_row("one\ntwo", 20), "one two");
+    }
 }

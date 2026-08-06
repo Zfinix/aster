@@ -1,7 +1,9 @@
 //! Minimal inline-viewport terminal, derived from ratatui's `Terminal`
 //! (MIT, © Ratatui Developers). The cursor is queried once at startup;
 //! height changes and history inserts never re-anchor, which is what keeps
-//! the viewport from landing on top of scrollback mid-stream.
+//! the viewport from landing on top of scrollback mid-stream. Finished lines
+//! go into the terminal's own scrollback, so scrolling the transcript is the
+//! terminal's job and history is not capped at one screen.
 
 use std::io::{self, Stdout};
 
@@ -125,7 +127,7 @@ impl InlineTerm {
             let room_below = self.screen.height.saturating_sub(old.bottom());
             let need_above = delta.saturating_sub(room_below).min(old.y);
             if need_above > 0 {
-                self.backend.scroll_region_up(0..old.y, need_above)?;
+                self.scroll_into_scrollback(old.y, need_above)?;
             }
             old.y - need_above
         };
@@ -162,11 +164,36 @@ impl InlineTerm {
         let top = self.viewport.top();
         while height > 0 && top > 0 {
             let to_draw = height.min(top);
-            self.backend.scroll_region_up(0..top, to_draw)?;
+            self.scroll_into_scrollback(top, to_draw)?;
             remaining = self.draw_cleared(top - to_draw, to_draw, remaining)?;
             height -= to_draw;
         }
         self.backend.flush()?;
+        Ok(())
+    }
+
+    /// Open `rows` blank rows at the bottom of the region above the viewport,
+    /// handing what leaves the top to the terminal's scrollback.
+    ///
+    /// The scroll has to come from line feeds at the bottom margin. `SU`, which
+    /// is what a plain scroll-up emits, moves the same rows but throws away
+    /// what falls off, so history above the viewport was capped at one screen
+    /// and older lines were gone rather than merely out of view. The region
+    /// stops short of the viewport, so the viewport itself never moves and
+    /// needs no repaint.
+    fn scroll_into_scrollback(&mut self, region_bottom: u16, rows: u16) -> Result<()> {
+        use std::io::Write;
+        if region_bottom == 0 || rows == 0 {
+            return Ok(());
+        }
+        // Region and cursor address are 1-based, so `region_bottom` names the
+        // region's last row, which is the row above the viewport.
+        write!(self.backend, "\x1b[1;{region_bottom}r")?;
+        write!(self.backend, "\x1b[{region_bottom};1H")?;
+        for _ in 0..rows {
+            write!(self.backend, "\r\n")?;
+        }
+        write!(self.backend, "\x1b[r")?;
         Ok(())
     }
 
@@ -226,7 +253,48 @@ impl InlineTerm {
     }
 }
 
-/// Always leave at least one row of screen to scroll history through.
+/// Share of the screen the viewport may take. Growing it scrolls the
+/// transcript away, so an unbounded pane walks the conversation off the top
+/// until nothing of it is left. A view taller than its share clips instead,
+/// which is the pane's problem to window around.
+const MAX_VIEWPORT_NUM: u16 = 3;
+const MAX_VIEWPORT_DEN: u16 = 5;
+
+/// Always leave rows of screen for the transcript to sit in.
 fn clamp_height(height: u16, screen: Size) -> u16 {
-    height.clamp(1, screen.height.saturating_sub(1).max(1))
+    let share = (screen.height * MAX_VIEWPORT_NUM / MAX_VIEWPORT_DEN).max(1);
+    let ceiling = share.min(screen.height.saturating_sub(1).max(1));
+    height.clamp(1, ceiling)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen(height: u16) -> Size {
+        Size { width: 80, height }
+    }
+
+    #[test]
+    fn the_viewport_never_takes_the_whole_screen() {
+        for h in [10u16, 24, 40, 100] {
+            let capped = clamp_height(u16::MAX, screen(h));
+            assert!(
+                capped < h,
+                "viewport {capped} left no transcript on {h} rows"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pane_that_fits_its_share_is_left_alone() {
+        assert_eq!(clamp_height(4, screen(40)), 4);
+        assert_eq!(clamp_height(13, screen(40)), 13);
+    }
+
+    #[test]
+    fn a_tiny_screen_still_yields_a_usable_viewport() {
+        assert_eq!(clamp_height(4, screen(2)), 1);
+        assert!(clamp_height(4, screen(1)) >= 1);
+    }
 }

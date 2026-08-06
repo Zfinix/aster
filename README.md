@@ -34,7 +34,7 @@ Three ideas shape it:
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zfinix/aster/main/crates/aster-cli/install.sh | bash
+curl -fsSL https://withaster.dev/install | sh
 ```
 
 Or build it yourself (Rust 1.85 or newer):
@@ -230,8 +230,14 @@ specific. Aster reads the titles and loads the body only when it is relevant.
 aster skills find react          # search GitHub for skills
 aster skills add owner/repo      # install from a repo
 aster skills add ./my-skill -p   # install into this project only
+aster skills add claude-code     # import from another agent on this machine
 aster skills list
 ```
+
+Any agent key from the [skills](https://github.com/vercel-labs/skills) registry
+works as a source, so skills already installed for Claude Code, Cursor, Codex,
+Gemini CLI, and the rest come across as-is. `aster skills add` with no source
+lists the ones it finds installed.
 
 ### MCP servers
 

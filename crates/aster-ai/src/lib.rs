@@ -22,6 +22,9 @@ pub use effort::Effort;
 mod inline_tools;
 use inline_tools::{TokenGate, split_inline_tool_calls};
 
+mod repetition;
+pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
+
 mod models;
 pub use models::{
     Annotation, AssistantMessage, ChatMessage, ToolCall, ToolCallFunction, UrlCitation,
@@ -450,6 +453,14 @@ impl AiClient {
                 message.tool_calls = inline;
             }
         }
+        if message
+            .content
+            .as_deref()
+            .map(is_degenerate)
+            .unwrap_or(false)
+        {
+            return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
+        }
         let completion_chars = message.content.as_deref().map(str::len).unwrap_or(0)
             + message
                 .tool_calls
@@ -481,7 +492,7 @@ impl AiClient {
         let mut usage: Option<Usage> = None;
         read_sse(response, |data| {
             let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
-                return;
+                return true;
             };
             if let Some(u) = parsed.usage {
                 usage = Some(u);
@@ -496,6 +507,7 @@ impl AiClient {
                 acc.push_str(&delta);
                 on_token(&delta);
             }
+            true
         })
         .await?;
 
@@ -551,19 +563,29 @@ impl AiClient {
         // Some models write their tool calls into the content. The gate keeps
         // that markup off the screen; the block is parsed back out below.
         let mut gate = TokenGate::default();
+        // A reply that degenerates into verbatim repetition is cut off before
+        // it streams to completion; `degenerate` is set and the stream dropped.
+        let mut guard = RepetitionGuard::default();
+        let mut degenerate: Option<&'static str> = None;
 
         read_sse(response, |data| {
             let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
-                return;
+                return true;
             };
             if let Some(u) = parsed.usage {
                 usage = Some(u);
             }
             let Some(choice) = parsed.choices.into_iter().next() else {
-                return;
+                return true;
             };
             if let Some(delta) = choice.delta.content.filter(|d| !d.is_empty()) {
                 content.push_str(&delta);
+                // The guard sees the raw delta, before the gate strips tool
+                // markup, so suppressed markup cannot hide repetition.
+                if guard.feed(&delta) {
+                    degenerate = Some(DEGENERATE_MSG);
+                    return false;
+                }
                 gate.feed(&delta, &mut on_token);
             }
             if !choice.delta.annotations.is_empty() {
@@ -583,9 +605,13 @@ impl AiClient {
                     }
                 }
             }
+            true
         })
         .await?;
         gate.finish(&mut on_token);
+        if let Some(msg) = degenerate {
+            return Err(anyhow::Error::new(DegenerateOutput).context(msg));
+        }
 
         if content.is_empty() && partials.is_empty() {
             tracing::debug!(
@@ -623,6 +649,11 @@ impl AiClient {
                 content = text;
                 tool_calls = inline;
             }
+        }
+        // Second net for a whole response that repeats itself, when the stream
+        // guard never saw enough chunks (single-delta or non-streamed replies).
+        if is_degenerate(&content) {
+            return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
         }
 
         let completion_chars = content.len()
@@ -722,7 +753,10 @@ struct PartialToolCall {
 /// Feed each SSE `data:` payload to `on_data`, skipping keep-alives and the
 /// terminating `[DONE]`. Lines are split on the byte buffer so a multibyte
 /// codepoint straddling two network chunks is never decoded until whole.
-async fn read_sse(response: reqwest::Response, mut on_data: impl FnMut(&str)) -> Result<()> {
+async fn read_sse(
+    response: reqwest::Response,
+    mut on_data: impl FnMut(&str) -> bool,
+) -> Result<()> {
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -741,7 +775,11 @@ async fn read_sse(response: reqwest::Response, mut on_data: impl FnMut(&str)) ->
             if data.is_empty() || data == "[DONE]" {
                 continue;
             }
-            on_data(data);
+            // The callback reports false to abort: dropping the bytes stream
+            // mid-way cancels the in-flight request and stops the token burn.
+            if !on_data(data) {
+                return Ok(());
+            }
         }
     }
     Ok(())

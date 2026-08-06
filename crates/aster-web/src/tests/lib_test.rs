@@ -142,8 +142,12 @@ fn crawl_is_offered_only_by_a_provider_that_supports_it() {
 }
 
 #[test]
-fn search_is_offered_only_by_firecrawl_and_browserbase() {
+fn search_is_offered_only_by_a_provider_that_supports_it() {
     for with in [
+        Configured {
+            context_dev: true,
+            ..Default::default()
+        },
         Configured {
             firecrawl: true,
             ..Default::default()
@@ -159,16 +163,31 @@ fn search_is_offered_only_by_firecrawl_and_browserbase() {
     for with in [
         Configured::default(),
         Configured {
-            context_dev: true,
-            ..Default::default()
-        },
-        Configured {
             cloudflare: true,
             ..Default::default()
         },
     ] {
         assert!(!tool_names(&backend(with)).contains(&"search".to_string()));
     }
+}
+
+#[test]
+fn sitemap_and_screenshot_are_offered_only_by_context_dev() {
+    let names = tool_names(&backend(Configured {
+        context_dev: true,
+        ..Default::default()
+    }));
+    assert!(names.contains(&"sitemap".to_string()));
+    assert!(names.contains(&"screenshot".to_string()));
+
+    let names = tool_names(&backend(Configured {
+        firecrawl: true,
+        browserbase: true,
+        cloudflare: true,
+        ..Default::default()
+    }));
+    assert!(!names.contains(&"sitemap".to_string()));
+    assert!(!names.contains(&"screenshot".to_string()));
 }
 
 #[tokio::test]
@@ -187,10 +206,29 @@ async fn search_without_a_capable_provider_says_which_keys_to_set() {
     let err = backend(Configured::default())
         .search("rust", 5)
         .await
-        .expect_err("only Firecrawl and Browserbase search");
+        .expect_err("only Context.dev, Firecrawl, and Browserbase search");
     let msg = err.to_string();
+    assert!(msg.contains("CONTEXT_DEV_API_KEY"), "{msg}");
     assert!(msg.contains("FIRECRAWL_API_KEY"), "{msg}");
     assert!(msg.contains("BROWSERBASE_API_KEY"), "{msg}");
+}
+
+#[tokio::test]
+async fn sitemap_without_context_dev_says_which_key_to_set() {
+    let err = backend(Configured::default())
+        .sitemap("example.com", 500, None)
+        .await
+        .expect_err("only Context.dev serves sitemaps");
+    assert!(err.to_string().contains("CONTEXT_DEV_API_KEY"), "{err}");
+}
+
+#[tokio::test]
+async fn screenshot_without_context_dev_says_which_key_to_set() {
+    let err = backend(Configured::default())
+        .screenshot("https://example.com", false)
+        .await
+        .expect_err("only Context.dev serves screenshots");
+    assert!(err.to_string().contains("CONTEXT_DEV_API_KEY"), "{err}");
 }
 
 #[test]
@@ -203,7 +241,10 @@ fn every_tool_name_is_offered_once_with_all_providers_configured() {
     });
     let mut names = tool_names(&all);
     names.sort();
-    assert_eq!(names, ["crawl", "extract", "search"]);
+    assert_eq!(
+        names,
+        ["crawl", "extract", "screenshot", "search", "sitemap"]
+    );
 }
 
 #[test]

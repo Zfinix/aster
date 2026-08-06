@@ -186,6 +186,31 @@ pub(super) fn error(text: &str, width: usize) -> Vec<Line<'static>> {
     ))
 }
 
+/// Failures framed in a red rounded box so they cannot be read as notes.
+pub(super) fn error_box(texts: &[String], width: usize) -> Vec<Line<'static>> {
+    let style = theme::get().error_style();
+    let inner = body_width(width).saturating_sub(4).max(8);
+    let rows: Vec<String> = texts
+        .iter()
+        .flat_map(|text| wrap::lines(text, inner))
+        .collect();
+    let Some(box_width) = rows.iter().map(|row| wrap::width(row)).max() else {
+        return Vec::new();
+    };
+    let margin = " ".repeat(GUTTER);
+    let edge = "─".repeat(box_width + 2);
+    let mut out = vec![Line::from(Span::styled(format!("{margin}╭{edge}╮"), style))];
+    for row in rows {
+        let pad = " ".repeat(box_width - wrap::width(&row));
+        out.push(Line::from(Span::styled(
+            format!("{margin}│ {row}{pad} │"),
+            style,
+        )));
+    }
+    out.push(Line::from(Span::styled(format!("{margin}╰{edge}╯"), style)));
+    prepend_blank(out)
+}
+
 /// One read-only tool call, emitted the moment it lands. The first row of a
 /// run opens the cell with its header; the rest hang off the same branch, so a
 /// twelve-file sweep still reads as a single step while it prints live.
@@ -380,13 +405,13 @@ pub(super) fn diff_lines(body: &str, width: usize) -> Vec<Line<'static>> {
 /// The session header, printed once above the first prompt: the mark, the
 /// name and version, then the fields. No box; hints only for what you cannot
 /// guess.
-pub(super) fn welcome(fields: &[(&str, String)], _width: usize) -> Vec<Line<'static>> {
+pub(super) fn welcome(fields: &[(&str, String)], width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = super::helpers::mark_lines();
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("aster", theme::get().accent_style()),
         Span::styled(
-            format!("  v{}", env!("CARGO_PKG_VERSION")),
+            format!("  {}", env!("CARGO_PKG_VERSION")),
             theme::get().dimmer_style(),
         ),
     ]));
@@ -398,11 +423,20 @@ pub(super) fn welcome(fields: &[(&str, String)], _width: usize) -> Vec<Line<'sta
         .max()
         .unwrap_or(0)
         + 2;
+    // Long values (tool or skill lists) wrap into a hanging indent under the
+    // value column instead of running off the edge.
+    let value_w = width.saturating_sub(key_w).max(16);
     for (key, value) in fields {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{key:<key_w$}"), theme::get().dimmer_style()),
-            Span::styled(value.clone(), Style::default().fg(theme::get().text)),
-        ]));
+        for (i, row) in wrap::lines(value, value_w).into_iter().enumerate() {
+            let head = match i {
+                0 => Span::styled(format!("{key:<key_w$}"), theme::get().dimmer_style()),
+                _ => Span::raw(" ".repeat(key_w)),
+            };
+            lines.push(Line::from(vec![
+                head,
+                Span::styled(row, Style::default().fg(theme::get().text)),
+            ]));
+        }
     }
     // None of the keys are on screen anywhere else, so the header is where a
     // first-time reader finds out they exist.
@@ -411,7 +445,70 @@ pub(super) fn welcome(fields: &[(&str, String)], _width: usize) -> Vec<Line<'sta
         "/help for commands and keys  ·  shift+tab changes mode  ·  esc esc quits",
         theme::get().dimmer_style(),
     )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("✨ ", theme::get().accent_style()),
+        Span::styled(format!("Tip: {}", tip()), theme::get().text_style()),
+    ]));
+    lines.push(Line::from(""));
     prepend_blank(lines)
+}
+
+/// One-line feature reminders; the welcome shows one per session.
+const TIPS: &[&str] = &[
+    "aster --resume reopens your last session; /resume picks from a list",
+    "@ mentions a file from this repo without typing the whole path",
+    "/compact folds earlier turns into a summary when context runs low",
+    "/model switches models mid-session; /effort sets the reasoning budget",
+    "/status shows session, model, context, and token usage",
+    "aster mcp list shows every MCP server and the tools it advertises",
+    "/diff shows the repo's uncommitted changes without leaving the chat",
+    "/memory lists what Aster remembers about this project",
+    "/yolo drops the guardrails; the theme turns red while it is on",
+    "ctrl+j adds a newline without sending the message",
+    "↑ walks back through your past messages once the cursor is at the top",
+    "enter during a running turn interrupts it and sends your message",
+    "aster mcp import copies MCP servers from Claude Code, Codex, or Cursor",
+    "/provider switches the endpoint Aster talks to, then picks a model",
+    "/clear wipes the conversation and starts fresh",
+    "/skills opens a picker to use, view, or delete a skill",
+    "aster sessions list prints ids to use with aster --resume <id>",
+    "/mcp enables or disables MCP servers from inside the chat",
+    "/mode changes how the agent acts; shift+tab steps through them",
+    "/effort cycles the reasoning budget when called with no argument",
+];
+
+fn tip() -> &'static str {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    TIPS[nanos % TIPS.len()]
+}
+
+/// A newer release on GitHub: headline, changelog, and where to get it.
+pub(super) fn update(info: &crate::update::UpdateInfo, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("update available  {} → {}", info.current, info.latest),
+        theme::get().text_style(),
+    ))];
+    for entry in &info.changelog {
+        lines.push(Line::from(Span::styled(
+            entry.clone(),
+            theme::get().dim_style(),
+        )));
+    }
+    if !info.url.is_empty() {
+        lines.push(Line::from(Span::styled(
+            info.url.clone(),
+            Style::default().fg(theme::get().link_fg),
+        )));
+    }
+    prepend_blank(hang(
+        lines,
+        Span::styled("✦ ", theme::get().accent_style()),
+        width,
+    ))
 }
 
 /// A review pipeline phase header, e.g. `▶ Verify`.
@@ -520,6 +617,43 @@ mod tests {
     }
 
     #[test]
+    fn the_welcome_closes_with_one_tip() {
+        let lines = welcome(&[("model", "claude".to_string())], 80);
+        let text = text_of(&lines);
+        assert_eq!(
+            text.iter().filter(|l| l.starts_with("✨ Tip: ")).count(),
+            1,
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn an_error_box_frames_and_wraps_every_failure() {
+        let problems = vec![
+            "linkedin-mcp crashed: Cannot find package '@modelcontextprotocol/sdk'".to_string(),
+            "railway needs auth: sign in at https://railway.app/auth".to_string(),
+        ];
+        let lines = error_box(&problems, 40);
+        let text = text_of(&lines);
+        assert_eq!(text[0], "");
+        assert!(text[1].starts_with("  ╭─"), "{text:?}");
+        assert!(text.last().unwrap().starts_with("  ╰─"), "{text:?}");
+        assert!(text.iter().any(|l| l.contains("linkedin-mcp")), "{text:?}");
+        assert!(text.iter().any(|l| l.contains("railway")), "{text:?}");
+        // Wrapped to the terminal, not overflowing it.
+        assert!(text.iter().all(|l| wrap::width(l) <= 40), "{text:?}");
+        let error = Style::default().fg(theme::get().error);
+        assert!(
+            lines[1..]
+                .iter()
+                .flat_map(|l| &l.spans)
+                .all(|s| s.style == error),
+            "every span should carry the error color"
+        );
+        assert!(error_box(&[], 40).is_empty());
+    }
+
+    #[test]
     fn long_output_is_elided_in_the_middle() {
         let body: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
         let out = tool("Ran cargo check", &body.join("\n"), false, 80);
@@ -572,6 +706,24 @@ mod tests {
             out.iter().any(|l| l.contains("model     kimi-k3")),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn a_long_welcome_value_wraps_under_its_column() {
+        let fields = [(
+            "tools",
+            "read_file, list_files, explore, search_files, find_files, run_command".to_string(),
+        )];
+        let out = text_of(&welcome(&fields, 40));
+        assert!(
+            out.iter().any(|l| l.starts_with("tools  read_file")),
+            "{out:?}"
+        );
+        let hang = out
+            .iter()
+            .find(|l| l.trim_start().starts_with("search_files"))
+            .unwrap();
+        assert!(hang.starts_with("       search_files"), "{hang:?}");
     }
 
     #[test]

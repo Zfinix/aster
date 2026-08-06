@@ -136,3 +136,19 @@ impl Language {
         }
     }
 }
+
+/// Directories never worth descending into when walking a source tree: build
+/// output, dependency caches, and VCS metadata. Shared so every walker in the
+/// workspace skips the same set.
+pub const SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "build",
+    "dist",
+    "node_modules",
+    "out",
+    "target",
+    "vendor",
+];

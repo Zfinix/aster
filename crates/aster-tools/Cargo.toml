@@ -10,6 +10,7 @@ name = "bash_tools"
 path = "src/lib.rs"
 
 [dependencies]
+aster-models = { path = "../aster-models" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 which = "7"

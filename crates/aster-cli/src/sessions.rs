@@ -11,6 +11,16 @@ pub struct SessionsArgs {
     cmd: Option<SessionsCmd>,
 }
 
+impl SessionsArgs {
+    pub fn is_interactive(&self) -> bool {
+        match &self.cmd {
+            None => crate::picker::is_tty(),
+            Some(SessionsCmd::Import { dry_run, .. }) => !dry_run && crate::picker::is_tty(),
+            Some(_) => false,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum SessionsCmd {
     /// List saved sessions for this repo (the default).
@@ -39,14 +49,65 @@ enum SessionsCmd {
     },
 }
 
-pub fn run_sessions(args: SessionsArgs) -> Result<()> {
+/// Interactive `aster sessions`: enter resumes the highlighted session in
+/// the chat TUI, `d` deletes it in place.
+pub(crate) async fn pick_session(
+    store: aster_persist::Store,
+    repo_root: &std::path::Path,
+) -> Result<()> {
+    loop {
+        let metas = store.list_sessions(repo_root)?;
+        if metas.is_empty() {
+            println!("no sessions for this repo yet");
+            return Ok(());
+        }
+        let (ids, items): (Vec<String>, Vec<crate::picker::Item>) = metas
+            .into_iter()
+            .map(|meta| {
+                let transcript = store.resume(repo_root, &meta.id).ok();
+                let turns = transcript
+                    .as_ref()
+                    .map(|t| t.user_turn_count())
+                    .unwrap_or(0);
+                let title = transcript
+                    .as_ref()
+                    .and_then(|t| t.first_user_text())
+                    .map(|s| truncate(s.trim(), 80))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "(empty)".into());
+                let when = meta.created_at.format("%Y-%m-%d %H:%M");
+                let item = crate::picker::Item {
+                    name: title,
+                    detail: format!("{when} · {turns} turns · {}", meta.id),
+                };
+                (meta.id, item)
+            })
+            .unzip();
+        match crate::picker::select_action("Sessions", &items)? {
+            Some((i, crate::picker::Action::Open)) => {
+                let id = ids[i].clone();
+                drop(store);
+                return crate::chat::run(crate::chat::resume_args(&id)).await;
+            }
+            Some((i, crate::picker::Action::Delete)) => {
+                store.delete_session(repo_root, &ids[i])?;
+                eprintln!("deleted {}", ids[i]);
+            }
+            None => return Ok(()),
+        }
+    }
+}
+
+pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let store = crate::persist::store()?;
+    let interactive = args.is_interactive();
 
     match args.cmd.unwrap_or(SessionsCmd::List) {
         SessionsCmd::Import { from, dry_run } => {
-            return crate::import::run_sessions_import(from, dry_run);
+            return crate::import::run_sessions_import(from, dry_run).await;
         }
+        SessionsCmd::List if interactive => return pick_session(store, &repo_root).await,
         SessionsCmd::List => {
             let metas = store.list_sessions(&repo_root)?;
             let rows: Vec<(_, usize, String)> = metas

@@ -80,7 +80,7 @@ impl<E> ApprovalView<E> {
             .unwrap_or((req.preview.as_str(), ""));
         let title = match &req.scope {
             Some(dir) => format!(
-                "Allow writes to {}?",
+                "Allow reads and writes to {}?",
                 super::super::helpers::short_path(dir)
             ),
             None => format!("Approve: {}", title.trim_end_matches(':')),

@@ -162,6 +162,16 @@ fn python_settings() -> McpSettings {
     settings_for(FAKE_SERVER)
 }
 
+/// Every server carries whatever web tools the environment's provider keys
+/// enable, on top of its own. Counting them here keeps the assertions honest
+/// regardless of which `WEB_*`/`*_API_KEY` vars happen to be set in a given
+/// environment, rather than mutating process env from a test.
+fn web_tool_count() -> usize {
+    let config = aster_web::WebConfig::from_env();
+    let backend = aster_web::WebBackend::from_env(&config);
+    aster_web::register_tools(&backend).len()
+}
+
 fn has_python() -> bool {
     std::process::Command::new("python3")
         .arg("--version")
@@ -179,8 +189,10 @@ async fn a_server_handshakes_lists_and_answers_a_call() {
     let (runtime, problems) = McpRuntime::connect(&python_settings()).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 2);
-    assert_eq!(runtime.server_names(), vec!["fake".to_string()]);
+    assert_eq!(runtime.tool_count(), 2 + web_tool_count());
+    let mut server_names = runtime.server_names();
+    server_names.retain(|name| name != "web");
+    assert_eq!(server_names, vec!["fake".to_string()]);
 
     let tool = runtime
         .injector()
@@ -204,7 +216,7 @@ async fn a_modern_server_is_driven_without_an_initialize_handshake() {
     let (runtime, problems) = McpRuntime::connect(&settings_for(MODERN_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 2);
+    assert_eq!(runtime.tool_count(), 2 + web_tool_count());
 
     let tool = runtime
         .injector()
@@ -229,7 +241,10 @@ async fn an_unsupported_version_retries_modern_instead_of_falling_back() {
     assert!(problems.is_empty(), "{problems:?}");
     // The server only answers when `_meta` carries 2025-11-25, so listing
     // succeeding proves the client switched versions and stayed modern.
-    assert_eq!(runtime.expect("a runtime").tool_count(), 1);
+    assert_eq!(
+        runtime.expect("a runtime").tool_count(),
+        1 + web_tool_count()
+    );
 }
 
 #[test]
@@ -289,7 +304,11 @@ async fn every_page_of_a_paginated_tool_list_is_read() {
     let (runtime, problems) = McpRuntime::connect(&settings_for(PAGINATED_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 3, "pagination stopped early");
+    assert_eq!(
+        runtime.tool_count(),
+        3 + web_tool_count(),
+        "pagination stopped early"
+    );
     assert!(runtime.injector().catalog().get("fake/three").is_some());
 }
 
@@ -299,7 +318,10 @@ async fn a_server_without_a_tools_capability_is_quiet_not_an_error() {
         return;
     }
     let (runtime, problems) = McpRuntime::connect(&settings_for(NO_TOOLS_SERVER)).await;
-    assert!(runtime.is_none(), "no tools means nothing to inject");
+    // Web tools always register, so a resources-only server still leaves a
+    // runtime — it just contributes nothing under `fake/`.
+    let runtime = runtime.expect("web tools keep the runtime alive");
+    assert!(runtime.injector().catalog().get("fake/ping").is_none());
     assert!(
         problems.is_empty(),
         "a resources-only server is not a fault: {problems:?}"
@@ -342,7 +364,10 @@ async fn a_server_that_cannot_start_is_reported_and_skipped() {
         },
     );
     let (runtime, problems) = McpRuntime::connect(&settings).await;
-    assert!(runtime.is_none());
+    // Web tools always register, so the runtime survives; the broken server
+    // is reported as a problem and contributes nothing under `broken/`.
+    let runtime = runtime.expect("web tools keep the runtime alive");
+    assert!(!runtime.server_names().iter().any(|name| name == "broken"));
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(
         problems[0], "broken is not installed (no `aster-no-such-binary` on PATH)",
@@ -378,7 +403,7 @@ async fn a_server_dying_for_credentials_is_reported_as_needing_auth_not_offline(
         return;
     }
     let (runtime, problems) = McpRuntime::connect(&settings_for(AUTH_FAILING_SERVER)).await;
-    assert!(runtime.is_none());
+    assert!(runtime.is_some(), "web tools keep the runtime alive");
     assert_eq!(problems.len(), 1, "{problems:?}");
     // One line, the `Error:` prefix stripped, nothing about crashes.
     assert_eq!(
@@ -393,7 +418,7 @@ async fn a_server_printing_its_auth_route_gets_that_url_into_the_one_liner() {
         return;
     }
     let (runtime, problems) = McpRuntime::connect(&settings_for(AUTH_URL_SERVER)).await;
-    assert!(runtime.is_none());
+    assert!(runtime.is_some(), "web tools keep the runtime alive");
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(
         problems[0], "fake needs auth: sign in at https://linkedin-mcp.dev/auth",
@@ -419,7 +444,7 @@ async fn a_server_crashing_at_startup_is_reported_offline_with_its_stderr() {
         return;
     }
     let (runtime, problems) = McpRuntime::connect(&settings_for(CRASHING_SERVER)).await;
-    assert!(runtime.is_none());
+    assert!(runtime.is_some(), "web tools keep the runtime alive");
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(
         problems[0], "fake crashed: config file is corrupt",
@@ -467,7 +492,7 @@ async fn a_strict_legacy_server_killed_by_the_probe_is_respawned_and_works() {
     let (runtime, problems) = McpRuntime::connect(&settings_for(STRICT_LEGACY_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 1);
+    assert_eq!(runtime.tool_count(), 1 + web_tool_count());
     runtime.shutdown().await;
 }
 

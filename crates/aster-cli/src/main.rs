@@ -25,6 +25,7 @@ mod skills;
 mod term;
 mod test_runner;
 mod tui;
+mod update;
 mod util;
 mod web;
 
@@ -39,6 +40,7 @@ use anyhow::Result;
 use aster_ai::Effort;
 use clap::Parser;
 use clap::Subcommand;
+use clap::ValueEnum;
 
 #[derive(Parser)]
 #[command(
@@ -60,6 +62,10 @@ struct Cli {
     /// before or after it, and turns errors into `{"ok":false,"error":…}`.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Hidden alias for `--json`, matching the `--format json` spelling other CLIs use.
+    #[arg(long, global = true, value_name = "FORMAT", hide = true)]
+    format: Option<OutputFormat>,
 
     /// Reasoning budget for thinking models: off, low, medium, or high.
     /// Overrides ASTER_EFFORT and aster.yaml `review.effort`.
@@ -98,6 +104,12 @@ enum Command {
     Remote(remote::RemoteArgs),
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 /// Set once from the root `--json` flag, then read anywhere a command chooses
 /// between its human and machine output.
 static JSON: AtomicBool = AtomicBool::new(false);
@@ -123,14 +135,17 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    JSON.store(cli.json, Ordering::Relaxed);
+    let json = cli.json || matches!(cli.format, Some(OutputFormat::Json));
+    JSON.store(json, Ordering::Relaxed);
     let _ = EFFORT.set(cli.effort);
 
     // No subcommand means chat: the flattened root flags are the chat args.
     let command = cli.command.unwrap_or(Command::Chat(cli.chat));
     // Full-screen TUI logs must go to a file, not stderr.
     let chat_tui = matches!(&command, Command::Chat(a) if a.is_interactive());
-    let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui;
+    // Interactive `aster sessions` can hand off into the chat TUI on enter.
+    let sessions_tui = matches!(&command, Command::Sessions(a) if a.is_interactive());
+    let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui || sessions_tui;
     let stream_mode = matches!(&command, Command::Review(a) if a.stream)
         || matches!(&command, Command::Fix(_))
         || matches!(&command, Command::Chat(a) if !a.is_interactive());
@@ -143,7 +158,7 @@ async fn main() -> Result<()> {
         Command::Review(args) => review::run(args).await,
         Command::Chat(args) => chat::run(args).await,
         Command::Fix(args) => fix::run(args).await,
-        Command::Sessions(args) => sessions::run_sessions(args),
+        Command::Sessions(args) => sessions::run_sessions(args).await,
         Command::Memory(args) => sessions::run_memory(args),
         Command::Skills(args) => skills::run(args).await,
         Command::Web(args) => web::run(args).await,

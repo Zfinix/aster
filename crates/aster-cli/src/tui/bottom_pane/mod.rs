@@ -33,10 +33,9 @@ use super::terminal::FrameRequester;
 use super::theme;
 use crate::chat::{Answer, ApprovalRequest};
 
-/// Rows a picker lists at once. The pane grows to whatever it renders, and
-/// growing it scrolls history into scrollback that shrinking cannot pull back,
-/// so an unbounded list leaves a blank band behind when the view closes.
-const VISIBLE_ROWS: usize = 8;
+/// Any list shows at most this many rows; the rest collapse to `+N more`.
+const VISIBLE_ROWS: usize = 10;
+const MENU_ROWS: usize = 10;
 
 /// The row a click landed on, counted from the top of `area`, or `None` when
 /// it landed outside.
@@ -51,18 +50,38 @@ fn row_within(area: Rect, ev: MouseEvent) -> Option<u16> {
 /// First row of a picker's visible window: keeps the selection centred until
 /// it reaches either end of the list.
 fn window_start(selected: usize, len: usize) -> usize {
-    if len <= VISIBLE_ROWS {
+    window_start_of(selected, len, VISIBLE_ROWS)
+}
+
+fn window_start_of(selected: usize, len: usize, rows: usize) -> usize {
+    if len <= rows {
         return 0;
     }
-    selected
-        .saturating_sub(VISIBLE_ROWS / 2)
-        .min(len - VISIBLE_ROWS)
+    selected.saturating_sub(rows / 2).min(len - rows)
 }
 
 pub(super) struct CommandDesc {
     pub name: &'static str,
     pub takes_arg: bool,
     pub desc: &'static str,
+}
+
+/// One row the slash menu offers: a built-in command or an installed skill.
+#[derive(Clone)]
+pub(super) struct MenuEntry {
+    name: String,
+    desc: String,
+    takes_arg: bool,
+}
+
+impl From<&CommandDesc> for MenuEntry {
+    fn from(c: &CommandDesc) -> Self {
+        Self {
+            name: c.name.to_string(),
+            desc: c.desc.to_string(),
+            takes_arg: c.takes_arg,
+        }
+    }
 }
 
 /// What a keypress amounted to, once the pane has routed it.
@@ -85,7 +104,7 @@ pub(super) enum InputResult {
 }
 
 /// Max mention suggestions shown at once.
-const MAX_MENTION_MATCHES: usize = 8;
+const MAX_MENTION_MATCHES: usize = 10;
 /// Cap on walked entries per search; outside a repo (a launch from `~`, say)
 /// the tree is effectively unbounded and no `.gitignore` applies.
 const MAX_WALK_ENTRIES: usize = 20_000;
@@ -141,6 +160,9 @@ pub(super) struct BottomPane<E> {
     views: Vec<Box<dyn BottomPaneView<E>>>,
     status: Option<StatusWidget>,
     commands: &'static [CommandDesc],
+    /// Skills the menu suggests once the user types part of a name; a bare
+    /// `/` stays commands-only.
+    skills: Vec<MenuEntry>,
     menu_sel: usize,
     placeholder: &'static str,
     frames: FrameRequester,
@@ -174,6 +196,7 @@ impl<E: Clone + 'static> BottomPane<E> {
             views: Vec::new(),
             status: None,
             commands,
+            skills: Vec::new(),
             menu_sel: 0,
             placeholder,
             frames,
@@ -241,8 +264,10 @@ impl<E: Clone + 'static> BottomPane<E> {
             }
             if let Some(row) = row_within(area, ev) {
                 let len = self.command_matches().len();
-                if (row as usize) < len {
-                    self.menu_sel = row as usize;
+                let sel = self.menu_sel.min(len - 1);
+                let index = window_start_of(sel, len, MENU_ROWS) + row as usize;
+                if (row as usize) < MENU_ROWS && index < len {
+                    self.menu_sel = index;
                     let cmd = self.command_to_run();
                     self.composer.clear();
                     self.menu_sel = 0;
@@ -451,25 +476,47 @@ impl<E: Clone + 'static> BottomPane<E> {
         InputResult::None
     }
 
-    fn command_matches(&self) -> Vec<&'static CommandDesc> {
+    pub(super) fn set_skills(&mut self, skills: Vec<(String, String)>) {
+        self.skills = skills
+            .into_iter()
+            .map(|(name, desc)| MenuEntry {
+                name,
+                desc: format!("skill · {}", crate::tui::helpers::clip_row(&desc, 60)),
+                takes_arg: true,
+            })
+            .collect();
+    }
+
+    fn command_matches(&self) -> Vec<MenuEntry> {
         let Some(rest) = self.composer.text().strip_prefix('/') else {
             return Vec::new();
         };
         if rest.contains(char::is_whitespace) {
             return Vec::new();
         }
-        self.commands
+        let mut out: Vec<MenuEntry> = self
+            .commands
             .iter()
             .filter(|c| c.name.starts_with(rest))
-            .collect()
+            .map(MenuEntry::from)
+            .collect();
+        if !rest.is_empty() {
+            out.extend(
+                self.skills
+                    .iter()
+                    .filter(|s| s.name.contains(rest))
+                    .cloned(),
+            );
+        }
+        out
     }
 
-    fn selected_command(&self) -> Option<&'static CommandDesc> {
+    fn selected_command(&self) -> Option<MenuEntry> {
         let matches = self.command_matches();
         matches
             .get(self.menu_sel)
             .or_else(|| matches.first())
-            .copied()
+            .cloned()
     }
 
     fn menu_move(&mut self, delta: isize) {
@@ -503,6 +550,7 @@ impl<E: Clone + 'static> BottomPane<E> {
             return false;
         }
         self.commands.iter().any(|c| c.name.starts_with(first))
+            || self.skills.iter().any(|s| s.name.contains(first))
     }
 
     /// A typed command with args runs as-is; a bare prefix, or a bare `/`,
@@ -518,12 +566,12 @@ impl<E: Clone + 'static> BottomPane<E> {
         if rest.contains(char::is_whitespace) {
             return rest;
         }
-        if self.commands.iter().any(|c| c.name == rest) {
+        if self.commands.iter().any(|c| c.name == rest)
+            || self.skills.iter().any(|s| s.name == rest)
+        {
             return rest;
         }
-        self.selected_command()
-            .map(|c| c.name.to_string())
-            .unwrap_or(rest)
+        self.selected_command().map(|c| c.name).unwrap_or(rest)
     }
 
     fn menu_lines(&self) -> Option<Vec<Line<'static>>> {
@@ -532,24 +580,32 @@ impl<E: Clone + 'static> BottomPane<E> {
             return None;
         }
         let sel = self.menu_sel.min(matches.len() - 1);
-        Some(
-            matches
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let style = if i == sel {
-                        theme::get().selected_style()
-                    } else {
-                        theme::get().dimmer_style()
-                    };
-                    Line::from(vec![
-                        Span::styled(if i == sel { "▸ " } else { "  " }, style),
-                        Span::styled(format!("/{:<7}", c.name), style),
-                        Span::styled(format!("  {}", c.desc), theme::get().faint_style()),
-                    ])
-                })
-                .collect(),
-        )
+        let start = window_start_of(sel, matches.len(), MENU_ROWS);
+        let mut lines: Vec<Line<'static>> = matches
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(MENU_ROWS)
+            .map(|(i, c)| {
+                let style = if i == sel {
+                    theme::get().selected_style()
+                } else {
+                    theme::get().dimmer_style()
+                };
+                Line::from(vec![
+                    Span::styled(if i == sel { "▸ " } else { "  " }, style),
+                    Span::styled(format!("/{:<7}", c.name), style),
+                    Span::styled(format!("  {}", c.desc), theme::get().text_style()),
+                ])
+            })
+            .collect();
+        if matches.len() > MENU_ROWS {
+            lines.push(Line::from(Span::styled(
+                format!("  +{} more", matches.len() - MENU_ROWS),
+                theme::get().faint_style(),
+            )));
+        }
+        Some(lines)
     }
 
     /// Ask the owner to search when the `@` query changed since the last
@@ -750,5 +806,5 @@ impl ComposerRef<'_> {
 }
 
 #[cfg(test)]
-#[path = "command_routing_tests.rs"]
+#[path = "tests/command_routing_test.rs"]
 mod tests;

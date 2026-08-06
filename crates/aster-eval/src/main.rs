@@ -7,7 +7,11 @@ use anyhow::{Context, Result};
 use aster_eval::{Filter, Report, analyze, render, render_comparison};
 
 fn main() -> Result<()> {
-    let mut args = std::env::args().skip(1);
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "live") {
+        return live(raw[1..].to_vec());
+    }
+    let mut args = raw.into_iter();
     let mut dir: Option<PathBuf> = None;
     let mut filter = Filter::default();
     let mut json = false;
@@ -54,6 +58,58 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// `aster-eval live [--models a,b] [--repo DIR] [--evals DIR]`. Runs the fixed
+/// cases through Ori against each model and prints one row per model.
+fn live(args: Vec<String>) -> Result<()> {
+    let mut models: Vec<String> = Vec::new();
+    let mut repo = std::env::current_dir()?;
+    let mut evals: Option<PathBuf> = None;
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--models" => {
+                models = args
+                    .next()
+                    .context("--models needs a comma-separated list")?
+                    .split(',')
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .collect();
+            }
+            "--repo" => repo = args.next().context("--repo needs a path")?.into(),
+            "--evals" => evals = Some(args.next().context("--evals needs a path")?.into()),
+            "-h" | "--help" => {
+                println!("{LIVE_HELP}");
+                return Ok(());
+            }
+            other => anyhow::bail!("unknown flag {other}"),
+        }
+    }
+
+    // Default to the workspace shipped beside this crate.
+    let evals = evals.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals"));
+    if !evals.join("features/aster/feature.ts").exists() {
+        anyhow::bail!("no aster harness at {}", evals.display());
+    }
+    let runs = aster_eval::sweep(&evals, &repo, &aster_eval::default_cases(), &models)?;
+    print!("{}", aster_eval::render_live(&runs));
+    if runs.iter().any(|r| r.failed() > 0) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+const LIVE_HELP: &str = "\
+aster-eval live [options]
+
+Runs aster against fixed cases through Ori and compares models. Needs `ori`
+(openrouter.ai/labs/ori), `bun`, and an OpenRouter credential.
+
+  --models a,b   models to compare (default: the configured one)
+  --repo DIR     checkout aster runs against (default: the current directory)
+  --evals DIR    eval workspace (default: crates/aster-eval/evals)";
+
 const HELP: &str = "\
 aster-eval [SESSIONS_DIR] [options]
 
@@ -63,4 +119,7 @@ batches tool calls, and which tools answer nothing.
   --since DAYS     only sessions created in the last DAYS days
   --model NAME     only sessions recorded against this model
   --json           emit the report as JSON, for use as a baseline
-  --baseline FILE  compare against a report saved earlier with --json";
+  --baseline FILE  compare against a report saved earlier with --json
+
+Subcommands:
+  live             run fixed cases against models through Ori (see `live --help`)";

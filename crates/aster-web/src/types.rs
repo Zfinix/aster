@@ -87,3 +87,21 @@ pub struct CrawlResult {
     pub max_crawl_depth: u32,
     pub credits_consumed: Option<u32>,
 }
+
+/// URLs discovered from a domain's sitemap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SitemapResult {
+    pub domain: String,
+    pub urls: Vec<String>,
+}
+
+/// A rendered-page screenshot hosted on the provider's CDN.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Screenshot {
+    /// Public CDN URL of the captured PNG.
+    pub url: String,
+    /// "viewport" or "fullPage".
+    pub screenshot_type: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}

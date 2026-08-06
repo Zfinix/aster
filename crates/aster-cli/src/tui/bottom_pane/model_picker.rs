@@ -111,7 +111,7 @@ impl ModelPickerView {
             }
             if filtered.len() > VISIBLE_ROWS {
                 out.push(Line::from(Span::styled(
-                    format!("  {} of {}", sel + 1, filtered.len()),
+                    format!("  +{} more", filtered.len() - VISIBLE_ROWS),
                     theme::get().faint_style(),
                 )));
             }
@@ -260,7 +260,10 @@ mod tests {
     fn height_does_not_grow_with_the_model_count() {
         let small = picker(4).desired_height(80);
         let huge = picker(500).desired_height(80);
-        assert!(huge <= small + 6, "small {small}, huge {huge}");
+        assert!(
+            huge <= small + VISIBLE_ROWS as u16,
+            "small {small}, huge {huge}"
+        );
         assert!(huge < 20, "the pane would eat the screen: {huge}");
     }
 
@@ -273,7 +276,7 @@ mod tests {
             shown.iter().any(|l| l.to_string().contains("model-400")),
             "selection scrolled off: {shown:?}"
         );
-        assert!(shown.iter().any(|l| l.to_string().contains("401 of 500")));
+        assert!(shown.iter().any(|l| l.to_string().contains("+490 more")));
     }
 
     #[test]

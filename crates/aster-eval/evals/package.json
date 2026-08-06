@@ -1,0 +1,24 @@
+{
+  "name": "aster-evals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fix": "ori lint --fix",
+    "lint": "ori lint",
+    "start": "ori start",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ori": "file:.ori/sdk"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.3",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
+  },
+  "workspaces": [
+    "features/*"
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "@aster/eval-harness",
+  "private": true,
+  "type": "module"
+}

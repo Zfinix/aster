@@ -128,7 +128,17 @@ impl SandboxProfile {
         // first fetch. Everything else under $HOME stays read-only.
         if let Some(home) = dirs::home_dir() {
             paths.extend(
-                [".cargo", ".rustup", ".npm", ".cache", "Library/Caches"].map(|d| home.join(d)),
+                [
+                    ".cargo",
+                    ".rustup",
+                    ".npm",
+                    ".bun",
+                    ".yarn",
+                    "Library/pnpm",
+                    ".cache",
+                    "Library/Caches",
+                ]
+                .map(|d| home.join(d)),
             );
         }
         resolve_existing(paths)
