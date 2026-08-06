@@ -8,7 +8,7 @@ export function ApprovalPrompt({
 }) {
   return (
     <div className="approval">
-      <div className="approval-head">Approve this edit?</div>
+      <div className="approval-head">Approve command</div>
       <pre className="approval-preview">
         <code>
           {preview.split("\n").map((line, i) => (

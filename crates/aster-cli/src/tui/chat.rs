@@ -23,7 +23,7 @@ use super::bottom_pane::{
     BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem, scan_mentions,
 };
 use super::guard::TuiGuard;
-use super::helpers::{human_count, short_path};
+use super::helpers::{clip_row, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
 use super::terminal::{Tui, TuiEvent};
@@ -70,6 +70,17 @@ pub(super) enum AppEvent {
         disabled: bool,
     },
     ModelChanged(String),
+    /// A newer release found on GitHub, checked off the loop at startup.
+    UpdateAvailable(crate::update::UpdateInfo),
+    /// A skill chosen from `/skills`; its action menu opens next.
+    SkillPicked(String),
+    /// Start a message in the composer that applies the skill.
+    SkillUse(String),
+    /// Show the skill's full description and where it lives.
+    SkillView(String),
+    /// Ask before deleting; the confirmed event does the removal.
+    SkillDelete(String),
+    SkillDeleteConfirmed(String),
     /// The provider's catalog, fetched off the loop so `/model` never blocks
     /// the UI on a round trip.
     ModelsLoaded(Vec<String>),
@@ -95,6 +106,12 @@ pub(super) enum AppEvent {
         replaces_through: usize,
     },
     CompactFailed(String),
+    /// The MCP connect finished off the loop; the session adopts its tools and
+    /// replays whatever was submitted while it was still pending.
+    McpReady {
+        runtime: Option<crate::mcp::McpRuntime>,
+        problems: Vec<String>,
+    },
 }
 
 /// Search for `@`-mention matches off the loop; the result lands as
@@ -120,7 +137,7 @@ pub async fn run_chat(
     perms: PermissionsConfig,
     seed: Option<String>,
     resume: Resume,
-    mcp: Option<crate::mcp::McpRuntime>,
+    mcp: tokio::task::JoinHandle<(Option<crate::mcp::McpRuntime>, Vec<String>)>,
     limits: crate::chat::Limits,
     swarm: crate::chat::SwarmLimits,
     agents: std::sync::Arc<aster_agents::AgentRegistry>,
@@ -172,7 +189,7 @@ pub async fn run_chat(
     app.repo_root = repo_root.clone();
     app.width = tui.width() as usize;
     app.instructions = sync::Arc::new(crate::instructions::discover(&repo_root));
-    app.mcp = mcp;
+    app.mcp_pending = true;
     app.limits = limits;
     app.swarm = swarm;
     app.agents = agents;
@@ -186,24 +203,21 @@ pub async fn run_chat(
         |answer, scope| AppEvent::ApprovalDecided { answer, scope },
         AppEvent::MentionQueried,
     );
+    pane.set_skills(
+        crate::chat::discover_skills(&repo_root)
+            .iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect(),
+    );
 
-    let endpoint = crate::init::provider_label(client.base_url());
-    app.emit(history::welcome(
-        &[
-            ("model", app.model.clone()),
-            ("provider", endpoint),
-            ("cwd", short_path(&repo_root)),
-            ("mode", app.mode.as_str().to_string()),
-            ("effort", client.effort().to_string()),
-        ],
-        app.width,
-    ));
-
+    // The store opens before the welcome prints, so a resumed session's id
+    // lands in the header; its history replays underneath.
+    let mut seeded: Option<Vec<ChatMessage>> = None;
     if let Ok(store) = crate::persist::store() {
         match resume_or_new(&store, &repo_root, &resume) {
-            Ok(Some((recorder, seeded))) => {
+            Ok(Some((recorder, messages))) => {
                 app.recorder = Some(recorder);
-                app.load_history(seeded);
+                seeded = Some(messages);
             }
             // `Pick`: the picker opens below, and the choice arrives as an event.
             Ok(None) => {}
@@ -215,14 +229,36 @@ pub async fn run_chat(
         app.store = Some(store);
     }
 
+    let welcome = app.welcome_block();
+    app.emit(welcome);
+    if let Some(messages) = seeded {
+        app.load_history(messages);
+    }
+
     if matches!(resume, Resume::Pick) {
         app.open_session_picker(&mut pane);
     }
 
+    {
+        let tx = app_tx.clone();
+        tokio::spawn(async move {
+            let (runtime, problems) = mcp.await.unwrap_or((None, Vec::new()));
+            let _ = tx.send(AppEvent::McpReady { runtime, problems });
+        });
+    }
+    {
+        let tx = app_tx.clone();
+        tokio::spawn(async move {
+            if let Some(info) = crate::update::check().await {
+                let _ = tx.send(AppEvent::UpdateAvailable(info));
+            }
+        });
+    }
+
     let mut turn: Option<ChatTurn> = None;
     if let Some(seed) = seed.filter(|s| !s.trim().is_empty()) {
-        turn = Some(app.submit(&seed, &[], &client, &repo_root));
-        pane.set_task_running(true);
+        turn = app.submit_or_hold(&seed, &[], &client, &repo_root);
+        pane.set_task_running(turn.is_some());
     }
 
     let frames = tui.frame_requester();
@@ -322,6 +358,33 @@ pub async fn run_chat(
                     AppEvent::MentionResults { query, paths } => {
                         pane.set_mention_results(&query, paths)
                     }
+                    AppEvent::SkillPicked(name) => app.open_skill_actions(&name, &mut pane),
+                    AppEvent::SkillUse(name) => {
+                        pane.composer.insert_str(&format!("Use the \"{name}\" skill: "))
+                    }
+                    AppEvent::SkillDelete(name) => app.confirm_skill_delete(&name, &mut pane),
+                    AppEvent::SkillDeleteConfirmed(name) => {
+                        app.delete_skill(&name);
+                        let skills = crate::chat::discover_skills(&repo_root);
+                        pane.set_skills(
+                            skills
+                                .iter()
+                                .map(|s| (s.name.clone(), s.description.clone()))
+                                .collect(),
+                        );
+                    }
+                    AppEvent::McpReady { runtime, problems } => {
+                        app.mcp = runtime;
+                        app.mcp_pending = false;
+                        // Do not print "MCP connected" anymore.
+                        app.error_box(&problems);
+                        if let Some((text, refs)) = app.held_submit.take() {
+                            app.flash = None;
+                            turn = Some(app.submit(&text, &refs, &client, &repo_root));
+                            pane.set_task_running(true);
+                        }
+                    }
+
                     AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
                     ev => app.on_app_event(ev, &mut client),
                 }
@@ -562,9 +625,9 @@ fn on_key(
 
     match pane.handle_key(key, app.width as u16) {
         InputResult::Submitted { text, refs } => {
-            *turn = Some(app.submit(&text, &refs, client, repo_root));
-            pane.set_task_running(true);
             app.flash = None;
+            *turn = app.submit_or_hold(&text, &refs, client, repo_root);
+            pane.set_task_running(turn.is_some());
         }
         InputResult::Command(cmd) => {
             app.handle_command(&cmd, client, pane);
@@ -579,9 +642,9 @@ fn on_key(
             // Drop stale events the old turn already pushed before it was
             // cancelled, so they do not render as part of the new turn.
             while events_rx.try_recv().is_ok() {}
-            *turn = Some(app.submit(&text, &refs, client, repo_root));
-            pane.set_task_running(true);
             app.flash = None;
+            *turn = app.submit_or_hold(&text, &refs, client, repo_root);
+            pane.set_task_running(turn.is_some());
         }
         InputResult::None => {
             app.flash = None;
@@ -990,7 +1053,7 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "skills",
         takes_arg: false,
-        desc: "List the skills the agent can load",
+        desc: "Pick a skill to use, view, or delete",
     },
     CommandDesc {
         name: "memory",
@@ -1070,6 +1133,11 @@ struct ChatApp {
     instructions: sync::Arc<crate::instructions::Instructions>,
     /// Connected MCP servers, cloned into each turn's context.
     mcp: Option<crate::mcp::McpRuntime>,
+    /// The connect is still running, so `mcp` being `None` means "not yet"
+    /// rather than "none configured" and a turn must wait for it.
+    mcp_pending: bool,
+    /// A submit that beat the connect, replayed once the servers answer.
+    held_submit: Option<(String, Vec<(String, String)>)>,
     /// Per-turn caps, cloned into each turn's context.
     limits: crate::chat::Limits,
     /// The endpoint in use, so `/provider` can mark the current row.
@@ -1132,6 +1200,8 @@ impl ChatApp {
             pending_plan_approval: false,
             instructions: sync::Arc::default(),
             mcp: None,
+            mcp_pending: false,
+            held_submit: None,
             limits: crate::chat::Limits::default(),
             provider_base_url: String::new(),
             quit_armed: None,
@@ -1149,6 +1219,11 @@ impl ChatApp {
 
     fn note(&mut self, text: &str) {
         let block = history::notice(text, self.width);
+        self.emit(block);
+    }
+
+    fn error_box(&mut self, texts: &[String]) {
+        let block = history::error_box(texts, self.width);
         self.emit(block);
     }
 
@@ -1332,6 +1407,23 @@ impl ChatApp {
         self.exploring = false;
     }
 
+    /// Turns carry the MCP tool list, so a submit that beats the connect is
+    /// held and replayed rather than run without the servers' tools.
+    fn submit_or_hold(
+        &mut self,
+        text: &str,
+        refs: &[(String, String)],
+        client: &AiClient,
+        repo_root: &std::path::Path,
+    ) -> Option<ChatTurn> {
+        if self.mcp_pending {
+            self.held_submit = Some((text.to_string(), refs.to_vec()));
+            self.flash = Some("connecting to MCP servers…".into());
+            return None;
+        }
+        Some(self.submit(text, refs, client, repo_root))
+    }
+
     fn submit(
         &mut self,
         text: &str,
@@ -1376,6 +1468,7 @@ impl ChatApp {
             environment: crate::chat::environment_note(&repo_root),
             yolo: self.mode == Mode::Yolo,
             reads: Default::default(),
+            lookups: Default::default(),
             injected: Default::default(),
             agents: self.agents.clone(),
             sub_agent: None,
@@ -1574,6 +1667,8 @@ impl ChatApp {
 
     fn on_app_event(&mut self, ev: AppEvent, client: &mut AiClient) {
         match ev {
+            // Handled on the run loop, which owns the turn a hold replays into.
+            AppEvent::McpReady { .. } => {}
             // Entering YOLO goes through `confirm_yolo`, never straight here.
             AppEvent::SetMode(Mode::Yolo) => {}
             AppEvent::SetMode(mode) => self.select_mode(mode),
@@ -1612,6 +1707,16 @@ impl ChatApp {
             AppEvent::ProviderPicked { base_url, model } => {
                 self.switch_provider(base_url, model, client)
             }
+            AppEvent::UpdateAvailable(info) => {
+                let block = history::update(&info, self.width);
+                self.emit(block);
+            }
+            // Skill events that need the pane are handled on the run loop.
+            AppEvent::SkillPicked(_)
+            | AppEvent::SkillUse(_)
+            | AppEvent::SkillDelete(_)
+            | AppEvent::SkillDeleteConfirmed(_) => {}
+            AppEvent::SkillView(name) => self.show_skill(&name),
             AppEvent::ModelsLoaded(_) => {}
             AppEvent::MentionQueried(_) | AppEvent::MentionResults { .. } => {}
             AppEvent::ModelsFailed(e) => self.note(&format!("failed to load model list: {e}")),
@@ -1746,19 +1851,36 @@ impl ChatApp {
 
     /// The session header, in the palette current when it is called.
     fn welcome_block(&self) -> Vec<Line<'static>> {
-        history::welcome(
-            &[
-                ("model", self.model.clone()),
-                (
-                    "provider",
-                    crate::init::provider_label(&self.provider_base_url),
-                ),
-                ("cwd", self.repo_root.display().to_string()),
-                ("mode", self.mode.as_str().to_string()),
-                ("effort", self.effort.to_string()),
-            ],
-            self.width,
-        )
+        let mut fields: Vec<(&str, String)> = vec![
+            ("model", self.model.clone()),
+            (
+                "provider",
+                crate::init::provider_label(&self.provider_base_url),
+            ),
+            ("cwd", short_path(&self.repo_root)),
+            ("mode", self.mode.as_str().to_string()),
+            ("effort", self.effort.to_string()),
+        ];
+
+        let instructions = self.instructions.labels();
+        if !instructions.is_empty() {
+            fields.push(("instructions", instructions.join(", ")));
+        }
+        fields.push((
+            "tools",
+            crate::chat::tool_names(self.mode.can_edit(), true).join(", "),
+        ));
+        if !self.agents.is_empty() {
+            let names: Vec<&str> = self.agents.iter().map(|a| a.name.as_str()).collect();
+            fields.push(("agents", names.join(", ")));
+        }
+        let skills = crate::chat::discover_skills(&self.repo_root);
+        if !skills.is_empty() {
+            fields.push(("skills", listed(skills.iter().map(|s| s.name.as_str()), 10)));
+        }
+        // MCP is deliberately absent: the `mcp connected` note lands on its
+        // own once the servers finish starting.
+        history::welcome(&fields, self.width)
     }
 
     /// The takeover has played out: land the screen in the new palette.
@@ -1974,7 +2096,7 @@ impl ChatApp {
                 for c in CHAT_COMMANDS {
                     lines.push(Line::from(vec![
                         Span::styled(format!("/{:<9}", c.name), theme::get().accent_style()),
-                        Span::styled(format!("  {}", c.desc), theme::get().dim_style()),
+                        Span::styled(format!("  {}", c.desc), theme::get().text_style()),
                     ]));
                 }
                 lines.push(Line::from(""));
@@ -1985,7 +2107,7 @@ impl ChatApp {
                 for (key, what) in KEY_HELP {
                     lines.push(Line::from(vec![
                         Span::styled(format!("{key:<10}"), theme::get().accent_style()),
-                        Span::styled(format!("  {what}"), theme::get().dim_style()),
+                        Span::styled(format!("  {what}"), theme::get().text_style()),
                     ]));
                 }
                 let block = history::assistant(lines, true, width);
@@ -1995,10 +2117,22 @@ impl ChatApp {
             "status" => self.show_status(),
             "diff" | "d" => self.show_diff(),
             "mcp" => self.show_mcp(pane),
-            "skills" => self.show_skills(),
+            "skills" => self.open_skills_picker(pane),
             "memory" => self.show_memory(),
             "quit" | "q" | "exit" => self.should_quit = true,
-            other => self.note(&format!("unknown command: /{other} (try /help)")),
+            // A skill name typed as a command starts a message that applies
+            // it, with anything after the name carried along as the task.
+            other => {
+                let skills = crate::chat::discover_skills(&self.repo_root);
+                match skills.get(other) {
+                    Some(skill) => {
+                        let task = arg.unwrap_or_default();
+                        pane.composer
+                            .insert_str(&format!("Use the \"{}\" skill: {task}", skill.name));
+                    }
+                    None => self.note(&format!("unknown command: /{other} (try /help)")),
+                }
+            }
         }
     }
 
@@ -2047,6 +2181,10 @@ impl ChatApp {
             self.note("wait for the current turn to finish before compacting");
             return;
         }
+        if !crate::chat::can_compact(&self.history) {
+            self.note("nothing to compact yet");
+            return;
+        }
         self.flash = Some("compacting…".into());
         let client = client.clone();
         let history = self.history.clone();
@@ -2066,18 +2204,30 @@ impl ChatApp {
         });
     }
 
-    /// Bold-label rows rendered like the /help block.
+    /// Bold-label rows rendered like the /help block. Each description is
+    /// clipped to its one row: a long one reads as a teaser, never a wall.
     fn emit_rows(&mut self, title: &str, rows: Vec<(String, String)>) {
         let width = self.width;
         let mut lines = vec![Line::from(Span::styled(
             title.to_string(),
             Style::default().add_modifier(Modifier::BOLD),
         ))];
-        let pad = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        let pad = rows
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(0);
+        // The cell body wraps at width minus the gutter; whatever the key
+        // column leaves over is the room one description gets.
+        let room = width.saturating_sub(4 + pad + 2).clamp(20, 120);
         for (key, value) in rows {
+            let first = value.lines().next().unwrap_or_default();
             lines.push(Line::from(vec![
                 Span::styled(format!("{key:<pad$}"), theme::get().accent_style()),
-                Span::styled(format!("  {value}"), theme::get().dim_style()),
+                Span::styled(
+                    format!("  {}", super::helpers::clip_row(first, room)),
+                    theme::get().dim_style(),
+                ),
             ]));
         }
         let block = history::assistant(lines, true, width);
@@ -2091,7 +2241,6 @@ impl ChatApp {
 
     fn show_status(&mut self) {
         let chars: usize = self.history.iter().map(|m| m.content.len()).sum();
-        let session = self.session_id().unwrap_or_else(|| "not saved".into());
         let mcp = match &self.mcp {
             Some(rt) => format!(
                 "{} ({} tools)",
@@ -2111,7 +2260,6 @@ impl ChatApp {
                 ),
                 ("mode".into(), self.mode.as_str().into()),
                 ("effort".into(), self.effort.to_string()),
-                ("session".into(), session),
                 (
                     "context".into(),
                     format!(
@@ -2226,17 +2374,120 @@ impl ChatApp {
         }
     }
 
-    fn show_skills(&mut self) {
+    fn open_skills_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
         let skills = crate::chat::discover_skills(&self.repo_root);
         if skills.is_empty() {
             self.note("no skills installed (put SKILL.md folders under .aster/skills/)");
             return;
         }
-        let rows = skills
+        let items = skills
             .iter()
-            .map(|s| (s.name.clone(), s.description.clone()))
+            .map(|s| SelectionItem {
+                name: s.name.clone(),
+                description: clip_row(&s.description, 60),
+                is_current: false,
+                event: AppEvent::SkillPicked(s.name.clone()),
+            })
             .collect();
-        self.emit_rows("Skills", rows);
+        pane.push_picker("Skills", items);
+    }
+
+    fn open_skill_actions(&mut self, name: &str, pane: &mut BottomPane<AppEvent>) {
+        let items = vec![
+            SelectionItem {
+                name: "use".into(),
+                description: "start a message that applies this skill".into(),
+                is_current: false,
+                event: AppEvent::SkillUse(name.to_string()),
+            },
+            SelectionItem {
+                name: "view".into(),
+                description: "show the full description and path".into(),
+                is_current: false,
+                event: AppEvent::SkillView(name.to_string()),
+            },
+            SelectionItem {
+                name: "delete".into(),
+                description: "remove the skill folder from disk".into(),
+                is_current: false,
+                event: AppEvent::SkillDelete(name.to_string()),
+            },
+        ];
+        pane.push_picker(&format!("Skill: {name}"), items);
+    }
+
+    /// Deleting removes a folder from disk, so it gets the same ask-first
+    /// treatment as YOLO; declining returns to the skill's action menu.
+    fn confirm_skill_delete(&mut self, name: &str, pane: &mut BottomPane<AppEvent>) {
+        let skills = crate::chat::discover_skills(&self.repo_root);
+        let Some(skill) = skills.get(name) else {
+            self.note(&format!("no skill named {name:?}"));
+            return;
+        };
+        let folder = skill
+            .path
+            .parent()
+            .map(short_path)
+            .unwrap_or_else(|| short_path(&skill.path));
+        pane.push_picker(
+            &format!("Delete {name}?"),
+            vec![
+                SelectionItem {
+                    name: "No, keep it".into(),
+                    description: String::new(),
+                    is_current: true,
+                    event: AppEvent::SkillPicked(name.to_string()),
+                },
+                SelectionItem {
+                    name: "Yes, delete it".into(),
+                    description: format!("removes {folder}"),
+                    is_current: false,
+                    event: AppEvent::SkillDeleteConfirmed(name.to_string()),
+                },
+            ],
+        );
+    }
+
+    fn show_skill(&mut self, name: &str) {
+        let skills = crate::chat::discover_skills(&self.repo_root);
+        let Some(skill) = skills.get(name) else {
+            self.note(&format!("no skill named {name:?}"));
+            return;
+        };
+        let width = self.width;
+        let mut lines = vec![Line::from(Span::styled(
+            format!("Skill: {name}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        lines.push(Line::from(Span::styled(
+            short_path(&skill.path),
+            theme::get().dim_style(),
+        )));
+        lines.push(Line::from(""));
+        for line in skill.description.lines() {
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                theme::get().text_style(),
+            )));
+        }
+        let block = history::assistant(lines, true, width);
+        self.emit(block);
+    }
+
+    fn delete_skill(&mut self, name: &str) {
+        let skills = crate::chat::discover_skills(&self.repo_root);
+        let Some(skill) = skills.get(name) else {
+            self.note(&format!("no skill named {name:?}"));
+            return;
+        };
+        let Some(folder) = skill.path.parent() else {
+            self.note(&format!("skill {name} has no folder to delete"));
+            return;
+        };
+        match std::fs::remove_dir_all(folder) {
+            Ok(()) => self.note(&format!("deleted skill {name} ({})", short_path(folder))),
+            Err(e) => self.note(&format!("could not delete {name}: {e}")),
+        }
     }
 
     fn show_memory(&mut self) {
@@ -2279,751 +2530,5 @@ impl ChatApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn chat_app(model: String) -> ChatApp {
-        let (tx, _rx) = mpsc::channel(1);
-        let (events_tx, _events_rx) = mpsc::channel(1);
-        ChatApp::new(
-            Mode::Plan,
-            Effort::Low,
-            false,
-            model,
-            SessionPermissions {
-                plan: sync::Arc::new(Policy::permissive()),
-                manual: sync::Arc::new(Policy::permissive()),
-                auto: sync::Arc::new(Policy::permissive()),
-                edit: sync::Arc::new(Policy::permissive()),
-                grants: sync::Arc::new(Grants::default()),
-            },
-            tx,
-            events_tx,
-        )
-    }
-
-    fn pane() -> (BottomPane<AppEvent>, mpsc::UnboundedReceiver<AppEvent>) {
-        let frames = super::super::terminal::FrameRequester::noop();
-        let (tx, rx) = mpsc::unbounded_channel();
-        (
-            BottomPane::new(
-                CHAT_COMMANDS,
-                "hint",
-                frames,
-                tx,
-                |answer, scope| AppEvent::ApprovalDecided { answer, scope },
-                AppEvent::MentionQueried,
-            ),
-            rx,
-        )
-    }
-
-    fn rendered(app: &ChatApp) -> String {
-        app.queue
-            .iter()
-            .flatten()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn command_model_switches_client_and_app() {
-        let mut client = AiClient::new("http://localhost", "k", "openai/gpt-4o-mini");
-        let mut app = chat_app(client.model.clone());
-        let (mut p, _rx) = pane();
-        app.handle_command("model anthropic/claude-sonnet-5", &mut client, &mut p);
-        assert_eq!(client.model, "anthropic/claude-sonnet-5");
-        assert_eq!(app.model, "anthropic/claude-sonnet-5");
-    }
-
-    #[test]
-    fn command_mode_with_name_switches_and_notes_the_model() {
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let mut app = chat_app(client.model.clone());
-        let (mut p, _rx) = pane();
-        app.handle_command("mode auto", &mut client, &mut p);
-        assert_eq!(app.mode, Mode::Auto);
-        assert!(app.history.last().is_some_and(is_edit_note));
-
-        app.handle_command("mode edit", &mut client, &mut p);
-        assert_eq!(app.mode, Mode::Edit);
-        assert_eq!(app.history.iter().filter(|m| is_edit_note(m)).count(), 1);
-    }
-
-    #[test]
-    fn command_mode_bare_opens_the_picker() {
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let mut app = chat_app(client.model.clone());
-        let (mut p, _rx) = pane();
-        app.handle_command("mode", &mut client, &mut p);
-        assert!(p.has_active_view());
-    }
-
-    #[test]
-    fn a_locked_run_cannot_leave_plan() {
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let mut app = chat_app(client.model.clone());
-        app.edits_locked = true;
-        let (mut p, _rx) = pane();
-        app.handle_command("mode edit", &mut client, &mut p);
-        assert_eq!(app.mode, Mode::Plan);
-        assert!(app.flash.unwrap().contains("edits are off"));
-    }
-
-    #[test]
-    fn mode_change_mid_turn_says_it_waits() {
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let mut app = chat_app(client.model.clone());
-        app.thinking = true;
-        let (mut p, _rx) = pane();
-        app.handle_command("mode auto", &mut client, &mut p);
-        assert!(app.flash.unwrap().contains("next message"));
-    }
-
-    #[test]
-    fn approval_auto_approves_in_edit_mode() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Edit;
-        let (mut p, _rx) = pane();
-        let (respond, rx) = tokio::sync::oneshot::channel();
-        app.on_approval_request(
-            ApprovalRequest {
-                preview: "edit a.rs".into(),
-                scope: None,
-                respond,
-            },
-            &mut p,
-        );
-        assert!(!p.has_active_view());
-        assert_eq!(rx.blocking_recv(), Ok(Answer::Yes));
-    }
-
-    fn plan_request() -> (ApprovalRequest, tokio::sync::oneshot::Receiver<Answer>) {
-        let (respond, rx) = tokio::sync::oneshot::channel();
-        (
-            ApprovalRequest {
-                preview: "Approve this plan and start editing?\n\n[ ] ship it".into(),
-                scope: None,
-                respond,
-            },
-            rx,
-        )
-    }
-
-    #[test]
-    fn a_plan_approval_asks_rather_than_passing_silently() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Plan;
-        let (mut p, _rx) = pane();
-        let (req, _answer) = plan_request();
-        app.on_plan_approval_request(req, &mut p);
-        assert!(p.has_active_view(), "the user must see the plan");
-    }
-
-    /// The turn-local edit gate dies with the turn, so approval has to land on
-    /// the session or the next message drops back to plan.
-    #[test]
-    fn an_approved_plan_promotes_the_session_not_just_the_turn() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Plan;
-        app.edits_locked = false;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let (mut p, _rx) = pane();
-
-        let (req, _answer) = plan_request();
-        app.on_plan_approval_request(req, &mut p);
-        app.on_app_event(
-            AppEvent::ApprovalDecided {
-                answer: Answer::Yes,
-                scope: None,
-            },
-            &mut client,
-        );
-
-        assert_eq!(app.mode, Mode::Edit, "the footer and the next turn agree");
-        assert!(app.mode.can_edit(), "the next submit() keeps edits on");
-    }
-
-    #[test]
-    fn a_rejected_plan_leaves_the_session_in_plan() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Plan;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let (mut p, _rx) = pane();
-
-        let (req, _answer) = plan_request();
-        app.on_plan_approval_request(req, &mut p);
-        app.on_app_event(
-            AppEvent::ApprovalDecided {
-                answer: Answer::No,
-                scope: None,
-            },
-            &mut client,
-        );
-
-        assert_eq!(app.mode, Mode::Plan);
-    }
-
-    /// A plain edit approval must not promote; only "always" and plans do.
-    #[test]
-    fn a_one_off_edit_approval_does_not_promote_the_session() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Manual;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        app.on_app_event(
-            AppEvent::ApprovalDecided {
-                answer: Answer::Yes,
-                scope: None,
-            },
-            &mut client,
-        );
-        assert_eq!(app.mode, Mode::Manual);
-    }
-
-    #[test]
-    fn a_locked_run_cannot_be_promoted_by_approving_a_plan() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Plan;
-        app.edits_locked = true;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let (mut p, _rx) = pane();
-
-        let (req, _answer) = plan_request();
-        app.on_plan_approval_request(req, &mut p);
-        app.on_app_event(
-            AppEvent::ApprovalDecided {
-                answer: Answer::Yes,
-                scope: None,
-            },
-            &mut client,
-        );
-
-        assert_eq!(app.mode, Mode::Plan, "a read-only run stays read-only");
-    }
-
-    #[test]
-    fn approval_always_promotes_the_session_to_edit() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Manual;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let (mut p, _rx) = pane();
-        app.on_app_event(
-            AppEvent::ApprovalDecided {
-                answer: Answer::Always,
-                scope: None,
-            },
-            &mut client,
-        );
-        assert_eq!(app.mode, Mode::Edit);
-
-        // The next request needs no prompt at all.
-        let (respond, rx) = tokio::sync::oneshot::channel();
-        app.on_approval_request(
-            ApprovalRequest {
-                preview: "edit b.rs".into(),
-                scope: None,
-                respond,
-            },
-            &mut p,
-        );
-        assert!(!p.has_active_view());
-        assert_eq!(rx.blocking_recv(), Ok(Answer::Yes));
-    }
-
-    #[test]
-    fn approval_always_stays_locked_when_permissions_deny() {
-        let mut app = chat_app("m1".into());
-        app.edits_locked = true;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        app.on_app_event(
-            AppEvent::ApprovalDecided {
-                answer: Answer::Always,
-                scope: None,
-            },
-            &mut client,
-        );
-        assert_eq!(app.mode, Mode::Plan);
-    }
-
-    #[test]
-    fn streamed_text_is_emitted_a_line_at_a_time() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::Token("hello ".into()));
-        assert!(app.queue.is_empty(), "an unfinished line stays buffered");
-        app.on_turn_event(TurnEvent::Token("there\n".into()));
-        assert!(rendered(&app).contains("hello there"));
-    }
-
-    #[test]
-    fn consecutive_reads_stream_into_one_explored_cell() {
-        let mut app = chat_app("m1".into());
-        for (i, path) in ["a.rs", "b.rs"].iter().enumerate() {
-            let args = format!("{{\"path\":\"{path}\"}}");
-            app.on_turn_event(TurnEvent::ToolCall {
-                id: i.to_string(),
-                name: "read_file".into(),
-                args: args.clone(),
-            });
-            app.on_turn_event(TurnEvent::ToolResult {
-                id: i.to_string(),
-                result: "contents".into(),
-                error: false,
-            });
-        }
-        assert!(
-            !app.queue.is_empty(),
-            "each read prints as it lands, not once the group closes"
-        );
-
-        app.on_turn_event(TurnEvent::Token("done\n".into()));
-        let out = rendered(&app);
-        assert!(out.contains("Explored"), "{out}");
-        assert_eq!(out.matches("Read ").count(), 2);
-        assert_eq!(out.matches("Explored").count(), 1);
-    }
-
-    #[test]
-    fn an_edit_renders_as_a_counted_patch() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::ToolCall {
-            id: "1".into(),
-            name: "edit_file".into(),
-            args: "{\"path\":\"src/lib.rs\"}".into(),
-        });
-        app.on_turn_event(TurnEvent::ToolResult {
-            id: "1".into(),
-            result: "edited src/lib.rs:\n- old\n+ new\n".into(),
-            error: false,
-        });
-        let out = rendered(&app);
-        assert!(out.contains("Edited"), "{out}");
-        assert!(out.contains("src/lib.rs"));
-        assert!(out.contains("+1 −1"), "{out}");
-    }
-
-    #[test]
-    fn a_swarm_renders_status_lines_then_the_curated_report() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::ToolCall {
-            id: "c1".into(),
-            name: "agent".into(),
-            args: "{\"tasks\":[{\"agent\":\"explorer\",\"task\":\"find\"}]}".into(),
-        });
-        app.on_turn_event(TurnEvent::AgentStatus {
-            call_id: "c1".into(),
-            agent: "explorer".into(),
-            status: "running".into(),
-            report: None,
-            error: None,
-            done: 0,
-            total: 1,
-        });
-        app.on_turn_event(TurnEvent::AgentStatus {
-            call_id: "c1".into(),
-            agent: "explorer".into(),
-            status: "done".into(),
-            report: Some("Found: auth lives in src/auth.rs".into()),
-            error: None,
-            done: 1,
-            total: 1,
-        });
-        app.on_turn_event(TurnEvent::ToolResult {
-            id: "c1".into(),
-            result: "[{\"agent\":\"explorer\",\"report\":\"...\"}]".into(),
-            error: false,
-        });
-        let out = rendered(&app);
-        assert!(out.contains("agent explorer: done"), "{out}");
-        assert!(out.contains("✔ explorer done"), "{out}");
-        assert!(out.contains("Found: auth lives in src/auth.rs"), "{out}");
-        assert!(!out.contains("agent ×"), "{out}");
-    }
-
-    #[test]
-    fn a_failing_tool_shows_its_output_instead_of_being_collapsed() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::ToolCall {
-            id: "1".into(),
-            name: "read_file".into(),
-            args: "{\"path\":\"missing.rs\"}".into(),
-        });
-        app.on_turn_event(TurnEvent::ToolResult {
-            id: "1".into(),
-            result: "no such file".into(),
-            error: true,
-        });
-        assert!(rendered(&app).contains("no such file"));
-    }
-
-    #[test]
-    fn a_missing_path_is_marked_on_the_explored_line_not_raised_as_an_error() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::ToolCall {
-            id: "1".into(),
-            name: "read_file".into(),
-            args: "{\"path\":\"crates/ui/src/chat.rs\"}".into(),
-        });
-        app.on_turn_event(TurnEvent::ToolResult {
-            id: "1".into(),
-            result: "note: crates/ui/src/chat.rs does not exist. Nearest paths:\n  a.rs".into(),
-            error: false,
-        });
-        app.on_turn_event(TurnEvent::Token("done\n".into()));
-
-        let out = rendered(&app);
-        assert!(out.contains("Explored"), "{out}");
-        assert!(out.contains("(not found)"), "{out}");
-        assert!(!out.contains("Nearest paths"), "{out}");
-    }
-
-    #[test]
-    fn a_command_step_names_the_command_it_ran() {
-        assert_eq!(
-            step_label(
-                "run_command",
-                r#"{"command":"cargo","args":["test","--all"]}"#
-            ),
-            "Ran cargo test --all"
-        );
-        assert_eq!(
-            step_label("run_command", r#"{"command":"cargo"}"#),
-            "Ran cargo"
-        );
-    }
-
-    #[test]
-    fn a_half_streamed_command_label_does_not_invent_a_name() {
-        assert_eq!(
-            step_label("run_command", r#"{"args":["test"]}"#),
-            "Ran a command"
-        );
-        assert_eq!(
-            step_label("run_command", r#"{"command":"car"#),
-            "Ran a command"
-        );
-    }
-
-    #[test]
-    fn yolo_asks_before_it_switches() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Edit;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let (mut p, _rx) = pane();
-
-        app.handle_command("yolo", &mut client, &mut p);
-        assert_eq!(app.mode, Mode::Edit, "asking does not switch");
-        assert!(
-            p.has_active_view(),
-            "the prompt is a pane view, not a flash"
-        );
-        assert!(app.flash.is_none(), "{:?}", app.flash);
-
-        app.on_app_event(AppEvent::YoloConfirmed, &mut client);
-        assert_eq!(app.mode, Mode::Yolo);
-        assert!(app.takeover.is_some(), "the switch plays the takeover");
-
-        app.finish_takeover();
-        assert!(app.takeover.is_none());
-        assert!(
-            app.clear_requested,
-            "the screen is repainted in the new palette"
-        );
-        let out = rendered(&app);
-        assert!(out.contains("aster"), "the header comes back: {out}");
-        assert!(out.contains("YOLO mode ON"), "{out}");
-
-        theme::set(theme::Theme::DEFAULT);
-    }
-
-    #[test]
-    fn declining_yolo_leaves_the_mode_alone() {
-        let mut app = chat_app("m1".into());
-        app.mode = Mode::Edit;
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let (mut p, _rx) = pane();
-
-        app.handle_command("yolo", &mut client, &mut p);
-        app.on_app_event(AppEvent::SetMode(Mode::Edit), &mut client);
-        assert_eq!(app.mode, Mode::Edit);
-    }
-
-    #[test]
-    fn a_command_shows_its_command_and_then_its_output() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::ToolCall {
-            id: "1".into(),
-            name: "run_command".into(),
-            args: r#"{"command":"cargo","args":["test"]}"#.into(),
-        });
-        app.on_turn_event(TurnEvent::ToolResult {
-            id: "1".into(),
-            result: "test result: ok. 29 passed".into(),
-            error: false,
-        });
-
-        let out = rendered(&app);
-        assert!(out.contains("cargo test"), "the command is named: {out}");
-        assert!(out.contains("29 passed"), "the output follows it: {out}");
-        assert!(
-            !out.contains("Explored"),
-            "a command is not collapsed away as exploration: {out}"
-        );
-    }
-
-    #[test]
-    fn a_quiet_endpoint_still_renders_its_reply() {
-        let mut app = chat_app("m1".into());
-        app.finish_turn("the whole answer", &[], None);
-        assert!(rendered(&app).contains("the whole answer"));
-    }
-
-    #[test]
-    fn blank_only_tokens_render_nothing() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::Token("\n\n\n".into()));
-        assert!(app.queue.is_empty(), "{:?}", rendered(&app));
-        app.end_message();
-        assert!(app.queue.is_empty(), "{:?}", rendered(&app));
-    }
-
-    #[test]
-    fn blank_lines_inside_a_message_survive() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::Token("first\n\nsecond\n".into()));
-        let out = rendered(&app);
-        assert!(out.contains("first"));
-        assert!(out.contains("second"));
-        assert_eq!(app.pending_blanks, 0);
-    }
-
-    #[test]
-    fn trailing_blank_lines_are_dropped_at_message_end() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::Token("done\n\n\n".into()));
-        app.end_message();
-        let rows: Vec<Line<'static>> = app.queue.iter().flatten().cloned().collect();
-        let last = rows
-            .last()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-        assert!(last.contains("done"), "{last:?}");
-    }
-
-    #[test]
-    fn a_streamed_reply_is_not_rendered_twice() {
-        let mut app = chat_app("m1".into());
-        app.on_turn_event(TurnEvent::Token("the whole answer\n".into()));
-        app.finish_turn("the whole answer", &[], None);
-        assert_eq!(rendered(&app).matches("the whole answer").count(), 1);
-    }
-
-    #[test]
-    fn a_failed_turn_drops_the_unanswered_question() {
-        let mut app = chat_app("m1".into());
-        app.history.push(ChatMessage {
-            role: "user".into(),
-            content: "hi".into(),
-        });
-        app.fail_turn("provider is down");
-        assert!(app.history.is_empty());
-        assert!(rendered(&app).contains("provider is down"));
-    }
-
-    #[test]
-    fn command_unknown_is_reported() {
-        let mut client = AiClient::new("http://localhost", "k", "m1");
-        let mut app = chat_app(client.model.clone());
-        let (mut p, _rx) = pane();
-        app.handle_command("bogus", &mut client, &mut p);
-        assert!(rendered(&app).contains("unknown command"));
-    }
-
-    #[test]
-    fn resume_seeds_history_from_prior_session() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-resume-repo");
-        {
-            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
-            w.append_message(MessageEvent::user("hello")).unwrap();
-            w.append_message(MessageEvent::assistant(Some("hi there".into()), vec![]))
-                .unwrap();
-        }
-
-        let (recorder, messages) = resume_or_new(&store, repo, &Resume::Latest)
-            .unwrap()
-            .unwrap();
-        assert_eq!(messages.len(), 2);
-
-        let mut app = chat_app("m".into());
-        app.store = Some(store);
-        app.repo_root = repo.to_path_buf();
-        app.recorder = Some(recorder);
-        app.load_history(messages);
-        assert_eq!(app.history.len(), 2);
-        assert!(rendered(&app).contains("hi there"));
-    }
-
-    /// A picker cannot be shown before the UI exists, and opening a transcript
-    /// early is what leaves the stray empty sessions `--continue` trips over.
-    #[test]
-    fn pick_opens_no_session_up_front() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-pick-repo");
-
-        assert!(
-            resume_or_new(&store, repo, &Resume::Pick)
-                .unwrap()
-                .is_none()
-        );
-        assert!(store.list_sessions(repo).unwrap().is_empty());
-    }
-
-    #[test]
-    fn resume_by_id_reopens_that_session() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-by-id-repo");
-        let id = {
-            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
-            w.append_message(MessageEvent::user("the first one"))
-                .unwrap();
-            w.meta().id.clone()
-        };
-        // A newer session, so "latest" and "this id" disagree.
-        {
-            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
-            w.append_message(MessageEvent::user("the second one"))
-                .unwrap();
-        }
-
-        let (_, messages) = resume_or_new(&store, repo, &Resume::Id(id))
-            .unwrap()
-            .unwrap();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].content, "the first one");
-    }
-
-    #[test]
-    fn resume_by_unknown_id_is_an_error_not_a_new_session() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-bad-id-repo");
-
-        let Err(err) = resume_or_new(&store, repo, &Resume::Id("nope".into())) else {
-            panic!("an unknown id cannot be resumed");
-        };
-        assert!(err.to_string().contains("nope"), "{err}");
-        assert!(store.list_sessions(repo).unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_session_picker_skips_empty_transcripts() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-picker-repo");
-        store.new_session(repo, repo, Some("m".into())).unwrap();
-        {
-            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
-            w.append_message(MessageEvent::user("real work")).unwrap();
-        }
-
-        let mut app = chat_app("m".into());
-        app.store = Some(store);
-        app.repo_root = repo.to_path_buf();
-        let (mut p, _rx) = pane();
-        app.open_session_picker(&mut p);
-
-        assert!(p.has_active_view(), "the one real session is offered");
-        assert!(
-            rendered(&app).contains("real work") || !rendered(&app).contains("no saved sessions"),
-            "{}",
-            rendered(&app)
-        );
-    }
-
-    #[test]
-    fn the_session_picker_says_so_when_there_is_nothing_to_resume() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-empty-picker-repo");
-        store.new_session(repo, repo, Some("m".into())).unwrap();
-
-        let mut app = chat_app("m".into());
-        app.store = Some(store);
-        app.repo_root = repo.to_path_buf();
-        let (mut p, _rx) = pane();
-        app.open_session_picker(&mut p);
-
-        assert!(!p.has_active_view(), "an empty list is not a picker");
-        assert!(
-            rendered(&app).contains("no saved sessions"),
-            "{}",
-            rendered(&app)
-        );
-    }
-
-    #[test]
-    fn picking_a_session_seeds_its_history_and_reopens_its_transcript() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-adopt-repo");
-        let id = {
-            let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
-            w.append_message(MessageEvent::user("earlier question"))
-                .unwrap();
-            w.append_message(MessageEvent::assistant(
-                Some("earlier answer".into()),
-                vec![],
-            ))
-            .unwrap();
-            w.meta().id.clone()
-        };
-
-        let mut app = chat_app("m".into());
-        app.store = Some(store);
-        app.repo_root = repo.to_path_buf();
-        let mut client = AiClient::new("http://localhost", "k", "m");
-        app.on_app_event(AppEvent::SessionPicked(id), &mut client);
-
-        assert_eq!(app.history.len(), 2);
-        assert!(app.recorder.is_some(), "later turns append to that session");
-        assert!(
-            rendered(&app).contains("earlier answer"),
-            "{}",
-            rendered(&app)
-        );
-    }
-
-    #[test]
-    fn record_user_persists_turn() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::open(home.path()).unwrap();
-        let repo = std::path::Path::new("/tmp/aster-record-repo");
-
-        let mut app = chat_app("m".into());
-        app.store = Some(store.clone());
-        app.repo_root = repo.to_path_buf();
-        app.start_new_session();
-        app.record_user("remember me");
-
-        let latest = store.latest(repo).unwrap().unwrap();
-        let persisted = latest.events.iter().any(|e| {
-            matches!(e, aster_persist::TranscriptEvent::Message(m)
-                if m.role == "user" && m.content.as_deref() == Some("remember me"))
-        });
-        assert!(persisted);
-    }
-}
+#[path = "tests/chat_test.rs"]
+mod tests;

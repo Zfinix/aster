@@ -1,14 +1,16 @@
 //! Bare `aster`: a conversational turn with an agentic read/list/search/edit tool loop.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
-use aster_ai::{AiClient, Annotation, ChatMessage};
-use aster_persist::{EvictionEvent, MessageEvent, Store, SummaryEvent, TranscriptEvent};
+use aster_ai::{AiClient, Annotation, ChatMessage, DegenerateOutput, UsageSnapshot};
+use aster_persist::{
+    EventUsage, EvictionEvent, MessageEvent, Store, SummaryEvent, TranscriptEvent,
+};
 use aster_policy::{Action, Decision, Grants, Policy};
 use clap::Args;
 use serde::Deserialize;
@@ -45,6 +47,10 @@ pub(crate) struct SessionCtx {
     /// modification time. A repeat read of an unchanged range is answered with
     /// a pointer instead of a second full copy in the history.
     pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
+    /// Lookups already answered this turn, keyed by tool and arguments. A
+    /// repeat is answered with a pointer instead of a second copy in the
+    /// history. Anything that can change the tree clears it.
+    pub lookups: Arc<Mutex<HashSet<String>>>,
     /// User messages sent while the turn runs, absorbed at the next round
     /// boundary instead of waiting out the whole turn.
     pub injected: Arc<std::sync::Mutex<Vec<String>>>,
@@ -530,7 +536,6 @@ pub struct ChatArgs {
     /// One-shot question, e.g. `aster "why is finding 2 critical?"`.
     #[arg(value_name = "PROMPT", conflicts_with = "messages_json")]
     prompt: Option<String>,
-
     /// Continue this repo's most recent session, seeding its prior history.
     /// Without it every session starts clean, in the TUI too.
     #[arg(long = "continue", conflicts_with = "messages_json")]
@@ -584,6 +589,17 @@ pub struct ChatArgs {
     /// Answer once and print plain text instead of opening the TUI (default when piped).
     #[arg(long, short = 'p', conflicts_with_all = ["messages_json", "json"])]
     print: bool,
+}
+
+/// Args equivalent to `aster --resume <id>`, for commands that hand off into
+/// a resumed chat.
+pub fn resume_args(id: &str) -> ChatArgs {
+    #[derive(clap::Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        chat: ChatArgs,
+    }
+    <Wrap as clap::Parser>::parse_from(["aster", "--resume", id]).chat
 }
 
 impl ChatArgs {
@@ -670,16 +686,16 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let policy = Arc::new(Policy::compile(&permissions)?);
     let grants = Arc::new(configured_grants(&permissions, &repo_root));
 
-    let (mcp, mcp_problems) = crate::mcp::McpRuntime::connect(&settings.mcp).await;
-    for problem in &mcp_problems {
-        eprintln!("note: MCP server unavailable, {problem}");
-    }
-
     let limits = Limits::resolve(&settings.agent);
     let swarm = SwarmLimits::resolve(&settings.agents);
     let agents = crate::agents::discover_agents(&repo_root);
 
     if args.is_interactive() {
+        // Every server costs a process spawn, and `npx` ones a registry round
+        // trip, so waiting here would leave the terminal blank for seconds.
+        // The TUI draws first and adopts the tools when the connect lands.
+        let mcp_settings = settings.mcp.clone();
+        let mcp = tokio::spawn(async move { crate::mcp::McpRuntime::connect(&mcp_settings).await });
         let seed = args.prompt.clone();
         return crate::tui::run_chat(
             client,
@@ -694,6 +710,11 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             agents,
         )
         .await;
+    }
+
+    let (mcp, mcp_problems) = crate::mcp::McpRuntime::connect(&settings.mcp).await;
+    for problem in &mcp_problems {
+        eprintln!("{}", console::style(format!("✗ {problem}")).red());
     }
 
     // A picker needs a terminal to draw in; naming the session is the way out.
@@ -801,6 +822,7 @@ fn prepare_turn(
         // drop the sandbox too, otherwise commands still fail on writes.
         yolo,
         reads: Default::default(),
+        lookups: Default::default(),
         injected: Default::default(),
         agents,
         sub_agent: None,
@@ -1122,6 +1144,75 @@ pub(crate) async fn agent_turn_streaming(
     Ok((reply, edited, compacted))
 }
 
+/// Verdict for one tool round fed to [`NoProgress`].
+enum RoundVerdict {
+    /// Keep looping.
+    Continue,
+    /// The round repeated itself; inject the correction and keep going once.
+    Correct,
+    /// Already corrected and it looped again; abort the turn.
+    Abort,
+}
+
+/// Message injected once when a tool loop is detected. It changes the prompt,
+/// so a fixed-seed retry is not identical to the degenerate rounds.
+const LOOP_CORRECTION: &str = "You repeated the same tool calls with the same \
+    results three times in a row. Stop repeating. Re-read the results above and \
+    do something different, or give your final answer.";
+
+/// How many extra round allotments the plan-progress extension may grant. The
+/// cap is a backstop, so it cannot stretch indefinitely.
+const MAX_ROUND_EXTENSIONS: usize = 2;
+
+/// Consecutive identical tool rounds, and consecutive all-error rounds, mean the
+/// model is spinning: correct once, then abort instead of burning the round cap.
+#[derive(Default)]
+struct NoProgress {
+    last_round: Option<u64>,
+    identical_rounds: usize,
+    error_rounds: usize,
+    corrected: bool,
+}
+
+impl NoProgress {
+    /// Feed one round's signature (hashed name/args/result) and whether every
+    /// result was an error. Returns what the loop should do next.
+    fn feed(&mut self, sig: u64, all_errors: bool) -> RoundVerdict {
+        if self.last_round == Some(sig) {
+            self.identical_rounds += 1;
+        } else {
+            self.last_round = Some(sig);
+            self.identical_rounds = 1;
+        }
+        self.error_rounds = if all_errors { self.error_rounds + 1 } else { 0 };
+        let looping = self.identical_rounds >= 3 || self.error_rounds >= 3;
+        if !looping {
+            return RoundVerdict::Continue;
+        }
+        if !self.corrected {
+            self.corrected = true;
+            self.identical_rounds = 0;
+            self.error_rounds = 0;
+            return RoundVerdict::Correct;
+        }
+        RoundVerdict::Abort
+    }
+}
+
+/// Hash a round's (tool name, arguments, result) triples so identical rounds
+/// compare equal. The call id is deliberately excluded: a model re-issues a
+/// fresh id each round, so including it would hide a repeated round.
+fn round_signature(round: &[(String, String, String)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (name, args, result) in round {
+        name.hash(&mut hasher);
+        args.hash(&mut hasher);
+        result.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Drive the model's tool calls until it answers in plain text or the round cap trips.
 /// Tool failures return to the model as tool results so it can retry instead of dying.
 #[allow(clippy::too_many_arguments)]
@@ -1169,15 +1260,21 @@ async fn agent_loop(
     // with no plan progress is the runaway case, and the loop ends.
     let mut round_cap = ctx.limits.max_tool_rounds;
     let mut plan_at_extension = plan_snapshot(ctx);
+    let mut extensions = 0usize;
+    let mut no_progress = NoProgress::default();
     for round in 0.. {
         if round >= round_cap {
             let now = plan_snapshot(ctx);
-            if plan_unfinished(&now) && now != plan_at_extension {
+            if extensions < MAX_ROUND_EXTENSIONS
+                && plan_unfinished(&now)
+                && now != plan_at_extension
+            {
                 tracing::debug!(
                     round,
                     "plan still in motion; extending the tool-round budget"
                 );
                 plan_at_extension = now;
+                extensions += 1;
                 round_cap += ctx.limits.max_tool_rounds;
             } else {
                 break;
@@ -1230,6 +1327,9 @@ async fn agent_loop(
         // False when the endpoint ignored `stream` and the client fell back to a
         // whole response, which the commentary emit below has to make up for.
         let mut streamed = false;
+        // The client only exposes a cumulative counter, so this round's spend is
+        // the delta across the call.
+        let before = client.usage_snapshot();
         let msg = match client
             .complete_tools_stream_with(
                 &client.model,
@@ -1256,11 +1356,15 @@ async fn agent_loop(
                 let reply = client
                     .complete_messages(&messages, CHAT_TEMPERATURE)
                     .await?;
-                ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+                ctx.record(
+                    MessageEvent::assistant(Some(reply.clone()), Vec::new())
+                        .with_usage(round_usage(before, client.usage_snapshot())),
+                );
                 return Ok((reply, compacted));
             }
             Err(e) => return Err(e),
         };
+        let usage = round_usage(before, client.usage_snapshot());
 
         if msg.tool_calls.is_empty() {
             let reply = msg
@@ -1271,17 +1375,21 @@ async fn agent_loop(
                 emit_citations(&msg.annotations, &emit);
                 ctx.record(
                     MessageEvent::assistant(Some(reply.clone()), Vec::new())
-                        .with_annotations(msg.annotations.clone()),
+                        .with_annotations(msg.annotations.clone())
+                        .with_usage(usage),
                 );
             } else {
-                ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
+                ctx.record(
+                    MessageEvent::assistant(Some(reply.clone()), Vec::new()).with_usage(usage),
+                );
             }
             return Ok((reply, compacted));
         }
 
         ctx.record(
             MessageEvent::assistant(msg.content.clone(), msg.tool_calls.clone())
-                .with_annotations(msg.annotations.clone()),
+                .with_annotations(msg.annotations.clone())
+                .with_usage(usage),
         );
         // Text the model emitted alongside its tool calls: its running commentary.
         // Streaming already delivered it, so that path only needs the separator.
@@ -1338,6 +1446,8 @@ async fn agent_loop(
                 prefetched[i] = handle.await.unwrap_or_default();
             }
         }
+        let mut round_sig = Vec::with_capacity(msg.tool_calls.len());
+        let mut round_all_errors = true;
         for (call, prefetched) in msg.tool_calls.iter().zip(prefetched) {
             calls += 1;
             turn_span.record("calls", calls);
@@ -1383,6 +1493,16 @@ async fn agent_loop(
                     }
                 }
             };
+            // Re-asking costs a round either way, but the answer is already
+            // above; a pointer keeps the history from carrying it twice.
+            let result = if is_repeat_lookup(ctx, &call.function.name, &call.function.arguments) {
+                format!(
+                    "[identical {} call earlier in this turn — scroll up for the result]",
+                    call.function.name
+                )
+            } else {
+                result
+            };
             // The same rule aster-eval applies offline, so a live dashboard and
             // a session report never disagree about what counted as barren.
             span.record("result_chars", result.len());
@@ -1390,6 +1510,14 @@ async fn agent_loop(
             span.record("error", result.starts_with("error: "));
             tracing::debug!(tool = %call.function.name, "tool call executed");
             let result = truncate(&result, MAX_TOOL_RESULT_CHARS);
+            round_sig.push((
+                call.function.name.clone(),
+                call.function.arguments.clone(),
+                result.clone(),
+            ));
+            if !result.starts_with("error: ") {
+                round_all_errors = false;
+            }
             emit(json!({
                 "type": "tool_result",
                 "id": call.id,
@@ -1403,6 +1531,20 @@ async fn agent_loop(
                 "tool_call_id": call.id,
                 "content": result,
             }));
+        }
+        match no_progress.feed(round_signature(&round_sig), round_all_errors) {
+            RoundVerdict::Continue => {}
+            RoundVerdict::Correct => {
+                tracing::warn!("model looped on tool calls; injecting one correction");
+                emit(json!({ "type": "injected", "content": LOOP_CORRECTION }));
+                ctx.record(MessageEvent::user(LOOP_CORRECTION.to_string()));
+                wire.push(json!({ "role": "user", "content": LOOP_CORRECTION }));
+            }
+            RoundVerdict::Abort => {
+                bail!(
+                    "the model kept repeating the same tool calls after being told to stop; ending the turn"
+                );
+            }
         }
     }
 
@@ -1444,12 +1586,17 @@ async fn compact_if_needed(
 ) -> Result<(Vec<ChatMessage>, Option<Vec<ChatMessage>>)> {
     let total: usize = history.iter().map(|m| m.content.len()).sum();
     let budget = crate::budget::history_budget(ctx.limits.compact_budget_chars, system_chars);
-    if total <= budget || history.len() <= COMPACT_KEEP_TAIL + 2 {
+    if total <= budget || !can_compact(history) {
         return Ok((history.to_vec(), None));
     }
     let (compacted, summary, split) = compact_now(client, history).await?;
     ctx.record_summary(&summary, split);
     Ok((compacted.clone(), Some(compacted)))
+}
+
+/// True once history has grown past the tail that compaction keeps.
+pub(crate) fn can_compact(history: &[ChatMessage]) -> bool {
+    history.len() > COMPACT_KEEP_TAIL + 2
 }
 
 /// Fold everything but the last few turns into a summary, unconditionally.
@@ -1458,7 +1605,7 @@ pub(crate) async fn compact_now(
     client: &AiClient,
     history: &[ChatMessage],
 ) -> Result<(Vec<ChatMessage>, String, usize)> {
-    if history.len() <= COMPACT_KEEP_TAIL + 2 {
+    if !can_compact(history) {
         bail!("nothing to compact yet");
     }
     let split = history.len().saturating_sub(COMPACT_KEEP_TAIL);
@@ -1493,7 +1640,26 @@ async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
     client.complete_messages(&messages, 0.2).await
 }
 
+/// Tokens spent between two cumulative snapshots. `None` when the counter did
+/// not move, so a provider that reports no usage records nothing rather than a
+/// misleading zero.
+fn round_usage(before: UsageSnapshot, after: UsageSnapshot) -> Option<EventUsage> {
+    let prompt_tokens = after.prompt_tokens.saturating_sub(before.prompt_tokens);
+    let completion_tokens = after
+        .completion_tokens
+        .saturating_sub(before.completion_tokens);
+    (prompt_tokens > 0 || completion_tokens > 0).then_some(EventUsage {
+        prompt_tokens,
+        completion_tokens,
+    })
+}
+
 fn is_tool_unsupported(e: &anyhow::Error) -> bool {
+    // A degenerate reply is never "the model rejected tools", even if the
+    // message text happens to mention a tool or function.
+    if e.downcast_ref::<DegenerateOutput>().is_some() {
+        return false;
+    }
     let text = format!("{e:#}").to_lowercase();
     text.contains("tool") || text.contains("function")
 }
@@ -1504,7 +1670,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file, with line numbers. Optionally a line range. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
+                "description": "Read a file, with line numbers. Optionally a line range. Document formats (PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, RTF) are converted to Markdown, so their line numbers do not map to bytes on disk. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1995,6 +2161,26 @@ const PARALLEL_READ_TOOLS: [&str; 6] = [
     "read_skill",
 ];
 
+/// Lookups worth deduplicating within a turn: pure, cheap, and answered
+/// entirely from the tree. `read_file` is absent because [`cached_read`]
+/// already dedupes it per range, against the file's mtime.
+const DEDUPED_LOOKUPS: [&str; 4] = ["list_files", "search_files", "find_files", "explore"];
+
+/// True once this exact lookup has been answered in this turn. Recording and
+/// testing are one step so two identical calls in the same batch cannot both
+/// miss. Anything outside [`DEDUPED_LOOKUPS`] is never a repeat and clears the
+/// cache instead: a command or an edit can change what a lookup would return.
+fn is_repeat_lookup(ctx: &SessionCtx, name: &str, arguments: &str) -> bool {
+    let Ok(mut lookups) = ctx.lookups.lock() else {
+        return false;
+    };
+    if !DEDUPED_LOOKUPS.contains(&name) {
+        lookups.clear();
+        return false;
+    }
+    !lookups.insert(format!("{name}:{arguments}"))
+}
+
 /// Fan a batch of lookups out in one round. Every step goes through
 /// [`read_only_call`], so nothing here escapes the policy or runs anything
 /// stateful; a step it declines is reported rather than run another way.
@@ -2136,7 +2322,7 @@ fn read_only_call(
     Some(result.unwrap_or_else(|e| format!("error: {e:#}")))
 }
 
-fn tool_names(allow_edits: bool, has_approver: bool) -> Vec<String> {
+pub(crate) fn tool_names(allow_edits: bool, has_approver: bool) -> Vec<String> {
     tool_defs(allow_edits, has_approver)
         .iter()
         .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
@@ -2459,7 +2645,7 @@ async fn run_raw(
     binary: &str,
     args: &[String],
     opts: RunOpts,
-) -> Result<(String, String, i32)> {
+) -> Result<aster_sandbox::CommandOutput> {
     if opts.yolo {
         let output = tokio::process::Command::new(binary)
             .args(args)
@@ -2470,21 +2656,46 @@ async fn run_raw(
             .output()
             .await
             .context("running command")?;
-        return Ok((
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-            output.status.code().unwrap_or(-1),
-        ));
+        return Ok(aster_sandbox::CommandOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code(),
+            timed_out: false,
+        });
     }
     let profile = aster_sandbox::SandboxProfile::new(env.repo_root)
         .timeout(opts.timeout_secs)
         .network(!opts.turbo);
     let config = aster_sandbox::SandboxConfig::new(profile);
-    let output = aster_sandbox::run_command(&config, binary, args).await?;
-    if output.timed_out {
-        bail!("command timed out after {}s", opts.timeout_secs);
+    aster_sandbox::run_command(&config, binary, args).await
+}
+
+/// Render a timed-out command for the model: the partial output is the
+/// evidence, and the coaching stops the two observed dead ends (diagnosing
+/// from nothing, or re-running with a longer timeout).
+fn render_timeout(output: &aster_sandbox::CommandOutput, timeout_secs: u64) -> String {
+    let mut result = format!("error: command timed out after {timeout_secs}s\n");
+    if output.stdout.is_empty() && output.stderr.is_empty() {
+        result.push_str("(no output before the timeout)\n");
+    } else {
+        result.push_str("output before the timeout:\n");
+        if !output.stdout.is_empty() {
+            result.push_str("stdout:\n");
+            result.push_str(&truncate_head(&output.stdout, MAX_STREAM_CHARS));
+            result.push('\n');
+        }
+        if !output.stderr.is_empty() {
+            result.push_str("stderr:\n");
+            result.push_str(&truncate_head(&output.stderr, MAX_STREAM_CHARS));
+            result.push('\n');
+        }
     }
-    Ok((output.stdout, output.stderr, output.exit_code.unwrap_or(-1)))
+    result.push_str(
+        "Do NOT re-run this command with a longer timeout. Kill any leftover \
+         processes first, then run a narrower or faster variant (scope it to \
+         one target, bound its output, or skip the slow step).",
+    );
+    result
 }
 
 async fn run_command_tool(
@@ -2494,19 +2705,23 @@ async fn run_command_tool(
     opts: RunOpts,
 ) -> Result<String> {
     authorize_exec(env, binary, args).await?;
-    let (stdout, stderr, exit_code) = run_raw(env, binary, args, opts).await?;
-    let mut result = String::new();
-    if !stdout.is_empty() {
-        result.push_str("stdout:\n");
-        result.push_str(&truncate(&stdout, MAX_STREAM_CHARS));
+    let output = run_raw(env, binary, args, opts).await?;
+    if output.timed_out {
+        return Ok(render_timeout(&output, opts.timeout_secs));
     }
-    if !stderr.is_empty() {
+    let exit_code = output.exit_code.unwrap_or(-1);
+    let mut result = String::new();
+    if !output.stdout.is_empty() {
+        result.push_str("stdout:\n");
+        result.push_str(&truncate(&output.stdout, MAX_STREAM_CHARS));
+    }
+    if !output.stderr.is_empty() {
         if !result.is_empty() {
             result.push('\n');
         }
         result.push_str("stderr:\n");
         // Compilers and test runners put the verdict last, so keep the tail.
-        result.push_str(&truncate_head(&stderr, MAX_STREAM_CHARS));
+        result.push_str(&truncate_head(&output.stderr, MAX_STREAM_CHARS));
     }
     result.push_str(&format!("\nexit code: {exit_code}"));
     if result.is_empty() {
@@ -2523,8 +2738,16 @@ async fn run_tests_tool(
 ) -> Result<String> {
     let cmd = crate::test_runner::detect(env.repo_root, runner, filter)?;
     authorize_exec(env, &cmd.binary, &cmd.args).await?;
-    let (stdout, stderr, exit_code) = run_raw(env, &cmd.binary, &cmd.args, opts).await?;
-    let result = crate::test_runner::parse(cmd.runner, &stdout, &stderr, exit_code);
+    let output = run_raw(env, &cmd.binary, &cmd.args, opts).await?;
+    if output.timed_out {
+        return Ok(render_timeout(&output, opts.timeout_secs));
+    }
+    let result = crate::test_runner::parse(
+        cmd.runner,
+        &output.stdout,
+        &output.stderr,
+        output.exit_code.unwrap_or(-1),
+    );
     serde_json::to_string_pretty(&result).context("serializing test results")
 }
 
@@ -2700,9 +2923,42 @@ fn cached_read(
     Ok(body)
 }
 
+/// Read a file as text, converting document formats (PDF, Office, EPUB, RTF)
+/// to Markdown via anydoc. CSV is exempt: it reads raw so line numbers keep
+/// matching the bytes on disk for edits.
+fn read_text_or_document(target: &Path) -> Result<String> {
+    let format = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(anydoc::Format::from_extension);
+    if let Some(format) = format
+        && !matches!(format, anydoc::Format::Csv)
+    {
+        return anydoc::to_markdown(target)
+            .map_err(|e| anyhow::anyhow!("converting {} to Markdown: {e}", target.display()));
+    }
+    match fs::read_to_string(target) {
+        Ok(text) => Ok(text),
+        // A document with a missing or misleading extension: sniff the bytes.
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            let bytes =
+                fs::read(target).with_context(|| format!("reading {}", target.display()))?;
+            match anydoc::Format::from_bytes(&bytes) {
+                Some(format) => anydoc::to_markdown_bytes(&bytes, format).map_err(|e| {
+                    anyhow::anyhow!("converting {} to Markdown: {e}", target.display())
+                }),
+                None => bail!(
+                    "{} is a binary file, not readable as text",
+                    target.display()
+                ),
+            }
+        }
+        Err(e) => Err(e).with_context(|| format!("reading {}", target.display())),
+    }
+}
+
 fn read_numbered(target: &Path, start: Option<usize>, end: Option<usize>) -> Result<String> {
-    let content =
-        fs::read_to_string(target).with_context(|| format!("reading {}", target.display()))?;
+    let content = read_text_or_document(target)?;
     let lines: Vec<&str> = content.lines().collect();
     let from = start.unwrap_or(1).max(1) - 1;
     // An open-ended read is windowed rather than truncated mid-file, so the
@@ -3018,861 +3274,5 @@ async fn dispatch_agent_tool(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn explore_runs_mixed_lookups_in_one_call() {
-        let repo = tempfile::tempdir().unwrap();
-        std::fs::write(repo.path().join("a.rs"), "fn needle() {}\n").unwrap();
-        std::fs::write(repo.path().join("b.rs"), "mod other;\n").unwrap();
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &SessionCtx::default(),
-            "explore",
-            json!({ "steps": [
-                { "tool": "read_file", "args": { "path": "b.rs" } },
-                { "tool": "search_files", "args": { "query": "needle" } },
-            ]}),
-        )
-        .await;
-        assert!(out.contains("[1] read_file b.rs"), "{out}");
-        assert!(out.contains("mod other;"), "{out}");
-        assert!(out.contains("[2] search_files needle"), "{out}");
-        assert!(out.contains("a.rs"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn explore_reports_steps_in_the_order_they_were_sent() {
-        let repo = tempfile::tempdir().unwrap();
-        for name in ["one.rs", "two.rs", "three.rs"] {
-            std::fs::write(repo.path().join(name), format!("// {name}\n")).unwrap();
-        }
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &SessionCtx::default(),
-            "explore",
-            json!({ "steps": [
-                { "tool": "read_file", "args": { "path": "three.rs" } },
-                { "tool": "read_file", "args": { "path": "one.rs" } },
-                { "tool": "read_file", "args": { "path": "two.rs" } },
-            ]}),
-        )
-        .await;
-        let order: Vec<usize> = ["three.rs", "one.rs", "two.rs"]
-            .iter()
-            .map(|n| out.find(n).unwrap_or_else(|| panic!("{n} missing:\n{out}")))
-            .collect();
-        assert!(order.windows(2).all(|w| w[0] < w[1]), "{out}");
-    }
-
-    #[tokio::test]
-    async fn explore_refuses_to_run_what_needs_the_sequential_path() {
-        let repo = tempfile::tempdir().unwrap();
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &SessionCtx::default(),
-            "explore",
-            json!({ "steps": [
-                { "tool": "run_command", "args": { "command": "rm", "args": ["-rf", "/"] } },
-                { "tool": "read_file", "args": { "path": "/etc/hosts" } },
-            ]}),
-        )
-        .await;
-        assert_eq!(out.matches("call this tool on its own").count(), 2, "{out}");
-        assert!(!out.contains("localhost"), "outside read leaked: {out}");
-    }
-
-    #[tokio::test]
-    async fn explore_needs_at_least_one_step() {
-        let repo = tempfile::tempdir().unwrap();
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &SessionCtx::default(),
-            "explore",
-            json!({ "steps": [] }),
-        )
-        .await;
-        assert!(out.starts_with("error: "), "{out}");
-    }
-
-    #[tokio::test]
-    async fn a_failing_step_does_not_sink_the_others() {
-        let repo = tempfile::tempdir().unwrap();
-        std::fs::write(repo.path().join("real.rs"), "fn real() {}\n").unwrap();
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &SessionCtx::default(),
-            "explore",
-            json!({ "steps": [
-                { "tool": "read_file", "args": { "path": "nope.rs" } },
-                { "tool": "read_file", "args": { "path": "real.rs" } },
-            ]}),
-        )
-        .await;
-        assert!(out.contains("does not exist"), "{out}");
-        assert!(out.contains("fn real()"), "{out}");
-    }
-
-    #[test]
-    fn valid_arguments_are_left_alone() {
-        let raw = r#"{"command":"bash","args":["-lc","echo \"hi\"\n"]}"#;
-        let parsed = parse_arguments(raw).unwrap();
-        assert_eq!(parsed["args"][1], "echo \"hi\"\n");
-    }
-
-    #[test]
-    fn a_shell_quote_escape_loses_the_backslash() {
-        let raw = r#"{"args":["-lc","git diff -- \'crates/aster-cli/src/tui/\' | head"]}"#;
-        let parsed = parse_arguments(raw).unwrap();
-        assert_eq!(
-            parsed["args"][1],
-            "git diff -- 'crates/aster-cli/src/tui/' | head"
-        );
-    }
-
-    #[test]
-    fn a_regex_escape_keeps_its_backslash() {
-        let raw = r#"{"args":["-lc","grep -E '^\s*fn \w+' src"]}"#;
-        let parsed = parse_arguments(raw).unwrap();
-        assert_eq!(parsed["args"][1], r"grep -E '^\s*fn \w+' src");
-    }
-
-    #[test]
-    fn a_backslash_outside_a_string_is_still_a_syntax_error() {
-        assert!(parse_arguments(r#"{"a": \1}"#).is_err());
-    }
-
-    #[test]
-    fn an_unrepairable_error_reports_what_the_model_sent() {
-        let error = parse_arguments(r#"{"a": "b""#).unwrap_err().to_string();
-        assert!(error.contains("EOF"), "{error}");
-    }
-
-    #[test]
-    fn an_escaped_quote_does_not_end_the_string_early() {
-        let raw = r#"{"args":["say \"hi\" then \s"]}"#;
-        assert_eq!(
-            parse_arguments(raw).unwrap()["args"][0],
-            r#"say "hi" then \s"#
-        );
-    }
-
-    #[test]
-    fn read_window_caps_an_open_ended_read_and_says_where_to_resume() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("big.rs");
-        let body: String = (1..=READ_WINDOW_LINES + 50)
-            .map(|n| format!("line {n}\n"))
-            .collect();
-        std::fs::write(&path, body).unwrap();
-        let out = read_numbered(&path, None, None).unwrap();
-        assert!(out.contains(&format!("line {READ_WINDOW_LINES}")));
-        assert!(!out.contains(&format!("line {}", READ_WINDOW_LINES + 1)));
-        assert!(out.contains(&format!("start_line={}", READ_WINDOW_LINES + 1)));
-    }
-
-    #[test]
-    fn read_window_leaves_short_files_whole() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("small.rs");
-        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
-        let out = read_numbered(&path, None, None).unwrap();
-        assert!(out.contains("three"));
-        assert!(!out.contains("start_line="));
-    }
-
-    #[test]
-    fn a_repeat_read_of_an_unchanged_file_points_at_the_earlier_copy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stable.rs");
-        std::fs::write(&path, "fn main() {}\n").unwrap();
-        let ctx = SessionCtx::default();
-        let first = cached_read(&ctx, &path, None, None).unwrap();
-        assert!(first.contains("fn main"));
-        let second = cached_read(&ctx, &path, None, None).unwrap();
-        assert!(second.contains("unchanged since you read it"));
-        assert!(!second.contains("fn main"));
-    }
-
-    #[test]
-    fn a_changed_file_is_read_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("edited.rs");
-        std::fs::write(&path, "before\n").unwrap();
-        let ctx = SessionCtx::default();
-        cached_read(&ctx, &path, None, None).unwrap();
-        // Rewind the recorded mtime rather than sleeping for the clock.
-        if let Ok(mut reads) = ctx.reads.lock() {
-            for value in reads.values_mut() {
-                *value = Some(std::time::SystemTime::UNIX_EPOCH);
-            }
-        }
-        std::fs::write(&path, "after\n").unwrap();
-        let again = cached_read(&ctx, &path, None, None).unwrap();
-        assert!(again.contains("after"));
-    }
-
-    #[test]
-    fn truncate_head_keeps_the_verdict_at_the_end() {
-        let noisy = format!("{}FAILED: 2 tests", "warning\n".repeat(500));
-        let kept = truncate_head(&noisy, 100);
-        assert!(kept.ends_with("FAILED: 2 tests"));
-        assert!(kept.starts_with("... [truncated]"));
-    }
-
-    #[test]
-    fn environment_note_finds_nested_bun_lockfile() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("editors/vscode")).unwrap();
-        std::fs::write(dir.path().join("editors/vscode/bun.lock"), "").unwrap();
-        let note = environment_note(dir.path()).expect("a note");
-        assert!(note.contains("`bun`"));
-        assert!(note.contains("editors/vscode"));
-    }
-
-    #[test]
-    fn environment_note_is_none_without_lockfiles() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(environment_note(dir.path()).is_none());
-    }
-
-    #[test]
-    fn limits_come_from_the_agent_block() {
-        let agent = crate::settings::Agent {
-            max_tool_rounds: Some(9),
-            command_timeout_secs: Some(11),
-            compact_budget_chars: Some(64_000),
-        };
-        let limits = Limits::resolve(&agent);
-        assert_eq!(limits.max_tool_rounds, 9);
-        assert_eq!(limits.command_timeout_secs, 11);
-        assert_eq!(limits.compact_budget_chars, 64_000);
-    }
-
-    #[test]
-    fn limits_default_to_room_for_real_work() {
-        let limits = Limits::default();
-        assert!(limits.max_tool_rounds >= 60);
-        assert!(limits.command_timeout_secs >= 120);
-    }
-
-    /// Bouncing "give me options" back to the model made it retry the tool in
-    /// a loop, so a question with nothing to pick declines instead.
-    #[tokio::test]
-    async fn a_question_without_options_declines_rather_than_asking_again() {
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let result = ask_user(Some(&tx), "", "which one?", &[]).await.unwrap();
-        assert!(result.contains("declined"), "{result}");
-        assert!(rx.try_recv().is_err(), "the UI is never troubled");
-    }
-
-    /// One option is not a choice: it is answered without a round trip.
-    #[tokio::test]
-    async fn a_single_option_is_taken_without_asking() {
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let opts = ["sqlite".to_string()];
-        let result = ask_user(Some(&tx), "", "which one?", &opts).await.unwrap();
-        assert!(result.contains("sqlite"), "{result}");
-        assert!(rx.try_recv().is_err(), "the UI is never troubled");
-    }
-
-    fn args(path: &str, search: Option<&str>, replace: &str) -> Value {
-        match search {
-            Some(s) => json!({ "path": path, "search": s, "replace": replace }),
-            None => json!({ "path": path, "replace": replace }),
-        }
-    }
-
-    /// Unwraps the approval these tests expect; a question here is a bug.
-    fn approval(req: UiRequest) -> ApprovalRequest {
-        match req {
-            UiRequest::Approval(req) | UiRequest::PlanApproval(req) => req,
-            UiRequest::Question(_) => panic!("expected an approval, got a question"),
-        }
-    }
-
-    async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
-        exec_tool(
-            repo,
-            &mut false,
-            &Policy::permissive(),
-            &Grants::default(),
-            None,
-            name,
-            &arguments.to_string(),
-            &mut Vec::new(),
-            &SessionCtx::default(),
-        )
-        .await
-    }
-
-    /// Runs a tool against a shared ctx and mutable edit gate, for the plan
-    /// tools whose whole point is the state they leave behind.
-    async fn run_tool_with(
-        repo: &Path,
-        allow_edits: &mut bool,
-        approver: Option<&UiSender>,
-        ctx: &SessionCtx,
-        name: &str,
-        arguments: Value,
-    ) -> String {
-        exec_tool(
-            repo,
-            allow_edits,
-            &Policy::permissive(),
-            &Grants::default(),
-            approver,
-            name,
-            &arguments.to_string(),
-            &mut Vec::new(),
-            ctx,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn read_only_call_matches_the_sequential_path() {
-        let repo = tempfile::tempdir().unwrap();
-        std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
-        // A fresh context per path: the same one would answer the second read
-        // from its cache, which is the point of the cache, not a mismatch.
-        let args = json!({ "path": "a.txt" });
-        let parallel = read_only_call(
-            repo.path(),
-            &Policy::permissive(),
-            &SessionCtx::default(),
-            "read_file",
-            &args.to_string(),
-        )
-        .unwrap();
-        let sequential = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &SessionCtx::default(),
-            "read_file",
-            args,
-        )
-        .await;
-        assert_eq!(parallel, sequential);
-    }
-
-    #[test]
-    fn read_only_call_defers_outside_paths_and_stateful_tools() {
-        let repo = tempfile::tempdir().unwrap();
-        let ctx = SessionCtx::default();
-        let policy = Policy::permissive();
-        let outside = json!({ "path": "/etc/hosts" }).to_string();
-        assert!(read_only_call(repo.path(), &policy, &ctx, "read_file", &outside).is_none());
-        assert!(read_only_call(repo.path(), &policy, &ctx, "run_command", "{}").is_none());
-        assert!(read_only_call(repo.path(), &policy, &ctx, "edit_file", "{}").is_none());
-    }
-
-    fn steps(pairs: &[(&str, &str)]) -> Value {
-        json!({
-            "steps": pairs
-                .iter()
-                .map(|(label, status)| json!({ "label": label, "status": status }))
-                .collect::<Vec<_>>()
-        })
-    }
-
-    #[tokio::test]
-    async fn update_plan_stores_every_step_with_its_status() {
-        let repo = tempfile::tempdir().unwrap();
-        let ctx = SessionCtx::default();
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &ctx,
-            "update_plan",
-            steps(&[("read the code", "done"), ("write the fix", "in_progress")]),
-        )
-        .await;
-
-        assert!(out.contains("✔ read the code"), "{out}");
-        assert!(out.contains("◼ write the fix"), "{out}");
-        assert!(
-            out.contains("2 tasks (1 done, 1 in progress, 0 open)"),
-            "{out}"
-        );
-        assert_eq!(ctx.plan.lock().unwrap().steps.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn update_plan_replaces_rather_than_appends() {
-        let repo = tempfile::tempdir().unwrap();
-        let ctx = SessionCtx::default();
-        for pairs in [
-            &[("first", "pending")][..],
-            &[("second", "pending"), ("third", "pending")][..],
-        ] {
-            run_tool_with(
-                repo.path(),
-                &mut false,
-                None,
-                &ctx,
-                "update_plan",
-                steps(pairs),
-            )
-            .await;
-        }
-
-        let plan = ctx.plan.lock().unwrap();
-        assert_eq!(plan.steps.len(), 2, "the second call replaced the first");
-        assert_eq!(plan.steps[0].label, "second");
-    }
-
-    #[tokio::test]
-    async fn update_plan_rejects_an_unknown_status() {
-        let repo = tempfile::tempdir().unwrap();
-        let ctx = SessionCtx::default();
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            None,
-            &ctx,
-            "update_plan",
-            steps(&[("do it", "almost")]),
-        )
-        .await;
-
-        assert!(out.starts_with("error:"), "{out}");
-        assert!(
-            out.contains("in_progress"),
-            "the error lists valid ones: {out}"
-        );
-        assert!(
-            ctx.plan.lock().unwrap().steps.is_empty(),
-            "nothing was stored"
-        );
-    }
-
-    #[tokio::test]
-    async fn update_plan_needs_at_least_one_step() {
-        let repo = tempfile::tempdir().unwrap();
-        let out = run_tool(repo.path(), "update_plan", json!({ "steps": [] })).await;
-        assert!(out.starts_with("error:"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn exit_plan_mode_needs_a_plan_first() {
-        let repo = tempfile::tempdir().unwrap();
-        let out = run_tool(repo.path(), "exit_plan_mode", json!({})).await;
-        assert!(out.contains("update_plan"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn approving_the_plan_unlocks_editing() {
-        let repo = tempfile::tempdir().unwrap();
-        let ctx = SessionCtx::default();
-        let mut allow_edits = false;
-
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let prompt = tokio::spawn(async move {
-            let req = approval(rx.recv().await.unwrap());
-            assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
-            let _ = req.respond.send(Answer::Yes);
-        });
-
-        run_tool_with(
-            repo.path(),
-            &mut allow_edits,
-            None,
-            &ctx,
-            "update_plan",
-            steps(&[("ship it", "pending")]),
-        )
-        .await;
-        let out = run_tool_with(
-            repo.path(),
-            &mut allow_edits,
-            Some(&tx),
-            &ctx,
-            "exit_plan_mode",
-            json!({}),
-        )
-        .await;
-
-        prompt.await.unwrap();
-        assert!(out.contains("edit mode is now active"), "{out}");
-        assert!(allow_edits, "approval promotes the turn to edit mode");
-    }
-
-    #[tokio::test]
-    async fn rejecting_the_plan_leaves_editing_locked() {
-        let repo = tempfile::tempdir().unwrap();
-        let ctx = SessionCtx::default();
-        let mut allow_edits = false;
-
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let prompt = tokio::spawn(async move {
-            let _ = approval(rx.recv().await.unwrap()).respond.send(Answer::No);
-        });
-
-        run_tool_with(
-            repo.path(),
-            &mut allow_edits,
-            None,
-            &ctx,
-            "update_plan",
-            steps(&[("ship it", "pending")]),
-        )
-        .await;
-        let out = run_tool_with(
-            repo.path(),
-            &mut allow_edits,
-            Some(&tx),
-            &ctx,
-            "exit_plan_mode",
-            json!({}),
-        )
-        .await;
-
-        prompt.await.unwrap();
-        assert!(out.contains("stay in plan mode"), "{out}");
-        assert!(!allow_edits);
-    }
-
-    #[tokio::test]
-    async fn exit_plan_mode_is_refused_once_already_editing() {
-        let repo = tempfile::tempdir().unwrap();
-        let out = run_tool_with(
-            repo.path(),
-            &mut true,
-            None,
-            &SessionCtx::default(),
-            "exit_plan_mode",
-            json!({}),
-        )
-        .await;
-        assert!(out.contains("already in edit mode"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn ask_user_relays_the_chosen_option() {
-        let repo = tempfile::tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let prompt = tokio::spawn(async move {
-            let UiRequest::Question(req) = rx.recv().await.unwrap() else {
-                panic!("expected a question");
-            };
-            assert_eq!(req.header, "Storage");
-            assert_eq!(req.options, ["sqlite", "postgres"]);
-            let _ = req.respond.send(Some("postgres".to_string()));
-        });
-
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            Some(&tx),
-            &SessionCtx::default(),
-            "ask_user",
-            json!({
-                "header": "Storage",
-                "question": "Which database?",
-                "options": ["sqlite", "postgres"]
-            }),
-        )
-        .await;
-
-        prompt.await.unwrap();
-        assert!(out.contains("postgres"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn ask_user_tells_the_agent_to_decide_when_headless() {
-        let repo = tempfile::tempdir().unwrap();
-        let out = run_tool(
-            repo.path(),
-            "ask_user",
-            json!({ "question": "Which database?", "options": ["sqlite"] }),
-        )
-        .await;
-
-        assert!(
-            !out.starts_with("error:"),
-            "a missing UI is not an error: {out}"
-        );
-        assert!(out.contains("no interactive UI"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn a_declined_question_does_not_stall_the_turn() {
-        let repo = tempfile::tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        // Dropping the responder is how a dismissed picker answers.
-        let prompt = tokio::spawn(async move { drop(rx.recv().await.unwrap()) });
-
-        let out = run_tool_with(
-            repo.path(),
-            &mut false,
-            Some(&tx),
-            &SessionCtx::default(),
-            "ask_user",
-            json!({ "question": "Which database?", "options": ["sqlite", "postgres"] }),
-        )
-        .await;
-
-        prompt.await.unwrap();
-        assert!(out.contains("declined"), "{out}");
-    }
-
-    fn sample_repo() -> tempfile::TempDir {
-        let repo = tempfile::tempdir().unwrap();
-        fs::create_dir_all(repo.path().join("crates/aster-cli/src/tui")).unwrap();
-        fs::write(
-            repo.path().join("crates/aster-cli/src/tui/composer.rs"),
-            "fn compose() {}\n",
-        )
-        .unwrap();
-        repo
-    }
-
-    #[tokio::test]
-    async fn a_missing_read_path_suggests_real_ones_instead_of_failing() {
-        let repo = sample_repo();
-
-        let out = run_tool(
-            repo.path(),
-            "read_file",
-            json!({ "path": "crates/ui/src/composer.rs" }),
-        )
-        .await;
-
-        assert!(!out.starts_with("error: "), "{out}");
-        assert!(
-            out.contains("crates/aster-cli/src/tui/composer.rs"),
-            "{out}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_missing_search_dir_widens_to_the_whole_repo() {
-        let repo = sample_repo();
-
-        let out = run_tool(
-            repo.path(),
-            "search_files",
-            json!({ "query": "compose", "dir": "crates/aster-tui" }),
-        )
-        .await;
-
-        assert!(
-            out.starts_with("note: crates/aster-tui does not exist"),
-            "{out}"
-        );
-        assert!(out.contains("composer.rs"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn find_files_locates_a_file_by_name() {
-        let repo = sample_repo();
-
-        let out = run_tool(
-            repo.path(),
-            "find_files",
-            json!({ "pattern": "composer.rs" }),
-        )
-        .await;
-
-        assert_eq!(out, "crates/aster-cli/src/tui/composer.rs");
-    }
-
-    #[tokio::test]
-    async fn an_unknown_tool_names_the_real_ones() {
-        let repo = tempfile::tempdir().unwrap();
-
-        let out = run_tool(repo.path(), "search_file", json!({ "query": "x" })).await;
-
-        assert!(out.starts_with("error: unknown tool: search_file"), "{out}");
-        assert!(out.contains("search_files"), "{out}");
-        assert!(out.contains("find_files"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn edit_file_creates_a_missing_file_without_search() {
-        let repo = tempfile::tempdir().unwrap();
-        let policy = Policy::permissive();
-        let mut edited = Vec::new();
-
-        let out = edit_file(
-            repo.path(),
-            &policy,
-            None,
-            &args("docs/notes/test.md", None, "# Test\n"),
-            &mut edited,
-        )
-        .await
-        .unwrap();
-
-        assert!(out.starts_with("created docs/notes/test.md"), "{out}");
-        assert_eq!(
-            fs::read_to_string(repo.path().join("docs/notes/test.md")).unwrap(),
-            "# Test\n"
-        );
-        assert_eq!(edited, ["docs/notes/test.md"]);
-    }
-
-    #[tokio::test]
-    async fn outside_reads_are_approved_by_the_front_end() {
-        let repo = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let target = outside.path().join("notes.txt");
-        fs::write(&target, "hello").unwrap();
-        let policy = Policy::permissive();
-
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let answer = tokio::spawn(async move {
-            let req = approval(rx.recv().await.unwrap());
-            assert!(
-                req.preview.contains("outside the repository"),
-                "{}",
-                req.preview
-            );
-            let _ = req.respond.send(Answer::Yes);
-        });
-
-        let resolved = resolve_for_read(
-            repo.path(),
-            &policy,
-            &Grants::default(),
-            Some(&tx),
-            &SessionCtx::default(),
-            &target.to_string_lossy(),
-        )
-        .await
-        .unwrap();
-
-        answer.await.unwrap();
-        assert_eq!(resolved, target.canonicalize().unwrap());
-    }
-
-    #[tokio::test]
-    async fn a_grant_covers_the_rest_of_the_directory() {
-        let repo = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("a.txt"), "a").unwrap();
-        fs::write(outside.path().join("b.txt"), "b").unwrap();
-        let policy = Policy::permissive();
-        let grants = Grants::default();
-
-        let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-        let prompts = tokio::spawn(async move {
-            let mut seen = 0;
-            while let Some(req) = rx.recv().await {
-                seen += 1;
-                let _ = approval(req).respond.send(Answer::Yes);
-            }
-            seen
-        });
-
-        for name in ["a.txt", "b.txt"] {
-            let path = outside.path().join(name);
-            resolve_for_read(
-                repo.path(),
-                &policy,
-                &grants,
-                Some(&tx),
-                &SessionCtx::default(),
-                &path.to_string_lossy(),
-            )
-            .await
-            .unwrap();
-        }
-        drop(tx);
-
-        assert_eq!(
-            prompts.await.unwrap(),
-            1,
-            "the second read should be covered"
-        );
-        assert_eq!(grants.granted(), [outside.path().canonicalize().unwrap()]);
-    }
-
-    #[tokio::test]
-    async fn configured_directories_never_prompt() {
-        let repo = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("a.txt"), "a").unwrap();
-
-        let permissions = aster_policy::PermissionsConfig {
-            additional_directories: vec![outside.path().to_string_lossy().into_owned()],
-            ..Default::default()
-        };
-
-        let resolved = resolve_for_read(
-            repo.path(),
-            &Policy::permissive(),
-            &configured_grants(&permissions, repo.path()),
-            None,
-            &SessionCtx::default(),
-            &outside.path().join("a.txt").to_string_lossy(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            resolved,
-            outside.path().join("a.txt").canonicalize().unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn outside_reads_are_denied_without_an_approver() {
-        let repo = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let target = outside.path().join("notes.txt");
-        fs::write(&target, "hello").unwrap();
-
-        let err = resolve_for_read(
-            repo.path(),
-            &Policy::permissive(),
-            &Grants::default(),
-            None,
-            &SessionCtx::default(),
-            &target.to_string_lossy(),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-
-        assert!(err.contains("needs the user's approval"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn edit_file_refuses_to_clobber_an_existing_file() {
-        let repo = tempfile::tempdir().unwrap();
-        fs::write(repo.path().join("test.md"), "keep me").unwrap();
-        let policy = Policy::permissive();
-
-        let err = edit_file(
-            repo.path(),
-            &policy,
-            None,
-            &args("test.md", None, "gone"),
-            &mut Vec::new(),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-
-        assert!(err.contains("already exists"), "{err}");
-        assert_eq!(
-            fs::read_to_string(repo.path().join("test.md")).unwrap(),
-            "keep me"
-        );
-    }
-}
+#[path = "tests/chat_test.rs"]
+mod tests;

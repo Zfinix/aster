@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
-//! Web tools for Aster: crawl, extract, and search across pluggable providers.
-//! [`WebBackend::from_env`] holds every provider whose key is set and dispatches
-//! to the best one; [`register_tools`] is the catalog agents discover.
+//! Web tools for Aster: crawl, extract, search, sitemap, and screenshot across
+//! pluggable providers. [`WebBackend::from_env`] holds every provider whose key
+//! is set and dispatches to the best one; [`register_tools`] is the catalog
+//! agents discover.
 
 mod browserbase;
 mod cloudflare_br;
@@ -16,7 +17,9 @@ use aster_mcp::McpTool;
 use async_trait::async_trait;
 
 pub use config::WebConfig;
-pub use types::{CrawlOptions, CrawlResult, ExtractedPage, PageMetadata};
+pub use types::{
+    CrawlOptions, CrawlResult, ExtractedPage, PageMetadata, Screenshot, SitemapResult,
+};
 
 /// Extract a single page as Markdown.
 #[async_trait]
@@ -106,6 +109,9 @@ impl WebBackend {
     }
 
     pub async fn search(&self, query: &str, limit: u32) -> anyhow::Result<Vec<ExtractedPage>> {
+        if let Some(ref c) = self.context_dev {
+            return c.search(query, limit).await;
+        }
         if let Some(ref c) = self.firecrawl {
             return c.search(query, limit).await;
         }
@@ -113,8 +119,27 @@ impl WebBackend {
             return c.search(query, limit).await;
         }
         anyhow::bail!(
-            "search requires Firecrawl or Browserbase (set FIRECRAWL_API_KEY or BROWSERBASE_API_KEY)"
+            "search requires a configured provider (set CONTEXT_DEV_API_KEY, FIRECRAWL_API_KEY, or BROWSERBASE_API_KEY)"
         )
+    }
+
+    pub async fn sitemap(
+        &self,
+        domain: &str,
+        max_links: u32,
+        url_regex: Option<&str>,
+    ) -> anyhow::Result<SitemapResult> {
+        if let Some(ref c) = self.context_dev {
+            return c.sitemap(domain, max_links, url_regex).await;
+        }
+        anyhow::bail!("sitemap requires Context.dev (set CONTEXT_DEV_API_KEY)")
+    }
+
+    pub async fn screenshot(&self, url: &str, full_page: bool) -> anyhow::Result<Screenshot> {
+        if let Some(ref c) = self.context_dev {
+            return c.screenshot(url, full_page).await;
+        }
+        anyhow::bail!("screenshot requires Context.dev (set CONTEXT_DEV_API_KEY)")
     }
 }
 
@@ -130,6 +155,9 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     if backend.context_dev.is_some() {
         candidates.push(context_dev::extract_tool());
         candidates.push(context_dev::crawl_tool());
+        candidates.push(context_dev::search_tool());
+        candidates.push(context_dev::sitemap_tool());
+        candidates.push(context_dev::screenshot_tool());
     }
     if backend.firecrawl.is_some() {
         candidates.push(firecrawl::scrape_tool());

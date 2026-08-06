@@ -80,6 +80,9 @@ const INHERITED_ENV: &[&str] = &[
     "LANG",
     "LC_ALL",
     "TERM",
+    // Dropping TMPDIR sends tools to fallback temp dirs the profile may not
+    // allow; the parent's TMPDIR is under /var/folders, which is writable.
+    "TMPDIR",
     "SystemRoot",
     "SystemDrive",
     "ComSpec",
@@ -145,25 +148,37 @@ pub async fn run_command(
 
     let mut child = cmd.spawn().context("spawning sandboxed command")?;
     let pid = child.id();
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
+    // Readers run as tasks so partial output survives a timeout; killing the
+    // process group closes the pipes and lets them finish.
+    let stdout_task = tokio::spawn(read_capped(child.stdout.take()));
+    let stderr_task = tokio::spawn(read_capped(child.stderr.take()));
 
-    let io = async {
-        let (stdout, stderr) = tokio::join!(read_capped(stdout_pipe), read_capped(stderr_pipe));
-        let status = child.wait().await?;
-        Ok::<_, std::io::Error>((stdout, stderr, status))
+    let timed_out = tokio::time::timeout(timeout, child.wait()).await;
+    if timed_out.is_err() {
+        // Kill before joining the readers: a hung child holds the pipes open,
+        // and the readers only finish once the pipes close.
+        kill_process_group(pid);
+    }
+    // Bounded join: a grandchild that inherited the pipes can keep them open
+    // after the child exits, so never wait on the readers indefinitely.
+    let readers = async { tokio::join!(stdout_task, stderr_task) };
+    let (stdout, stderr) = match tokio::time::timeout(READER_GRACE, readers).await {
+        Ok((stdout, stderr)) => (stdout.unwrap_or_default(), stderr.unwrap_or_default()),
+        Err(_) => {
+            kill_process_group(pid);
+            (String::new(), String::new())
+        }
     };
 
-    let Ok(result) = tokio::time::timeout(timeout, io).await else {
-        kill_process_group(pid);
+    let Ok(status) = timed_out else {
         return Ok(CommandOutput {
-            stdout: String::new(),
-            stderr: String::new(),
+            stdout,
+            stderr,
             exit_code: None,
             timed_out: true,
         });
     };
-    let (stdout, stderr, status) = result.context("running sandboxed command")?;
+    let status = status.context("running sandboxed command")?;
 
     Ok(CommandOutput {
         stdout,
@@ -175,6 +190,10 @@ pub async fn run_command(
 
 /// Cap on captured bytes per stream; commands can emit gigabytes.
 const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
+
+/// How long to wait for the stream readers after the child exits or is
+/// killed, in case a leftover grandchild still holds the pipes open.
+const READER_GRACE: Duration = Duration::from_secs(5);
 
 /// Read a stream to the end, keeping at most [`MAX_CAPTURE_BYTES`] and
 /// draining the rest so the child never blocks on a full pipe.
@@ -349,6 +368,43 @@ mod tests {
         assert!(out.timed_out, "should have timed out");
         assert!(!out.success());
         assert_eq!(out.exit_code, None);
+    }
+
+    #[tokio::test]
+    async fn run_command_times_out_keeps_partial_output() {
+        if !can_run_sandboxed().await {
+            return;
+        }
+        let mut profile = SandboxProfile::new(Path::new("."));
+        profile.timeout_secs = 1;
+        let cfg = SandboxConfig::new(profile);
+        let script = "echo partial-stdout; echo partial-stderr >&2; sleep 10";
+        let out = run_command(&cfg, "sh", &["-c".into(), script.into()])
+            .await
+            .unwrap();
+        assert!(out.timed_out);
+        assert!(out.stdout.contains("partial-stdout"), "{}", out.stdout);
+        assert!(out.stderr.contains("partial-stderr"), "{}", out.stderr);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn run_command_temp_dirs_are_writable() {
+        if !can_run_sandboxed().await {
+            return;
+        }
+        let cfg = config();
+        // The per-user dir from confstr(_CS_DARWIN_USER_TEMP_DIR), which bun
+        // and friends fall back to, and the inherited $TMPDIR.
+        let script = "d=$(getconf DARWIN_USER_TEMP_DIR) && touch \"$d/aster_sbx_probe\" \
+                      && rm \"$d/aster_sbx_probe\" \
+                      && test -n \"$TMPDIR\" && touch \"$TMPDIR/aster_sbx_probe\" \
+                      && rm \"$TMPDIR/aster_sbx_probe\" && echo ok";
+        let out = run_command(&cfg, "sh", &["-c".into(), script.into()])
+            .await
+            .unwrap();
+        assert!(out.success(), "stderr={}", out.stderr);
+        assert!(out.stdout.contains("ok"), "{}", out.stdout);
     }
 
     fn process_alive(pid: &str) -> bool {

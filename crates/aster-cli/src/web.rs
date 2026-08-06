@@ -1,5 +1,7 @@
-//! `aster web crawl` and `aster web extract`: one-shot web tools using the
-//! configured provider.
+//! `aster web` subcommands: one-shot crawl, extract, search, sitemap, and
+//! screenshot tools using the configured provider.
+
+use std::time::Instant;
 
 use anyhow::Result;
 use aster_web::{CrawlOptions, WebBackend, WebConfig};
@@ -17,6 +19,12 @@ pub enum WebAction {
     Crawl(CrawlArgs),
     /// Extract a single page as Markdown.
     Extract(ExtractArgs),
+    /// Search the web and print Markdown for every result.
+    Search(SearchArgs),
+    /// List a domain's sitemap URLs without scraping any pages.
+    Sitemap(SitemapArgs),
+    /// Capture a screenshot of a page and print the image URL.
+    Screenshot(ScreenshotArgs),
 }
 
 #[derive(clap::Args)]
@@ -59,6 +67,78 @@ pub struct ExtractArgs {
     pub url: String,
 }
 
+#[derive(clap::Args)]
+pub struct SearchArgs {
+    /// Search query.
+    pub query: String,
+
+    /// Maximum number of results (default 5).
+    #[arg(long, default_value = "5")]
+    pub limit: u32,
+}
+
+#[derive(clap::Args)]
+pub struct SitemapArgs {
+    /// Domain without protocol, e.g. docs.rs.
+    pub domain: String,
+
+    /// Maximum URLs to return (default 500).
+    #[arg(long, default_value = "500")]
+    pub max_links: u32,
+
+    /// Only return URLs matching this regex.
+    #[arg(long)]
+    pub url_regex: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct ScreenshotArgs {
+    /// URL of the page, including https://.
+    pub url: String,
+
+    /// Capture the full scrollable height instead of one viewport.
+    #[arg(long)]
+    pub full_page: bool,
+}
+
+/// Live status for one long provider call: an animated spinner on a terminal,
+/// plain stderr lines when piped, nothing in JSON mode.
+struct Status {
+    spinner: Option<cliclack::ProgressBar>,
+    started: Instant,
+}
+
+impl Status {
+    fn begin(message: String) -> Self {
+        let spinner = crate::picker::is_tty().then(|| {
+            let s = cliclack::spinner();
+            s.start(&message);
+            s
+        });
+        if spinner.is_none() && !crate::json_mode() {
+            eprintln!("{message}…");
+        }
+        Self {
+            spinner,
+            started: Instant::now(),
+        }
+    }
+
+    /// Close the status line: a timed summary on success, a mark on failure.
+    fn end<T>(self, result: Result<T>, summary: impl FnOnce(&T) -> String) -> Result<T> {
+        let elapsed = self.started.elapsed().as_secs_f32();
+        match (&result, self.spinner) {
+            (Ok(v), Some(s)) => s.stop(format!("{} in {elapsed:.1}s", summary(v))),
+            (Ok(v), None) if !crate::json_mode() => {
+                eprintln!("{} in {elapsed:.1}s", summary(v));
+            }
+            (Err(_), Some(s)) => s.error("failed"),
+            _ => {}
+        }
+        result
+    }
+}
+
 pub async fn run(args: WebArgs) -> Result<()> {
     let config = WebConfig::from_env();
     let backend = WebBackend::from_env(&config);
@@ -76,21 +156,15 @@ pub async fn run(args: WebArgs) -> Result<()> {
                 ..Default::default()
             };
 
-            // A crawl is one long provider call with nothing to show until it
-            // returns, so say what it is doing rather than look hung.
-            let started = std::time::Instant::now();
-            if !crate::json_mode() {
-                eprintln!(
-                    "Crawling {} (up to {} pages, {}s budget)…",
-                    a.url,
-                    a.max_pages,
-                    a.stop_after_ms / 1000
-                );
-            }
-            let result = backend.crawl(&a.url, &opts).await?;
-            if !crate::json_mode() {
-                eprintln!("Done in {:.1}s", started.elapsed().as_secs_f32());
-            }
+            let status = Status::begin(format!(
+                "Crawling {} (up to {} pages, {}s budget)",
+                a.url,
+                a.max_pages,
+                a.stop_after_ms / 1000
+            ));
+            let result = status.end(backend.crawl(&a.url, &opts).await, |r| {
+                format!("Crawled {} pages", r.num_urls)
+            })?;
             if crate::json_mode() {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -117,14 +191,61 @@ pub async fn run(args: WebArgs) -> Result<()> {
             }
         }
         WebAction::Extract(a) => {
-            if !crate::json_mode() {
-                eprintln!("Reading {}…", a.url);
-            }
-            let page = backend.extract(&a.url).await?;
+            let status = Status::begin(format!("Reading {}", a.url));
+            let page = status.end(backend.extract(&a.url).await, |p| {
+                format!("Read {}", p.metadata.url)
+            })?;
             if crate::json_mode() {
                 println!("{}", serde_json::to_string_pretty(&page)?);
             } else {
                 println!("{}", page.markdown);
+            }
+        }
+        WebAction::Search(a) => {
+            let status = Status::begin(format!("Searching \"{}\"", a.query));
+            let results = status.end(backend.search(&a.query, a.limit).await, |r| {
+                format!("{} results", r.len())
+            })?;
+            if crate::json_mode() {
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            } else {
+                for page in &results {
+                    println!("═══ {} ═══", page.metadata.url);
+                    if let Some(ref title) = page.metadata.title {
+                        println!("  Title: {title}");
+                    }
+                    println!();
+                    println!("{}", page.markdown);
+                    println!();
+                }
+            }
+        }
+        WebAction::Sitemap(a) => {
+            let status = Status::begin(format!("Listing sitemap for {}", a.domain));
+            let result = status.end(
+                backend
+                    .sitemap(&a.domain, a.max_links, a.url_regex.as_deref())
+                    .await,
+                |r| format!("{} URLs", r.urls.len()),
+            )?;
+            if crate::json_mode() {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{} URLs on {}", result.urls.len(), result.domain);
+                for url in &result.urls {
+                    println!("{url}");
+                }
+            }
+        }
+        WebAction::Screenshot(a) => {
+            let status = Status::begin(format!("Capturing {}", a.url));
+            let shot = status.end(backend.screenshot(&a.url, a.full_page).await, |_| {
+                format!("Captured {}", a.url)
+            })?;
+            if crate::json_mode() {
+                println!("{}", serde_json::to_string_pretty(&shot)?);
+            } else {
+                println!("{}", shot.url);
             }
         }
     }

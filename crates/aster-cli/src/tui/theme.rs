@@ -133,7 +133,7 @@ pub struct Theme {
 impl Theme {
     /// Current default palette, matching the aster-tui-spec mockup.
     pub const DEFAULT: Theme = Theme {
-        text: Color::Rgb(0xc9, 0xc9, 0xc4),
+        text: Color::Rgb(0xff, 0xff, 0xff),
         dim: Color::Rgb(0x8a, 0x8a, 0x85),
         dimmer: Color::Rgb(0x5a, 0x5a, 0x5a),
         faint: Color::Rgb(0x3f, 0x3f, 0x3f),
@@ -180,7 +180,7 @@ impl Theme {
     /// Red-tinted theme for YOLO mode — everything gets a red cast so the
     /// user never forgets they are running without a sandbox.
     pub const YOLO: Theme = Theme {
-        text: Color::Rgb(0xd4, 0xc4, 0xc4),
+        text: Color::Rgb(0xff, 0xff, 0xff),
         dim: Color::Rgb(0x8a, 0x7a, 0x7a),
         dimmer: Color::Rgb(0x5a, 0x45, 0x45),
         faint: Color::Rgb(0x3f, 0x2a, 0x2a),

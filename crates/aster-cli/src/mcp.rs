@@ -122,6 +122,52 @@ struct Connection {
     stderr_task: tokio::task::JoinHandle<()>,
 }
 
+/// A wrapper for web tools, acting as an MCP server.
+struct WebConnection {
+    backend: aster_web::WebBackend,
+}
+
+impl WebConnection {
+    async fn call(&self, tool: &str, arguments: &Value) -> Result<Value> {
+        // Dispatch to web backend based on tool name
+        match tool {
+            "web/extract" => {
+                let url = arguments["url"].as_str().context("missing url")?;
+                let result = self.backend.extract(url).await?;
+                Ok(serde_json::to_value(result)?)
+            }
+            "web/search" => {
+                let query = arguments["query"].as_str().context("missing query")?;
+                let limit = arguments["limit"].as_u64().unwrap_or(10) as u32;
+                let result = self.backend.search(query, limit).await?;
+                Ok(serde_json::to_value(result)?)
+            }
+            "web/screenshot" => {
+                let url = arguments["url"].as_str().context("missing url")?;
+                let full_page = arguments["full_page"].as_bool().unwrap_or(false);
+                let result = self.backend.screenshot(url, full_page).await?;
+                Ok(serde_json::to_value(result)?)
+            }
+            "web/sitemap" => {
+                let url = arguments["url"].as_str().context("missing url")?;
+                let max_links = arguments["max_links"].as_u64().unwrap_or(100) as u32;
+                let url_regex = arguments["url_regex"].as_str();
+                let result = self.backend.sitemap(url, max_links, url_regex).await?;
+                Ok(serde_json::to_value(result)?)
+            }
+            "web/crawl" => {
+                let url = arguments["url"].as_str().context("missing url")?;
+                let result = self
+                    .backend
+                    .crawl(url, &aster_web::CrawlOptions::default())
+                    .await?;
+                Ok(serde_json::to_value(result)?)
+            }
+            _ => bail!("unknown web tool: {tool}"),
+        }
+    }
+}
+
 /// One JSON-RPC failure, kept structured so the probe can tell an
 /// `UnsupportedProtocolVersionError` (modern server) from anything else
 /// (legacy server).
@@ -540,6 +586,7 @@ fn stderr_headline(tail: &VecDeque<String>) -> Option<String> {
 pub struct McpRuntime {
     injector: Arc<Injector>,
     connections: Arc<Mutex<BTreeMap<String, Connection>>>,
+    web_connection: Option<Arc<WebConnection>>,
     disabled_servers: Vec<DisabledServer>,
 }
 
@@ -570,6 +617,11 @@ impl McpRuntime {
                 Err(e) => problems.push(format!("ASTER_MCP_EXTRA is not valid: {e}")),
             }
         }
+
+        let config = aster_web::WebConfig::from_env();
+        let backend = aster_web::WebBackend::from_env(&config);
+        tools.extend(aster_web::register_tools(&backend));
+        let web_connection = Some(Arc::new(WebConnection { backend }));
 
         // Servers start concurrently: each costs a process spawn and a probe,
         // and serially that is the whole session's startup budget.
@@ -622,6 +674,7 @@ impl McpRuntime {
         let runtime = Self {
             injector: Arc::new(injector),
             connections: Arc::new(Mutex::new(connections)),
+            web_connection,
             disabled_servers,
         };
         (Some(runtime), problems)
@@ -696,6 +749,12 @@ impl McpRuntime {
     /// Invoke an already-resolved tool. The caller authorizes `tool.id()`
     /// before reaching here.
     pub async fn call(&self, tool: &McpTool, arguments: &Value) -> Result<Value> {
+        if tool.server == "web" {
+            if let Some(web) = &self.web_connection {
+                return web.call(&tool.name, arguments).await;
+            }
+            bail!("web tools are not configured");
+        }
         let mut connections = self.connections.lock().await;
         let connection = connections
             .get_mut(&tool.server)

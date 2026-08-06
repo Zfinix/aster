@@ -67,6 +67,96 @@ pub fn multi_select(title: &str, items: &[Item], preselect: bool) -> Result<Opti
     Ok(result)
 }
 
+pub enum Action {
+    Open,
+    Delete,
+}
+
+/// Single-select sibling of `multi_select`: arrows or j/k move, enter opens
+/// the highlighted row, `d` deletes it, esc closes (`None`).
+pub fn select_action(title: &str, items: &[Item]) -> Result<Option<(usize, Action)>> {
+    let term = Term::stderr();
+    let visible = items.len().min(MAX_VISIBLE);
+    let rows = visible + 2;
+    let mut cursor = 0usize;
+    let mut top = 0usize;
+
+    term.hide_cursor()?;
+    let mut drawn = false;
+    let result = loop {
+        if cursor < top {
+            top = cursor;
+        }
+        if cursor >= top + visible {
+            top = cursor + 1 - visible;
+        }
+        if drawn {
+            term.clear_last_lines(rows)?;
+        }
+        render_single(&term, title, items, cursor, top, visible)?;
+        drawn = true;
+
+        match term.read_key()? {
+            Key::ArrowUp | Key::Char('k') => {
+                cursor = cursor.checked_sub(1).unwrap_or(items.len() - 1);
+            }
+            Key::ArrowDown | Key::Char('j') => {
+                cursor = (cursor + 1) % items.len();
+            }
+            Key::Enter => break Some((cursor, Action::Open)),
+            Key::Char('d') | Key::Char('D') => break Some((cursor, Action::Delete)),
+            Key::Escape | Key::CtrlC => break None,
+            _ => {}
+        }
+    };
+    term.clear_last_lines(rows)?;
+    term.show_cursor()?;
+    Ok(result)
+}
+
+fn render_single(
+    term: &Term,
+    title: &str,
+    items: &[Item],
+    cursor: usize,
+    top: usize,
+    visible: usize,
+) -> io::Result<()> {
+    let width = term.size().1 as usize;
+    term.write_line(&format!(
+        "{}  {}",
+        style(title).bold(),
+        style(format!("({})", items.len())).dim()
+    ))?;
+    for (i, item) in items.iter().enumerate().skip(top).take(visible) {
+        let pointer = if i == cursor {
+            style("❯").cyan().to_string()
+        } else {
+            " ".to_string()
+        };
+        let name = if i == cursor {
+            style(&item.name).cyan().bold().to_string()
+        } else {
+            item.name.clone()
+        };
+        let head = format!("{pointer} {name}  ");
+        let room = width.saturating_sub(console::measure_text_width(&head) + 1);
+        let detail = console::truncate_str(first_line(&item.detail), room, "…");
+        term.write_line(&format!("{head}{}", style(detail).dim()))?;
+    }
+    let scroll = if items.len() > visible {
+        format!("{}-{} of {} · ", top + 1, top + visible, items.len())
+    } else {
+        String::new()
+    };
+    term.write_line(
+        &style(format!("{scroll}enter open · d delete · esc close"))
+            .dim()
+            .to_string(),
+    )?;
+    Ok(())
+}
+
 fn render(
     term: &Term,
     title: &str,

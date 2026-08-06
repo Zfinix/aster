@@ -389,7 +389,7 @@ fn first_user_text(session: &ImportedSession) -> &str {
 
 /// `aster sessions import`: copy this repo's conversations into the session
 /// store. Only user and assistant text carries over; tool traffic stays behind.
-pub fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<()> {
+pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<()> {
     let repo_root = std::env::current_dir().context("could not determine the current directory")?;
     let store = crate::persist::store()?;
 
@@ -468,8 +468,10 @@ pub fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<()> {
         println!("{}", json!({ "ok": true, "sources": out }));
         return Ok(());
     }
+    let mut landed = 0usize;
     for (source, imported, skipped) in report {
         let verb = if dry_run { "would import" } else { "imported" };
+        landed += imported.len();
         match (imported.len(), skipped) {
             (0, 0) => println!("{}: nothing found for this repo", source.name()),
             (n, 0) => println!("{}: {verb} {n} session(s)", source.name()),
@@ -479,9 +481,14 @@ pub fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<()> {
             ),
         }
     }
-    if !dry_run {
-        println!("resume one with `aster --resume <ID>`; `aster sessions` lists them");
+    if dry_run {
+        return Ok(());
     }
+    // Landed imports go straight into the picker: enter resumes one there.
+    if landed > 0 && crate::picker::is_tty() {
+        return crate::sessions::pick_session(store, &repo_root).await;
+    }
+    println!("resume one with `aster --resume <ID>`; `aster sessions` lists them");
     Ok(())
 }
 

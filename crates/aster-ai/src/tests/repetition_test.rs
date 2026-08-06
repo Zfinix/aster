@@ -1,0 +1,71 @@
+use super::*;
+
+fn degenerate() -> String {
+    "I'm committing. ".repeat(60)
+}
+
+#[test]
+fn repeated_prose_trips() {
+    let mut guard = RepetitionGuard::default();
+    let out = degenerate();
+    let mut tripped = false;
+    for delta in out.as_bytes().chunks(11) {
+        if guard.feed(std::str::from_utf8(delta).unwrap()) {
+            tripped = true;
+            break;
+        }
+    }
+    assert!(tripped);
+    assert!(is_degenerate(&out));
+}
+
+#[test]
+fn varied_prose_does_not_trip() {
+    let mut guard = RepetitionGuard::default();
+    let text = "The model is reviewing this function, so give it the whole file. \
+                Maybe the callers too. Maybe the tests. Every addition felt like \
+                diligence, and past a small threshold every addition made the output \
+                worse. The model does not read context the way you hope."
+        .repeat(2);
+    for delta in text.as_bytes().chunks(13) {
+        assert!(!guard.feed(std::str::from_utf8(delta).unwrap()));
+    }
+    assert!(!is_degenerate(&text));
+}
+
+#[test]
+fn separator_wall_does_not_trip() {
+    let mut guard = RepetitionGuard::default();
+    let wall = "--------".repeat(80);
+    for delta in wall.as_bytes().chunks(19) {
+        assert!(!guard.feed(std::str::from_utf8(delta).unwrap()));
+    }
+    assert!(!is_degenerate(&wall));
+}
+
+#[test]
+fn chunks_split_across_deltas_still_trip() {
+    let mut guard = RepetitionGuard::default();
+    let out = degenerate();
+    // Odd, uneven delta sizes so period boundaries land mid-delta.
+    let mut tripped = false;
+    for delta in out.as_bytes().chunks(7) {
+        if guard.feed(std::str::from_utf8(delta).unwrap()) {
+            tripped = true;
+            break;
+        }
+    }
+    assert!(tripped);
+}
+
+#[test]
+fn short_text_does_not_trip() {
+    assert!(!is_degenerate("a short reply"));
+}
+
+#[test]
+fn marker_downcasts() {
+    let e = anyhow::Error::new(DegenerateOutput)
+        .context("the model's reply degenerated into repeated text");
+    assert!(e.downcast_ref::<DegenerateOutput>().is_some());
+}
