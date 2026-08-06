@@ -1,5 +1,5 @@
 //! `aster skills`: manage agent skills, mirroring the `npx skills@latest`
-//! surface. Skills install user-global (`<config>/aster/skills`) by default, or
+//! surface. Sources include other agents' skills roots, keyed as in that CLI. Skills install user-global (`<config>/aster/skills`) by default, or
 //! into this project (`.aster/skills`) with `-p`, where they shadow a global
 //! skill of the same name. A git source is fetched lazily: a treeless partial
 //! clone with only the `SKILL.md` manifests checked out, so browsing is cheap
@@ -12,7 +12,8 @@ use std::process::{Command, Stdio};
 
 use crate::util::or_cancel;
 use anyhow::{Context, Result, bail};
-use aster_skills::{Skill, SkillSet, find_skills, install_skill, remove_skill};
+use aster_skills::agents::{Agent, agent_by_key, installed_agents};
+use aster_skills::{Skill, SkillSet, find_skills_report, install_skill, remove_skill};
 use clap::{Args, Subcommand};
 use cliclack::{confirm, input, intro, log, outro, outro_cancel, select};
 use console::{Term, style};
@@ -26,10 +27,11 @@ pub struct SkillsArgs {
 
 #[derive(Subcommand)]
 enum SkillsCommand {
-    /// Add skills from a repo, a local folder, or Claude Code.
+    /// Add skills from a repo, a local folder, or another agent.
     #[command(visible_alias = "a")]
     Add {
-        /// Source: `owner/repo`, a git URL, or a local path. Omit for the wizard.
+        /// Source: `owner/repo`, a git URL, a local path, or an agent key
+        /// (`claude-code`, `cursor`, …). Omit for the wizard.
         source: Option<String>,
         /// Install into this project (`.aster/skills`) instead of the user-global root.
         #[arg(short = 'p', long)]
@@ -273,7 +275,9 @@ fn add(opts: AddOpts) -> Result<()> {
                 None => return cancel(),
             }
         }
-        None => bail!("a source is required (owner/repo, a git URL, or a local path)"),
+        None => {
+            bail!("a source is required (owner/repo, a git URL, a local path, or an agent key)")
+        }
     };
 
     let (src, mut skills) = resolve_and_list(&source, opts.full_depth, tty)?;
@@ -360,10 +364,15 @@ fn resolve_and_list(source: &str, full_depth: bool, tty: bool) -> Result<(Source
             return Err(e);
         }
     };
-    let mut skills = find_skills(src.browse_root(), full_depth);
+    let (mut skills, skipped) = src.list_report(full_depth);
     src.filter(&mut skills);
     if let Some(s) = spinner {
         s.stop(format!("Found {} skill(s)", skills.len()));
+    }
+    if skills.is_empty() {
+        for reason in &skipped {
+            eprintln!("skipped {reason}");
+        }
     }
     Ok((src, skills))
 }
@@ -608,7 +617,7 @@ fn use_skill(target: &str, skill: Option<&str>, full_depth: bool) -> Result<()> 
 /// Print one skill's body pulled straight from a source, without installing.
 fn print_from_source(pkg: &str, skill: Option<&str>, full_depth: bool) -> Result<()> {
     let src = resolve_source(pkg)?;
-    let mut skills = find_skills(src.browse_root(), full_depth);
+    let mut skills = src.list(full_depth);
     src.filter(&mut skills);
     let target = match skill {
         Some(name) => skills
@@ -789,7 +798,7 @@ fn update(names: Vec<String>, project: bool) -> Result<()> {
                 continue;
             }
         };
-        let mut skills = find_skills(src.browse_root(), false);
+        let mut skills = src.list(false);
         src.filter(&mut skills);
         let chosen: Vec<Skill> = skills
             .into_iter()
@@ -910,23 +919,28 @@ fn forget_installed(root: &Path, names: &[String]) {
 }
 
 fn prompt_source() -> Result<Option<String>> {
-    let kind = match or_cancel(
-        select::<u8>("Where should skills come from?")
-            .item(0, "GitHub repo", "owner/repo, e.g. anthropics/skills")
-            .item(1, "Git URL", "https://… or git@…")
-            .item(2, "Local folder", "a path on this machine")
-            .item(3, "Claude Code", "import from ~/.claude/skills")
-            .interact(),
-    )? {
+    let others = importable_agents();
+    let mut menu = select::<u8>("Where should skills come from?")
+        .item(0, "GitHub repo", "owner/repo, e.g. anthropics/skills")
+        .item(1, "Git URL", "https://… or git@…")
+        .item(2, "Local folder", "a path on this machine");
+    if !others.is_empty() {
+        menu = menu.item(
+            3,
+            "Another agent",
+            format!("import from {} installed agent(s)", others.len()),
+        );
+    }
+    let kind = match or_cancel(menu.interact())? {
         Some(k) => k,
         None => return Ok(None),
     };
 
     let source = match kind {
-        3 => claude_skills_dir()
-            .context("could not locate ~/.claude/skills")?
-            .to_string_lossy()
-            .into_owned(),
+        3 => match prompt_agent(&others)? {
+            Some(key) => key,
+            None => return Ok(None),
+        },
         _ => {
             let prompt = match kind {
                 0 => "GitHub repo (owner/repo)",
@@ -940,6 +954,34 @@ fn prompt_source() -> Result<Option<String>> {
         }
     };
     Ok(Some(source))
+}
+
+/// Pick which other agent to import from, listing where its skills live.
+fn prompt_agent(others: &[&'static Agent]) -> Result<Option<String>> {
+    let cwd = std::env::current_dir().ok();
+    let mut menu = select::<usize>("Import from which agent?");
+    for (i, agent) in others.iter().enumerate() {
+        let roots = agent.existing_roots(cwd.as_deref());
+        let detail = roots
+            .iter()
+            .map(|r| display_home(r))
+            .collect::<Vec<_>>()
+            .join(", ");
+        menu = menu.item(i, agent.display_name, detail);
+    }
+    Ok(or_cancel(menu.interact())?.map(|i| others[i].key.to_string()))
+}
+
+/// Paths read better in a picker with the home directory back as `~`.
+fn display_home(path: &Path) -> String {
+    let shown = path.display().to_string();
+    match dirs::home_dir() {
+        Some(home) => match path.strip_prefix(&home) {
+            Ok(rel) => format!("~/{}", rel.display()),
+            Err(_) => shown,
+        },
+        None => shown,
+    }
 }
 
 /// The shared multi-select over the source's skills, none preselected.
@@ -958,7 +1000,9 @@ fn choose_skills(title: &str, skills: &[Skill]) -> Result<Option<Vec<Skill>>> {
 /// A git source is a treeless partial clone with only `SKILL.md` files checked
 /// out, so listing is cheap; a chosen skill's contents are fetched on demand.
 enum Source {
-    Local(PathBuf),
+    /// One or more local roots; an agent import can have both a global and a
+    /// project root.
+    Local(Vec<PathBuf>),
     Git {
         /// Kept alive so the clone survives until installation finishes.
         _guard: tempfile::TempDir,
@@ -968,11 +1012,32 @@ enum Source {
 }
 
 impl Source {
-    fn browse_root(&self) -> &Path {
+    fn roots(&self) -> Vec<&Path> {
         match self {
-            Source::Local(p) => p,
-            Source::Git { root, .. } => root,
+            Source::Local(paths) => paths.iter().map(PathBuf::as_path).collect(),
+            Source::Git { root, .. } => vec![root.as_path()],
         }
+    }
+
+    /// The skills this source offers, deduped by name with earlier roots winning.
+    fn list(&self, full_depth: bool) -> Vec<Skill> {
+        self.list_report(full_depth).0
+    }
+
+    /// Like [`Source::list`], but also returns the manifests that failed to parse.
+    fn list_report(&self, full_depth: bool) -> (Vec<Skill>, Vec<String>) {
+        let mut skills: Vec<Skill> = Vec::new();
+        let mut skipped = Vec::new();
+        for root in self.roots() {
+            let (found, reasons) = find_skills_report(root, full_depth);
+            for skill in found {
+                if !skills.iter().any(|s| s.name == skill.name) {
+                    skills.push(skill);
+                }
+            }
+            skipped.extend(reasons);
+        }
+        (skills, skipped)
     }
 
     /// When a repo subpath was given, keep only skills beneath it.
@@ -1008,18 +1073,23 @@ impl Source {
 
 const MANIFEST_PATTERN: &str = "**/SKILL.md";
 
-/// A local path is used as-is; a `owner/repo` shorthand or git URL becomes a
-/// treeless partial clone. A trailing `/subpath` narrows browsing to that subtree.
+/// A local path is used as-is and an agent key expands to that agent's skills
+/// roots; a `owner/repo` shorthand or git URL becomes a treeless partial clone.
+/// A trailing `/subpath` narrows browsing to that subtree.
 fn resolve_source(source: &str) -> Result<Source> {
     let source = source.trim();
 
     let local = Path::new(source);
     if local.exists() {
-        return Ok(Source::Local(local.to_path_buf()));
+        return Ok(Source::Local(vec![local.to_path_buf()]));
+    }
+
+    if let Some(roots) = agent_roots(source)? {
+        return Ok(Source::Local(roots));
     }
 
     let Some((url, subpath)) = git_source(source) else {
-        bail!("could not resolve {source:?} as a local path or git source");
+        bail!("could not resolve {source:?} as a local path, an agent, or a git source");
     };
 
     let tmp = tempfile::tempdir().context("creating a temp dir for the checkout")?;
@@ -1114,8 +1184,29 @@ fn git_try(args: &[&str]) -> Result<bool> {
     Ok(true)
 }
 
-fn claude_skills_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".claude").join("skills"))
+/// Resolve another agent's `--agent` key to the skills roots it has on disk.
+/// An unknown key is not an agent, so the caller falls through to git.
+fn agent_roots(source: &str) -> Result<Option<Vec<PathBuf>>> {
+    let Some(agent) = agent_by_key(source) else {
+        return Ok(None);
+    };
+    let roots = agent.existing_roots(std::env::current_dir().ok().as_deref());
+    if roots.is_empty() {
+        bail!(
+            "{} has no skills directory on this machine",
+            agent.display_name
+        );
+    }
+    Ok(Some(roots))
+}
+
+/// The agents with skills on this machine, for the wizard's import list.
+fn importable_agents() -> Vec<&'static Agent> {
+    let cwd = std::env::current_dir().ok();
+    installed_agents(cwd.as_deref())
+        .into_iter()
+        .filter(|a| a.key != "aster")
+        .collect()
 }
 
 fn first_line(text: &str) -> &str {

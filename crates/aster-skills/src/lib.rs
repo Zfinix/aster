@@ -6,6 +6,8 @@
 //! Layout mirrors Claude Code: a project root (`.aster/skills`) overrides a
 //! user-global root (`<config>/aster/skills`) on name collision.
 
+pub mod agents;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -136,16 +138,7 @@ fn ceil_boundary(text: &str, max: usize) -> usize {
     cut
 }
 
-/// Directories never worth descending into when searching a source tree.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    ".hg",
-    ".svn",
-];
+use aster_models::SKIP_DIRS;
 
 /// How deep to walk a source tree looking for skills. Repos nest skills a few
 /// levels down (`skills/<category>/<name>/SKILL.md`); this bounds the search.
@@ -156,14 +149,27 @@ const MAX_FIND_DEPTH: usize = 6;
 /// children. `full_depth` keeps descending into a skill dir to find nested skills;
 /// otherwise it stops at the first `SKILL.md`.
 pub fn find_skills(root: &Path, full_depth: bool) -> Vec<Skill> {
-    let mut found = Vec::new();
-    walk(root, 0, full_depth, &mut found);
-    found.sort_by(|a, b| a.name.cmp(&b.name));
-    found.dedup_by(|a, b| a.name == b.name);
-    found
+    find_skills_report(root, full_depth).0
 }
 
-fn walk(dir: &Path, depth: usize, full_depth: bool, out: &mut Vec<Skill>) {
+/// Like [`find_skills`], but also returns one message per manifest that failed to
+/// load, so a caller can explain an empty result instead of reporting a bare zero.
+pub fn find_skills_report(root: &Path, full_depth: bool) -> (Vec<Skill>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut skipped = Vec::new();
+    walk(root, 0, full_depth, &mut found, &mut skipped);
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found.dedup_by(|a, b| a.name == b.name);
+    (found, skipped)
+}
+
+fn walk(
+    dir: &Path,
+    depth: usize,
+    full_depth: bool,
+    out: &mut Vec<Skill>,
+    skipped: &mut Vec<String>,
+) {
     let manifest = dir.join(SKILL_FILE);
     if manifest.is_file() {
         let dir_name = dir
@@ -172,7 +178,10 @@ fn walk(dir: &Path, depth: usize, full_depth: bool, out: &mut Vec<Skill>) {
             .unwrap_or_default();
         match load_skill(&manifest, &dir_name) {
             Ok(skill) => out.push(skill),
-            Err(e) => tracing::warn!(path = %manifest.display(), "skipping skill: {e:#}"),
+            Err(e) => {
+                tracing::warn!(path = %manifest.display(), "skipping skill: {e:#}");
+                skipped.push(format!("{}: {e:#}", manifest.display()));
+            }
         }
         if !full_depth {
             return;
@@ -194,7 +203,7 @@ fn walk(dir: &Path, depth: usize, full_depth: bool, out: &mut Vec<Skill>) {
         if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
             continue;
         }
-        walk(&path, depth + 1, full_depth, out);
+        walk(&path, depth + 1, full_depth, out, skipped);
     }
 }
 
@@ -297,14 +306,19 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
 
     let mut name = None;
     let mut description = None;
-    for line in front.lines() {
+    let mut lines = front.lines().peekable();
+    while let Some(line) = lines.next() {
+        // Indented lines belong to the value above, never open a key of their own.
+        if line.starts_with([' ', '\t']) {
+            continue;
+        }
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        let value = unquote(value.trim());
+        let value = read_value(value.trim(), &mut lines);
         match key.trim() {
-            "name" => name = Some(value.to_string()),
-            "description" => description = Some(value.to_string()),
+            "name" => name = Some(value),
+            "description" => description = Some(value),
             _ => {}
         }
     }
@@ -313,6 +327,7 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| dir_name.to_string());
+    let name = slugify(&name);
     validate_name(&name)?;
 
     let description = description.unwrap_or_default().trim().to_string();
@@ -324,6 +339,38 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
     }
 
     Ok((name, description))
+}
+
+/// One scalar: an inline value, a `>`/`|` block, or a value continued on the
+/// indented lines below it. Blocks and continuations fold to a single line,
+/// which is what both the prompt index and `/skills` want; `|` keeps its
+/// newlines. Consumes the continuation lines so the caller resumes at the next
+/// key.
+fn read_value(inline: &str, lines: &mut std::iter::Peekable<std::str::Lines>) -> String {
+    let (marker, literal) = match inline {
+        ">" | ">-" | ">+" => (true, false),
+        "|" | "|-" | "|+" => (true, true),
+        _ => (false, false),
+    };
+    let mut parts: Vec<String> = match marker {
+        true => Vec::new(),
+        false => vec![unquote(inline).to_string()],
+    };
+    while let Some(next) = lines.peek() {
+        if !next.trim().is_empty() && !next.starts_with([' ', '\t']) {
+            break;
+        }
+        let line = lines.next().unwrap_or_default();
+        parts.push(line.trim().to_string());
+    }
+    let joiner = if literal { "\n" } else { " " };
+    parts
+        .into_iter()
+        .filter(|p| literal || !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(joiner)
+        .trim()
+        .to_string()
 }
 
 /// The text between the opening `---` and the next `---` line, if the file opens
@@ -367,6 +414,20 @@ fn unquote(value: &str) -> &str {
     } else {
         value
     }
+}
+
+/// Skills in the wild title-case their `name` ("Simplified Technical English
+/// (ASD-STE100)"); fold those to kebab-case rather than rejecting the skill.
+fn slugify(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 /// Structural checks on `name`: kebab-case identity, bounded length. The
@@ -424,6 +485,50 @@ mod tests {
     }
 
     #[test]
+    fn a_folded_description_reads_as_one_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "writer",
+            "---\nname: writer\ndescription: >\n  Write blog posts and essays.\n  TRIGGER when drafting a post.\n---\n\nbody",
+        );
+        let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+        let skill = set.get("writer").unwrap();
+        assert_eq!(
+            skill.description,
+            "Write blog posts and essays. TRIGGER when drafting a post."
+        );
+        assert_eq!(skill.load_body().unwrap(), "body");
+    }
+
+    #[test]
+    fn a_literal_description_keeps_its_newlines() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "writer",
+            "---\nname: writer\ndescription: |\n  line one\n  line two\n---\n\nbody",
+        );
+        let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+        assert_eq!(set.get("writer").unwrap().description, "line one\nline two");
+    }
+
+    #[test]
+    fn an_indented_key_does_not_end_a_folded_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "writer",
+            "---\nname: writer\ndescription: >\n  Reflects conventions: agentic ledes.\n  More prose.\n---\n\nbody",
+        );
+        let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+        assert_eq!(
+            set.get("writer").unwrap().description,
+            "Reflects conventions: agentic ledes. More prose."
+        );
+    }
+
+    #[test]
     fn discovers_and_parses_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
         write_skill(
@@ -448,6 +553,18 @@ mod tests {
         );
         let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
         assert!(set.get("reviewer").is_some());
+    }
+
+    #[test]
+    fn title_cased_name_is_slugified() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "ste",
+            "---\nname: Simplified Technical English (ASD-STE100)\ndescription: Rewrite text.\n---\nbody",
+        );
+        let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+        assert!(set.get("simplified-technical-english-asd-ste100").is_some());
     }
 
     #[test]
