@@ -160,5 +160,5 @@ fn seconds(from: DateTime<Utc>, to: DateTime<Utc>) -> f64 {
 }
 
 #[cfg(test)]
-#[path = "turn_tests.rs"]
+#[path = "tests/turn_test.rs"]
 pub(crate) mod tests;

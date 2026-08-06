@@ -69,5 +69,5 @@ fn score(name: &str, target: &str) -> Option<u8> {
 }
 
 #[cfg(test)]
-#[path = "suggest_tests.rs"]
+#[path = "tests/suggest_test.rs"]
 mod tests;

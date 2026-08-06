@@ -48,3 +48,40 @@ fn find_empty_pattern_errors() {
     let repo = tempdir().unwrap();
     assert!(find(repo.path(), repo.path(), "  ", 10).is_err());
 }
+
+#[test]
+fn find_reaches_a_gitignored_path_when_nothing_else_matches() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    fs::write(repo.path().join(".gitignore"), "editors/\n").unwrap();
+    fs::create_dir_all(repo.path().join("editors/vscode")).unwrap();
+    fs::write(repo.path().join("editors/vscode/package.json"), "").unwrap();
+
+    let out = find(repo.path(), repo.path(), "**/vscode/**", 10).unwrap();
+    assert!(out.contains("editors/vscode/package.json"), "{out}");
+    assert!(out.contains("ignored by .gitignore"), "{out}");
+}
+
+#[test]
+fn find_prefers_tracked_matches_over_ignored_ones() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    fs::write(repo.path().join(".gitignore"), "editors/\n").unwrap();
+    fs::create_dir_all(repo.path().join("editors")).unwrap();
+    fs::write(repo.path().join("editors/chat.rs"), "").unwrap();
+
+    let out = find(repo.path(), repo.path(), "chat.rs", 10).unwrap();
+    assert_eq!(out, "crates/aster-cli/src/chat.rs");
+}
+
+#[test]
+fn find_skips_build_output_on_the_ignored_pass() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    fs::write(repo.path().join(".gitignore"), "target/\n").unwrap();
+    fs::create_dir_all(repo.path().join("target/debug")).unwrap();
+    fs::write(repo.path().join("target/debug/huge.rs"), "").unwrap();
+
+    let out = find(repo.path(), repo.path(), "huge.rs", 10).unwrap();
+    assert_eq!(out, "no files matched");
+}

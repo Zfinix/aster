@@ -41,21 +41,31 @@ fn legacy_homes() -> Vec<PathBuf> {
 
 /// Copy legacy data across the first time the new path is asked for, so a
 /// login, session, or memory from an older build is not silently orphaned.
-/// Runs once per process and never overwrites anything already migrated.
+/// A stamp makes it truly one-time: re-copying would resurrect deleted data.
 fn migrate_legacy_homes(new: &PathBuf) {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
+        let stamp = new.join(".legacy-migrated");
+        if stamp.exists() {
+            return;
+        }
+        let mut all_ok = true;
         for old in legacy_homes() {
             if !old.is_dir() || old == *new {
                 continue;
             }
             if let Err(e) = migrate_data(&old, new) {
+                all_ok = false;
                 tracing::warn!(
                     "could not migrate {} to {}: {e:#}",
                     old.display(),
                     new.display()
                 );
             }
+        }
+        // A failed pass leaves no stamp, so the next run retries.
+        if all_ok && let Err(e) = fs::create_dir_all(new).and_then(|()| fs::write(&stamp, "")) {
+            tracing::warn!("could not stamp migration at {}: {e}", stamp.display());
         }
     });
 }

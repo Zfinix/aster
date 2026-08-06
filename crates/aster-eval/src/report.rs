@@ -341,5 +341,5 @@ pub fn render_comparison(deltas: &[Delta]) -> String {
 }
 
 #[cfg(test)]
-#[path = "report_tests.rs"]
+#[path = "tests/report_test.rs"]
 mod tests;

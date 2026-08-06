@@ -8,6 +8,10 @@ use ignore::WalkBuilder;
 
 /// Find files under `base` whose repo-relative path or file name matches
 /// `pattern`, returning repo-relative paths up to `max_hits`.
+///
+/// A `.gitignore` entry hides a path from the fast pass but must not make it
+/// unreachable: an ignored directory is still part of the repository the user
+/// is asking about. When the filtered pass finds nothing, retry without it.
 pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Result<String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
@@ -15,15 +19,42 @@ pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Re
     }
     let matchers = matchers(pattern)?;
 
-    let mut hits: Vec<String> = Vec::new();
-    for entry in WalkBuilder::new(base)
-        .hidden(true)
-        .git_ignore(true)
+    let hits = walk(repo_root, base, &matchers, max_hits, true);
+    if !hits.is_empty() {
+        return Ok(hits.join("\n"));
+    }
+
+    let ignored = walk(repo_root, base, &matchers, max_hits, false);
+    if ignored.is_empty() {
+        return Ok("no files matched".into());
+    }
+    Ok(format!(
+        "{}\n\n(ignored by .gitignore; matched only because nothing else did)",
+        ignored.join("\n")
+    ))
+}
+
+/// Collect matching repo-relative paths, sorted. `respect_ignore` drives the
+/// two passes in [`find`]; the unfiltered one still skips [`crate::SKIP_DIRS`].
+fn walk(
+    repo_root: &Path,
+    base: &Path,
+    matchers: &[GlobMatcher],
+    max_hits: usize,
+    respect_ignore: bool,
+) -> Vec<String> {
+    let mut builder = WalkBuilder::new(base);
+    builder
+        .hidden(respect_ignore)
+        .git_ignore(respect_ignore)
         .require_git(false)
-        .git_exclude(true)
-        .build()
-        .flatten()
-    {
+        .git_exclude(respect_ignore);
+    if !respect_ignore {
+        builder.filter_entry(|entry| !crate::is_skipped(entry));
+    }
+
+    let mut hits: Vec<String> = Vec::new();
+    for entry in builder.build().flatten() {
         if hits.len() >= max_hits {
             break;
         }
@@ -37,12 +68,8 @@ pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Re
             hits.push(rel.to_string_lossy().into_owned());
         }
     }
-
-    if hits.is_empty() {
-        return Ok("no files matched".into());
-    }
     hits.sort();
-    Ok(hits.join("\n"))
+    hits
 }
 
 /// A bare name like `chat.rs` should match at any depth, so every pattern
@@ -61,5 +88,5 @@ fn matchers(pattern: &str) -> Result<Vec<GlobMatcher>> {
 }
 
 #[cfg(test)]
-#[path = "find_tests.rs"]
+#[path = "tests/find_test.rs"]
 mod tests;

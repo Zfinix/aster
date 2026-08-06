@@ -3,10 +3,12 @@
 
 #![forbid(unsafe_code)]
 
+mod live;
 mod report;
 mod stats;
 mod turn;
 
+pub use live::{Case, ModelRun, default_cases, render_eval, render_live, sweep};
 pub use report::{Delta, ModelStat, Report, ToolStat, render, render_comparison};
 pub use stats::Dist;
 pub use turn::{Call, Turn, barren, turns};
@@ -87,5 +89,5 @@ fn transcripts(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 #[cfg(test)]
-#[path = "lib_tests.rs"]
+#[path = "tests/lib_test.rs"]
 mod tests;

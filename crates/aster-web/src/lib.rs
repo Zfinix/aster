@@ -119,7 +119,7 @@ impl WebBackend {
 }
 
 #[cfg(test)]
-#[path = "web_tests.rs"]
+#[path = "tests/lib_test.rs"]
 mod tests;
 
 /// One tool per name, described by the provider that will serve it. Providers

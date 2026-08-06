@@ -194,5 +194,5 @@ fn classify(tag: &str) -> Tag {
 }
 
 #[cfg(test)]
-#[path = "inline_tools_tests.rs"]
+#[path = "tests/inline_tools_test.rs"]
 mod tests;

@@ -42,5 +42,5 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
 }
 
 #[cfg(test)]
-#[path = "stats_tests.rs"]
+#[path = "tests/stats_test.rs"]
 mod tests;

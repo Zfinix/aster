@@ -10,25 +10,42 @@ use crate::ToolProbe;
 
 /// List entries of `base` up to `max_entries`. Directories end with `/`.
 /// Tries `fd`, then falls back to `fs::read_dir`.
+/// `fd` hides `.gitignore`d entries and the manual fallback does not, so the
+/// same directory listed differently depending on what was installed. Retry
+/// with `--no-ignore` when the filtered pass comes back empty, matching how
+/// `find` and `search` reach ignored paths.
 pub fn list(probe: &ToolProbe, base: &Path, max_entries: usize) -> Result<String> {
     if let Some(fd) = &probe.fd {
-        return list_with_fd(fd, base, max_entries);
+        let entries = list_with_fd(fd, base, max_entries, true)?;
+        if !entries.is_empty() {
+            return Ok(entries);
+        }
+        return list_with_fd(fd, base, max_entries, false);
     }
     list_manual(base, max_entries)
 }
 
 /// Shell out to `fd`. Faster on large directories.
-fn list_with_fd(fd: &Path, base: &Path, max_entries: usize) -> Result<String> {
-    let output = Command::new(fd)
-        .args([
-            "--color",
-            "never",
-            "--max-results",
-            &max_entries.to_string(),
-        ])
-        .arg(base)
-        .output()
-        .context("running fd")?;
+fn list_with_fd(
+    fd: &Path,
+    base: &Path,
+    max_entries: usize,
+    respect_ignore: bool,
+) -> Result<String> {
+    let mut cmd = Command::new(fd);
+    cmd.args([
+        "--color",
+        "never",
+        "--max-results",
+        &max_entries.to_string(),
+    ]);
+    if !respect_ignore {
+        cmd.arg("--no-ignore").arg("--hidden");
+        for dir in crate::SKIP_DIRS {
+            cmd.arg("--exclude").arg(dir);
+        }
+    }
+    let output = cmd.arg(base).output().context("running fd")?;
 
     if !output.status.success() && !output.status.code().is_some_and(|c| c == 1) {
         bail!(
@@ -81,5 +98,5 @@ fn list_manual(base: &Path, max_entries: usize) -> Result<String> {
 }
 
 #[cfg(test)]
-#[path = "list_tests.rs"]
+#[path = "tests/list_test.rs"]
 mod tests;
