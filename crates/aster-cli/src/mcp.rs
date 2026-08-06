@@ -2,7 +2,7 @@
 //! and deliberately has no transport, so the host supplies one: JSON-RPC 2.0
 //! over a child process's stdio, the standard for local MCP servers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const MAX_TOOLS_PER_SERVER: usize = 2_000;
 /// How long a server gets to exit on its own after its stdin closes.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+/// Stderr lines kept per server: enough to hold a whole Node crash dump
+/// (message plus stack frames), bounded so a chatty server cannot grow memory.
+const STDERR_TAIL_LINES: usize = 40;
+/// Longest stderr line kept; anything past this is a dump, not a reason.
+const STDERR_LINE_CHARS: usize = 400;
 /// Newest revision we speak. Modern revisions carry it per request instead of
 /// negotiating once.
 const PROTOCOL_VERSION: &str = "2026-07-28";
@@ -111,6 +116,10 @@ struct Connection {
     stdout: BufReader<ChildStdout>,
     next_id: i64,
     era: Era,
+    /// Last stderr lines, kept so a dead server's reason survives it.
+    stderr_tail: Arc<std::sync::Mutex<VecDeque<String>>>,
+    /// Drains stderr for the life of the child; finishes at EOF.
+    stderr_task: tokio::task::JoinHandle<()>,
 }
 
 /// One JSON-RPC failure, kept structured so the probe can tell an
@@ -137,12 +146,16 @@ impl Connection {
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Servers log to stderr; inheriting it would corrupt the TUI.
-            .stderr(Stdio::null())
+            // Servers log to stderr; a tail is kept for post-mortems, and
+            // inheriting it would corrupt the TUI.
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("spawning MCP server `{name}` ({})", config.command))?;
+        let mut child = command.spawn().map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                anyhow::anyhow!("is not installed (no `{}` on PATH)", config.command)
+            }
+            _ => anyhow::Error::new(e).context(format!("could not start ({})", config.command)),
+        })?;
         let stdin = child
             .stdin
             .take()
@@ -151,6 +164,22 @@ impl Connection {
             .stdout
             .take()
             .context("MCP server stdout was not piped")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("MCP server stderr was not piped")?;
+        let stderr_tail = Arc::new(std::sync::Mutex::new(VecDeque::new()));
+        let tail = Arc::clone(&stderr_tail);
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(mut tail) = tail.lock() else { return };
+                if tail.len() >= STDERR_TAIL_LINES {
+                    tail.pop_front();
+                }
+                tail.push_back(line.chars().take(STDERR_LINE_CHARS).collect());
+            }
+        });
         Ok(Self {
             name: name.to_string(),
             child,
@@ -160,6 +189,8 @@ impl Connection {
             era: Era::Modern {
                 version: PROTOCOL_VERSION.to_string(),
             },
+            stderr_tail,
+            stderr_task,
         })
     }
 
@@ -335,6 +366,14 @@ impl Connection {
         Ok(discovered)
     }
 
+    /// Start straight into the legacy handshake with no probe, for servers
+    /// that treat an unknown method before `initialize` as fatal.
+    async fn start_legacy(&mut self) -> Result<Vec<McpTool>> {
+        self.era = Era::Legacy;
+        self.initialize().await?;
+        self.list_tools().await
+    }
+
     /// The pre-2026 handshake, used only once the probe says the server needs it.
     async fn initialize(&mut self) -> Result<()> {
         self.request(
@@ -379,6 +418,121 @@ impl Connection {
         )
         .await
     }
+
+    /// Turn a startup failure into one short line saying what to do about it.
+    /// The raw error and full stderr go to the debug log, not the user.
+    async fn diagnose(mut self, error: anyhow::Error) -> anyhow::Error {
+        // Stderr EOF means the child is gone and its last words are in the
+        // tail. A server that is still alive times out here instead.
+        let _ = timeout(SHUTDOWN_GRACE, &mut self.stderr_task).await;
+        let status = match timeout(SHUTDOWN_GRACE, self.child.wait()).await {
+            Ok(Ok(status)) => Some(status),
+            _ => None,
+        };
+        let tail = self
+            .stderr_tail
+            .lock()
+            .map(|tail| tail.clone())
+            .unwrap_or_default();
+        tracing::debug!(
+            server = %self.name, ?status, stderr = ?tail,
+            "MCP server failed to start: {error:#}"
+        );
+        let headline = stderr_headline(&tail);
+        // Checked before the exit status: an OAuth server that is blocked
+        // waiting for the user to open its auth route never exits at all.
+        let words: Vec<&str> = tail.iter().map(String::as_str).collect();
+        if looks_like_auth_failure(&words.join("\n")) {
+            return match (auth_url(&tail), headline) {
+                (Some(url), _) => anyhow::anyhow!("needs auth: sign in at {url}"),
+                (None, Some(line)) => anyhow::anyhow!("needs auth: {}", brief(&line)),
+                (None, None) => anyhow::anyhow!("needs auth (check its credentials)"),
+            };
+        }
+        if status.is_none() {
+            return anyhow::anyhow!("is not responding (startup timed out)");
+        }
+        match headline {
+            Some(line) => anyhow::anyhow!("crashed: {}", brief(&line)),
+            None => anyhow::anyhow!("crashed on startup"),
+        }
+    }
+}
+
+/// One short reason from a stderr line: error-name prefixes, "imported from"
+/// trailers, and anything past 80 chars are noise in a one-line report.
+fn brief(line: &str) -> String {
+    let mut reason = line.trim();
+    if let Some((prefix, rest)) = reason.split_once(':')
+        && prefix.len() <= 40
+        && prefix.to_ascii_lowercase().contains("error")
+        && !rest.trim().is_empty()
+    {
+        reason = rest.trim();
+    }
+    if let Some(at) = reason.find(" imported from ") {
+        reason = reason[..at].trim_end();
+    }
+    const REASON_CHARS: usize = 80;
+    if reason.chars().count() <= REASON_CHARS {
+        return reason.to_string();
+    }
+    let cut: String = reason.chars().take(REASON_CHARS).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// Whether a dying server's stderr reads like a credentials problem rather
+/// than a crash. Bare "token" is excluded: parsers also complain about those.
+fn looks_like_auth_failure(stderr: &str) -> bool {
+    const SIGNS: [&str; 17] = [
+        "unauthorized",
+        "unauthenticated",
+        "not authenticated",
+        "authentication",
+        "authorization",
+        "401",
+        "403",
+        "forbidden",
+        "api key",
+        "api_key",
+        "apikey",
+        "access token",
+        "access_token",
+        "auth token",
+        "credential",
+        "login",
+        "oauth",
+    ];
+    let text = stderr.to_ascii_lowercase();
+    SIGNS.iter().any(|sign| text.contains(sign))
+}
+
+/// The login link the server printed, if any: OAuth-based servers hand the
+/// user a URL to open, so the report should carry it rather than bury it.
+fn auth_url(tail: &VecDeque<String>) -> Option<String> {
+    tail.iter().find_map(|line| {
+        let start = line.find("https://").or_else(|| line.find("http://"))?;
+        let url = line[start..]
+            .split_whitespace()
+            .next()?
+            .trim_end_matches(['.', ',', ')', ']', '"', '\'']);
+        Some(url.to_string())
+    })
+}
+
+/// The stderr line most likely to say why the server died: the first one
+/// naming an error, else the last non-empty one.
+fn stderr_headline(tail: &VecDeque<String>) -> Option<String> {
+    let lines: Vec<&str> = tail
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines
+        .iter()
+        .find(|line| line.to_ascii_lowercase().contains("error"))
+        .or(lines.last())
+        .map(|line| line.to_string())
 }
 
 /// Live MCP servers plus the injector that decides what the model sees.
@@ -445,7 +599,7 @@ impl McpRuntime {
                     tools.extend(listed);
                     connections.insert(name, connection);
                 }
-                Err(e) => problems.push(format!("{name}: {e:#}")),
+                Err(e) => problems.push(format!("{name} {e:#}")),
             }
         }
 
@@ -475,8 +629,25 @@ impl McpRuntime {
 
     async fn start_one(name: &str, config: &ServerConfig) -> Result<(Connection, Vec<McpTool>)> {
         let mut connection = Connection::spawn(name, config).await?;
-        let tools = connection.start().await?;
-        Ok((connection, tools))
+        let error = match connection.start().await {
+            Ok(tools) => return Ok((connection, tools)),
+            Err(error) => error,
+        };
+        // A strict legacy server treats the modern probe itself as fatal and
+        // exits. When the child is dead, one respawn straight into the legacy
+        // handshake tells that server apart from a genuinely broken one.
+        let died = matches!(
+            timeout(SHUTDOWN_GRACE, connection.child.wait()).await,
+            Ok(Ok(_))
+        );
+        if !died {
+            return Err(connection.diagnose(error).await);
+        }
+        let mut retry = Connection::spawn(name, config).await?;
+        match retry.start_legacy().await {
+            Ok(tools) => Ok((retry, tools)),
+            Err(retry_error) => Err(retry.diagnose(retry_error).await),
+        }
     }
 
     pub fn injector(&self) -> &Injector {
@@ -1142,380 +1313,5 @@ fn describe_disabled_server(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SAMPLE_YAML: &str = "\
-mcp:
-  servers:
-    # Ships with Chrome.
-    chrome:
-      command: npx
-      disabled: true
-    github:
-      command: npx
-";
-
-    #[test]
-    fn enabling_rewrites_the_disabled_line_and_keeps_comments() {
-        let out = toggled(SAMPLE_YAML, "chrome", false).expect("chrome is configured");
-        assert!(out.contains("      disabled: false"));
-        assert!(out.contains("# Ships with Chrome."));
-    }
-
-    #[test]
-    fn disabling_a_server_without_the_key_inserts_one_in_its_block() {
-        let out = toggled(SAMPLE_YAML, "github", true).expect("github is configured");
-        assert!(
-            out.ends_with("    github:\n      command: npx\n      disabled: true\n"),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn an_unknown_server_is_not_a_silent_rewrite() {
-        assert!(toggled(SAMPLE_YAML, "slack", true).is_none());
-    }
-
-    #[test]
-    fn removing_a_server_deletes_its_whole_block_and_nothing_else() {
-        let out = without_server(SAMPLE_YAML, "chrome").expect("chrome is configured");
-        assert!(!out.contains("chrome:"), "{out}");
-        assert!(!out.contains("disabled: true"), "{out}");
-        assert!(out.contains("github:\n      command: npx\n"), "{out}");
-        assert!(without_server(SAMPLE_YAML, "slack").is_none());
-
-        let out = without_server(SAMPLE_YAML, "github").expect("github is configured");
-        assert!(!out.contains("github:"), "{out}");
-        assert!(out.contains("chrome:"), "{out}");
-    }
-
-    #[test]
-    fn text_parts_are_joined_and_typed_parts_are_named() {
-        let result = json!({
-            "content": [
-                { "type": "text", "text": "first" },
-                { "type": "image", "data": "..." },
-                { "type": "text", "text": "second" }
-            ]
-        });
-        assert_eq!(
-            render_result(&result),
-            "first\n[image content omitted]\nsecond"
-        );
-    }
-
-    #[test]
-    fn an_error_result_says_so_rather_than_reading_as_success() {
-        let result =
-            json!({ "isError": true, "content": [{ "type": "text", "text": "no such repo" }] });
-        assert!(render_result(&result).starts_with("the MCP tool reported an error"));
-    }
-
-    #[test]
-    fn an_unfamiliar_shape_falls_back_to_the_raw_payload() {
-        let result = json!({ "value": 42 });
-        assert_eq!(render_result(&result), result.to_string());
-    }
-
-    /// A whole MCP server in one argument, so the transport test needs no
-    /// fixture file on disk.
-    const FAKE_SERVER: &str = r#"
-import json, sys
-TOOLS = [{"name": "create_issue", "description": "Create a GitHub issue",
-          "inputSchema": {"type": "object", "properties": {"repo": {"type": "string"}}}},
-         {"name": "send_message", "description": "Send a Slack message",
-          "inputSchema": {"type": "object"}}]
-def reply(i, r): sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":i,"result":r})+"\n"); sys.stdout.flush()
-for line in sys.stdin:
-    if not line.strip(): continue
-    m = json.loads(line)
-    if m.get("method") == "initialize": reply(m["id"], {"protocolVersion": "2025-06-18"})
-    elif m.get("method") == "tools/list": reply(m["id"], {"tools": TOOLS})
-    elif m.get("method") == "tools/call":
-        p = m.get("params", {})
-        reply(m["id"], {"content": [{"type": "text", "text": "ran " + p.get("name", "")}]})
-"#;
-
-    /// A 2026-07-28 server: no `initialize`, answers `server/discover`, and
-    /// rejects any request that arrives without the required `_meta` fields.
-    const MODERN_SERVER: &str = r#"
-import json, sys
-TOOLS = [{"name": "create_issue", "description": "Create a GitHub issue",
-          "inputSchema": {"type": "object", "properties": {"repo": {"type": "string"}}}},
-         {"name": "send_message", "description": "Send a Slack message",
-          "inputSchema": {"type": "object"}}]
-def reply(i, r): sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":i,"result":r})+"\n"); sys.stdout.flush()
-def err(i, c, m, d=None):
-    e = {"code": c, "message": m}
-    if d is not None: e["data"] = d
-    sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":i,"error":e})+"\n"); sys.stdout.flush()
-for line in sys.stdin:
-    if not line.strip(): continue
-    m = json.loads(line)
-    meta = (m.get("params") or {}).get("_meta") or {}
-    if m.get("method") == "initialize":
-        err(m["id"], -32601, "no such method"); continue
-    if not meta.get("io.modelcontextprotocol/protocolVersion"):
-        err(m["id"], -32602, "missing protocolVersion"); continue
-    if "io.modelcontextprotocol/clientCapabilities" not in meta:
-        err(m["id"], -32602, "missing clientCapabilities"); continue
-    if m.get("method") == "server/discover":
-        reply(m["id"], {"resultType": "complete", "supportedVersions": ["2026-07-28"]})
-    elif m.get("method") == "tools/list":
-        reply(m["id"], {"resultType": "complete", "tools": TOOLS})
-    elif m.get("method") == "tools/call":
-        p = m.get("params", {})
-        reply(m["id"], {"resultType": "complete",
-                        "content": [{"type": "text", "text": "ran " + p.get("name", "")}]})
-"#;
-
-    /// Modern, but speaks only a revision Aster does not prefer: it must answer
-    /// with -32022 rather than push the client back to `initialize`.
-    const OLDER_MODERN_SERVER: &str = r#"
-import json, sys
-def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
-for line in sys.stdin:
-    if not line.strip(): continue
-    m = json.loads(line)
-    v = ((m.get("params") or {}).get("_meta") or {}).get("io.modelcontextprotocol/protocolVersion")
-    if v != "2025-11-25":
-        send({"jsonrpc":"2.0","id":m["id"],"error":{"code":-32022,"message":"Unsupported protocol version",
-              "data":{"supported":["2025-11-25"],"requested":v}}})
-        continue
-    if m.get("method") == "server/discover":
-        send({"jsonrpc":"2.0","id":m["id"],"result":{"supportedVersions":["2025-11-25"]}})
-    elif m.get("method") == "tools/list":
-        send({"jsonrpc":"2.0","id":m["id"],"result":{"tools":[
-            {"name":"ping","description":"Ping the server","inputSchema":{"type":"object"}}]}})
-"#;
-
-    fn settings_for(source: &str) -> McpSettings {
-        let mut settings = McpSettings::default();
-        settings.servers.insert(
-            "fake".into(),
-            ServerConfig {
-                command: "python3".into(),
-                args: vec!["-c".into(), source.into()],
-                ..ServerConfig::default()
-            },
-        );
-        settings
-    }
-
-    fn python_settings() -> McpSettings {
-        settings_for(FAKE_SERVER)
-    }
-
-    fn has_python() -> bool {
-        std::process::Command::new("python3")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    }
-
-    #[tokio::test]
-    async fn a_server_handshakes_lists_and_answers_a_call() {
-        if !has_python() {
-            return;
-        }
-        let (runtime, problems) = McpRuntime::connect(&python_settings()).await;
-        assert!(problems.is_empty(), "{problems:?}");
-        let runtime = runtime.expect("a runtime");
-        assert_eq!(runtime.tool_count(), 2);
-        assert_eq!(runtime.server_names(), vec!["fake".to_string()]);
-
-        let tool = runtime
-            .injector()
-            .catalog()
-            .get("fake/create_issue")
-            .expect("the listed tool")
-            .clone();
-        let result = runtime
-            .call(&tool, &json!({ "repo": "aster" }))
-            .await
-            .unwrap();
-        assert_eq!(render_result(&result), "ran create_issue");
-        runtime.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn a_modern_server_is_driven_without_an_initialize_handshake() {
-        if !has_python() {
-            return;
-        }
-        let (runtime, problems) = McpRuntime::connect(&settings_for(MODERN_SERVER)).await;
-        assert!(problems.is_empty(), "{problems:?}");
-        let runtime = runtime.expect("a runtime");
-        assert_eq!(runtime.tool_count(), 2);
-
-        let tool = runtime
-            .injector()
-            .catalog()
-            .get("fake/create_issue")
-            .expect("the listed tool")
-            .clone();
-        let result = runtime
-            .call(&tool, &json!({ "repo": "aster" }))
-            .await
-            .unwrap();
-        assert_eq!(render_result(&result), "ran create_issue");
-        runtime.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn an_unsupported_version_retries_modern_instead_of_falling_back() {
-        if !has_python() {
-            return;
-        }
-        let (runtime, problems) = McpRuntime::connect(&settings_for(OLDER_MODERN_SERVER)).await;
-        assert!(problems.is_empty(), "{problems:?}");
-        // The server only answers when `_meta` carries 2025-11-25, so listing
-        // succeeding proves the client switched versions and stayed modern.
-        assert_eq!(runtime.expect("a runtime").tool_count(), 1);
-    }
-
-    #[test]
-    fn version_choice_prefers_the_newest_shared_revision() {
-        assert_eq!(
-            pick_version(Some(&json!(["2025-11-25", "2026-07-28"]))).as_deref(),
-            Some("2026-07-28")
-        );
-        assert_eq!(
-            pick_version(Some(&json!(["2025-11-25"]))).as_deref(),
-            Some("2025-11-25")
-        );
-        assert_eq!(pick_version(Some(&json!(["1900-01-01"]))), None);
-        assert_eq!(pick_version(None), None);
-    }
-
-    /// Advertises three tools one page at a time, so a client that reads only
-    /// the first page sees one of them.
-    const PAGINATED_SERVER: &str = r#"
-import json, sys
-PAGES = {None: ([{"name":"one","description":"First","inputSchema":{"type":"object"}}], "c1"),
-         "c1": ([{"name":"two","description":"Second","inputSchema":{"type":"object"}}], "c2"),
-         "c2": ([{"name":"three","description":"Third","inputSchema":{"type":"object"}}], None)}
-def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
-for line in sys.stdin:
-    if not line.strip(): continue
-    m = json.loads(line)
-    if m.get("method") == "server/discover":
-        send({"jsonrpc":"2.0","id":m["id"],"result":{"resultType":"complete",
-              "supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}})
-    elif m.get("method") == "tools/list":
-        tools, nxt = PAGES[(m.get("params") or {}).get("cursor")]
-        r = {"resultType":"complete","tools":tools}
-        if nxt: r["nextCursor"] = nxt
-        send({"jsonrpc":"2.0","id":m["id"],"result":r})
-"#;
-
-    /// Modern, but serves resources only: it never declares a tools capability.
-    const NO_TOOLS_SERVER: &str = r#"
-import json, sys
-def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
-for line in sys.stdin:
-    if not line.strip(): continue
-    m = json.loads(line)
-    if m.get("method") == "server/discover":
-        send({"jsonrpc":"2.0","id":m["id"],"result":{"resultType":"complete",
-              "supportedVersions":["2026-07-28"],"capabilities":{"resources":{}}}})
-    else:
-        send({"jsonrpc":"2.0","id":m["id"],"error":{"code":-32601,"message":"no tools here"}})
-"#;
-
-    #[tokio::test]
-    async fn every_page_of_a_paginated_tool_list_is_read() {
-        if !has_python() {
-            return;
-        }
-        let (runtime, problems) = McpRuntime::connect(&settings_for(PAGINATED_SERVER)).await;
-        assert!(problems.is_empty(), "{problems:?}");
-        let runtime = runtime.expect("a runtime");
-        assert_eq!(runtime.tool_count(), 3, "pagination stopped early");
-        assert!(runtime.injector().catalog().get("fake/three").is_some());
-    }
-
-    #[tokio::test]
-    async fn a_server_without_a_tools_capability_is_quiet_not_an_error() {
-        if !has_python() {
-            return;
-        }
-        let (runtime, problems) = McpRuntime::connect(&settings_for(NO_TOOLS_SERVER)).await;
-        assert!(runtime.is_none(), "no tools means nothing to inject");
-        assert!(
-            problems.is_empty(),
-            "a resources-only server is not a fault: {problems:?}"
-        );
-    }
-
-    #[test]
-    fn structured_content_is_used_when_the_server_sends_no_text() {
-        let result = json!({ "structuredContent": { "temperature": 22.5 } });
-        assert!(render_result(&result).contains("22.5"));
-    }
-
-    #[test]
-    fn an_incomplete_modern_result_is_not_reported_as_success() {
-        let result = json!({ "resultType": "input_required", "content": [] });
-        assert!(render_result(&result).contains("unfinished"));
-    }
-
-    #[tokio::test]
-    async fn discovery_costs_one_tool_no_matter_how_many_servers_there_are() {
-        if !has_python() {
-            return;
-        }
-        let (runtime, _) = McpRuntime::connect(&python_settings()).await;
-        let injection = runtime.expect("a runtime").injection().expect("injection");
-        assert_eq!(injection.bridge_tool["function"]["name"], "aster_mcp");
-        // Schemas stay behind `describe`; the prompt never carries them.
-        assert!(!injection.prompt.contains("inputSchema"));
-        assert!(!injection.prompt.contains("properties"));
-    }
-
-    #[tokio::test]
-    async fn a_server_that_cannot_start_is_reported_and_skipped() {
-        let mut settings = McpSettings::default();
-        settings.servers.insert(
-            "broken".into(),
-            ServerConfig {
-                command: "aster-no-such-binary".into(),
-                ..ServerConfig::default()
-            },
-        );
-        let (runtime, problems) = McpRuntime::connect(&settings).await;
-        assert!(runtime.is_none());
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].starts_with("broken:"), "{problems:?}");
-    }
-
-    #[test]
-    fn a_tight_budget_hides_tool_names_so_the_agent_has_to_search() {
-        let settings = McpSettings {
-            context_tokens: 1_000,
-            inventory_percent: 0.1,
-            ..McpSettings::default()
-        };
-        let config = settings.progressive();
-        assert_eq!(config.available_context_tokens, 1_000);
-        assert!(config.inventory_threshold_percent < 1.0);
-    }
-
-    #[test]
-    fn a_tool_without_a_description_still_enters_the_catalog() {
-        let connection_name = "github";
-        let entry = json!({ "name": "create_issue" });
-        // `McpCatalog::new` rejects empty descriptions, so the fallback text is
-        // what keeps a terse server usable.
-        let tool = McpTool {
-            server: connection_name.into(),
-            name: entry["name"].as_str().unwrap().into(),
-            description: "no description provided".into(),
-            input_schema: json!({ "type": "object" }),
-        };
-        assert!(McpCatalog::new(vec![tool]).is_ok());
-    }
-}
+#[path = "tests/mcp_test.rs"]
+mod tests;
