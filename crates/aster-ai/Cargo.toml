@@ -16,3 +16,6 @@ async-trait = "0.1"
 tokio = { workspace = true }
 tracing = { workspace = true }
 futures-util = "0.3"
+
+[dev-dependencies]
+wiremock = "0.6"

@@ -275,9 +275,116 @@ fn environment_note_finds_nested_bun_lockfile() {
 }
 
 #[test]
-fn environment_note_is_none_without_lockfiles() {
+fn environment_note_has_platform_and_date_without_lockfiles() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(environment_note(dir.path()).is_none());
+    let note = environment_note(dir.path()).expect("a note");
+    assert!(note.contains("- Platform: "), "{note}");
+    assert!(note.contains("- Today's date: "), "{note}");
+    assert!(!note.contains("lockfile"), "{note}");
+}
+
+#[test]
+fn environment_note_snapshots_git_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    };
+    git(&["init", "-b", "trunk"]);
+    std::fs::write(dir.path().join("a.txt"), "committed").unwrap();
+    git(&["add", "a.txt"]);
+    git(&["commit", "-m", "feat: first"]);
+    std::fs::write(dir.path().join("b.txt"), "untracked").unwrap();
+
+    let note = environment_note(dir.path()).expect("a note");
+    assert!(note.contains("- Git branch: trunk"), "{note}");
+    assert!(note.contains("feat: first"), "{note}");
+    assert!(note.contains("?? b.txt"), "{note}");
+}
+
+fn generate_test_command_output(
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+) -> aster_sandbox::CommandOutput {
+    aster_sandbox::CommandOutput {
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+        exit_code: Some(exit_code),
+        timed_out: false,
+    }
+}
+
+#[test]
+fn command_coaching_flags_pipe_masked_build_failure() {
+    let out = generate_test_command_output(
+        "error[E0308]: mismatched types\n  --> src/main.rs:4:5\n",
+        "",
+        0,
+    );
+    let notes = command_coaching(&out, true);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("exit code 0 comes from"), "{}", notes[0]);
+    assert!(notes[0].contains("error[E0308]"), "{}", notes[0]);
+}
+
+#[test]
+fn command_coaching_surfaces_first_error_on_failure() {
+    let out = generate_test_command_output("", "warning: x\nerror: linker failed\n", 1);
+    let notes = command_coaching(&out, true);
+    assert!(notes[0].contains("first error"), "{notes:?}");
+    assert!(notes[0].contains("linker failed"), "{notes:?}");
+}
+
+#[test]
+fn command_coaching_marks_auth_failures_as_non_retryable() {
+    let out = generate_test_command_output("", "Unauthorized. Please run 'railway login'\n", 1);
+    let notes = command_coaching(&out, true);
+    assert!(
+        notes.iter().any(|n| n.contains("auth failure")),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn command_coaching_names_the_sandbox_on_denials() {
+    let out = generate_test_command_output(
+        "",
+        "error: bun is unable to write files to tempdir: PermissionDenied\n",
+        1,
+    );
+    let notes = command_coaching(&out, true);
+    assert!(notes.iter().any(|n| n.contains("sandbox")), "{notes:?}");
+    let unsandboxed = command_coaching(&out, false);
+    assert!(
+        !unsandboxed.iter().any(|n| n.contains("sandbox")),
+        "{unsandboxed:?}"
+    );
+}
+
+#[test]
+fn command_coaching_ignores_ssh_publickey_denials() {
+    let out = generate_test_command_output("", "Permission denied (publickey).\n", 255);
+    let notes = command_coaching(&out, true);
+    assert!(!notes.iter().any(|n| n.contains("sandbox")), "{notes:?}");
+}
+
+#[test]
+fn command_coaching_stays_quiet_on_clean_output() {
+    let out = generate_test_command_output("all good\n", "", 0);
+    assert!(command_coaching(&out, true).is_empty());
 }
 
 #[test]
@@ -941,4 +1048,128 @@ fn read_file_is_left_to_its_own_mtime_cache() {
     let args = r#"{"path":"a.rs"}"#;
     assert!(!is_repeat_lookup(&ctx, "read_file", args));
     assert!(!is_repeat_lookup(&ctx, "read_file", args));
+}
+
+#[test]
+fn no_progress_corrects_then_aborts_on_identical_rounds() {
+    let mut np = NoProgress::default();
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Correct));
+    // Corrected once; another three identical rounds are the hard abort.
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Abort));
+}
+
+#[test]
+fn no_progress_corrects_then_aborts_on_error_storm() {
+    let mut np = NoProgress::default();
+    // Different failing calls still count as an error storm.
+    assert!(matches!(np.feed(1, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(2, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(3, true), RoundVerdict::Correct));
+    assert!(matches!(np.feed(4, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(5, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(6, true), RoundVerdict::Abort));
+}
+
+#[test]
+fn no_progress_a_differing_round_resets_the_streak() {
+    let mut np = NoProgress::default();
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    // A new round breaks the streak.
+    assert!(matches!(np.feed(2, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false), RoundVerdict::Correct));
+}
+
+#[test]
+fn no_progress_a_good_round_resets_the_error_streak() {
+    let mut np = NoProgress::default();
+    assert!(matches!(np.feed(1, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(2, true), RoundVerdict::Continue));
+    // A round with a non-error result resets the storm.
+    assert!(matches!(np.feed(3, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(4, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(5, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(6, true), RoundVerdict::Correct));
+}
+
+#[test]
+fn round_signature_hashes_name_args_and_result() {
+    let a = vec![(
+        "run_command".to_string(),
+        r#"{"cmd":"ls"}"#.to_string(),
+        "ok".to_string(),
+    )];
+    let b = vec![(
+        "run_command".to_string(),
+        r#"{"cmd":"ls"}"#.to_string(),
+        "ok".to_string(),
+    )];
+    assert_eq!(round_signature(&a), round_signature(&b));
+    let c = vec![(
+        "run_command".to_string(),
+        r#"{"cmd":"ls"}"#.to_string(),
+        "error: boom".to_string(),
+    )];
+    assert_ne!(round_signature(&a), round_signature(&c));
+}
+
+#[test]
+fn a_title_survives_the_wrappers_a_model_adds() {
+    assert_eq!(
+        clean_title("\"Fix the sandbox seccomp filter\"").unwrap(),
+        "Fix the sandbox seccomp filter"
+    );
+    assert_eq!(
+        clean_title("## Name the conversation.\nextra").unwrap(),
+        "Name the conversation"
+    );
+    assert_eq!(
+        clean_title("  `Rename chat sessions`  ").unwrap(),
+        "Rename chat sessions"
+    );
+}
+
+#[test]
+fn a_rambling_or_empty_title_is_rejected() {
+    assert!(clean_title("").is_none());
+    assert!(clean_title("\"\"").is_none());
+    assert!(clean_title(&"a".repeat(TITLE_MAX_CHARS + 1)).is_none());
+}
+
+#[test]
+fn the_titler_sees_the_user_turns_in_full_and_clips_the_assistant() {
+    let history = vec![
+        ChatMessage {
+            role: "user".into(),
+            content: "how does naming work".into(),
+        },
+        ChatMessage {
+            role: "assistant".into(),
+            content: "x".repeat(900),
+        },
+    ];
+    let ctx = title_context(&history);
+    assert!(ctx.contains("user: how does naming work"));
+    assert!(ctx.contains("[truncated]"));
+}
+
+#[test]
+fn environment_note_lists_task_runners_and_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Justfile"), "build:\n\techo hi\n").unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"vite","build":"vite build","check":"tsc --noEmit"}}"#,
+    )
+    .unwrap();
+    let note = environment_note(dir.path()).expect("a note");
+    assert!(note.contains("Justfile present"), "{note}");
+    assert_eq!(note.matches("just <name>").count(), 1, "{note}");
+    assert!(note.contains("build, check, dev"), "{note}");
 }
