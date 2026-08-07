@@ -26,16 +26,98 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    /// Manifest compiled into the binary; `path` is empty for these.
+    builtin: Option<&'static str>,
 }
 
 impl Skill {
     /// The instructions below the frontmatter, read on demand. Returns the whole
     /// file when it has no frontmatter fence.
     pub fn load_body(&self) -> Result<String> {
+        if let Some(raw) = self.builtin {
+            return Ok(strip_frontmatter(raw).trim().to_string());
+        }
         let raw = fs::read_to_string(&self.path)
             .with_context(|| format!("reading skill {}", self.path.display()))?;
         Ok(strip_frontmatter(&raw).trim().to_string())
     }
+
+    /// True when the skill ships with the binary rather than a directory.
+    pub fn is_builtin(&self) -> bool {
+        self.builtin.is_some()
+    }
+}
+
+/// Core skills every session gets: every-day workflows, verification and
+/// triage discipline, shell and context efficiency, and conduct. The index is
+/// a standing context cost, so only skills that earn their place on a routine
+/// coding turn live here. An installed skill with the same name shadows its
+/// built-in, so a repo can override any of them.
+const BUILTIN_SKILLS: &[&str] = &[
+    include_str!("../builtins/git-workflow/SKILL.md"),
+    include_str!("../builtins/gh-pr-workflow/SKILL.md"),
+    include_str!("../builtins/verify-before-done/SKILL.md"),
+    include_str!("../builtins/build-triage/SKILL.md"),
+    include_str!("../builtins/batched-bash/SKILL.md"),
+    include_str!("../builtins/cli-toolbox/SKILL.md"),
+    include_str!("../builtins/context-economy/SKILL.md"),
+    include_str!("../builtins/correction-protocol/SKILL.md"),
+    include_str!("../builtins/security-hygiene/SKILL.md"),
+];
+
+/// Bundled from `optional-skills/` but not indexed: task-class packs a user opts into with
+/// `aster skills bundled <name>`, which materializes the manifest into a
+/// skills root where discovery then treats it like any installed skill.
+const OPTIONAL_SKILLS: &[&str] = &[
+    include_str!("../optional-skills/package-managers/SKILL.md"),
+    include_str!("../optional-skills/supply-chain-safety/SKILL.md"),
+    include_str!("../optional-skills/dependency-upgrade/SKILL.md"),
+    include_str!("../optional-skills/debug-systematically/SKILL.md"),
+    include_str!("../optional-skills/refactor-safely/SKILL.md"),
+    include_str!("../optional-skills/write-tests/SKILL.md"),
+    include_str!("../optional-skills/background-processes/SKILL.md"),
+    include_str!("../optional-skills/i-have-adhd/SKILL.md"),
+    include_str!("../optional-skills/skill-creator/SKILL.md"),
+];
+
+/// The bundled optional skills, parsed. Not part of any default index.
+pub fn optional_skills() -> Vec<Skill> {
+    OPTIONAL_SKILLS
+        .iter()
+        .filter_map(|raw| builtin_skill(raw).ok())
+        .collect()
+}
+
+/// Materialize a bundled optional skill into `dest_root/<name>/SKILL.md`.
+/// Returns the installed directory.
+pub fn install_bundled(name: &str, dest_root: &Path, overwrite: bool) -> Result<PathBuf> {
+    let skill = optional_skills()
+        .into_iter()
+        .find(|s| s.name == name)
+        .with_context(|| format!("no bundled skill named {name}; see `aster skills bundled`"))?;
+    let dest = dest_root.join(&skill.name);
+    if dest.exists() && !overwrite {
+        bail!("{name} is already installed");
+    }
+    fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
+    let raw = skill
+        .builtin
+        .context("bundled skill has no embedded manifest")?;
+    fs::write(dest.join(SKILL_FILE), raw)
+        .with_context(|| format!("writing {}", dest.join(SKILL_FILE).display()))?;
+    Ok(dest)
+}
+
+/// Parse one compiled-in manifest. Its frontmatter must carry `name`; there is
+/// no directory name to fall back on.
+fn builtin_skill(raw: &'static str) -> Result<Skill> {
+    let (name, description) = parse_frontmatter(raw, "")?;
+    Ok(Skill {
+        name,
+        description,
+        path: PathBuf::new(),
+        builtin: Some(raw),
+    })
 }
 
 /// Skills discovered across one or more roots, deduped by name.
@@ -82,6 +164,23 @@ impl SkillSet {
         self.skills.iter().find(|s| s.name == name)
     }
 
+    /// Append every built-in that no installed skill shadows.
+    pub fn with_builtins(mut self) -> Self {
+        for raw in BUILTIN_SKILLS {
+            match builtin_skill(raw) {
+                Ok(skill) if self.skills.iter().all(|s| s.name != skill.name) => {
+                    self.skills.push(skill);
+                }
+                Ok(shadowed) => {
+                    tracing::debug!(skill = %shadowed.name, "built-in shadowed by an installed skill");
+                }
+                Err(e) => tracing::warn!("skipping malformed built-in skill: {e:#}"),
+            }
+        }
+        self.skills.sort_by(|a, b| a.name.cmp(&b.name));
+        self
+    }
+
     /// The system-prompt block listing every skill by name and description, or
     /// `None` when none are installed. The model loads a body with `read_skill`.
     pub fn render_index(&self) -> Option<String> {
@@ -90,11 +189,16 @@ impl SkillSet {
         }
         let mut out = String::from(
             "## Skills\n\n\
-            Skills are reusable instruction sets for specific tasks. Each is listed \
-            below as a name and a description of what it does and when to use it. \
-            When a request matches a skill's description, call `read_skill` with its \
-            name to load the full instructions before acting. Ignore skills that are \
-            not relevant.\n",
+            Skills are reusable instruction sets for specific tasks, listed as a \
+            name and a description of when to use each. Before your first action \
+            on every user message, scan this list against what the user wants and \
+            load anything that matches with `read_skill` (batch it into your \
+            `explore` call; it costs no extra round). Match on meaning and tone, \
+            not keywords: a task implies its workflow skills, a complaint or \
+            correction matches a correction skill, a request to be brief matches \
+            a brevity skill, whatever the exact words. When nothing matches, load \
+            nothing. Skipping a matching skill and improvising is how avoidable \
+            mistakes happen.\n",
         );
         for skill in &self.skills {
             out.push_str(&format!(
@@ -211,6 +315,9 @@ fn walk(
 /// `dest_root/<name>`. Returns the installed path. Refuses to clobber an existing
 /// install unless `overwrite` is set.
 pub fn install_skill(skill: &Skill, dest_root: &Path, overwrite: bool) -> Result<PathBuf> {
+    if skill.is_builtin() {
+        bail!("{} is built in and always available", skill.name);
+    }
     let src = skill
         .path
         .parent()
@@ -296,6 +403,7 @@ fn load_skill(manifest: &Path, dir_name: &str) -> Result<Skill> {
         name,
         description,
         path: manifest.to_path_buf(),
+        builtin: None,
     })
 }
 
@@ -482,6 +590,72 @@ mod tests {
         let dir = root.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(SKILL_FILE), body).unwrap();
+    }
+
+    #[test]
+    fn builtins_load_with_parseable_bodies() {
+        let set = SkillSet::default().with_builtins();
+        assert_eq!(set.len(), BUILTIN_SKILLS.len());
+        for skill in set.iter() {
+            assert!(skill.is_builtin(), "{}", skill.name);
+            assert!(!skill.description.is_empty(), "{}", skill.name);
+            let body = skill.load_body().unwrap();
+            assert!(body.starts_with('#'), "{}: {body:.40}", skill.name);
+        }
+        assert!(set.get("git-workflow").is_some());
+        assert!(set.get("verify-before-done").is_some());
+    }
+
+    #[test]
+    fn an_installed_skill_shadows_its_builtin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "git-workflow",
+            "---\nname: git-workflow\ndescription: repo override\n---\n\ncustom body",
+        );
+        let set = SkillSet::discover(&[tmp.path().to_path_buf()]).with_builtins();
+        let skill = set.get("git-workflow").unwrap();
+        assert!(!skill.is_builtin());
+        assert_eq!(skill.load_body().unwrap(), "custom body");
+        assert_eq!(set.iter().filter(|s| s.name == "git-workflow").count(), 1);
+    }
+
+    #[test]
+    fn optional_skills_stay_out_of_the_default_index() {
+        let set = SkillSet::default().with_builtins();
+        for optional in optional_skills() {
+            assert!(set.get(&optional.name).is_none(), "{}", optional.name);
+        }
+        assert!(!optional_skills().is_empty());
+    }
+
+    #[test]
+    fn install_bundled_materializes_a_discoverable_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = install_bundled("debug-systematically", tmp.path(), false).unwrap();
+        assert!(dest.join(SKILL_FILE).is_file());
+        let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+        let skill = set.get("debug-systematically").unwrap();
+        assert!(!skill.is_builtin());
+        assert!(skill.load_body().unwrap().starts_with('#'));
+        let err = install_bundled("debug-systematically", tmp.path(), false).unwrap_err();
+        assert!(err.to_string().contains("already installed"), "{err:#}");
+    }
+
+    #[test]
+    fn install_bundled_rejects_unknown_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = install_bundled("no-such-skill", tmp.path(), false).unwrap_err();
+        assert!(format!("{err:#}").contains("no bundled skill"), "{err:#}");
+    }
+
+    #[test]
+    fn a_builtin_refuses_to_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let set = SkillSet::default().with_builtins();
+        let err = install_skill(set.get("git-workflow").unwrap(), tmp.path(), false).unwrap_err();
+        assert!(err.to_string().contains("built in"), "{err:#}");
     }
 
     #[test]
