@@ -195,7 +195,7 @@ probability, so treat the number as a ranking signal rather than odds.
 | --- | --- |
 | `aster memory` | Facts Aster should keep between sessions. `add`, `list`, `show`, `remove`. |
 | `aster sessions` | Past conversations. `list`, `show`, `delete`, `prune`. |
-| `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `remove`. |
+| `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `bundled`, `remove`. |
 | `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`. |
 | `aster web` | Fetch a page or crawl a site as Markdown. |
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
@@ -226,11 +226,21 @@ listed by title and read in full only when the agent needs them.
 Skills are folders with a `SKILL.md` telling the agent how to do something
 specific. Aster reads the titles and loads the body only when it is relevant.
 
+Nine core skills ship built in and are always available: git and GitHub
+workflows, verification before reporting done, build triage, shell batching,
+CLI craft, context economy, taking corrections, and security hygiene. Nine
+more are bundled but off by default (debugging, refactoring, tests,
+dependency upgrades, supply-chain safety, background processes, and others);
+`aster skills bundled` lists them. Installing any skill with the same name
+overrides its built-in.
+
 ```bash
 aster skills find react          # search GitHub for skills
 aster skills add owner/repo      # install from a repo
 aster skills add ./my-skill -p   # install into this project only
 aster skills add claude-code     # import from another agent on this machine
+aster skills bundled             # list the optional built-in skills
+aster skills bundled write-tests # turn one on
 aster skills list
 ```
 
