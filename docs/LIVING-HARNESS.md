@@ -88,49 +88,63 @@ behavior instantly and persisted for dozens of messages. Only 4 of roughly 120
 available skills ever fired, so the catalog itself is a standing context cost:
 ship few, targeted built-ins.
 
-Built-ins to ship (via `include_str!`, like the
-[subagent builtins](../crates/aster-agents/src/registry.rs)):
+Shipped (via `include_str!` in
+[aster-skills](../crates/aster-skills/src/lib.rs), manifests under
+[builtins/](../crates/aster-skills/builtins/)) as two tiers, because the index
+is a standing context cost:
 
-1. **git-workflow**: conventional commits, no interactive flags, `--no-pager`,
-   add specific files, do not commit unless asked, branch before pushing main.
-2. **gh-pr-workflow**: API-first review flow, `gh pr diff N > file` instead of
-   dumping diffs into context, draft review JSON to a scratch file, post only
-   on explicit approval.
-3. **verify-before-done**: behavioral checks per ecosystem, the
-   start-server-and-poll idiom, the red-check protocol, the environmental-noise
-   escape hatch.
-4. **build-triage**: read the first error not the last, parse output over exit
-   codes, bound output with head/tail, the timeout protocol.
-5. **batched-bash**: one call per goal, `echo "=== label ==="` section markers,
-   self-verifying pipes (`... && echo OK || echo FAIL`). 61% of Claude's bash
-   was chained; weak models will not do this unprompted.
-6. **package-managers**: lockfile discipline, never mix managers, sandbox
-   failure signatures.
-7. **correction-protocol**: concede in the first sentence, name the true cause,
-   minimal fix only, and save the correction with `remember` so it never has to
-   be repeated. Teach once, comply forever: in the study, a correction written
-   to memory was honored in every later session with zero re-prompting, while
-   unsaved corrections were re-typed across sessions in increasingly frustrated
-   caps.
+**Core, always in the index (9):** git-workflow, gh-pr-workflow,
+verify-before-done, build-triage, batched-bash, cli-toolbox, context-economy,
+correction-protocol, security-hygiene. The bar: earns its place on a routine
+coding turn. An installed skill with the same name shadows its built-in.
+
+**Optional, bundled but not indexed (9):** package-managers,
+supply-chain-safety, dependency-upgrade, debug-systematically, refactor-safely,
+write-tests, background-processes, i-have-adhd, skill-creator.
+`aster skills bundled` lists them; `aster skills bundled <name>` materializes
+one into a skills root, after which discovery treats it like any installed
+skill.
+
+Routing is split by observability. Events the harness can detect mechanically
+(build failure, timeout) carry a pointer to the matching skill in their
+coaching note. Language and tone are the model's call: the index instruction
+makes a match-on-meaning scan mandatory before the first action of every turn
+and tells the model to batch `read_skill` into `explore`, so loading costs no
+extra round. Keyword tables were tried and removed; they cannot enumerate
+English.
+
+The memory loop closes it: correction-protocol ends every taken correction
+with a `remember` save. Teach once, comply forever: in the study, a correction
+written to memory was honored in every later session with zero re-prompting,
+while unsaved corrections were re-typed across sessions in increasingly
+frustrated caps.
 
 ## Environment context
 
-Inject at session start, next to the package-manager note: branch, main branch,
-a `git status --short` snapshot, the last few commits, platform, and today's
-date. The study's models started acting immediately from this context instead
-of spending rounds on discovery; date injection also stops training-cutoff
-dates leaking into commits and docs.
+Injected at session start (`environment_note` in
+[chat.rs](../crates/aster-cli/src/chat.rs)): platform and arch, today's date,
+branch and default branch, a bounded `git status --porcelain` snapshot, the
+last five commits, the package manager each lockfile pins, and the project's
+own verbs (Justfile/Makefile/Taskfile presence, package.json script names).
+The study's models started acting immediately from this context instead of
+spending rounds on discovery; date injection also stops training-cutoff dates
+leaking into commits and docs.
 
 ## Phases
 
-- **P1, mechanical**: timeout partial output, sandbox TMPDIR fix, the error
-  decorators above, the environment block.
-- **P2, doctrine and skills**: prompt sections (verification, final message,
-  correction protocol, named-command fidelity, reference fidelity) plus the
-  seven built-in skills.
+- **P1, mechanical — shipped**: timeouts return partial output with coaching,
+  the sandbox inherits `TMPDIR` and allows bun/yarn/pnpm caches, the error
+  decorators above (fuzzy-region edit errors, first-error extraction,
+  pipe-masked failures, auth tags, sandbox-denial naming), the environment
+  block.
+- **P2, doctrine and skills — shipped**: prompt sections in
+  [aster-agent.md](../crates/aster-cli/prompts/aster-agent.md) (shape of a
+  reply, verifying work, fidelity, taking a correction) plus the 18 built-in
+  skills in two tiers.
 - **P3, state loops**: read-before-edit and stale-file tracking, the
   verification gate with edit/verify ordering, replayable assertions, the
-  repeat-action guard, plan staleness nags, memory-on-correction.
+  repeat-action guard for commands, plan staleness nags, memory-on-correction
+  nudges.
 - **P4, infrastructure**: a compaction template whose summary preserves all
   user messages as constraints (the studied template's key trick), and one
   [live eval case](../crates/aster-eval/src/live.rs) per feedback loop so a

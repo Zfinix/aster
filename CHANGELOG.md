@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 18 built-in skills in two tiers. Nine core skills (git-workflow,
+  gh-pr-workflow, verify-before-done, build-triage, batched-bash, cli-toolbox,
+  context-economy, correction-protocol, security-hygiene) sit in every
+  session's skill index; nine optional ones (package-managers,
+  supply-chain-safety, dependency-upgrade, debug-systematically,
+  refactor-safely, write-tests, background-processes, i-have-adhd,
+  skill-creator) ship in the binary and install with
+  `aster skills bundled <name>`. An installed skill of the same name shadows
+  its built-in.
+- A session-start environment snapshot in the system prompt: platform, date,
+  git branch and status, recent commits, the package manager each lockfile
+  pins, and the project's task-runner verbs (Justfile, Makefile, Taskfile,
+  package.json scripts).
+- Error coaching on tool results. Failed edits embed the closest matching
+  region of the file with line numbers; command results flag pipe-masked build
+  failures, extract the first compiler error, mark auth failures as
+  non-retryable, and name the sandbox as the cause of permission denials.
+- Agent doctrine sections in the system prompt: shape of a reply, verifying
+  work before reporting done, command and reference fidelity, and taking a
+  correction.
+- [docs/LIVING-HARNESS.md](docs/LIVING-HARNESS.md): the transcript-study
+  design behind all of the above.
+
+### Fixed
+
+- Timed-out commands now return the output they produced before the kill,
+  with guidance, instead of discarding it.
+- The sandbox inherits `TMPDIR` and allows the bun, yarn, and pnpm caches, so
+  JavaScript installs no longer fail with permission errors.
+
 - Three new Context.dev web tools. `web/search` searches the web and returns
   each result scraped to Markdown, `web/sitemap` lists a domain's sitemap URLs
   without scraping any pages, and `web/screenshot` captures a rendered page as
