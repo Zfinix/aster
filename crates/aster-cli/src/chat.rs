@@ -2081,7 +2081,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "ask_user",
-                "description": "Ask the user a structured question with a set of options. Use when you need a decision between alternatives, not for simple yes/no approval. The user can pick an option or write their own.",
+                "description": "Ask the user a structured question with a set of options. Only for decisions that are genuinely the user's to make and that you cannot resolve from the request, the code, or sensible defaults. If the user's message already implies the answer, act on it; never ask how to do the thing they just asked for. Not for yes/no approval. The user can pick an option or write their own.",
                 "parameters": {
                     "type": "object",
                     "properties": {
