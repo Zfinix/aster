@@ -246,6 +246,26 @@ impl SessionCtx {
         }
     }
 
+    /// True once this session carries a generated name, so a resumed session
+    /// keeps the one it already has.
+    fn is_titled(&self) -> bool {
+        self.recorder
+            .as_ref()
+            .and_then(|r| r.lock().ok())
+            .is_some_and(|w| w.title().is_some())
+    }
+
+    fn record_title(&self, title: &str) {
+        let Some(recorder) = &self.recorder else {
+            return;
+        };
+        if let Ok(mut writer) = recorder.lock()
+            && let Err(e) = writer.set_title(title)
+        {
+            tracing::warn!("failed to record title event: {e:#}");
+        }
+    }
+
     fn memory_context(&self) -> Option<String> {
         let store = self.store.as_ref()?;
         match store.memory().load_context() {
@@ -267,12 +287,139 @@ pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
         Ok(home) => roots.push(home.join("skills")),
         Err(e) => tracing::debug!("no global skills root: {e:#}"),
     }
-    Arc::new(aster_skills::SkillSet::discover(&roots))
+    Arc::new(aster_skills::SkillSet::discover(&roots).with_builtins())
+}
+
+/// Session-start snapshot: platform, date, git state, and which package
+/// manager each lockfile pins. Taken once, so the model starts a turn knowing
+/// what a round of discovery commands would have told it.
+pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
+    let mut note = format!(
+        "## Environment\n- Platform: {} ({})\n- Today's date: {}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    if let Some(git) = git_snapshot(repo_root) {
+        note.push_str(&git);
+    }
+    if let Some(pm) = package_manager_note(repo_root) {
+        note.push_str(&pm);
+    }
+    if let Some(runners) = task_runner_note(repo_root) {
+        note.push_str(&runners);
+    }
+    Some(note)
+}
+
+/// How many package.json script names the snapshot lists.
+const MAX_SCRIPT_NAMES: usize = 12;
+
+/// The project's own verbs: task-runner files and script names, so the model
+/// reaches for `just build` or `bun run check` instead of hand-rolling the
+/// pipeline those already encode.
+fn task_runner_note(repo_root: &Path) -> Option<String> {
+    let mut note = String::new();
+    // One candidate list per runner: a case-insensitive filesystem would
+    // otherwise report Justfile and justfile as two files.
+    let runners: [(&[&str], &str); 3] = [
+        (
+            &["Justfile", "justfile"],
+            "run recipes with `just <name>`; `just --list` shows them",
+        ),
+        (&["Makefile"], "run targets with `make <name>`"),
+        (
+            &["Taskfile.yml"],
+            "run tasks with `task <name>`; `task --list` shows them",
+        ),
+    ];
+    for (candidates, hint) in runners {
+        if let Some(file) = candidates.iter().find(|f| repo_root.join(f).is_file()) {
+            note.push_str(&format!("- {file} present: {hint}.\n"));
+        }
+    }
+    if let Some(scripts) = package_scripts(&repo_root.join("package.json")) {
+        note.push_str(&format!(
+            "- package.json scripts: {}. Prefer these over hand-rolled equivalents.\n",
+            scripts.join(", ")
+        ));
+    }
+    (!note.is_empty()).then_some(note)
+}
+
+/// Script names from a `package.json`, bounded, alphabetical.
+fn package_scripts(manifest: &Path) -> Option<Vec<String>> {
+    let raw = fs::read_to_string(manifest).ok()?;
+    let json: Value = serde_json::from_str(&raw).ok()?;
+    let scripts = json.get("scripts")?.as_object()?;
+    if scripts.is_empty() {
+        return None;
+    }
+    let mut names: Vec<String> = scripts.keys().take(MAX_SCRIPT_NAMES).cloned().collect();
+    if scripts.len() > MAX_SCRIPT_NAMES {
+        names.push(format!("... {} more", scripts.len() - MAX_SCRIPT_NAMES));
+    }
+    Some(names)
+}
+
+/// How many changed files the git snapshot lists before summarizing the rest.
+const GIT_STATUS_LINES: usize = 15;
+
+/// Branch, working-tree status, and recent commits, labelled as a snapshot so
+/// a later turn does not treat it as live. `None` outside a git repository.
+fn git_snapshot(repo_root: &Path) -> Option<String> {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let mut note = format!("- Git branch: {branch}");
+    if let Some(default) = git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .as_deref()
+        .and_then(|head| head.rsplit('/').next())
+    {
+        note.push_str(&format!(" (default branch: {default})"));
+    }
+    note.push('\n');
+    match git(&["status", "--porcelain"]).as_deref() {
+        Some("") => note.push_str("- Working tree clean at session start\n"),
+        Some(status) => {
+            let lines: Vec<&str> = status.lines().collect();
+            note.push_str(&format!(
+                "- Changed files at session start ({}):\n",
+                lines.len()
+            ));
+            for line in lines.iter().take(GIT_STATUS_LINES) {
+                note.push_str(&format!("  {line}\n"));
+            }
+            if lines.len() > GIT_STATUS_LINES {
+                note.push_str(&format!(
+                    "  ... and {} more\n",
+                    lines.len() - GIT_STATUS_LINES
+                ));
+            }
+        }
+        None => {}
+    }
+    if let Some(log) = git(&["log", "--oneline", "-5"]).filter(|log| !log.is_empty()) {
+        note.push_str("- Recent commits:\n");
+        for line in log.lines() {
+            note.push_str(&format!("  {line}\n"));
+        }
+    }
+    Some(note)
 }
 
 /// Which JavaScript package manager each lockfile pins, so the model runs
 /// `bun`/`pnpm`/`yarn` where the repo does instead of defaulting to npm.
-pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
+fn package_manager_note(repo_root: &Path) -> Option<String> {
     const LOCKS: &[(&str, &str)] = &[
         ("bun.lock", "bun"),
         ("bun.lockb", "bun"),
@@ -306,7 +453,7 @@ pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
     if found.is_empty() {
         return None;
     }
-    let mut note = String::from("## Environment\n");
+    let mut note = String::new();
     for (pm, dirs) in &found {
         note.push_str(&format!(
             "- JavaScript packages in {} use `{pm}`; run scripts and one-off tools with it, not npm/npx.\n",
@@ -740,6 +887,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     }
 
     let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo)?;
+    let titling = history.clone();
 
     let mut edited: Vec<String> = Vec::new();
     let reply = if args.no_tools {
@@ -769,6 +917,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .await?
         .0
     };
+    name_session(&client, &ctx, &titling).await;
 
     if crate::json_mode() {
         let u = client.usage_snapshot();
@@ -975,6 +1124,12 @@ async fn run_stream(
     )
     .await;
 
+    if result.is_ok()
+        && let Some(title) = name_session(&client, &ctx, &history).await
+    {
+        emit_line(&json!({ "type": "title", "title": title }));
+    }
+
     let u = client.usage_snapshot();
     match result {
         Ok((reply, _)) => emit_line(&json!({
@@ -1141,6 +1296,9 @@ pub(crate) async fn agent_turn_streaming(
         Some(&events),
     )
     .await?;
+    if let Some(title) = name_session(&client, &ctx, &history).await {
+        events(json!({ "type": "title", "title": title }));
+    }
     Ok((reply, edited, compacted))
 }
 
@@ -1577,6 +1735,98 @@ window. Summarize the exchange below into a compact brief the assistant can \
 continue from: the user's goals, the key decisions and facts established, the \
 files and code touched, and any open threads or next steps. Be specific and \
 terse. Do not add commentary or a preamble.";
+
+const TITLE_PROMPT: &str = "Name the conversation below. Reply with the name \
+and nothing else: 3 to 6 words, sentence case, no quotes, no trailing period. \
+Start with a plain verb and drop articles. Name what the user is trying to do, \
+not what the assistant did, and be concrete about the subject (\"Fix sandbox \
+seccomp filter\", not \"Debugging a bug\"). Keep the user's own nouns for \
+files, tools, and features.";
+
+/// User turns a session needs before it earns a name. Two is enough for the
+/// topic to be clear while the session is still worth finding later.
+const TITLE_AFTER_TURNS: usize = 2;
+
+/// Longest title kept; anything past this is the model ignoring the prompt.
+const TITLE_MAX_CHARS: usize = 60;
+
+/// Name the session once it has enough shape to be worth naming. Best-effort:
+/// a failure here must never cost the user their turn, so errors are logged and
+/// the session keeps its opening message as its name.
+async fn name_session(
+    client: &AiClient,
+    ctx: &SessionCtx,
+    history: &[ChatMessage],
+) -> Option<String> {
+    if ctx.sub_agent.is_some() {
+        return None;
+    }
+    let turns = history.iter().filter(|m| m.role == "user").count();
+    if turns < TITLE_AFTER_TURNS {
+        return None;
+    }
+    // A recorded session names itself once and the transcript remembers it. An
+    // unrecorded one (a desktop thread nobody saved) has nowhere to remember,
+    // so it names itself exactly on the threshold turn and not again.
+    if ctx.recorder.is_some() {
+        if ctx.is_titled() {
+            return None;
+        }
+    } else if turns != TITLE_AFTER_TURNS {
+        return None;
+    }
+
+    let messages = vec![
+        ChatMessage {
+            role: "system".into(),
+            content: TITLE_PROMPT.into(),
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: title_context(history),
+        },
+    ];
+    let reply = match client.complete_messages(&messages, 0.2).await {
+        Ok(reply) => reply,
+        Err(e) => {
+            tracing::debug!("could not name the session: {e:#}");
+            return None;
+        }
+    };
+    let title = clean_title(&reply)?;
+    ctx.record_title(&title);
+    Some(title)
+}
+
+/// The exchange the titler sees: user turns in full, assistant turns clipped,
+/// since the opening lines carry the topic and the rest is tool narration.
+fn title_context(history: &[ChatMessage]) -> String {
+    let mut out = String::new();
+    for m in history
+        .iter()
+        .filter(|m| m.role == "user" || m.role == "assistant")
+    {
+        let body = truncate(m.content.trim(), if m.role == "user" { 2000 } else { 500 });
+        out.push_str(&m.role);
+        out.push_str(": ");
+        out.push_str(&body);
+        out.push_str("\n\n");
+    }
+    out
+}
+
+/// Strip the wrappers a model reaches for when asked for a bare line: quotes,
+/// a trailing period, a markdown heading, extra lines.
+fn clean_title(reply: &str) -> Option<String> {
+    let line = reply.trim().lines().next()?.trim();
+    let line = line.trim_start_matches('#').trim();
+    let line = line.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    let line = line.trim_end_matches('.').trim();
+    if line.is_empty() || line.chars().count() > TITLE_MAX_CHARS {
+        return None;
+    }
+    Some(line.to_string())
+}
 
 async fn compact_if_needed(
     client: &AiClient,
@@ -2670,6 +2920,85 @@ async fn run_raw(
     aster_sandbox::run_command(&config, binary, args).await
 }
 
+/// Notes appended to a command result for failure classes models misread:
+/// pipe-masked build failures, buried first errors, auth failures worth zero
+/// retries, and sandbox denials that look like broken tools.
+fn command_coaching(output: &aster_sandbox::CommandOutput, sandboxed: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    let failed = output.exit_code != Some(0);
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+
+    if let Some(line) = first_error_line(&combined) {
+        if output.exit_code == Some(0) {
+            notes.push(format!(
+                "note: exit code 0 comes from the last command in the pipe; the \
+                 build or test run itself failed. First error: {line}. The \
+                 `build-triage` skill (read_skill) has the full protocol."
+            ));
+        } else {
+            notes.push(format!(
+                "note: first error in the output: {line}. Fix the first error \
+                 before any later one; the `build-triage` skill (read_skill) \
+                 has the full protocol."
+            ));
+        }
+    }
+
+    let lower = combined.to_lowercase();
+    if failed
+        && [
+            "unauthorized",
+            "authentication failed",
+            "invalid credentials",
+            "not logged in",
+            "please log in",
+            "token expired",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        notes.push(
+            "note: this is an auth failure; retrying the same command will not \
+             help. Tell the user what to log in to, and continue with what does \
+             not need it."
+                .into(),
+        );
+    }
+
+    let denial = ["permission denied", "permissiondenied", "eperm"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        // ssh's "Permission denied (publickey)" is auth, not the sandbox.
+        && !lower.contains("publickey");
+    if sandboxed && failed && denial {
+        notes.push(
+            "note: this command ran inside the sandbox, which only allows writes \
+             to the repository, temp directories, and build caches. A permission \
+             error here usually means the sandbox blocked a path, not that the \
+             tool or network is broken. Prefer a path the sandbox allows; if the \
+             task truly needs the blocked path, say so to the user instead of \
+             switching tools."
+                .into(),
+        );
+    }
+    notes
+}
+
+/// The first line of `output` that looks like a compiler or test failure.
+fn first_error_line(output: &str) -> Option<String> {
+    output
+        .lines()
+        .find(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("error:")
+                || trimmed.starts_with("error[")
+                || trimmed.contains("error TS")
+                || trimmed.starts_with("FAILED")
+                || trimmed.contains("panicked at")
+        })
+        .map(|line| line.trim().to_string())
+}
+
 /// Render a timed-out command for the model: the partial output is the
 /// evidence, and the coaching stops the two observed dead ends (diagnosing
 /// from nothing, or re-running with a longer timeout).
@@ -2693,7 +3022,8 @@ fn render_timeout(output: &aster_sandbox::CommandOutput, timeout_secs: u64) -> S
     result.push_str(
         "Do NOT re-run this command with a longer timeout. Kill any leftover \
          processes first, then run a narrower or faster variant (scope it to \
-         one target, bound its output, or skip the slow step).",
+         one target, bound its output, or skip the slow step). The \
+         `build-triage` skill (read_skill) has the full protocol.",
     );
     result
 }
@@ -2724,6 +3054,10 @@ async fn run_command_tool(
         result.push_str(&truncate_head(&output.stderr, MAX_STREAM_CHARS));
     }
     result.push_str(&format!("\nexit code: {exit_code}"));
+    for note in command_coaching(&output, !opts.yolo) {
+        result.push('\n');
+        result.push_str(&note);
+    }
     if result.is_empty() {
         return Ok("(no output)".into());
     }

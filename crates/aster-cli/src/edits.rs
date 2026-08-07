@@ -58,12 +58,79 @@ pub fn parse_blocks(reply: &str) -> Result<Vec<EditBlock>> {
 pub fn apply_block(content: &str, block: &EditBlock) -> Result<String> {
     let hits = content.matches(&block.search).count();
     match hits {
-        0 => {
-            bail!("search text not found in the file (it must match exactly, whitespace included)")
-        }
+        0 => match closest_region(content, &block.search) {
+            Some(region) => bail!(
+                "search text not found in the file (it must match exactly, \
+                 whitespace included). {region}"
+            ),
+            None => bail!(
+                "search text not found in the file (it must match exactly, \
+                 whitespace included); nothing similar found either, so check \
+                 the path and re-read the file"
+            ),
+        },
         1 => Ok(content.replacen(&block.search, &block.replace, 1)),
         n => bail!("search text matches {n} locations; add surrounding lines to make it unique"),
     }
+}
+
+/// Extra file lines shown either side of the best match, so the caller can
+/// re-anchor without another read.
+const REGION_CONTEXT_LINES: usize = 5;
+/// Bigram-similarity floor below which a "closest" line is just noise.
+const MIN_SIMILARITY: f64 = 0.5;
+
+/// The file region most similar to a failed search, rendered with line
+/// numbers. Retrying a mismatched edit verbatim was the most common wasted
+/// round in transcript studies; embedding the real text removes the extra
+/// read the retry depends on.
+fn closest_region(content: &str, search: &str) -> Option<String> {
+    let anchor = search.lines().find(|l| !l.trim().is_empty())?.trim();
+    let lines: Vec<&str> = content.lines().collect();
+    let (best, score) = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| (i, similarity(anchor, line.trim())))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    if score < MIN_SIMILARITY {
+        return None;
+    }
+    let span = search.lines().count() + REGION_CONTEXT_LINES;
+    let start = best.saturating_sub(REGION_CONTEXT_LINES);
+    let end = (best + span).min(lines.len());
+    let mut region = format!("Closest match in the file (lines {}-{}):\n", start + 1, end);
+    for (i, line) in lines[start..end].iter().enumerate() {
+        region.push_str(&format!("{:>5} | {line}\n", start + i + 1));
+    }
+    region.push_str("Re-issue the edit copying the exact text from this snippet.");
+    Some(region)
+}
+
+/// Dice coefficient over character bigrams; whitespace-insensitive enough to
+/// survive indentation drift, cheap enough to run per line.
+fn similarity(a: &str, b: &str) -> f64 {
+    let bigrams = |s: &str| -> Vec<(char, char)> {
+        let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let (a, b) = (bigrams(a), bigrams(b));
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut b_pool = b.clone();
+    let shared = a
+        .iter()
+        .filter(|bg| {
+            b_pool
+                .iter()
+                .position(|x| x == *bg)
+                .inspect(|&i| {
+                    b_pool.swap_remove(i);
+                })
+                .is_some()
+        })
+        .count();
+    (2.0 * shared as f64) / (a.len() + b.len()) as f64
 }
 
 /// Resolve `path` inside `repo_root`, rejecting anything that escapes it (`..`, symlinks, absolute).
@@ -278,5 +345,36 @@ mod tests {
             replace: "c".into(),
         };
         assert!(apply_block("a a", &block).is_err());
+    }
+
+    #[test]
+    fn apply_block_mismatch_embeds_closest_region() {
+        let content = "fn alpha() {}\nfn beta(count: usize) -> usize {\n    count + 1\n}\n";
+        let block = EditBlock {
+            search: "fn beta(count: u32) -> u32 {".into(),
+            replace: "fn beta(count: u64) -> u64 {".into(),
+        };
+        let err = format!("{:#}", apply_block(content, &block).unwrap_err());
+        assert!(err.contains("Closest match"), "{err}");
+        assert!(err.contains("fn beta(count: usize) -> usize {"), "{err}");
+        assert!(err.contains("Re-issue the edit"), "{err}");
+    }
+
+    #[test]
+    fn apply_block_mismatch_without_similar_text_says_so() {
+        let block = EditBlock {
+            search: "completely unrelated text".into(),
+            replace: "x".into(),
+        };
+        let err = format!("{:#}", apply_block("zzz\nqqq\n", &block).unwrap_err());
+        assert!(err.contains("nothing similar"), "{err}");
+    }
+
+    #[test]
+    fn closest_region_survives_indentation_drift() {
+        let content = "one\ntwo\n        let value = compute(input);\nfour\n";
+        let region = closest_region(content, "let value = compute(input);").unwrap();
+        assert!(region.contains("compute(input)"), "{region}");
+        assert!(region.contains("lines 1-"), "{region}");
     }
 }

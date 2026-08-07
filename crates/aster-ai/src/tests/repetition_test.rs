@@ -1,4 +1,8 @@
 use super::*;
+use crate::AiClient;
+use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn degenerate() -> String {
     "I'm committing. ".repeat(60)
@@ -68,4 +72,55 @@ fn marker_downcasts() {
     let e = anyhow::Error::new(DegenerateOutput)
         .context("the model's reply degenerated into repeated text");
     assert!(e.downcast_ref::<DegenerateOutput>().is_some());
+}
+
+#[tokio::test]
+async fn degenerate_stream_is_cut_off_mid_turn() {
+    let server = MockServer::start().await;
+    let mut sse = String::new();
+    for _ in 0..40 {
+        sse.push_str(&format!(
+            "data: {}\n\n",
+            json!({ "choices": [{ "delta": { "content": "I'm committing. " } }] })
+        ));
+    }
+    sse.push_str("data: [DONE]\n\n");
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse))
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let err = client
+        .complete_tools_stream_with("mock-model", vec![], vec![], 0.0, |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<DegenerateOutput>().is_some(),
+        "unexpected error: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn degenerate_non_streaming_reply_is_rejected() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": { "role": "assistant", "content": degenerate() } }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 10 }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let err = client
+        .complete_tools_with("mock-model", vec![], vec![], 0.0)
+        .await
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<DegenerateOutput>().is_some(),
+        "unexpected error: {err:#}"
+    );
 }
