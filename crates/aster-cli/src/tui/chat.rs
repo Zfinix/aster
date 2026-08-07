@@ -1771,7 +1771,7 @@ impl ChatApp {
                     return None;
                 }
                 let title = transcript
-                    .first_user_text()
+                    .display_title()
                     .map(|s| super::helpers::truncate_label(s.trim(), 60))
                     .unwrap_or_else(|| meta.id.clone());
                 Some(SelectionItem {

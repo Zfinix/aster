@@ -8,7 +8,7 @@ pub use grants::GrantStore;
 pub use memory::{MemoryMeta, MemoryStore, PROJECT_MEMORY_FILE};
 pub use transcript::{
     EventUsage, EvictionEvent, MessageEvent, SessionMeta, SessionTranscript, SessionWriter,
-    SummaryEvent, TRANSCRIPT_VERSION, TranscriptEvent,
+    SummaryEvent, TRANSCRIPT_VERSION, TitleEvent, TranscriptEvent,
 };
 
 use std::path::{Path, PathBuf};

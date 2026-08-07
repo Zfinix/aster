@@ -420,6 +420,13 @@ function App() {
         case "notice":
           toast(ev.message);
           break;
+        case "title":
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id === convoId && !c.renamed ? { ...c, title: ev.title } : c,
+            ),
+          );
+          break;
         case "done": {
           activeChatRef.current = null;
           chatUnlistenRef.current?.();
@@ -739,7 +746,7 @@ function App() {
 
   const onRenameConvo = useCallback((id: string, title: string) => {
     setConversations((cs) =>
-      cs.map((c) => (c.id === id ? { ...c, title } : c)),
+      cs.map((c) => (c.id === id ? { ...c, title, renamed: true } : c)),
     );
   }, []);
 
