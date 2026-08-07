@@ -16,6 +16,7 @@ pub enum TranscriptEvent {
     Message(MessageEvent),
     Summary(SummaryEvent),
     Eviction(EvictionEvent),
+    Title(TitleEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,24 @@ impl SummaryEvent {
     }
 }
 
+/// A name for the session, written once the conversation has enough shape to
+/// summarize. Appended rather than patched into the header, so the transcript
+/// stays append-only and a retitle is just the newest one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TitleEvent {
+    pub title: String,
+    pub ts: DateTime<Utc>,
+}
+
+impl TitleEvent {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            ts: Utc::now(),
+        }
+    }
+}
+
 /// One message dropped or stubbed out by the context budget, kept in the
 /// transcript so a run can explain exactly what the model no longer saw.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +237,17 @@ impl SessionWriter {
         &self.meta.id
     }
 
+    pub fn title(&self) -> Option<&str> {
+        self.meta.title.as_deref()
+    }
+
+    pub fn set_title(&mut self, title: impl Into<String>) -> Result<()> {
+        let title = title.into();
+        self.append(&TranscriptEvent::Title(TitleEvent::new(title.clone())))?;
+        self.meta.title = Some(title);
+        Ok(())
+    }
+
     pub fn meta(&self) -> &SessionMeta {
         &self.meta
     }
@@ -257,8 +287,16 @@ impl SessionTranscript {
             events.push(event);
         }
 
-        let meta =
+        let mut meta =
             meta.with_context(|| format!("transcript {} has no session header", path.display()))?;
+        // Fold the newest title into the header so every reader (and a writer
+        // reopened from here) sees the current name, not the one at creation.
+        if let Some(title) = events.iter().rev().find_map(|e| match e {
+            TranscriptEvent::Title(t) => Some(t.title.clone()),
+            _ => None,
+        }) {
+            meta.title = Some(title);
+        }
         Ok(Self { meta, events })
     }
 
@@ -314,4 +352,18 @@ impl SessionTranscript {
             .find(|m| m.role == "user")
             .and_then(|m| m.content.as_deref())
     }
+
+    pub fn title(&self) -> Option<&str> {
+        self.meta.title.as_deref()
+    }
+
+    /// What to show in a session list: the generated title once there is one,
+    /// otherwise the opening message.
+    pub fn display_title(&self) -> Option<&str> {
+        self.title().or_else(|| self.first_user_text())
+    }
 }
+
+#[cfg(test)]
+#[path = "tests/transcript_test.rs"]
+mod tests;

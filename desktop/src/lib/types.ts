@@ -58,6 +58,8 @@ export type ChatStreamEvent =
     }
   | { type: "approval_request"; preview: string }
   | { type: "done"; reply: string; edits: string[]; usage?: Usage }
+  /** A generated name for the session, sent once the conversation has shape. */
+  | { type: "title"; title: string }
   /** Something the harness did to the turn, e.g. stopping at the round cap. */
   | { type: "notice"; message: string }
   | { type: "error"; message: string };

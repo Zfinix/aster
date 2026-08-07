@@ -230,6 +230,9 @@ export interface Conversation {
   /** Set only by an explicit "Save session": the turn then records into this
    *  CLI session and the thread resumes it. Ephemeral until then. */
   sessionId?: string;
+  /** Set once the user renames the thread, so a generated title never
+   *  overwrites a name they chose. */
+  renamed?: boolean;
 }
 
 /** The 7/7-recall models from docs/BENCHMARKS.md, best first. */

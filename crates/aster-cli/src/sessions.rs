@@ -71,7 +71,7 @@ pub(crate) async fn pick_session(
                     .unwrap_or(0);
                 let title = transcript
                     .as_ref()
-                    .and_then(|t| t.first_user_text())
+                    .and_then(|t| t.display_title())
                     .map(|s| truncate(s.trim(), 80))
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "(empty)".into());
@@ -120,7 +120,7 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
                         .unwrap_or(0);
                     let title = transcript
                         .as_ref()
-                        .and_then(|t| t.first_user_text())
+                        .and_then(|t| t.display_title())
                         .map(|s| truncate(s.trim(), 80))
                         .unwrap_or_default();
                     (meta, turns, title)
@@ -226,6 +226,7 @@ fn print_transcript(transcript: &aster_persist::SessionTranscript) {
                     m.created_at.format("%Y-%m-%d %H:%M")
                 );
             }
+            TranscriptEvent::Title(t) => println!("\n[titled] {}", t.title),
             TranscriptEvent::Summary(s) => println!("\n[summary]\n{}", s.content),
             TranscriptEvent::Eviction(e) => {
                 println!(
