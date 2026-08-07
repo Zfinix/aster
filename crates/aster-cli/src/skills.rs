@@ -123,6 +123,20 @@ enum SkillsCommand {
         #[arg(short = 'g', long, conflicts_with = "project")]
         global: bool,
     },
+    /// List or install the optional skills bundled with aster.
+    Bundled {
+        /// Skill names to install; omit to list what is bundled.
+        skills: Vec<String>,
+        /// Install into this project (`.aster/skills`) instead of the user-global root.
+        #[arg(short = 'p', long)]
+        project: bool,
+        /// Install into the user-global root. The default; accepted for symmetry.
+        #[arg(short = 'g', long, conflicts_with = "project")]
+        global: bool,
+        /// Overwrite an already-installed copy.
+        #[arg(long)]
+        force: bool,
+    },
     /// Scaffold a new skill (creates <name>/SKILL.md).
     Init {
         /// The skill name; omit to write ./SKILL.md.
@@ -180,8 +194,52 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
             project,
             global: _,
         } => update(skills, project),
+        SkillsCommand::Bundled {
+            skills,
+            project,
+            global: _,
+            force,
+        } => bundled(skills, project, force),
         SkillsCommand::Init { name } => init(name.as_deref()),
     }
+}
+
+/// With names: install those bundled skills. Without: list the bundle, marking
+/// what is already installed in either root.
+fn bundled(names: Vec<String>, project: bool, force: bool) -> Result<()> {
+    let scope = scope_of(project);
+    if names.is_empty() {
+        let installed: Vec<String> = [Scope::Project, Scope::Global]
+            .into_iter()
+            .filter_map(|s| scope_root(s).ok())
+            .flat_map(|root| {
+                SkillSet::discover(std::slice::from_ref(&root))
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        println!("bundled optional skills (install with `aster skills bundled <name>`):\n");
+        for skill in aster_skills::optional_skills() {
+            let mark = if installed.contains(&skill.name) {
+                " (installed)"
+            } else {
+                ""
+            };
+            println!("  {}{mark}\n    {}", skill.name, skill.description);
+        }
+        return Ok(());
+    }
+    let root = scope_root(scope)?;
+    for name in &names {
+        let dest = aster_skills::install_bundled(name, &root, force)?;
+        println!(
+            "installed {name} {} ({})",
+            scope_phrase(scope),
+            dest.display()
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
