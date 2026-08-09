@@ -250,6 +250,7 @@ dependencies = [
  "aster-mcp",
  "aster-models",
  "aster-persist",
+ "aster-plugins",
  "aster-policy",
  "aster-remote",
  "aster-sandbox",
@@ -359,6 +360,16 @@ dependencies = [
  "tempfile",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "aster-plugins"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

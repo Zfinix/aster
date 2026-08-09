@@ -560,3 +560,323 @@ fn a_tool_without_a_description_still_enters_the_catalog() {
     };
     assert!(McpCatalog::new(vec![tool]).is_ok());
 }
+
+const ACCEPTED: &str = "HTTP/1.1 202 Accepted\r\nconnection: close\r\ncontent-length: 0\r\n\r\n";
+const CLOSED_OK: &str = "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 0\r\n\r\n";
+
+/// Just enough of an MCP server to handshake, list, and answer one call.
+/// `None` for a notification, which gets no reply.
+fn http_reply(message: &Value) -> Option<Value> {
+    let id = message.get("id")?.clone();
+    let result = match message.get("method").and_then(Value::as_str)? {
+        "server/discover" => json!({
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28"],
+            "capabilities": { "tools": {} },
+        }),
+        "tools/list" => json!({
+            "resultType": "complete",
+            "tools": [{
+                "name": "create_issue",
+                "description": "Create an issue",
+                "inputSchema": { "type": "object" },
+            }],
+        }),
+        "tools/call" => json!({
+            "resultType": "complete",
+            "content": [{ "type": "text", "text": "ran over http" }],
+        }),
+        _ => json!({ "resultType": "complete" }),
+    };
+    Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+}
+
+/// Read one HTTP request off the socket, returning its head and its body.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
+    use tokio::io::AsyncReadExt;
+    let mut raw = Vec::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        let read = socket.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        raw.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&raw).to_string();
+        let Some(end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let head = text[..end].to_string();
+        let length: usize = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().ok())?
+            })
+            .unwrap_or(0);
+        let body_start = end + 4;
+        if text.len() - body_start >= length {
+            return Some((head, text[body_start..body_start + length].to_string()));
+        }
+    }
+}
+
+/// A Streamable HTTP server on loopback. `as_events` frames each reply as an
+/// SSE stream instead of a JSON body; both are legal answers to a POST.
+/// Returns its url and the request heads it saw.
+async fn serve_streamable(as_events: bool) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = Arc::clone(&heads);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let seen = Arc::clone(&seen);
+            // One task per connection: the client keeps several open.
+            tokio::spawn(async move {
+                let Some((head, body)) = read_request(&mut socket).await else {
+                    return;
+                };
+                seen.lock().unwrap().push(head.clone());
+                if head.starts_with("DELETE") {
+                    let _ = socket.write_all(CLOSED_OK.as_bytes()).await;
+                    return;
+                }
+                let message: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let Some(reply) = http_reply(&message) else {
+                    let _ = socket.write_all(ACCEPTED.as_bytes()).await;
+                    return;
+                };
+                let (kind, payload) = match as_events {
+                    true => (
+                        "text/event-stream",
+                        format!("event: message\r\ndata: {reply}\r\n\r\n"),
+                    ),
+                    false => ("application/json", reply.to_string()),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-type: {kind}\r\nmcp-session-id: s-1\r\ncontent-length: {}\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            });
+        }
+    });
+    (url, heads)
+}
+
+/// A server speaking the deprecated HTTP+SSE binding: one GET stream carries
+/// every reply, and POSTed messages are acknowledged with 202.
+async fn serve_sse() -> String {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let url = format!("http://{address}/sse");
+    let (replies, outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let outgoing = Arc::new(tokio::sync::Mutex::new(Some(outgoing)));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let replies = replies.clone();
+            let outgoing = Arc::clone(&outgoing);
+            // One task per connection, so holding the event stream open does
+            // not stop the listener from accepting the POSTs it answers.
+            tokio::spawn(async move {
+                let Some((head, body)) = read_request(&mut socket).await else {
+                    return;
+                };
+                if head.starts_with("GET") {
+                    let opening = format!(
+                        "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-type: text/event-stream\r\n\r\nevent: endpoint\r\ndata: http://{address}/messages\r\n\r\n"
+                    );
+                    let _ = socket.write_all(opening.as_bytes()).await;
+                    let _ = socket.flush().await;
+                    let Some(mut outgoing) = outgoing.lock().await.take() else {
+                        return;
+                    };
+                    while let Some(reply) = outgoing.recv().await {
+                        let frame = format!("event: message\r\ndata: {reply}\r\n\r\n");
+                        if socket.write_all(frame.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let _ = socket.flush().await;
+                    }
+                    return;
+                }
+                let message: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                if let Some(reply) = http_reply(&message) {
+                    let _ = replies.send(reply.to_string());
+                }
+                let _ = socket.write_all(ACCEPTED.as_bytes()).await;
+            });
+        }
+    });
+    url
+}
+
+fn remote_settings(url: &str, kind: Transport) -> McpSettings {
+    let mut settings = McpSettings::default();
+    settings.servers.insert(
+        "remote".into(),
+        ServerConfig {
+            url: url.to_string(),
+            kind: Some(kind),
+            ..ServerConfig::default()
+        },
+    );
+    settings
+}
+
+async fn drive(settings: &McpSettings) -> String {
+    let (runtime, problems) = McpRuntime::connect(settings).await;
+    assert!(problems.is_empty(), "{problems:?}");
+    let runtime = runtime.expect("a runtime");
+    let tool = runtime
+        .injector()
+        .catalog()
+        .get("remote/create_issue")
+        .expect("the listed tool")
+        .clone();
+    let result = runtime
+        .call(&tool, &json!({ "repo": "aster" }))
+        .await
+        .unwrap();
+    runtime.shutdown().await;
+    render_result(&result)
+}
+
+#[tokio::test]
+async fn a_streamable_http_server_handshakes_lists_and_answers_a_call() {
+    let (url, heads) = serve_streamable(false).await;
+    let answer = drive(&remote_settings(&url, Transport::StreamableHttp)).await;
+    assert_eq!(answer, "ran over http");
+
+    let heads = heads.lock().unwrap();
+    let posts: Vec<String> = heads
+        .iter()
+        .filter(|head| head.starts_with("POST"))
+        .map(|head| head.to_lowercase())
+        .collect();
+    assert!(posts[0].contains("accept: application/json, text/event-stream"));
+    assert!(!posts[0].contains("mcp-session-id"), "{posts:?}");
+    // The session and revision the handshake settled ride along after it.
+    assert!(
+        posts[1..]
+            .iter()
+            .all(|head| head.contains("mcp-session-id: s-1")
+                && head.contains("mcp-protocol-version: 2026-07-28")),
+        "{posts:?}"
+    );
+    // The session is ended rather than left dangling on the server.
+    let last = heads.last().expect("a request").to_lowercase();
+    assert!(
+        last.starts_with("delete") && last.contains("mcp-session-id: s-1"),
+        "{last}"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_framed_as_an_event_stream_is_read_the_same_way() {
+    let (url, _) = serve_streamable(true).await;
+    assert_eq!(
+        drive(&remote_settings(&url, Transport::StreamableHttp)).await,
+        "ran over http"
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_sse_binding_posts_messages_and_reads_replies_off_the_stream() {
+    let url = serve_sse().await;
+    assert_eq!(
+        drive(&remote_settings(&url, Transport::Sse)).await,
+        "ran over http"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_remote_server_is_reported_not_fatal() {
+    let settings = remote_settings("http://127.0.0.1:1/mcp", Transport::StreamableHttp);
+    let (_, problems) = McpRuntime::connect(&settings).await;
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].starts_with("remote is not reachable"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_transport_is_inferred_from_the_fields_a_server_declares() {
+    let stdio = ServerConfig {
+        command: "npx".into(),
+        ..ServerConfig::default()
+    };
+    assert_eq!(stdio.transport(), Some(Transport::Stdio));
+
+    let remote = ServerConfig {
+        url: "https://example.com/mcp".into(),
+        ..ServerConfig::default()
+    };
+    assert_eq!(remote.transport(), Some(Transport::StreamableHttp));
+
+    let legacy = ServerConfig {
+        url: "https://example.com/sse".into(),
+        kind: Some(Transport::Sse),
+        ..ServerConfig::default()
+    };
+    assert_eq!(legacy.transport(), Some(Transport::Sse));
+
+    // A declared transport with nothing to reach is not a server.
+    let mismatched = ServerConfig {
+        command: "npx".into(),
+        kind: Some(Transport::StreamableHttp),
+        ..ServerConfig::default()
+    };
+    assert_eq!(mismatched.transport(), None);
+    assert_eq!(ServerConfig::default().transport(), None);
+}
+
+#[test]
+fn remote_servers_are_read_from_yaml_in_either_spelling() {
+    let settings: crate::settings::Settings = serde_yaml::from_str(
+        "mcp:\n  servers:\n    \
+         one:\n      url: https://a.example/mcp\n      headers: {X-Tenant: acme}\n    \
+         two:\n      type: sse\n      url: https://b.example/sse\n    \
+         three:\n      transport: http\n      url: https://c.example/mcp\n",
+    )
+    .expect("parse");
+    let servers = &settings.mcp.servers;
+    assert_eq!(servers["one"].headers["X-Tenant"], "acme");
+    assert_eq!(servers["one"].transport(), Some(Transport::StreamableHttp));
+    assert_eq!(servers["two"].transport(), Some(Transport::Sse));
+    assert_eq!(
+        servers["three"].transport(),
+        Some(Transport::StreamableHttp)
+    );
+}
+
+#[test]
+fn event_frames_are_parsed_across_chunk_boundaries() {
+    let mut parser = super::http::Parser::default();
+    assert!(parser.feed("event: endpoint\r\ndata: /mes").is_empty());
+    let events =
+        parser.feed("sages?id=1\r\n\r\n: keepalive\n\nevent: message\ndata: {\"a\":1}\n\n");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].name, "endpoint");
+    assert_eq!(events[0].data, "/messages?id=1");
+    assert_eq!(events[1].name, "message");
+    assert_eq!(events[1].data, "{\"a\":1}");
+
+    // Multi-line data joins with newlines, and an unnamed event still counts.
+    let events = parser.feed("data: one\ndata: two\n\n");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].name, "");
+    assert_eq!(events[0].data, "one\ntwo");
+}

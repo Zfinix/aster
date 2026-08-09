@@ -196,6 +196,7 @@ probability, so treat the number as a ranking signal rather than odds.
 | `aster memory` | Facts Aster should keep between sessions. `add`, `list`, `show`, `remove`. |
 | `aster sessions` | Past conversations. `list`, `show`, `delete`, `prune`. |
 | `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `bundled`, `remove`. |
+| `aster plugins` | Agent Plugins packages of skills and MCP servers. `add`, `list`, `remove`, `validate`. |
 | `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`. |
 | `aster web` | Fetch a page or crawl a site as Markdown. |
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
@@ -249,10 +250,27 @@ works as a source, so skills already installed for Claude Code, Cursor, Codex,
 Gemini CLI, and the rest come across as-is. `aster skills add` with no source
 lists the ones it finds installed.
 
+### Plugins
+
+A plugin packages skills and MCP servers together in one directory, in the
+vendor-neutral [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec)
+format. Anything published for a conformant client installs here unchanged.
+
+```bash
+aster plugins add owner/repo        # install from a repo
+aster plugins add ./my-plugin -p    # install into this project only
+aster plugins list                  # what is installed and what it contributes
+aster plugins validate ./my-plugin  # check a package you are authoring
+```
+
+Its skills join the skill index and its MCP servers join the configured ones as
+`<plugin>/<server>`. See [docs/PLUGINS.md](./docs/PLUGINS.md).
+
 ### MCP servers
 
 MCP servers add tools like a browser or a GitHub client. Declare them under
-`mcp.servers` in `aster.yaml`, then:
+`mcp.servers` in `aster.yaml`: a `command` to run one locally, or a `url` for a
+remote one over Streamable HTTP or the older SSE transport. Then:
 
 ```bash
 aster mcp list              # what is configured, and what it offers
@@ -298,6 +316,7 @@ diagrams and the reasoning behind each decision, lives in the docs:
 | [HARNESS.md](./docs/HARNESS.md) | Sessions, memory, approvals, and delegation. |
 | [MEMORY.md](./docs/MEMORY.md) | What Aster remembers, and how it is disclosed. |
 | [MCP.md](./docs/MCP.md) | Progressive tool injection: one bridge, schemas on demand. |
+| [PLUGINS.md](./docs/PLUGINS.md) | The Agent Plugins package format, and what Aster supports. |
 | [ANALYZERS.md](./docs/ANALYZERS.md) | Wiring semgrep and ast-grep into review. |
 | [ROADMAP.md](./docs/ROADMAP.md) | What is next. |
 
@@ -316,10 +335,11 @@ crates/
   aster-agents/      specialized agent definitions
   aster-policy/      read, write, and command permissions
   aster-mcp/         progressive MCP tool injection
+  aster-plugins/     Agent Plugins packages: manifest, skills, MCP config
   aster-models/      shared domain types
 desktop/             the desktop app (Tauri)
 editors/vscode/      the VS Code extension
-docs/                architecture, algorithm, memory, MCP, roadmap
+docs/                architecture, algorithm, memory, MCP, plugins, roadmap
 ```
 
 ## Contributing

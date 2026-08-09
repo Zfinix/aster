@@ -1,6 +1,9 @@
 //! MCP transport and session runtime. `aster-mcp` owns discovery and routing
-//! and deliberately has no transport, so the host supplies one: JSON-RPC 2.0
-//! over a child process's stdio, the standard for local MCP servers.
+//! and deliberately has no transport, so the host supplies them: JSON-RPC 2.0
+//! over a child process's stdio, over Streamable HTTP, or over the HTTP+SSE
+//! binding that preceded it. Only the wire differs; the session above it does not.
+
+mod http;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::process::Stdio;
@@ -55,7 +58,8 @@ enum Era {
     Legacy,
 }
 
-/// One MCP server as declared in `aster.yaml`.
+/// One MCP server as declared in `aster.yaml`. A local server names a
+/// `command`; a remote one names a `url`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
@@ -64,8 +68,58 @@ pub struct ServerConfig {
     pub args: Vec<String>,
     /// Extra environment for the child, merged over the inherited environment.
     pub env: BTreeMap<String, String>,
+    /// Working directory for the child; the inherited one when unset.
+    pub cwd: Option<std::path::PathBuf>,
+    /// Endpoint of a remote server.
+    pub url: String,
+    /// Fixed headers sent when connecting to a remote server.
+    pub headers: BTreeMap<String, String>,
+    /// `stdio`, `streamable-http`, or `sse`. Inferred from the fields above
+    /// when unset, which is how every config that predates remote support reads.
+    #[serde(rename = "type", alias = "transport")]
+    pub kind: Option<Transport>,
     /// Skip this server without deleting its configuration.
     pub disabled: bool,
+}
+
+/// How to reach a server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Transport {
+    Stdio,
+    /// `http` is accepted too: that is the spelling other clients write.
+    #[serde(alias = "http")]
+    StreamableHttp,
+    /// The deprecated HTTP+SSE binding.
+    Sse,
+}
+
+impl Transport {
+    fn label(self) -> &'static str {
+        match self {
+            Transport::Stdio => "stdio",
+            Transport::StreamableHttp => "streamable-http",
+            Transport::Sse => "sse",
+        }
+    }
+}
+
+impl ServerConfig {
+    /// The transport to use, or `None` when the entry names neither a command
+    /// nor a url and there is nothing to connect to.
+    pub fn transport(&self) -> Option<Transport> {
+        let has_url = !self.url.trim().is_empty();
+        let has_command = !self.command.trim().is_empty();
+        match self.kind {
+            Some(Transport::Stdio) if has_command => Some(Transport::Stdio),
+            Some(Transport::Stdio) => None,
+            Some(remote) if has_url => Some(remote),
+            Some(_) => None,
+            None if has_url => Some(Transport::StreamableHttp),
+            None if has_command => Some(Transport::Stdio),
+            None => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,16 +160,26 @@ impl McpSettings {
     }
 }
 
-/// A live connection to one MCP server.
+/// A live connection to one MCP server: a JSON-RPC session over some wire.
 struct Connection {
     name: String,
+    next_id: i64,
+    era: Era,
+    wire: Wire,
+}
+
+enum Wire {
+    Stdio(StdioWire),
+    Remote(http::Remote),
+}
+
+/// A child process speaking JSON-RPC over its stdio.
+struct StdioWire {
     child: Child,
     /// Taken on shutdown: closing stdin is the portable signal telling the
     /// server to exit.
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
-    next_id: i64,
-    era: Era,
     /// Last stderr lines, kept so a dead server's reason survives it.
     stderr_tail: Arc<std::sync::Mutex<VecDeque<String>>>,
     /// Drains stderr for the life of the child; finishes at EOF.
@@ -184,9 +248,64 @@ impl std::fmt::Display for RpcError {
     }
 }
 
+impl StdioWire {
+    /// Write one message and read until the reply to `id`. Notifications and
+    /// server-initiated requests in between are skipped, not mistaken for it.
+    async fn exchange(
+        &mut self,
+        name: &str,
+        method: &str,
+        body: &Value,
+        id: i64,
+        budget: Duration,
+    ) -> Result<Value> {
+        self.send(name, body).await?;
+        timeout(budget, async {
+            loop {
+                let mut line = String::new();
+                let read = self
+                    .stdout
+                    .read_line(&mut line)
+                    .await
+                    .with_context(|| format!("reading from MCP server `{name}`"))?;
+                if read == 0 {
+                    bail!("MCP server `{name}` closed the connection");
+                }
+                let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
+                    continue;
+                };
+                if message.get("id").and_then(Value::as_i64) != Some(id) {
+                    continue;
+                }
+                return Ok(message);
+            }
+        })
+        .await
+        .with_context(|| format!("MCP server `{name}` timed out on {method}"))?
+    }
+
+    async fn send(&mut self, name: &str, body: &Value) -> Result<()> {
+        let mut line = serde_json::to_string(body)?;
+        line.push('\n');
+        let stdin = self
+            .stdin
+            .as_mut()
+            .with_context(|| format!("MCP server `{name}` is shut down"))?;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .with_context(|| format!("writing to MCP server `{name}`"))?;
+        stdin.flush().await?;
+        Ok(())
+    }
+}
+
 impl Connection {
     async fn spawn(name: &str, config: &ServerConfig) -> Result<Self> {
         let mut command = Command::new(&config.command);
+        if let Some(cwd) = &config.cwd {
+            command.current_dir(cwd);
+        }
         command
             .args(&config.args)
             .envs(&config.env)
@@ -226,18 +345,56 @@ impl Connection {
                 tail.push_back(line.chars().take(STDERR_LINE_CHARS).collect());
             }
         });
-        Ok(Self {
+        Ok(Self::new(
+            name,
+            Wire::Stdio(StdioWire {
+                child,
+                stdin: Some(stdin),
+                stdout: BufReader::new(stdout),
+                stderr_tail,
+                stderr_task,
+            }),
+        ))
+    }
+
+    /// Open a remote server. Nothing is exchanged yet: the session's own
+    /// handshake is what tells a reachable endpoint from a working one.
+    async fn connect(name: &str, config: &ServerConfig, transport: Transport) -> Result<Self> {
+        let url = config.url.trim();
+        let remote = match transport {
+            Transport::Sse => {
+                http::Remote::connect_sse(name, url, &config.headers, STARTUP_TIMEOUT).await?
+            }
+            _ => http::Remote::connect_streamable(url, &config.headers).await?,
+        };
+        Ok(Self::new(name, Wire::Remote(remote)))
+    }
+
+    fn new(name: &str, wire: Wire) -> Self {
+        Self {
             name: name.to_string(),
-            child,
-            stdin: Some(stdin),
-            stdout: BufReader::new(stdout),
             next_id: 1,
             era: Era::Modern {
                 version: PROTOCOL_VERSION.to_string(),
             },
-            stderr_tail,
-            stderr_task,
-        })
+            wire,
+        }
+    }
+
+    fn stdio(&mut self) -> Option<&mut StdioWire> {
+        match &mut self.wire {
+            Wire::Stdio(wire) => Some(wire),
+            Wire::Remote(_) => None,
+        }
+    }
+
+    /// True once a local server's process has exited. A remote one has no
+    /// process to lose, so it never reports itself dead.
+    async fn died(&mut self) -> bool {
+        let Some(wire) = self.stdio() else {
+            return false;
+        };
+        matches!(timeout(SHUTDOWN_GRACE, wire.child.wait()).await, Ok(Ok(_)))
     }
 
     /// The per-request metadata a modern server needs to serve a request with
@@ -280,61 +437,39 @@ impl Connection {
             object.insert("_meta".into(), meta);
         }
         let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        self.send(&body).await?;
+        let message = match &mut self.wire {
+            Wire::Stdio(wire) => wire.exchange(&self.name, method, &body, id, budget).await?,
+            Wire::Remote(wire) => wire.exchange(&self.name, method, &body, id, budget).await?,
+        };
 
-        timeout(budget, async {
-            loop {
-                let mut line = String::new();
-                let read = self
-                    .stdout
-                    .read_line(&mut line)
-                    .await
-                    .with_context(|| format!("reading from MCP server `{}`", self.name))?;
-                if read == 0 {
-                    bail!("MCP server `{}` closed the connection", self.name);
-                }
-                let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
-                    continue;
-                };
-                if message.get("id").and_then(Value::as_i64) != Some(id) {
-                    continue;
-                }
-                if let Some(error) = message.get("error") {
-                    return Ok(Err(RpcError {
-                        code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
-                        message: error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("unknown error")
-                            .to_string(),
-                        data: error.get("data").cloned().unwrap_or(Value::Null),
-                    }));
-                }
-                return Ok(Ok(message.get("result").cloned().unwrap_or(Value::Null)));
-            }
-        })
-        .await
-        .with_context(|| format!("MCP server `{}` timed out on {method}", self.name))?
+        if let Some(error) = message.get("error") {
+            return Ok(Err(RpcError {
+                code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
+                message: error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error")
+                    .to_string(),
+                data: error.get("data").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        Ok(Ok(message.get("result").cloned().unwrap_or(Value::Null)))
     }
 
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
-        self.send(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
-            .await
+        let body = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        match &mut self.wire {
+            Wire::Stdio(wire) => wire.send(&self.name, &body).await,
+            Wire::Remote(wire) => wire.notify(&self.name, &body).await,
+        }
     }
 
-    async fn send(&mut self, body: &Value) -> Result<()> {
-        let mut line = serde_json::to_string(body)?;
-        line.push('\n');
-        let stdin = self
-            .stdin
-            .as_mut()
-            .with_context(|| format!("MCP server `{}` is shut down", self.name))?;
-        stdin
-            .write_all(line.as_bytes())
-            .await
-            .with_context(|| format!("writing to MCP server `{}`", self.name))?;
-        stdin.flush().await?;
-        Ok(())
+    /// How long the era probe waits before calling a server legacy.
+    fn probe_budget(&self) -> Duration {
+        match self.wire {
+            Wire::Stdio(_) => PROBE_TIMEOUT,
+            Wire::Remote(_) => http::PROBE_TIMEOUT,
+        }
     }
 
     /// Settle which era the server speaks, then list what it advertises.
@@ -385,7 +520,7 @@ impl Connection {
     /// silence, means the server predates per-request metadata.
     async fn detect_era(&mut self) -> Result<Option<Value>> {
         let probe = self
-            .try_request("server/discover", json!({}), PROBE_TIMEOUT)
+            .try_request("server/discover", json!({}), self.probe_budget())
             .await;
         let mut discovered = None;
         self.era = match probe {
@@ -409,6 +544,15 @@ impl Connection {
             // however they like, or not at all.
             Ok(Err(_)) | Err(_) => Era::Legacy,
         };
+        // A remote server keys its session to the revision it settled on, so
+        // every later request has to name it.
+        if let Wire::Remote(wire) = &mut self.wire {
+            let version = match &self.era {
+                Era::Modern { version } => version.as_str(),
+                Era::Legacy => LEGACY_PROTOCOL_VERSION,
+            };
+            wire.set_protocol(version);
+        }
         Ok(discovered)
     }
 
@@ -468,14 +612,18 @@ impl Connection {
     /// Turn a startup failure into one short line saying what to do about it.
     /// The raw error and full stderr go to the debug log, not the user.
     async fn diagnose(mut self, error: anyhow::Error) -> anyhow::Error {
+        let name = self.name.clone();
+        let Wire::Stdio(wire) = &mut self.wire else {
+            return remote_reason(&name, error);
+        };
         // Stderr EOF means the child is gone and its last words are in the
         // tail. A server that is still alive times out here instead.
-        let _ = timeout(SHUTDOWN_GRACE, &mut self.stderr_task).await;
-        let status = match timeout(SHUTDOWN_GRACE, self.child.wait()).await {
+        let _ = timeout(SHUTDOWN_GRACE, &mut wire.stderr_task).await;
+        let status = match timeout(SHUTDOWN_GRACE, wire.child.wait()).await {
             Ok(Ok(status)) => Some(status),
             _ => None,
         };
-        let tail = self
+        let tail = wire
             .stderr_tail
             .lock()
             .map(|tail| tail.clone())
@@ -503,6 +651,31 @@ impl Connection {
             None => anyhow::anyhow!("crashed on startup"),
         }
     }
+
+    /// Stop the server. A child is asked to exit by closing its stdin and
+    /// killed if it will not; a remote session is ended over the wire.
+    async fn shutdown(&mut self) {
+        match &mut self.wire {
+            Wire::Stdio(wire) => {
+                drop(wire.stdin.take());
+                if timeout(SHUTDOWN_GRACE, wire.child.wait()).await.is_err()
+                    && let Err(e) = wire.child.start_kill()
+                {
+                    tracing::debug!("could not stop MCP server `{}`: {e}", self.name);
+                }
+            }
+            Wire::Remote(wire) => wire.shutdown().await,
+        }
+    }
+}
+
+/// A remote server leaves no stderr to mine, so the transport error is the
+/// reason. The server name is already printed alongside it, so it is stripped
+/// here rather than repeated.
+fn remote_reason(name: &str, error: anyhow::Error) -> anyhow::Error {
+    tracing::debug!(server = %name, "MCP server failed to connect: {error:#}");
+    let text = format!("{error:#}").replace(&format!("MCP server `{name}` "), "");
+    anyhow::anyhow!("{}", brief(&text))
 }
 
 /// One short reason from a stderr line: error-name prefixes, "imported from"
@@ -627,12 +800,7 @@ impl McpRuntime {
         // and serially that is the whole session's startup budget.
         let starting: Vec<_> = servers
             .iter()
-            .filter(|(_, config)| {
-                if config.disabled || config.command.trim().is_empty() {
-                    return false;
-                }
-                true
-            })
+            .filter(|(_, config)| !config.disabled && config.transport().is_some())
             .map(
                 |(name, config)| async move { (name.clone(), Self::start_one(name, config).await) },
             )
@@ -681,7 +849,17 @@ impl McpRuntime {
     }
 
     async fn start_one(name: &str, config: &ServerConfig) -> Result<(Connection, Vec<McpTool>)> {
-        let mut connection = Connection::spawn(name, config).await?;
+        let transport = config
+            .transport()
+            .context("names neither a command nor a url")?;
+        let mut connection = match transport {
+            Transport::Stdio => Connection::spawn(name, config).await?,
+            // A remote server can fail before there is a session to diagnose,
+            // so the reason is shaped here too.
+            remote => Connection::connect(name, config, remote)
+                .await
+                .map_err(|e| remote_reason(name, e))?,
+        };
         let error = match connection.start().await {
             Ok(tools) => return Ok((connection, tools)),
             Err(error) => error,
@@ -689,11 +867,7 @@ impl McpRuntime {
         // A strict legacy server treats the modern probe itself as fatal and
         // exits. When the child is dead, one respawn straight into the legacy
         // handshake tells that server apart from a genuinely broken one.
-        let died = matches!(
-            timeout(SHUTDOWN_GRACE, connection.child.wait()).await,
-            Ok(Ok(_))
-        );
-        if !died {
+        if !connection.died().await {
             return Err(connection.diagnose(error).await);
         }
         let mut retry = Connection::spawn(name, config).await?;
@@ -762,20 +936,12 @@ impl McpRuntime {
         connection.call(&tool.name, arguments).await
     }
 
-    /// Terminate every child. Dropping alone would rely on `kill_on_drop`,
-    /// which cannot report failures.
+    /// Stop every server. Dropping alone would rely on `kill_on_drop`, which
+    /// cannot report failures and says nothing to a remote server.
     pub async fn shutdown(&self) {
         let mut connections = self.connections.lock().await;
-        for (name, connection) in connections.iter_mut() {
-            // Closing stdin is the graceful signal; killing is the fallback for
-            // a server that ignores it.
-            drop(connection.stdin.take());
-            let exited = timeout(SHUTDOWN_GRACE, connection.child.wait()).await;
-            if exited.is_err()
-                && let Err(e) = connection.child.start_kill()
-            {
-                tracing::debug!("could not stop MCP server `{name}`: {e}");
-            }
+        for connection in connections.values_mut() {
+            connection.shutdown().await;
         }
         connections.clear();
     }
@@ -912,6 +1078,9 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
                 "ok": problems.is_empty(),
                 "problems": problems,
                 "servers": runtime.as_ref().map(|r| r.server_names()).unwrap_or_default(),
+                "transports": settings.mcp.servers.iter()
+                    .filter_map(|(name, config)| Some((name.clone(), config.transport()?.label())))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
                 "tools": tools.iter().map(|t| json!({
                     "id": t.id(),
                     "description": t.description,
@@ -943,7 +1112,7 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
                         }
                     );
                 }
-                print_tool_tree(tools);
+                print_tool_tree(tools, &settings.mcp);
             }
             None if problems.is_empty() => println!("No servers advertised any tools."),
             None => {}
@@ -958,7 +1127,7 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
 
 /// One tree per server: tool names aligned under the server heading, each
 /// description cut to its first line and the terminal width.
-fn print_tool_tree(tools: Vec<&McpTool>) {
+fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings) {
     use std::collections::BTreeMap;
     let width = console::Term::stdout().size().1 as usize;
     let mut by_server: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
@@ -970,10 +1139,16 @@ fn print_tool_tree(tools: Vec<&McpTool>) {
     }
     for (server, mut rows) in by_server {
         rows.sort();
+        let transport = settings
+            .servers
+            .get(server)
+            .and_then(ServerConfig::transport)
+            .map(Transport::label)
+            .unwrap_or("built in");
         println!(
             "\n{} {}",
             console::style(server).bold(),
-            console::style(format!("({} tools)", rows.len())).dim()
+            console::style(format!("({transport}, {} tools)", rows.len())).dim()
         );
         let pad = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
         for (i, (name, desc)) in rows.iter().enumerate() {
@@ -1206,8 +1381,8 @@ fn mcp_json_paths(repo_root: Option<&std::path::Path>) -> Vec<std::path::PathBuf
     out
 }
 
-/// Stdio servers from a cross-tool `.mcp.json` (`mcpServers` key). Url-only
-/// entries are skipped: they need a transport aster does not have.
+/// Servers from a cross-tool `.mcp.json` (`mcpServers` key). Both shapes are
+/// read: a `command` to spawn, or a `url` with an optional `type`.
 pub fn mcp_json_servers(path: &std::path::Path) -> Result<Vec<(String, ServerConfig)>> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Ok(Vec::new());
@@ -1219,9 +1394,33 @@ pub fn mcp_json_servers(path: &std::path::Path) -> Result<Vec<(String, ServerCon
     };
     let mut out = Vec::new();
     for (name, v) in map {
-        let Some(command) = v.get("command").and_then(|c| c.as_str()) else {
+        let command = v
+            .get("command")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default();
+        let url = v.get("url").and_then(|u| u.as_str()).unwrap_or_default();
+        if command.is_empty() && url.is_empty() {
             continue;
-        };
+        }
+        let kind = v
+            .get("type")
+            .or_else(|| v.get("transport"))
+            .and_then(|t| t.as_str())
+            .and_then(|t| match t.to_ascii_lowercase().as_str() {
+                "stdio" => Some(Transport::Stdio),
+                "http" | "streamable-http" | "streamable_http" => Some(Transport::StreamableHttp),
+                "sse" => Some(Transport::Sse),
+                _ => None,
+            });
+        let headers = v
+            .get("headers")
+            .and_then(|h| h.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, x)| x.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
         let args = v
             .get("args")
             .and_then(|a| a.as_array())
@@ -1248,6 +1447,10 @@ pub fn mcp_json_servers(path: &std::path::Path) -> Result<Vec<(String, ServerCon
                 command: command.to_string(),
                 args,
                 env,
+                cwd: None,
+                url: url.to_string(),
+                headers,
+                kind,
                 disabled,
             },
         ));

@@ -38,6 +38,7 @@ crates/
   aster-persist/     filesystem-first chat transcripts + memory (see MEMORY.md)
   aster-skills/      filesystem-based agent skills: SKILL.md discovery + on-demand load
   aster-mcp/         progressive MCP tool injection: one bridge + scoped catalogue
+  aster-plugins/     Agent Plugins packages: plugin.json, skills/, mcp.json
   aster-policy/      policy engine: permissions, approvals, grants, modes
   aster-agents/      agent definitions: AGENT.md parsing, discovery, registry
   aster-tools/       tiered search/list/find/suggest (rg/fd native, hand-rolled fallback)
@@ -48,6 +49,9 @@ crates/
 
 Chat sessions and durable memory are documented separately in
 [`MEMORY.md`](./MEMORY.md).
+
+The Agent Plugins package format, and how a plugin's skills and MCP servers
+reach a session, are documented in [`PLUGINS.md`](./PLUGINS.md).
 
 MCP integration is documented in [`MCP.md`](./MCP.md). `aster-mcp` is a
 transport-agnostic boundary: it builds the model-visible injection and routes a
@@ -63,6 +67,7 @@ graph TD
     CLI --> SK[aster-skills]
     CLI --> AG[aster-agents]
     CLI --> MC[aster-mcp]
+    CLI --> PG[aster-plugins]
     CLI --> TL[aster-tools]
     CLI --> SB[aster-sandbox]
     CLI --> WB[aster-web]

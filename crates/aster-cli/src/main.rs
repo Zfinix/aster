@@ -16,6 +16,7 @@ mod mcp;
 mod models;
 mod persist;
 mod picker;
+mod plugins;
 mod provider;
 mod remote;
 mod review;
@@ -94,6 +95,8 @@ enum Command {
     Memory(sessions::MemoryArgs),
     /// Install, list, and remove agent skills.
     Skills(skills::SkillsArgs),
+    /// Install, list, and validate Agent Plugins packages.
+    Plugins(plugins::PluginsArgs),
     /// Crawl or extract web pages as Markdown.
     Web(web::WebArgs),
     /// Inspect the MCP servers configured for this repo.
@@ -161,6 +164,7 @@ async fn main() -> Result<()> {
         Command::Sessions(args) => sessions::run_sessions(args).await,
         Command::Memory(args) => sessions::run_memory(args),
         Command::Skills(args) => skills::run(args).await,
+        Command::Plugins(args) => plugins::run(args, std::env::current_dir().ok().as_deref()),
         Command::Web(args) => web::run(args).await,
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
         Command::Models(args) => models::run(args).await,

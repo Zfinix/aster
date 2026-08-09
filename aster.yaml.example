@@ -79,9 +79,19 @@ agent:
 
 # MCP servers that give the agent extra tools. `aster mcp list` shows what they
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.
+# Installed plugins add their own here as `<plugin>/<server>`; see
+# docs/PLUGINS.md.
 mcp:
   servers:
     chrome:
       command: npx
       args: ["-y", "chrome-devtools-mcp@latest"]
+      # Working directory for the server; inherited when unset.
+      # cwd: ./tools/chrome
       disabled: true
+    # A remote server names a url instead of a command. The transport is
+    # Streamable HTTP unless `type: sse` asks for the older binding.
+    deepwiki:
+      url: https://mcp.deepwiki.com/mcp
+      # headers:
+      #   X-Tenant: acme
