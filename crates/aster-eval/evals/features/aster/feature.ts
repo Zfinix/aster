@@ -19,6 +19,10 @@ interface HarnessOptions {
 /** Checkout aster runs against; the driver passes the repo root. */
 const REPO = process.env.ASTER_EVAL_REPO ?? process.cwd();
 const BIN = process.env.ASTER_BIN ?? "aster";
+const TMP = process.env.TMPDIR ?? "/tmp";
+
+/** Names the per-run message file; two cases may be in flight at once. */
+let proc_seq = 0;
 
 async function* lines(stream: ReadableStream<Uint8Array>) {
   const decoder = new TextDecoder();
@@ -35,11 +39,15 @@ async function* lines(stream: ReadableStream<Uint8Array>) {
   if (buffer.trim()) yield buffer.trim();
 }
 
-/** aster's stream carries a message; Ori's failures are a classified record. */
+/**
+ * aster's stream carries a message; Ori's failures are a classified record.
+ * Ori caps the message at 256 chars and drops the whole event when it is
+ * longer, so a panic or a stack trace has to be clipped rather than lost.
+ */
 const failure = (message: string) => ({
   code: "ORI_HARNESS_PROCESS_FAILED",
   kind: "unknown",
-  message,
+  message: message.length > 256 ? `${message.slice(0, 253)}...` : message,
   stage: "harness",
 }) as const;
 
@@ -62,7 +70,24 @@ export const harness = defineHarness({
     ): AsyncGenerator<AgentRuntimeEvent> {
       const args = ["--stream", "--permission-mode", "auto"];
       if (options.model) args.push("--model", options.model);
-      args.push(options.prompt);
+
+      // aster takes a system prompt only through --messages-json, so a case
+      // that varies one (Ori's way of measuring a prompt change) needs the
+      // message-array form rather than a positional prompt.
+      let messages: string | undefined;
+      if (options.systemPrompt) {
+        messages = `${TMP}/aster-eval-${proc_seq++}.json`;
+        await Bun.write(
+          messages,
+          JSON.stringify([
+            { role: "system", content: options.systemPrompt },
+            { role: "user", content: options.prompt },
+          ]),
+        );
+        args.push("--messages-json", messages);
+      } else {
+        args.push(options.prompt);
+      }
 
       const proc = Bun.spawn([BIN, ...args], {
         cwd: REPO,
@@ -79,6 +104,10 @@ export const harness = defineHarness({
       // carried across by id to label the completion.
       const open = new Map<string, string>();
       let finished = false;
+      // aster falls back to a whole response when an endpoint ignores `stream`,
+      // and then no token event ever arrives. Without this the reply would be
+      // lost and every text assertion would fail on an empty string.
+      let streamed = false;
 
       for await (const line of lines(proc.stdout)) {
         let event: any;
@@ -91,6 +120,7 @@ export const harness = defineHarness({
           case "token":
           case "text":
             if (event.content) {
+              streamed = true;
               yield {
                 type: "assistant.text.delta",
                 payload: { delta: event.content },
@@ -132,7 +162,14 @@ export const harness = defineHarness({
               model: options.model ?? "",
               outputTokens: u.completion_tokens ?? 0,
             };
-            // The reply already streamed as tokens; re-emitting would double it.
+            // Only when nothing streamed: re-emitting a streamed reply would
+            // double it.
+            if (!streamed && event.reply) {
+              yield {
+                type: "assistant.text.delta",
+                payload: { delta: event.reply },
+              };
+            }
             yield { type: "turn.succeeded", payload: { usage } };
             yield { type: "session.succeeded", payload: { sessionId, usage } };
             finished = true;
@@ -153,6 +190,7 @@ export const harness = defineHarness({
       }
 
       await proc.exited;
+      if (messages) await Bun.file(messages).delete().catch(() => {});
       if (!finished) {
         const stderr = (await new Response(proc.stderr).text()).trim();
         const message = stderr || `aster exited ${proc.exitCode} with no result`;
