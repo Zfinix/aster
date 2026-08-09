@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Remote MCP servers over Streamable HTTP and the deprecated HTTP+SSE binding,
+  alongside the existing stdio transport. Declare one with a `url` (plus
+  optional `headers`) in `aster.yaml`, `.mcp.json`, or a plugin's `mcp.json`;
+  `type` picks the binding and defaults to `streamable-http`. Sessions carry the
+  server's `Mcp-Session-Id` and the negotiated revision, redirects are followed
+  only inside one origin so configured headers cannot leak to another host, and
+  a session is ended with a `DELETE` at shutdown. `aster mcp import` now brings
+  remote servers across instead of skipping them, and `aster mcp list` names
+  each server's transport.
+- Agent Plugins support ([spec](https://github.com/agentplugins/agent-plugins-spec)
+  v1.0.0): a plugin is a directory with a `plugin.json`, skills under `skills/`,
+  and MCP servers in `mcp.json`. `aster plugins add|list|remove|validate` manages
+  them, user-global or per project with `-p`. A plugin's skills join the skill
+  index (behind skills roots, ahead of built-ins) and its stdio MCP servers join
+  the configured ones as `<plugin>/<server>`, with `${PLUGIN_ROOT}` and
+  `${PLUGIN_DATA}` expanded and both supplied to the subprocess. Remote
+  transports are validated and listed but skipped, since the MCP runtime is
+  stdio-only.
+- `mcp.servers.<name>.cwd` in `aster.yaml`, the working directory a server is
+  started in.
+
 - 18 built-in skills in two tiers. Nine core skills (git-workflow,
   gh-pr-workflow, verify-before-done, build-triage, batched-bash, cli-toolbox,
   context-economy, correction-protocol, security-hygiene) sit in every

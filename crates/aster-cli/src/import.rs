@@ -62,20 +62,20 @@ enum Scope {
     Repo,
 }
 
-/// One stdio MCP server found in another tool's config.
+/// One MCP server found in another tool's config, local or remote.
 struct FoundServer {
     name: String,
     scope: Scope,
     value: Value,
 }
 
-/// `aster mcp import`: copy stdio MCP servers into the standard `.mcp.json`
-/// files aster reads natively (`~/.aster/mcp.json`, repo `.mcp.json`). Remote
-/// (url) servers are reported but skipped, since aster only spawns stdio ones.
+/// `aster mcp import`: copy MCP servers into the standard `.mcp.json` files
+/// aster reads natively (`~/.aster/mcp.json`, repo `.mcp.json`). Both shapes
+/// come across: a `command` to spawn, or a `url` to connect to.
 pub fn run_mcp_import(from: Option<Source>, repo_root: Option<&Path>) -> Result<()> {
     let settings = crate::settings::Settings::load(repo_root)?;
     let mut found: Vec<FoundServer> = Vec::new();
-    let mut remote: Vec<String> = Vec::new();
+    let mut unusable: Vec<String> = Vec::new();
     for source in picked(from) {
         let servers = match source {
             Source::Claude => claude_mcp(repo_root)?,
@@ -88,10 +88,15 @@ pub fn run_mcp_import(from: Option<Source>, repo_root: Option<&Path>) -> Result<
             if found.iter().any(|s| s.name == name) {
                 continue;
             }
-            if value.get("command").and_then(|c| c.as_str()).is_some() {
-                found.push(FoundServer { name, scope, value });
-            } else if value.get("url").is_some() {
-                remote.push(name);
+            let usable = ["command", "url"].iter().any(|key| {
+                value
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| !v.is_empty())
+            });
+            match usable {
+                true => found.push(FoundServer { name, scope, value }),
+                false => unusable.push(name),
             }
         }
     }
@@ -153,7 +158,7 @@ pub fn run_mcp_import(from: Option<Source>, repo_root: Option<&Path>) -> Result<
                     "servers": names,
                 })).collect::<Vec<_>>(),
                 "skipped_existing": existing,
-                "skipped_remote": remote,
+                "skipped_unusable": unusable,
             })
         );
         return Ok(());
@@ -172,22 +177,30 @@ pub fn run_mcp_import(from: Option<Source>, repo_root: Option<&Path>) -> Result<
     if !existing.is_empty() {
         println!("already configured: {}", existing.join(", "));
     }
-    if !remote.is_empty() {
+    if !unusable.is_empty() {
         println!(
-            "skipped remote (url) servers aster cannot spawn: {}",
-            remote.join(", ")
+            "skipped servers that name neither a command nor a url: {}",
+            unusable.join(", ")
         );
     }
     Ok(())
 }
 
-/// `command arg arg…`, the one-line summary a picker row shows.
+/// `command arg arg…`, or the endpoint for a remote server: the one-line
+/// summary a picker row shows.
 fn spawn_line(value: &Value) -> String {
-    let mut out = value
+    let command = value
         .get("command")
         .and_then(|c| c.as_str())
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
+    if command.is_empty() {
+        return value
+            .get("url")
+            .and_then(|u| u.as_str())
+            .unwrap_or_default()
+            .to_string();
+    }
+    let mut out = command.to_string();
     for arg in value
         .get("args")
         .and_then(|a| a.as_array())
@@ -202,7 +215,7 @@ fn spawn_line(value: &Value) -> String {
 }
 
 /// Add servers to a `.mcp.json`'s `mcpServers`, creating the file when
-/// missing. Only `command`, `args`, and `env` carry over.
+/// missing. Only the fields aster reads carry over.
 fn merge_mcp_json(path: &Path, servers: &[&FoundServer]) -> Result<Vec<String>> {
     let mut config: Value = match std::fs::read_to_string(path) {
         Ok(text) => {
@@ -227,7 +240,7 @@ fn merge_mcp_json(path: &Path, servers: &[&FoundServer]) -> Result<Vec<String>> 
             continue;
         }
         let mut entry = serde_json::Map::new();
-        for key in ["command", "args", "env"] {
+        for key in ["command", "args", "env", "url", "headers", "type"] {
             if let Some(v) = server.value.get(key) {
                 entry.insert(key.to_string(), v.clone());
             }
@@ -1125,75 +1138,5 @@ fn timestamp(v: &Value) -> DateTime<Utc> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn server(name: &str) -> FoundServer {
-        FoundServer {
-            name: name.to_string(),
-            scope: Scope::Global,
-            value: json!({
-                "command": "npx",
-                "args": ["-y", "pkg"],
-                "env": {"KEY": "v1"},
-                "type": "stdio",
-            }),
-        }
-    }
-
-    #[test]
-    fn merge_creates_the_file_and_keeps_only_spawn_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".aster/mcp.json");
-        let github = server("github");
-        let names = merge_mcp_json(&path, &[&github]).unwrap();
-        assert_eq!(names, ["github"]);
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(written["mcpServers"]["github"]["command"], json!("npx"));
-        assert_eq!(
-            written["mcpServers"]["github"]["args"],
-            json!(["-y", "pkg"])
-        );
-        assert_eq!(written["mcpServers"]["github"]["env"]["KEY"], json!("v1"));
-        // Transport hints from the source tool do not carry over.
-        assert!(written["mcpServers"]["github"].get("type").is_none());
-    }
-
-    #[test]
-    fn merge_leaves_existing_entries_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers": {"github": {"command": "bun"}}, "other": 1}"#,
-        )
-        .unwrap();
-        let github = server("github");
-        let magic = server("magic");
-        let names = merge_mcp_json(&path, &[&github, &magic]).unwrap();
-        assert_eq!(names, ["magic"]);
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(written["mcpServers"]["github"]["command"], json!("bun"));
-        assert_eq!(written["mcpServers"]["magic"]["command"], json!("npx"));
-        assert_eq!(written["other"], json!(1));
-    }
-
-    #[test]
-    fn claude_message_content_keeps_text_and_drops_injected_wrappers() {
-        let content = serde_json::json!([
-            {"type": "text", "text": "<ide_opened_file>x</ide_opened_file>"},
-            {"type": "text", "text": "real question"},
-            {"type": "tool_use", "id": "t1", "name": "Read", "input": {}},
-        ]);
-        assert_eq!(content_text(&content), "real question");
-        assert_eq!(content_text(&serde_json::json!("plain")), "plain");
-        assert_eq!(
-            content_text(&serde_json::json!([{"type": "input_text", "text": "codex q"}])),
-            "codex q"
-        );
-    }
-}
+#[path = "tests/import_test.rs"]
+mod tests;

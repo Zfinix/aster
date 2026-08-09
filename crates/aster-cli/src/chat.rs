@@ -281,13 +281,21 @@ impl SessionCtx {
 
 /// Discover skills from the project (`.aster/skills`) and user-global
 /// (`<config>/aster/skills`) roots, project taking precedence on name collision.
+/// Installed plugins contribute theirs next, and built-ins last, so a skills
+/// root shadows a plugin and a plugin shadows a built-in.
 pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
     let mut roots = vec![repo_root.join(".aster").join("skills")];
     match crate::persist::home() {
         Ok(home) => roots.push(home.join("skills")),
         Err(e) => tracing::debug!("no global skills root: {e:#}"),
     }
-    Arc::new(aster_skills::SkillSet::discover(&roots).with_builtins())
+    let (plugins, problems) = crate::plugins::installed(Some(repo_root));
+    crate::plugins::report(&plugins, &problems);
+    Arc::new(
+        aster_skills::SkillSet::discover(&roots)
+            .extend_dirs(&crate::plugins::skill_dirs(&plugins))
+            .with_builtins(),
+    )
 }
 
 /// Session-start snapshot: platform, date, git state, and which package

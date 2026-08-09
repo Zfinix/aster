@@ -14,6 +14,7 @@ members = [
     "crates/aster-skills",
     "crates/aster-agents",
     "crates/aster-mcp",
+    "crates/aster-plugins",
     "crates/aster-tools",
     "crates/aster-sandbox",
     "crates/aster-web",

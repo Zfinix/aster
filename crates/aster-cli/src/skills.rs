@@ -538,6 +538,8 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
         _ => Vec::new(),
     };
 
+    let from_plugins = plugin_skills();
+
     if crate::json_mode() {
         emit_json(serde_json::json!({
             "scopes": sections
@@ -548,13 +550,20 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
                     "skills": skill_values(skills),
                 }))
                 .collect::<Vec<_>>(),
+            "plugins": from_plugins
+                .iter()
+                .map(|(plugin, skills)| serde_json::json!({
+                    "plugin": plugin,
+                    "skills": skill_values(skills),
+                }))
+                .collect::<Vec<_>>(),
             "shadowed": shadowed,
         }));
         return Ok(());
     }
 
     let total: usize = sections.iter().map(|(_, _, s)| s.len()).sum();
-    if total == 0 {
+    if total == 0 && from_plugins.is_empty() {
         for (scope, root, _) in &sections {
             println!("no {} skills in {}", scope_word(*scope), root.display());
         }
@@ -572,10 +581,33 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
         println!();
     }
 
+    for (plugin, skills) in &from_plugins {
+        println!("{} skill(s) from plugin {plugin}:\n", skills.len());
+        print_available(skills);
+        println!();
+    }
+
     if !shadowed.is_empty() {
         println!("shadowed by this project: {}", shadowed.join(", "));
     }
     Ok(())
+}
+
+/// Skills installed plugins contribute, grouped by plugin. They are not in a
+/// skills root, but the agent sees them in the same index.
+fn plugin_skills() -> Vec<(String, Vec<Skill>)> {
+    let (plugins, _) = crate::plugins::installed(None);
+    plugins
+        .iter()
+        .map(|plugin| {
+            let skills = SkillSet::default().extend_dirs(&plugin.skills);
+            (
+                plugin.name().to_string(),
+                skills.iter().cloned().collect::<Vec<Skill>>(),
+            )
+        })
+        .filter(|(_, skills)| !skills.is_empty())
+        .collect()
 }
 
 fn remove(names: Vec<String>, project: bool, all: bool, yes: bool) -> Result<()> {
@@ -1160,6 +1192,51 @@ fn resolve_source(source: &str) -> Result<Source> {
     })
 }
 
+/// A source resolved to a directory holding its full contents: a local path used
+/// in place, or a clone that lives as long as the guard.
+pub(crate) enum Checkout {
+    Local(PathBuf),
+    Clone {
+        _guard: tempfile::TempDir,
+        root: PathBuf,
+    },
+}
+
+impl Checkout {
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Checkout::Local(path) => path,
+            Checkout::Clone { root, .. } => root,
+        }
+    }
+}
+
+/// Resolve a local path or a git source to a full checkout. Unlike the skills
+/// path this fetches everything, since a plugin is installed whole.
+pub(crate) fn checkout(source: &str) -> Result<Checkout> {
+    let source = source.trim();
+    let local = Path::new(source);
+    if local.exists() {
+        return Ok(Checkout::Local(local.to_path_buf()));
+    }
+    let Some((url, subpath)) = git_source(source) else {
+        bail!("could not resolve {source:?} as a local path or a git source");
+    };
+    let tmp = tempfile::tempdir().context("creating a temp dir for the checkout")?;
+    let dest = tmp
+        .path()
+        .to_str()
+        .context("clone path is not valid UTF-8")?
+        .to_string();
+    git(&["clone", "--quiet", "--depth", "1", &url, &dest])
+        .with_context(|| format!("git clone failed for {url}"))?;
+    let root = match subpath {
+        Some(sub) => tmp.path().join(sub),
+        None => tmp.path().to_path_buf(),
+    };
+    Ok(Checkout::Clone { _guard: tmp, root })
+}
+
 /// Recognises full git URLs and `owner/repo[/subpath]` GitHub shorthands.
 fn git_source(source: &str) -> Option<(String, Option<String>)> {
     if source.starts_with("http://")
@@ -1299,81 +1376,5 @@ fn cancel() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn github_shorthand_becomes_clone_url() {
-        assert_eq!(
-            git_source("anthropics/skills"),
-            Some(("https://github.com/anthropics/skills".into(), None))
-        );
-    }
-
-    #[test]
-    fn shorthand_carries_subpath() {
-        assert_eq!(
-            git_source("anthropics/skills/document/pdf"),
-            Some((
-                "https://github.com/anthropics/skills".into(),
-                Some("document/pdf".into())
-            ))
-        );
-    }
-
-    #[test]
-    fn full_urls_pass_through() {
-        assert_eq!(
-            git_source("https://github.com/a/b.git"),
-            Some(("https://github.com/a/b.git".into(), None))
-        );
-        assert_eq!(
-            git_source("git@github.com:a/b.git"),
-            Some(("git@github.com:a/b.git".into(), None))
-        );
-    }
-
-    #[test]
-    fn plain_words_are_not_git_sources() {
-        assert_eq!(git_source("just-a-name"), None);
-    }
-
-    #[test]
-    fn source_detection() {
-        assert!(looks_like_source("owner/repo"));
-        assert!(looks_like_source("https://github.com/a/b"));
-        assert!(!looks_like_source("pdf"));
-    }
-
-    #[test]
-    fn template_has_valid_frontmatter() {
-        let t = skill_template("my-skill");
-        assert!(t.starts_with("---\nname: my-skill\n"));
-        assert!(t.contains("description:"));
-    }
-
-    /// The agent loads both roots every run, so installing once globally is what
-    /// makes a skill available everywhere. Project scope is the opt-in.
-    #[test]
-    fn scope_defaults_to_global() {
-        assert!(matches!(scope_of(false), Scope::Global));
-        assert!(matches!(scope_of(true), Scope::Project));
-    }
-
-    #[test]
-    fn global_and_project_roots_are_distinct() {
-        let global = scope_root(Scope::Global).unwrap();
-        let project = scope_root(Scope::Project).unwrap();
-        assert_ne!(global, project);
-        assert!(project.ends_with(".aster/skills"), "{}", project.display());
-        assert!(global.ends_with("skills"), "{}", global.display());
-    }
-
-    #[test]
-    fn the_other_scope_is_named_for_error_messages() {
-        assert!(matches!(other_scope(Scope::Global), Scope::Project));
-        assert!(matches!(other_scope(Scope::Project), Scope::Global));
-        assert_eq!(other_scope_flag(Scope::Global), "--project");
-        assert_eq!(other_scope_flag(Scope::Project), "--global");
-    }
-}
+#[path = "tests/skills_test.rs"]
+mod tests;

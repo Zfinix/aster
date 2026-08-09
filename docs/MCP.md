@@ -197,6 +197,41 @@ The current crate intentionally stops at this boundary; it does not configure
 or start MCP servers. That prevents a context optimization layer from gaining
 unreviewed access to credentials or bypassing Aster's policy engine.
 
+## Transports
+
+`aster-mcp` carries no transport, so the CLI supplies them. All three speak the
+same JSON-RPC session, and a server's transport changes only how bytes move.
+
+| Transport | Declare it with | How it works |
+| --- | --- | --- |
+| `stdio` | `command`, plus `args`, `env`, `cwd` | A child process; one JSON line per message. |
+| `streamable-http` | `url`, plus `headers` | Each request is a POST. The reply comes back as JSON or as an SSE stream, and the session id the server assigns rides on every later request. |
+| `sse` | `url`, plus `headers` | The deprecated HTTP+SSE binding: one long-lived GET stream carries every reply, and messages are POSTed to the endpoint that stream names. |
+
+`type` is optional. A server naming a `command` is stdio and one naming a `url`
+is Streamable HTTP, which is what an entry written before remote support meant.
+`type: http` is accepted as a spelling of `streamable-http`, since that is what
+other clients write.
+
+```yaml
+mcp:
+  servers:
+    deepwiki:
+      url: https://mcp.deepwiki.com/mcp
+    internal:
+      type: sse
+      url: https://tools.internal.example/sse
+      headers:
+        X-Tenant: acme
+```
+
+Two rules apply to remote servers. Redirects are followed only inside one
+origin, so configured headers never reach a host the user did not name; and a
+session is ended with a `DELETE` at shutdown rather than left dangling.
+
+Credentials belong in the environment or a secret store, not in `headers` in a
+file you commit.
+
 ## Operational guidance
 
 - Keep a small number of common, safety-critical native Aster tools directly
@@ -218,3 +253,4 @@ unreviewed access to credentials or bypassing Aster's policy engine.
 `aster-mcp` does not implement an MCP client transport, server installation,
 OAuth, prompt caching, semantic/vector retrieval, or unrestricted tool
 execution. Those belong to host-specific adapters and Aster's policy boundary.
+The CLI's transports live in `aster-cli/src/mcp`, on the far side of that line.
