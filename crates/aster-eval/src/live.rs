@@ -94,7 +94,7 @@ pub fn render_eval(cases: &[Case], model: Option<&str>) -> String {
     // `run.toolCalls` carries plain names, not objects. Reading `.name` off a
     // string silently counts zero and every ceiling passes vacuously.
     out.push_str(
-        "const count = (run: { toolCalls: unknown[] }, tool: string) =>\n  \
+        "const count = (run: { toolCalls: readonly unknown[] }, tool: string) =>\n  \
          run.toolCalls.filter((c) => (typeof c === \"string\" ? c : (c as any)?.name) === tool)\n    \
          .length;\n\n",
     );
