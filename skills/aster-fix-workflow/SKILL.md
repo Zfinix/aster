@@ -25,7 +25,7 @@ aster review --json | aster fix --findings-json - --apply
 
 - ALWAYS run the dry-run first and read the preview before `--apply`. Never jump straight to `--apply` on findings you have not seen.
 - `--apply` writes to the working tree only; it never commits. Review the diff with `git diff` afterward and commit yourself.
-- Writes are gated by `permissions` in aster.yaml (`mode`, `allow`/`deny` globs, protected paths). In headless runs `mode: ask` denies, so automation needs `mode: auto` with explicit `allow` globs.
+- Writes are gated by `permissions` in aster.yaml (`mode`, plus `allow`/`ask`/`deny` rules). A headless run has no way to answer a prompt, so anything that reaches `ask` is refused: automation needs `mode: edit` with explicit `allow` rules like `Edit(src/**)`.
 - `--json` emits one JSON array of per-finding results (useful to report which fixes applied, failed, or were skipped).
 - `--model` overrides the fix model (else `ASTER_MODEL`, else aster.yaml); `--repo-root <DIR>` sets the root the finding paths are relative to.
 

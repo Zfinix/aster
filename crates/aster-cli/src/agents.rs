@@ -119,6 +119,8 @@ async fn run_agent(
         recorder: None,
         store: None,
         credentials: deps.credentials.clone(),
+        // Not inherited: a sub-agent asks for its own out-of-repo writes.
+        write_grants: Default::default(),
         skills: Arc::new(aster_skills::SkillSet::default()),
         instructions: Arc::new(crate::instructions::Instructions::default()),
         probe: deps.probe.clone(),

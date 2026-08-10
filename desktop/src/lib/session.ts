@@ -122,6 +122,8 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return `Searched “${s(args.query)}”`;
     case "find_files":
       return `Found files matching ${s(args.pattern)}`;
+    case "run_command":
+      return s(args.description) || `Ran ${s(args.command) || "a command"}`;
     case "edit_file":
       return `Edited ${s(args.path) || "file"}`;
     case "remember":

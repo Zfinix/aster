@@ -1967,6 +1967,12 @@ code {
   --ring: var(--sev-critical);
 }
 
+/* Dropped files become @mentions, so the box says it will take them. */
+.composer[data-dropping="true"] {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-dropBackground, var(--vscode-input-background));
+}
+
 .composer[data-permission-mode="yolo"] {
   --ring: var(--sev-critical);
 }
@@ -2213,6 +2219,152 @@ code {
   border-top: 1px solid var(--border);
   border-radius: 0 0 var(--radius) var(--radius);
   color: var(--fg-dim);
+}
+
+/* The command menu: everything the panel can do, filterable. Shares the popup
+   shell with the pickers, but owns its own rows because they carry a current
+   value and, for a setting, the control that changes it. */
+.cmd {
+  position: absolute;
+  bottom: calc(100% - var(--s2));
+  left: var(--s3);
+  right: var(--s3);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 460px);
+  border: 1px solid var(--vscode-menu-border, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--vscode-menu-background, var(--surface));
+  color: var(--vscode-menu-foreground, var(--fg));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.cmd-filter {
+  flex: none;
+  padding: var(--s2) var(--s3);
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+
+.cmd-list {
+  overflow-y: auto;
+  padding: var(--s1);
+}
+
+.cmd-section + .cmd-section {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
+}
+
+.cmd-section-title {
+  padding: var(--s1) var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  padding: var(--s1) var(--s2);
+  cursor: pointer;
+}
+
+.cmd-row[data-active="true"] {
+  background: var(--vscode-menu-selectionBackground);
+  color: var(--vscode-menu-selectionForeground);
+}
+
+.cmd-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.cmd-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-detail {
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-row[data-active="true"] .cmd-detail,
+.cmd-row[data-active="true"] .cmd-hint {
+  color: inherit;
+  opacity: 0.8;
+}
+
+/* The setting's current value, right-aligned so the column reads down. */
+.cmd-hint {
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.cmd-row-choice {
+  cursor: default;
+}
+
+.cmd-options {
+  display: flex;
+  margin-left: auto;
+  flex: none;
+  gap: 1px;
+  padding: 1px;
+  border-radius: var(--radius);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.12));
+}
+
+.cmd-option {
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  border-radius: calc(var(--radius) - 1px);
+  padding: 1px var(--s2);
+  cursor: pointer;
+}
+
+.cmd-option[data-selected="true"] {
+  color: var(--vscode-button-foreground, var(--fg));
+  background: var(--vscode-button-background, rgba(127, 127, 127, 0.4));
+}
+
+.cmd-note,
+.cmd-empty {
+  padding: var(--s1) var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.cmd-btn {
+  flex: none;
 }
 
 .picker-input {

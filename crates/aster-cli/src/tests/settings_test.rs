@@ -9,18 +9,18 @@ review:
   base_url: https://openrouter.ai/api/v1
   model: old-model  # picked long ago
 permissions:
-  mode: auto
+  mode: manual
 ";
     let out = with_review_key(yaml, "model", "new-model");
     assert!(out.contains("  model: new-model"), "{out}");
     assert!(!out.contains("old-model"), "{out}");
     assert!(out.contains("# reviewed by the team"), "{out}");
-    assert!(out.contains("mode: auto"), "{out}");
+    assert!(out.contains("mode: manual"), "{out}");
 }
 
 #[test]
 fn review_key_is_added_inside_an_existing_block() {
-    let yaml = "review:\n  base_url: https://x.test/v1\npermissions:\n  mode: auto\n";
+    let yaml = "review:\n  base_url: https://x.test/v1\npermissions:\n  mode: manual\n";
     let out = with_review_key(yaml, "model", "m1");
     let review = out.find("review:").unwrap();
     let perms = out.find("permissions:").unwrap();
@@ -31,7 +31,7 @@ fn review_key_is_added_inside_an_existing_block() {
 #[test]
 fn review_block_is_created_when_the_file_lacks_one() {
     assert_eq!(with_review_key("", "model", "m1"), "review:\n  model: m1\n");
-    let out = with_review_key("permissions:\n  mode: auto\n", "model", "m1");
+    let out = with_review_key("permissions:\n  mode: edit\n", "model", "m1");
     assert!(out.ends_with("review:\n  model: m1\n"), "{out}");
     assert!(out.starts_with("permissions:"), "{out}");
 }
@@ -50,7 +50,7 @@ fn permissions_absent_defaults_to_permissive_edits() {
         p.evaluate(&Action::Edit {
             path: ".git/hooks/pre-commit"
         }),
-        Decision::Deny { .. }
+        Decision::Prompt { .. }
     ));
 }
 
@@ -58,9 +58,9 @@ fn permissions_absent_defaults_to_permissive_edits() {
 fn permissions_block_parses_and_compiles() {
     let yaml = "\
 permissions:
-  mode: ask
-  deny: [\"**/*.pem\"]
-  allow: [\"src/**\"]
+  mode: manual
+  deny: [\"Edit(**/*.pem)\"]
+  allow: [\"Edit(src/**)\"]
 ";
     let s: Settings = serde_yaml::from_str(yaml).expect("parse permissions block");
     let p = Policy::compile(&s.permissions).expect("compile");
@@ -70,13 +70,36 @@ permissions:
         }),
         Decision::Deny { .. }
     ));
-    // The legacy `ask` name is `manual`, which prompts for unmatched paths.
+    assert_eq!(
+        p.evaluate(&Action::Edit {
+            path: "src/main.rs"
+        }),
+        Decision::Allow
+    );
+    // `manual` prompts for anything no rule matched.
     assert!(matches!(
         p.evaluate(&Action::Edit {
             path: "docs/readme.md"
         }),
         Decision::Prompt { .. }
     ));
+}
+
+/// The keys the collapse removed. A stale config stops the run rather than
+/// silently dropping the protection it asked for.
+#[test]
+fn a_retired_permissions_key_is_an_error() {
+    for key in [
+        "protected: []",
+        "secret_read: []",
+        "allow_exec: []",
+        "deny_exec: []",
+        "use_default_protected: true",
+    ] {
+        let yaml = format!("permissions:\n  {key}\n");
+        let parsed: Result<Settings, _> = serde_yaml::from_str(&yaml);
+        assert!(parsed.is_err(), "{key} should no longer parse");
+    }
 }
 
 #[test]

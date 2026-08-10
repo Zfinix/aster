@@ -28,13 +28,23 @@ fn yolo_is_least_strict() {
 }
 
 #[test]
-fn deserializes_legacy_ask_and_deny_names() {
-    assert_eq!(
-        serde_json::from_str::<Mode>("\"ask\"").expect("ask parses"),
-        Mode::Manual
-    );
-    assert_eq!(
-        serde_json::from_str::<Mode>("\"deny\"").expect("deny parses"),
-        Mode::Plan
-    );
+fn deserializes_every_mode_name() {
+    for (text, mode) in [
+        ("\"plan\"", Mode::Plan),
+        ("\"manual\"", Mode::Manual),
+        ("\"auto\"", Mode::Auto),
+        ("\"edit\"", Mode::Edit),
+        ("\"yolo\"", Mode::Yolo),
+    ] {
+        assert_eq!(serde_json::from_str::<Mode>(text).expect(text), mode);
+    }
+}
+
+/// The names dropped in the collapse. A stale config should stop the run
+/// rather than silently resolve to something else.
+#[test]
+fn the_retired_mode_names_no_longer_parse() {
+    for text in ["\"ask\"", "\"deny\""] {
+        assert!(serde_json::from_str::<Mode>(text).is_err(), "{text}");
+    }
 }

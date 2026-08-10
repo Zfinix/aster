@@ -46,6 +46,9 @@ pub(crate) struct SessionCtx {
     /// Credential directories approved per command this session. Kept apart
     /// from the file-read grants: approving `gh` must not widen `read_file`.
     pub credentials: Arc<aster_policy::CommandGrants>,
+    /// Out-of-repo directories approved for writes this session. Kept apart
+    /// from the read grants: approving a read must not hand out a write.
+    pub write_grants: Arc<Grants>,
     /// Ranges already read this turn, keyed by path and range, with the file's
     /// modification time. A repeat read of an unchanged range is answered with
     /// a pointer instead of a second full copy in the history.
@@ -524,31 +527,26 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     prompt
 }
 
-/// CLI spelling of [`aster_policy::Mode`]. `ask` and `deny` stay as hidden
-/// aliases so older scripts and aster.yaml files keep working.
+/// CLI spelling of [`aster_policy::Mode`].
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub(crate) enum PermissionModeArg {
     /// Explore the code and present a plan before editing.
     Plan,
-    /// Ask for approval before each edit.
+    /// Ask for approval before each edit and command.
     Manual,
-    /// Apply what passes the safety check, pause for anything risky.
+    /// Apply edits and run commands, pausing on the risky ones.
     Auto,
-    /// Edit files without asking.
+    /// As auto, but commands are trusted; only a rule stops one.
     Edit,
-    /// Skip policy checks and isolation entirely. Use with extreme caution.
+    /// Skip the rules and isolation entirely. Use with extreme caution.
     Yolo,
-    #[value(hide = true)]
-    Ask,
-    #[value(hide = true)]
-    Deny,
 }
 
 impl From<PermissionModeArg> for aster_policy::Mode {
     fn from(arg: PermissionModeArg) -> Self {
         match arg {
-            PermissionModeArg::Plan | PermissionModeArg::Deny => Self::Plan,
-            PermissionModeArg::Manual | PermissionModeArg::Ask => Self::Manual,
+            PermissionModeArg::Plan => Self::Plan,
+            PermissionModeArg::Manual => Self::Manual,
             PermissionModeArg::Auto => Self::Auto,
             PermissionModeArg::Edit => Self::Edit,
             PermissionModeArg::Yolo => Self::Yolo,
@@ -725,9 +723,10 @@ pub struct ChatArgs {
     #[arg(long)]
     allow_edits: bool,
 
-    /// How edits are gated, overriding aster.yaml `permissions.mode`: plan,
-    /// manual, auto, or edit. `manual` needs a front-end that answers prompts:
-    /// the TUI, or `--stream`. Anything but `plan` also enables the edit tool.
+    /// How edits and commands are gated, overriding aster.yaml
+    /// `permissions.mode`: plan, manual, auto, edit, or yolo. Anything a rule sends to
+    /// a prompt needs a front-end that can answer: the TUI, or `--stream`.
+    /// Anything but `plan` also enables the edit tool.
     #[arg(long, value_name = "MODE", value_enum)]
     permission_mode: Option<PermissionModeArg>,
 
@@ -739,6 +738,12 @@ pub struct ChatArgs {
     /// Plain single-shot chat: no read/search/edit tools.
     #[arg(long)]
     no_tools: bool,
+
+    /// Fold the history from --messages-json into a summary and print the
+    /// shorter history instead of answering. For front-ends that own their
+    /// own transcript; the TUI does this from `/compact`.
+    #[arg(long, requires = "messages_json")]
+    compact: bool,
 
     /// Open the interactive chat TUI (default in a terminal). Optional PROMPT seeds the first question.
     #[arg(long, conflicts_with_all = ["messages_json", "json", "no_tools", "print"])]
@@ -812,6 +817,10 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
     let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
+
+    if args.compact {
+        return run_compact(&args, &client).await;
+    }
 
     // The flag is the user asking for this run outright, so it replaces the
     // configured mode rather than only tightening it.
@@ -978,6 +987,7 @@ fn prepare_turn(
         recorder,
         store,
         credentials,
+        write_grants: Arc::new(configured_write_grants(repo_root)),
         skills: discover_skills(repo_root),
         instructions: Arc::new(crate::instructions::discover(repo_root)),
         probe: Arc::new(bash_tools::ToolProbe::detect()),
@@ -1056,6 +1066,15 @@ fn spawn_stdin_router(injected: Arc<std::sync::Mutex<Vec<String>>>) -> mpsc::Rec
     rx
 }
 
+fn approval_request_json(kind: &str, req: &ApprovalRequest) -> Value {
+    json!({
+        "type": "approval_request",
+        "kind": kind,
+        "preview": req.preview,
+        "scope": req.scope.as_ref().map(|p| p.display().to_string()),
+    })
+}
+
 /// Bridge prompts to the caller: write an `approval_request` or `question`
 /// line, then block on the next reply from the stdin router.
 fn stdio_approver(mut replies: mpsc::Receiver<Value>) -> UiSender {
@@ -1063,12 +1082,16 @@ fn stdio_approver(mut replies: mpsc::Receiver<Value>) -> UiSender {
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
             match req {
-                UiRequest::Approval(a) | UiRequest::PlanApproval(a) => {
-                    emit_line(&json!({
-                        "type": "approval_request",
-                        "preview": a.preview,
-                        "scope": a.scope.as_ref().map(|p| p.display().to_string()),
-                    }));
+                // `kind` separates the two: approving a plan promotes the mode
+                // for good, so a front-end that spawns a process per turn has
+                // to persist it rather than re-launch in `plan`.
+                UiRequest::Approval(a) => {
+                    emit_line(&approval_request_json("action", &a));
+                    let answer = replies.recv().await.map_or(Answer::No, parse_approval);
+                    let _ = a.respond.send(answer);
+                }
+                UiRequest::PlanApproval(a) => {
+                    emit_line(&approval_request_json("plan", &a));
                     let answer = replies.recv().await.map_or(Answer::No, parse_approval);
                     let _ = a.respond.send(answer);
                 }
@@ -1412,6 +1435,10 @@ async fn agent_loop(
     ctx: &SessionCtx,
     events: Option<&ChatEventSink>,
 ) -> Result<(String, Option<Vec<ChatMessage>>)> {
+    // Owned for the turn: approving a plan promotes the mode, and the rest of
+    // the turn has to run under the promoted policy rather than the one the
+    // front-end compiled before the plan existed.
+    let mut policy = policy.clone();
     let mut calls = 0usize;
     let turn_span = tracing::Span::current();
     let emit = |event: Value| {
@@ -1645,7 +1672,7 @@ async fn agent_loop(
                             repo_root,
                             client,
                             &call.function.arguments,
-                            policy,
+                            &policy,
                             grants,
                             ctx,
                             &call.id,
@@ -1657,7 +1684,7 @@ async fn agent_loop(
                         exec_tool(
                             repo_root,
                             &mut allow_edits,
-                            policy,
+                            &mut policy,
                             grants,
                             approver,
                             &call.function.name,
@@ -1886,6 +1913,30 @@ pub(crate) async fn compact_now(
     });
     compacted.extend(history[split..].iter().cloned());
     Ok((compacted, summary, split))
+}
+
+/// `--compact`: fold the head of the given history into a summary and print the
+/// shorter history back, for a front-end to adopt in place of its own.
+async fn run_compact(args: &ChatArgs, client: &AiClient) -> Result<()> {
+    let history = read_history(args)?;
+    let (compacted, summary, folded) = compact_now(client, &history).await?;
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "summary": summary,
+                "folded": folded,
+                "messages": compacted
+                    .iter()
+                    .map(|m| json!({ "role": m.role, "content": m.content }))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!("{summary}");
+    }
+    Ok(())
 }
 
 async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
@@ -2122,11 +2173,11 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Replace text in a repository file, or create a new one. `search` must be copied verbatim from the file and match exactly once; include surrounding lines to disambiguate. Omit `search` to create a new file at `path` with `replace` as its whole contents; missing parent directories are created.",
+                "description": "Replace text in a file, or create a new one. `search` must be copied verbatim from the file and match exactly once; include surrounding lines to disambiguate. Omit `search` to create a new file at `path` with `replace` as its whole contents; missing parent directories are created. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each directory, so prefer repo-relative paths.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Repo-relative file path" },
+                        "path": { "type": "string", "description": "File path, repo-relative or absolute" },
                         "search": { "type": "string", "description": "Exact existing text to replace; omit or leave empty to create a new file" },
                         "replace": { "type": "string", "description": "Replacement text, or the new file's contents" }
                     },
@@ -2247,7 +2298,7 @@ fn repair_escapes(raw: &str) -> String {
 async fn exec_tool(
     repo_root: &Path,
     allow_edits: &mut bool,
-    policy: &Policy,
+    policy: &mut Policy,
     grants: &Grants,
     approver: Option<&UiSender>,
     name: &str,
@@ -2302,7 +2353,9 @@ async fn exec_tool(
             }
             Err(e) => Err(e),
         },
-        "exit_plan_mode" if !*allow_edits => exit_plan_mode(approver, ctx, allow_edits).await,
+        "exit_plan_mode" if !*allow_edits => {
+            exit_plan_mode(approver, ctx, allow_edits, policy).await
+        }
         "exit_plan_mode" => Err(anyhow::anyhow!(
             "already in edit mode; the plan has already been approved"
         )),
@@ -2368,7 +2421,7 @@ async fn exec_tool(
         "edit_file" if !*allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),
-        "edit_file" => edit_file(repo_root, policy, approver, &args, edited)
+        "edit_file" => edit_file(repo_root, policy, approver, ctx, &args, edited)
             .await
             .map(|done| match governing_instructions(ctx, &args) {
                 // Nested instructions are advertised, not preloaded, so an edit
@@ -2751,6 +2804,7 @@ async fn exit_plan_mode(
     approver: Option<&UiSender>,
     ctx: &SessionCtx,
     allow_edits: &mut bool,
+    policy: &mut Policy,
 ) -> Result<String> {
     let plan = ctx
         .plan
@@ -2769,7 +2823,11 @@ async fn exit_plan_mode(
             "the user did not approve the plan; stay in plan mode and revise it".to_string(),
         );
     }
+    // The edit tool and the policy gate separately: without the promotion the
+    // mode still denies every edit and command, and the turn stalls holding an
+    // approved plan it cannot act on.
     *allow_edits = true;
+    policy.promote(aster_policy::Mode::Edit);
     Ok("plan approved; edit mode is now active".to_string())
 }
 
@@ -3220,6 +3278,17 @@ pub(crate) fn configured_grants(
     Grants::new(configured.chain(persisted))
 }
 
+/// Seed the session's write grants from the ones already persisted for this
+/// repo. There is no config key to match `additional_directories`: a directory
+/// outside the repo becomes writable only once the user has said so.
+pub(crate) fn configured_write_grants(repo_root: &Path) -> Grants {
+    Grants::new(
+        crate::persist::store()
+            .map(|store| store.write_grants(repo_root).load())
+            .unwrap_or_default(),
+    )
+}
+
 /// Seed the session's credential grants from `permissions.allow_credentials`
 /// (written `<command>:<dir>`) and the persisted store, whose entries are
 /// `<command>\t<dir>`. A malformed entry is dropped rather than failing the
@@ -3462,6 +3531,7 @@ async fn edit_file(
     repo_root: &Path,
     policy: &Policy,
     approver: Option<&UiSender>,
+    ctx: &SessionCtx,
     args: &Value,
     edited: &mut Vec<String>,
 ) -> Result<String> {
@@ -3475,29 +3545,41 @@ async fn edit_file(
     };
     // An empty `search` has nothing to match, so it means "create this file".
     let creating = block.search.is_empty();
-    let (resolved, updated) = if creating {
-        let resolved = edits::resolve_new_in_repo(repo_root, path)?;
+    let (resolved, scope, updated) = if creating {
+        let (resolved, scope) = edits::resolve_new_anywhere(repo_root, path)?;
         if resolved.exists() {
             bail!("{path} already exists; put the text to replace in `search`");
         }
-        (resolved, block.replace.clone())
+        (resolved, scope, block.replace.clone())
     } else {
-        let (resolved, content) = edits::read_repo_file(repo_root, path)?;
+        let (resolved, scope, content) = edits::read_file_anywhere(repo_root, path)?;
         let updated = edits::apply_block(&content, &block)?;
-        (resolved, updated)
+        (resolved, scope, updated)
     };
     let verb = if creating { "create" } else { "edit" };
 
-    match policy.evaluate(&Action::Edit { path }) {
-        Decision::Allow => {}
-        Decision::Deny { reason } => bail!("edit blocked by policy: {reason}"),
-        Decision::Prompt { .. } => {
-            let preview = format!("{verb} {path}:\n{}", edits::preview(&block));
-            if !request_approval(approver, preview, None).await.allowed() {
-                bail!(
-                    "edit needs user approval (permissions mode is `ask`); \
-                     it was rejected or no interactive approver is available"
-                );
+    // The policy's globs are repo-relative, so they say nothing about a path
+    // outside it. There the user's approval is the whole gate.
+    if matches!(scope, edits::Scope::Outside) {
+        approve_outside_write(repo_root, approver, ctx, &resolved, verb).await?;
+    } else {
+        // Against the resolved path, not the argument: an absolute path inside
+        // the repo would otherwise match none of the protected globs.
+        let root = repo_root.canonicalize().unwrap_or_default();
+        let relative = resolved.strip_prefix(&root).unwrap_or(&resolved);
+        match policy.evaluate(&Action::Edit {
+            path: &relative.to_string_lossy(),
+        }) {
+            Decision::Allow => {}
+            Decision::Deny { reason } => bail!("edit blocked by policy: {reason}"),
+            Decision::Prompt { .. } => {
+                let preview = format!("{verb} {path}:\n{}", edits::preview(&block));
+                if !request_approval(approver, preview, None).await.allowed() {
+                    bail!(
+                        "edit needs user approval (permissions mode is `ask`); \
+                         it was rejected or no interactive approver is available"
+                    );
+                }
             }
         }
     }
@@ -3511,6 +3593,43 @@ async fn edit_file(
     }
     let done = if creating { "created" } else { "edited" };
     Ok(format!("{done} {path}:\n{}", edits::preview(&block)))
+}
+
+/// Gate a write that lands outside the repository on the user's approval,
+/// granted per directory so the rest of the session can keep working there.
+/// Yolo has already dropped the sandbox, so it drops this too.
+async fn approve_outside_write(
+    repo_root: &Path,
+    approver: Option<&UiSender>,
+    ctx: &SessionCtx,
+    resolved: &Path,
+    verb: &str,
+) -> Result<()> {
+    if ctx.yolo || ctx.write_grants.allows(resolved) {
+        return Ok(());
+    }
+    let root = grant_root(resolved);
+    let preview = format!("{verb} outside the repository:\n  {}", resolved.display());
+    match request_approval(approver, preview, Some(root.clone())).await {
+        Answer::No => bail!(
+            "{} is outside the repository and needs the user's approval; \
+             it was rejected or this run has no way to ask",
+            resolved.display()
+        ),
+        Answer::Yes => ctx.write_grants.grant(root),
+        Answer::Always => {
+            ctx.write_grants.grant(root.clone());
+            if let Some(store) = &ctx.store
+                && let Err(e) = store.write_grants(repo_root).add(&root)
+            {
+                tracing::warn!(
+                    "could not persist the write grant for {}: {e:#}",
+                    root.display()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ask the front-end to approve a pending action. Headless callers have no

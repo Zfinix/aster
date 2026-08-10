@@ -185,17 +185,14 @@ fn merge_permissions(
     aster_policy::PermissionsConfig {
         mode: global.mode.stricter(project.mode),
         allow: union(global.allow, project.allow),
+        ask: union(global.ask, project.ask),
         deny: union(global.deny, project.deny),
-        protected: union(global.protected, project.protected),
-        secret_read: union(global.secret_read, project.secret_read),
         additional_directories: union(
             global.additional_directories,
             project.additional_directories,
         ),
-        allow_exec: union(global.allow_exec, project.allow_exec),
-        deny_exec: union(global.deny_exec, project.deny_exec),
         allow_credentials: union(global.allow_credentials, project.allow_credentials),
-        use_default_protected: global.use_default_protected && project.use_default_protected,
+        use_default_rules: global.use_default_rules && project.use_default_rules,
     }
 }
 

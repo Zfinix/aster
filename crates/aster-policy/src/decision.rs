@@ -2,26 +2,22 @@
 
 use serde::Deserialize;
 
-/// Agent permission mode. Controls the edit and execution guardrails.
-/// Deny rules always override the mode; modes higher in the order
-/// grant more freedom (plan < manual < auto < edit < yolo).
+/// What happens to an action no rule matches. Deny rules always win; modes
+/// higher in the order grant more freedom (plan < manual < auto < edit < yolo).
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// Explore and propose a plan; never edit.
-    #[serde(alias = "deny")]
+    /// Explore and propose a plan; never edit, never run a command.
     Plan,
-    /// Confirm every edit before it lands.
-    #[serde(alias = "ask")]
+    /// Confirm every edit and command before it happens.
     Manual,
-    /// Apply what passes the safety check, ask before anything risky.
+    /// Apply edits and run commands, confirming the risky ones.
     Auto,
-    /// Apply edits without confirmation.
+    /// As `auto`, but commands are trusted: only a rule stops one.
     #[default]
     Edit,
-    /// No guardrails: policy checks and isolation are skipped entirely.
+    /// No guardrails: rules and isolation are skipped entirely.
     /// Toggled with `/yolo` behind a confirm; turns the theme red.
-    #[serde(alias = "yolo")]
     Yolo,
 }
 
@@ -61,9 +57,9 @@ impl Mode {
     pub fn description(self) -> &'static str {
         match self {
             Mode::Plan => "explore the code and present a plan before editing",
-            Mode::Manual => "ask for approval before each edit",
-            Mode::Auto => "apply what passes the safety check, pause for anything risky",
-            Mode::Edit => "edit files without asking",
+            Mode::Manual => "ask for approval before each edit and command",
+            Mode::Auto => "apply edits and run commands, pausing on the risky ones",
+            Mode::Edit => "as auto, but commands are trusted; only a rule stops one",
             Mode::Yolo => "no guardrails, unrestricted",
         }
     }
@@ -86,14 +82,6 @@ pub enum Decision {
     Prompt {
         preview: String,
     },
-}
-
-#[test]
-fn deserializes_yolo() {
-    assert_eq!(
-        serde_json::from_str::<Mode>("\"yolo\"").expect("yolo parses"),
-        Mode::Yolo
-    );
 }
 
 #[cfg(test)]

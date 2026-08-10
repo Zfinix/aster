@@ -1,61 +1,59 @@
 //! The compiled decision engine.
 
 use anyhow::{Context, Result};
-use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::action::Action;
 use crate::config::PermissionsConfig;
 use crate::decision::{Decision, Mode};
-use crate::defaults::{PROTECTED, RISKY_EXEC, SECRET_READ};
+use crate::defaults;
+use crate::rule::{Rule, first_match, parse_all};
 
 /// A compiled, immutable set of rules. [`Policy::evaluate`] is pure and never
 /// touches disk.
 #[derive(Clone)]
 pub struct Policy {
     mode: Mode,
-    protected: GlobSet,
-    allow: GlobSet,
-    deny: GlobSet,
-    secret_read: GlobSet,
-    allow_exec: Vec<String>,
-    deny_exec: Vec<String>,
+    allow: Vec<Rule>,
+    ask: Vec<Rule>,
+    deny: Vec<Rule>,
+    /// Built-ins, consulted only after every user rule has missed, so an
+    /// `allow` entry is all it takes to override one.
+    default_ask: Vec<Rule>,
+    /// Built-in command confirmations. `edit` trusts commands and skips these;
+    /// pausing on them is the whole difference between `auto` and `edit`.
+    default_ask_commands: Vec<Rule>,
+    default_deny: Vec<Rule>,
 }
 
 impl Policy {
-    /// Unions the built-in protected and secret lists unless
-    /// `use_default_protected` is false.
     pub fn compile(cfg: &PermissionsConfig) -> Result<Policy> {
-        let protected = if cfg.use_default_protected {
-            union(PROTECTED, &cfg.protected)
-        } else {
-            cfg.protected.clone()
-        };
-        let secret_read = if cfg.use_default_protected {
-            union(SECRET_READ, &cfg.secret_read)
-        } else {
-            cfg.secret_read.clone()
+        let builtin = |rules: &[&str]| -> Result<Vec<Rule>> {
+            if !cfg.use_default_rules {
+                return Ok(Vec::new());
+            }
+            parse_all(&rules.iter().map(|s| s.to_string()).collect::<Vec<_>>())
         };
         Ok(Policy {
             mode: cfg.mode,
-            protected: build(&protected)?,
-            allow: build(&cfg.allow)?,
-            deny: build(&cfg.deny)?,
-            secret_read: build(&secret_read)?,
-            allow_exec: cfg.allow_exec.clone(),
-            deny_exec: cfg.deny_exec.clone(),
+            allow: parse_all(&cfg.allow).context("permissions `allow`")?,
+            ask: parse_all(&cfg.ask).context("permissions `ask`")?,
+            deny: parse_all(&cfg.deny).context("permissions `deny`")?,
+            default_ask: builtin(defaults::ASK_EDIT)?,
+            default_ask_commands: builtin(defaults::ASK_BASH)?,
+            default_deny: builtin(defaults::DENY_READ)?,
         })
     }
 
-    /// A no-op policy: unconditional edits, nothing protected, no secret reads blocked.
+    /// A no-op policy: everything allowed, no rules at all.
     pub fn permissive() -> Policy {
         Policy {
             mode: Mode::Edit,
-            protected: GlobSet::empty(),
-            allow: GlobSet::empty(),
-            deny: GlobSet::empty(),
-            secret_read: GlobSet::empty(),
-            allow_exec: Vec::new(),
-            deny_exec: Vec::new(),
+            allow: Vec::new(),
+            ask: Vec::new(),
+            deny: Vec::new(),
+            default_ask: Vec::new(),
+            default_ask_commands: Vec::new(),
+            default_deny: Vec::new(),
         }
     }
 
@@ -65,41 +63,100 @@ impl Policy {
         self.mode
     }
 
-    /// `path` must be repo-relative and already validated against escape by the caller.
-    pub fn evaluate(&self, action: &Action) -> Decision {
-        match action {
-            Action::Edit { path } => self.evaluate_edit(path),
-            Action::Read { path } => self.evaluate_read(path),
-            Action::Exec { binary, args } => self.evaluate_exec(binary, args),
+    /// Move to a looser mode once the user has said so, e.g. after approving a
+    /// plan. The rules are kept, so `deny` still denies; only the fallback the
+    /// mode decides changes. Tightening goes through a fresh [`Policy::compile`].
+    pub fn promote(&mut self, mode: Mode) {
+        if self.mode.stricter(mode) == self.mode {
+            self.mode = mode;
         }
     }
 
-    fn evaluate_exec(&self, binary: &str, args: &[&str]) -> Decision {
+    /// Path actions carry a repo-relative path, already validated against
+    /// escape by the caller.
+    pub fn evaluate(&self, action: &Action) -> Decision {
         if self.mode == Mode::Yolo {
             return Decision::Allow;
         }
-        if self.deny_exec.iter().any(|b| b == binary) {
+        // User rules first, strictest bucket first, so one `allow` entry is
+        // enough to override a built-in without disabling the whole set.
+        if let Some(rule) = first_match(&self.deny, action) {
             return Decision::Deny {
-                reason: format!("command `{binary}` is denied by permissions"),
+                reason: format!(
+                    "{} matches the `deny` rule `{}`",
+                    subject(action),
+                    rule.source()
+                ),
             };
         }
-        if self.allow_exec.iter().any(|b| b == binary) {
+        if let Some(rule) = first_match(&self.ask, action) {
+            return Decision::Prompt {
+                preview: preview(action, rule.source()),
+            };
+        }
+        if first_match(&self.allow, action).is_some() {
             return Decision::Allow;
         }
-        match self.mode {
-            Mode::Plan => Decision::Deny {
+        if let Some(rule) = first_match(&self.default_deny, action) {
+            return Decision::Deny {
+                reason: format!(
+                    "{} matches the built-in rule `{}`; add it to permissions `allow` to override",
+                    subject(action),
+                    rule.source()
+                ),
+            };
+        }
+        if let Some(rule) = first_match(&self.default_ask, action) {
+            return Decision::Prompt {
+                preview: preview(action, rule.source()),
+            };
+        }
+        if self.mode != Mode::Edit
+            && let Some(rule) = first_match(&self.default_ask_commands, action)
+        {
+            return Decision::Prompt {
+                preview: preview(action, rule.source()),
+            };
+        }
+        self.by_mode(action)
+    }
+
+    /// Nothing matched, so the mode decides.
+    fn by_mode(&self, action: &Action) -> Decision {
+        match (self.mode, action) {
+            (Mode::Yolo, _) => Decision::Allow,
+            (_, Action::Read { .. }) => Decision::Allow,
+            (Mode::Plan, Action::Edit { .. }) => Decision::Deny {
+                reason: "permissions mode is `plan`, so edits are off".to_string(),
+            },
+            (Mode::Plan, Action::Exec { .. }) => Decision::Deny {
                 reason: "permissions mode is `plan`, so command execution is off".to_string(),
             },
-            Mode::Edit | Mode::Yolo => Decision::Allow,
-            // Mirrors edits: risky is what `auto` pauses on, not everything.
-            Mode::Auto if !RISKY_EXEC.contains(&binary) => Decision::Allow,
-            Mode::Auto => Decision::Prompt {
-                preview: format!("run `{}` (risky command)", command_line(binary, args)),
+            (Mode::Manual, _) => Decision::Prompt {
+                preview: bare_preview(action),
             },
-            Mode::Manual => Decision::Prompt {
-                preview: format!("run `{}`", command_line(binary, args)),
-            },
+            (Mode::Auto | Mode::Edit, _) => Decision::Allow,
         }
+    }
+}
+
+/// The action as it reads in a reason: `` `src/lib.rs` `` or `` `cargo test` ``.
+fn subject(action: &Action) -> String {
+    match action {
+        Action::Edit { path } | Action::Read { path } => format!("`{path}`"),
+        Action::Exec { binary, args } => format!("`{}`", command_line(binary, args)),
+    }
+}
+
+fn preview(action: &Action, rule: &str) -> String {
+    format!("{} ({rule})", bare_preview(action))
+}
+
+fn bare_preview(action: &Action) -> String {
+    match action {
+        Action::Edit { path } => format!("edit {path}"),
+        Action::Read { path } => format!("read {path}"),
+        Action::Exec { binary, args } => format!("run `{}`", command_line(binary, args)),
     }
 }
 
@@ -127,78 +184,6 @@ fn command_line(binary: &str, args: &[&str]) -> String {
         line.push('…');
     }
     line
-}
-
-impl Policy {
-    fn evaluate_edit(&self, path: &str) -> Decision {
-        if self.mode == Mode::Yolo {
-            return Decision::Allow;
-        }
-        // Explicit deny beats everything.
-        if self.deny.is_match(path) {
-            return Decision::Deny {
-                reason: format!("`{path}` matches a permissions `deny` rule"),
-            };
-        }
-        // Plan mode never writes, allow-listed or not.
-        if self.mode == Mode::Plan {
-            return Decision::Deny {
-                reason: "permissions mode is `plan`, so edits are off".to_string(),
-            };
-        }
-        // Protected beats mode, unless the user explicitly allow-listed it.
-        // `auto` is the exception: risky is what it pauses on rather than refuses.
-        if self.protected.is_match(path) && !self.allow.is_match(path) {
-            return match self.mode {
-                Mode::Auto => Decision::Prompt {
-                    preview: format!("edit {path} (protected path)"),
-                },
-                _ => Decision::Deny {
-                    reason: format!(
-                        "`{path}` is a protected path; add it to permissions `allow` to override"
-                    ),
-                },
-            };
-        }
-        if self.allow.is_match(path) {
-            return Decision::Allow;
-        }
-        match self.mode {
-            Mode::Auto | Mode::Edit | Mode::Yolo => Decision::Allow,
-            Mode::Manual => Decision::Prompt {
-                preview: format!("edit {path}"),
-            },
-            Mode::Plan => unreachable!("plan returns above"),
-        }
-    }
-
-    fn evaluate_read(&self, path: &str) -> Decision {
-        if self.mode == Mode::Yolo {
-            return Decision::Allow;
-        }
-        if self.secret_read.is_match(path) {
-            return Decision::Deny {
-                reason: format!("`{path}` is a secret file; reading it is blocked by policy"),
-            };
-        }
-        Decision::Allow
-    }
-}
-
-fn union(defaults: &[&str], extra: &[String]) -> Vec<String> {
-    defaults
-        .iter()
-        .map(|s| s.to_string())
-        .chain(extra.iter().cloned())
-        .collect()
-}
-
-fn build(patterns: &[String]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for p in patterns {
-        builder.add(Glob::new(p).with_context(|| format!("invalid glob: {p}"))?);
-    }
-    builder.build().context("building glob set")
 }
 
 #[cfg(test)]

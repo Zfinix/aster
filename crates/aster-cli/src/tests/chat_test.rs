@@ -32,6 +32,7 @@ async fn explore_runs_mixed_lookups_in_one_call() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "explore",
@@ -56,6 +57,7 @@ async fn explore_reports_steps_in_the_order_they_were_sent() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "explore",
@@ -79,6 +81,7 @@ async fn explore_refuses_to_run_what_needs_the_sequential_path() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "explore",
@@ -98,6 +101,7 @@ async fn explore_needs_at_least_one_step() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "explore",
@@ -114,6 +118,7 @@ async fn a_failing_step_does_not_sink_the_others() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "explore",
@@ -446,7 +451,7 @@ async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
     exec_tool(
         repo,
         &mut false,
-        &Policy::permissive(),
+        &mut Policy::permissive(),
         &Grants::default(),
         None,
         name,
@@ -457,11 +462,21 @@ async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
     .await
 }
 
-/// Runs a tool against a shared ctx and mutable edit gate, for the plan
+/// A policy in `plan`, the mode the plan tools are reached from.
+fn plan_policy() -> Policy {
+    Policy::compile(&aster_policy::PermissionsConfig {
+        mode: aster_policy::Mode::Plan,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+/// Runs a tool against a shared ctx, edit gate and policy, for the plan
 /// tools whose whole point is the state they leave behind.
 async fn run_tool_with(
     repo: &Path,
     allow_edits: &mut bool,
+    policy: &mut Policy,
     approver: Option<&UiSender>,
     ctx: &SessionCtx,
     name: &str,
@@ -470,7 +485,7 @@ async fn run_tool_with(
     exec_tool(
         repo,
         allow_edits,
-        &Policy::permissive(),
+        policy,
         &Grants::default(),
         approver,
         name,
@@ -499,6 +514,7 @@ async fn read_only_call_matches_the_sequential_path() {
     let sequential = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "read_file",
@@ -535,6 +551,7 @@ async fn update_plan_stores_every_step_with_its_status() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &ctx,
         "update_plan",
@@ -562,6 +579,7 @@ async fn update_plan_replaces_rather_than_appends() {
         run_tool_with(
             repo.path(),
             &mut false,
+            &mut Policy::permissive(),
             None,
             &ctx,
             "update_plan",
@@ -582,6 +600,7 @@ async fn update_plan_rejects_an_unknown_status() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         None,
         &ctx,
         "update_plan",
@@ -619,6 +638,7 @@ async fn approving_the_plan_unlocks_editing() {
     let repo = tempfile::tempdir().unwrap();
     let ctx = SessionCtx::default();
     let mut allow_edits = false;
+    let mut policy = plan_policy();
 
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     let prompt = tokio::spawn(async move {
@@ -630,6 +650,7 @@ async fn approving_the_plan_unlocks_editing() {
     run_tool_with(
         repo.path(),
         &mut allow_edits,
+        &mut policy,
         None,
         &ctx,
         "update_plan",
@@ -639,6 +660,7 @@ async fn approving_the_plan_unlocks_editing() {
     let out = run_tool_with(
         repo.path(),
         &mut allow_edits,
+        &mut policy,
         Some(&tx),
         &ctx,
         "exit_plan_mode",
@@ -649,6 +671,60 @@ async fn approving_the_plan_unlocks_editing() {
     prompt.await.unwrap();
     assert!(out.contains("edit mode is now active"), "{out}");
     assert!(allow_edits, "approval promotes the turn to edit mode");
+    assert_eq!(
+        policy.mode(),
+        aster_policy::Mode::Edit,
+        "the policy has to follow the edit gate, or commands stay denied"
+    );
+}
+
+#[tokio::test]
+async fn approving_the_plan_lets_the_same_turn_run_commands() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let mut allow_edits = false;
+    let mut policy = plan_policy();
+
+    let action = aster_policy::Action::Exec {
+        binary: "cargo",
+        args: &["test"],
+    };
+    assert!(
+        matches!(
+            policy.evaluate(&action),
+            aster_policy::Decision::Deny { .. }
+        ),
+        "plan mode denies commands until the plan is approved"
+    );
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let _ = approval(rx.recv().await.unwrap()).respond.send(Answer::Yes);
+    });
+
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "pending")]),
+    )
+    .await;
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        Some(&tx),
+        &ctx,
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+    prompt.await.unwrap();
+
+    assert_eq!(policy.evaluate(&action), aster_policy::Decision::Allow);
 }
 
 #[tokio::test]
@@ -656,6 +732,7 @@ async fn rejecting_the_plan_leaves_editing_locked() {
     let repo = tempfile::tempdir().unwrap();
     let ctx = SessionCtx::default();
     let mut allow_edits = false;
+    let mut policy = plan_policy();
 
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     let prompt = tokio::spawn(async move {
@@ -665,6 +742,7 @@ async fn rejecting_the_plan_leaves_editing_locked() {
     run_tool_with(
         repo.path(),
         &mut allow_edits,
+        &mut policy,
         None,
         &ctx,
         "update_plan",
@@ -674,6 +752,7 @@ async fn rejecting_the_plan_leaves_editing_locked() {
     let out = run_tool_with(
         repo.path(),
         &mut allow_edits,
+        &mut policy,
         Some(&tx),
         &ctx,
         "exit_plan_mode",
@@ -684,6 +763,7 @@ async fn rejecting_the_plan_leaves_editing_locked() {
     prompt.await.unwrap();
     assert!(out.contains("stay in plan mode"), "{out}");
     assert!(!allow_edits);
+    assert_eq!(policy.mode(), aster_policy::Mode::Plan);
 }
 
 #[tokio::test]
@@ -692,6 +772,7 @@ async fn exit_plan_mode_is_refused_once_already_editing() {
     let out = run_tool_with(
         repo.path(),
         &mut true,
+        &mut Policy::permissive(),
         None,
         &SessionCtx::default(),
         "exit_plan_mode",
@@ -717,6 +798,7 @@ async fn ask_user_relays_the_chosen_option() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         Some(&tx),
         &SessionCtx::default(),
         "ask_user",
@@ -759,6 +841,7 @@ async fn a_declined_question_does_not_stall_the_turn() {
     let out = run_tool_with(
         repo.path(),
         &mut false,
+        &mut Policy::permissive(),
         Some(&tx),
         &SessionCtx::default(),
         "ask_user",
@@ -852,6 +935,7 @@ async fn edit_file_creates_a_missing_file_without_search() {
         repo.path(),
         &policy,
         None,
+        &SessionCtx::default(),
         &args("docs/notes/test.md", None, "# Test\n"),
         &mut edited,
     )
@@ -992,6 +1076,193 @@ async fn outside_reads_are_denied_without_an_approver() {
     assert!(err.contains("needs the user's approval"), "{err}");
 }
 
+/// The protected globs are repo-relative, so an absolute path to the same
+/// file must not slip past them.
+#[tokio::test]
+async fn a_protected_file_stays_protected_through_an_absolute_path() {
+    let repo = tempfile::tempdir().unwrap();
+    let target = repo.path().join(".env");
+    fs::write(&target, "SECRET=1").unwrap();
+    let policy = Policy::compile(&aster_policy::PermissionsConfig {
+        deny: vec!["Edit(.env)".into()],
+        ..Default::default()
+    })
+    .unwrap();
+
+    let err = edit_file(
+        repo.path(),
+        &policy,
+        None,
+        &SessionCtx::default(),
+        &args(&target.to_string_lossy(), Some("SECRET=1"), "SECRET=2"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("blocked by policy"), "{err}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "SECRET=1");
+}
+
+#[tokio::test]
+async fn outside_writes_are_approved_by_the_front_end() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("notes.txt");
+    fs::write(&target, "keep me").unwrap();
+    let ctx = SessionCtx::default();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let answer = tokio::spawn(async move {
+        let req = approval(rx.recv().await.unwrap());
+        assert!(
+            req.preview.contains("outside the repository"),
+            "{}",
+            req.preview
+        );
+        let _ = req.respond.send(Answer::Yes);
+    });
+
+    edit_file(
+        repo.path(),
+        &Policy::permissive(),
+        Some(&tx),
+        &ctx,
+        &args(&target.to_string_lossy(), Some("keep me"), "changed"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
+
+    answer.await.unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), "changed");
+    assert_eq!(
+        ctx.write_grants.granted(),
+        [outside.path().canonicalize().unwrap()]
+    );
+}
+
+#[tokio::test]
+async fn outside_writes_are_denied_without_an_approver() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("notes.txt");
+    fs::write(&target, "keep me").unwrap();
+
+    let err = edit_file(
+        repo.path(),
+        &Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        &args(&target.to_string_lossy(), Some("keep me"), "changed"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("needs the user's approval"), "{err}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
+}
+
+/// A read grant is not a write grant: approving `read_file` on a directory
+/// must still leave `edit_file` asking.
+#[tokio::test]
+async fn a_read_grant_does_not_cover_a_write() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("notes.txt");
+    fs::write(&target, "keep me").unwrap();
+    let grants = Grants::new([outside.path().canonicalize().unwrap()]);
+
+    resolve_for_read(
+        repo.path(),
+        &Policy::permissive(),
+        &grants,
+        None,
+        &SessionCtx::default(),
+        &target.to_string_lossy(),
+    )
+    .await
+    .unwrap();
+
+    let err = edit_file(
+        repo.path(),
+        &Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        &args(&target.to_string_lossy(), Some("keep me"), "changed"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("needs the user's approval"), "{err}");
+}
+
+#[tokio::test]
+async fn yolo_writes_outside_the_repo_without_asking() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("new.txt");
+    let ctx = SessionCtx {
+        yolo: true,
+        ..SessionCtx::default()
+    };
+
+    edit_file(
+        repo.path(),
+        &Policy::permissive(),
+        None,
+        &ctx,
+        &args(&target.to_string_lossy(), None, "written"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(fs::read_to_string(&target).unwrap(), "written");
+}
+
+#[tokio::test]
+async fn one_approval_covers_the_rest_of_the_directory() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompts = tokio::spawn(async move {
+        let mut seen = 0;
+        while let Some(req) = rx.recv().await {
+            seen += 1;
+            let _ = approval(req).respond.send(Answer::Yes);
+        }
+        seen
+    });
+
+    for name in ["a.txt", "b.txt"] {
+        edit_file(
+            repo.path(),
+            &Policy::permissive(),
+            Some(&tx),
+            &ctx,
+            &args(&outside.path().join(name).to_string_lossy(), None, "x"),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+    }
+    drop(tx);
+
+    assert_eq!(
+        prompts.await.unwrap(),
+        1,
+        "the second write should be covered"
+    );
+}
+
 #[tokio::test]
 async fn edit_file_refuses_to_clobber_an_existing_file() {
     let repo = tempfile::tempdir().unwrap();
@@ -1002,6 +1273,7 @@ async fn edit_file_refuses_to_clobber_an_existing_file() {
         repo.path(),
         &policy,
         None,
+        &SessionCtx::default(),
         &args("test.md", None, "gone"),
         &mut Vec::new(),
     )

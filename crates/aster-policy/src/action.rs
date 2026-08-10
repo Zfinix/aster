@@ -2,6 +2,7 @@
 
 /// A file operation the policy decides on. Paths are repo-relative and already
 /// validated against escape upstream (`edits::resolve_in_repo`).
+#[derive(Debug)]
 pub enum Action<'a> {
     Edit {
         path: &'a str,

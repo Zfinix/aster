@@ -107,11 +107,10 @@ pub fn provider_choices() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// The env var holding the key for `base_url`, when it is not the shared one.
-/// Lets a mid-session provider switch pick up a key that is already exported.
-pub fn provider_key(base_url: &str) -> Option<String> {
-    let host = host_only(base_url.trim_end_matches('/'));
-    let vars: &[&str] = match host {
+/// The env vars that may hold `base_url`'s own key, in the order they are
+/// tried. Empty when the endpoint uses the shared `ASTER_API_KEY`.
+pub fn provider_key_vars(base_url: &str) -> &'static [&'static str] {
+    match host_only(base_url.trim_end_matches('/')) {
         h if h.contains("openrouter") => &["OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"],
         h if h.contains("anthropic") => &["ANTHROPIC_API_KEY"],
         h if h.contains("openai") => &["OPENAI_API_KEY"],
@@ -120,8 +119,14 @@ pub fn provider_key(base_url: &str) -> Option<String> {
         h if h.contains("deepseek") => &["DEEPSEEK_API_KEY"],
         h if h.contains("googleapis") => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         _ => &[],
-    };
-    vars.iter()
+    }
+}
+
+/// The env var holding the key for `base_url`, when it is not the shared one.
+/// Lets a mid-session provider switch pick up a key that is already exported.
+pub fn provider_key(base_url: &str) -> Option<String> {
+    provider_key_vars(base_url)
+        .iter()
         .filter_map(|v| env::var(v).ok())
         .find(|v| !v.trim().is_empty())
 }

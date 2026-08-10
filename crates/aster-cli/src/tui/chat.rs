@@ -182,6 +182,7 @@ pub async fn run_chat(
             auto: policy_for(Mode::Auto)?,
             edit: policy_for(Mode::Edit)?,
             grants: sync::Arc::new(crate::chat::configured_grants(&perms, &repo_root)),
+            write_grants: sync::Arc::new(crate::chat::configured_write_grants(&repo_root)),
             credentials: sync::Arc::new(crate::chat::configured_credentials(&perms, &repo_root)),
         },
         approval_tx,
@@ -953,6 +954,7 @@ struct SessionPermissions {
     auto: sync::Arc<Policy>,
     edit: sync::Arc<Policy>,
     grants: sync::Arc<Grants>,
+    write_grants: sync::Arc<Grants>,
     credentials: sync::Arc<aster_policy::CommandGrants>,
 }
 
@@ -1465,6 +1467,7 @@ impl ChatApp {
             recorder: self.recorder.clone(),
             store: self.store.clone(),
             credentials: self.perms.credentials.clone(),
+            write_grants: self.perms.write_grants.clone(),
             skills: crate::chat::discover_skills(&repo_root),
             instructions: self.instructions.clone(),
             probe: std::sync::Arc::new(bash_tools::ToolProbe::detect()),

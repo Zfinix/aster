@@ -30,16 +30,18 @@ fn resolve_anywhere_expands_a_leading_tilde() {
 #[test]
 fn resolve_new_accepts_a_missing_nested_path() {
     let repo = tempfile::tempdir().unwrap();
-    let target = resolve_new_in_repo(repo.path(), "src/deep/new.rs").unwrap();
+    let (target, scope) = resolve_new_anywhere(repo.path(), "src/deep/new.rs").unwrap();
     assert!(target.ends_with("src/deep/new.rs"));
     assert!(!target.exists());
+    assert_eq!(scope, Scope::InRepo);
 }
 
 #[test]
-fn resolve_new_rejects_paths_leaving_the_repo() {
+fn resolve_new_reports_paths_leaving_the_repo_instead_of_failing() {
     let repo = tempfile::tempdir().unwrap();
     for path in ["../outside.rs", "src/../../outside.rs", "/etc/passwd"] {
-        assert!(resolve_new_in_repo(repo.path(), path).is_err(), "{path}");
+        let (_, scope) = resolve_new_anywhere(repo.path(), path).unwrap();
+        assert_eq!(scope, Scope::Outside, "{path}");
     }
 }
 

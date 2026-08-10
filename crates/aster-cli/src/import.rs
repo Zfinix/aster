@@ -498,8 +498,9 @@ pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<
         return Ok(());
     }
     // Landed imports go straight into the picker: enter resumes one there.
+    // Scoped to this repo, since that is what the import just filled.
     if landed > 0 && crate::picker::is_tty() {
-        return crate::sessions::pick_session(store, &repo_root).await;
+        return crate::sessions::pick_session(store, &repo_root, false).await;
     }
     println!("resume one with `aster --resume <ID>`; `aster sessions` lists them");
     Ok(())
