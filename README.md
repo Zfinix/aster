@@ -202,12 +202,12 @@ probability, so treat the number as a ranking signal rather than odds.
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
 | `aster login` | Link GitHub, for reviewing and commenting on PRs. |
 
-Two flags work everywhere, before or after the subcommand: `--json` for
-machine-readable output, and `--effort` for the reasoning budget.
+`--json` works everywhere, before or after the subcommand. `--effort` sets the
+reasoning budget on the commands that run a model: chat, `review`, and `fix`.
 
 ```bash
 aster --json sessions list
-aster --effort high review
+aster review --effort high
 ```
 
 ### Memory
@@ -287,7 +287,9 @@ Order of precedence: **CLI flags, then environment, then `aster.yaml`, then
 defaults.** API keys are read from the environment only, never from the yaml.
 
 `aster.yaml` is read from your repo root, then `~/.aster/aster.yaml` for
-everything else. Copy [`aster.yaml.example`](./aster.yaml.example) to get started.
+everything else. Copy [`aster.yaml.example`](./aster.yaml.example) to get
+started. Every key, its default, and how the two files merge is in
+[docs/CONFIG.md](./docs/CONFIG.md).
 
 | Env var | What it does | Default |
 | --- | --- | --- |
@@ -311,6 +313,7 @@ diagrams and the reasoning behind each decision, lives in the docs:
 
 | Doc | What it covers |
 | --- | --- |
+| [CONFIG.md](./docs/CONFIG.md) | Every `aster.yaml` key, its default, and how files merge. |
 | [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | How the crates fit together and what a turn does end to end. |
 | [ALGORITHM.md](./docs/ALGORITHM.md) | The review pipeline and its cost model. |
 | [HARNESS.md](./docs/HARNESS.md) | Sessions, memory, approvals, and delegation. |
@@ -339,7 +342,7 @@ crates/
   aster-models/      shared domain types
 desktop/             the desktop app (Tauri)
 editors/vscode/      the VS Code extension
-docs/                architecture, algorithm, memory, MCP, plugins, roadmap
+docs/                config, architecture, algorithm, memory, MCP, plugins, roadmap
 ```
 
 ## Contributing

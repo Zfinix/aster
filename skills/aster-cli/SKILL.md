@@ -93,11 +93,13 @@ How the agent is allowed to act (`--permission-mode` on `aster chat`, or
 - `auto` — apply what passes the safety check, pause for anything risky
 - `edit` — edit files without asking (the default)
 
-`--effort <off|low|medium|high>` is global and sets the reasoning budget for
-thinking models, overriding `ASTER_EFFORT` and `review.effort` in aster.yaml.
+`--effort <off|low|medium|high>` sets the reasoning budget for thinking models
+on chat, `aster review`, and `aster fix`, overriding `ASTER_EFFORT` and
+`review.effort` in aster.yaml.
 In the TUI, `/mode` cycles modes and `/effort` sets the budget.
 
 ## Conventions
 
 - Non-interactive contexts (CI, agents): use `--print`, `--json`, and `-y` variants; never invoke the TUI.
 - Every command supports `--help`; check it before guessing flags.
+- Before editing `aster.yaml`, check `docs/CONFIG.md` for the key and its default. Unknown keys are a hard parse error, not a warning.

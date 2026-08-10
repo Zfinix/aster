@@ -744,6 +744,9 @@ pub struct ChatArgs {
     /// Answer once and print plain text instead of opening the TUI (default when piped).
     #[arg(long, short = 'p', conflicts_with_all = ["messages_json", "json"])]
     print: bool,
+
+    #[command(flatten)]
+    pub effort: crate::EffortArgs,
 }
 
 /// Args equivalent to `aster --resume <id>`, for commands that hand off into

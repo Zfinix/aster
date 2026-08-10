@@ -38,6 +38,9 @@ pub struct FixArgs {
     /// Repository root the file paths are relative to. Defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     repo_root: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub effort: crate::EffortArgs,
 }
 
 /// Per-finding outcome, also the `--json` wire shape.

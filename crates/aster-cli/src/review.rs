@@ -79,6 +79,9 @@ pub struct ReviewArgs {
     /// Browse findings in an interactive terminal UI.
     #[arg(long, conflicts_with = "comment")]
     pub tui: bool,
+
+    #[command(flatten)]
+    pub effort: crate::EffortArgs,
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
