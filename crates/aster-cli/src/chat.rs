@@ -1691,6 +1691,7 @@ async fn agent_loop(
                             &call.function.arguments,
                             edited,
                             ctx,
+                            events,
                         )
                         .instrument(span.clone())
                         .await
@@ -2305,6 +2306,7 @@ async fn exec_tool(
     arguments: &str,
     edited: &mut Vec<String>,
     ctx: &SessionCtx,
+    _events: Option<&ChatEventSink>,
 ) -> String {
     let args: Value = match parse_arguments(arguments) {
         Ok(v) => v,

@@ -65,11 +65,18 @@ impl Policy {
 
     /// Move to a looser mode once the user has said so, e.g. after approving a
     /// plan. The rules are kept, so `deny` still denies; only the fallback the
-    /// mode decides changes. Tightening goes through a fresh [`Policy::compile`].
+    /// mode decides changes.
     pub fn promote(&mut self, mode: Mode) {
         if self.mode.stricter(mode) == self.mode {
             self.mode = mode;
         }
+    }
+
+    /// Move to a stricter mode, e.g. when the agent drops itself into `plan`
+    /// before touching anything. Only ever tightens, so this cannot be a way
+    /// around the configured ceiling.
+    pub fn demote(&mut self, mode: Mode) {
+        self.mode = self.mode.stricter(mode);
     }
 
     /// Path actions carry a repo-relative path, already validated against
