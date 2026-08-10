@@ -4,7 +4,7 @@ Aster runs models a tier below Claude. The harness has to supply the judgment
 the model lacks: knowledge as predefined skills, recovery as feedback that
 carries the answer, and pacing as gates and nudges. This document is the design
 for that, grounded in a transcript study of real Claude Code sessions (Aug 2026)
-across four corpora: this repo, instalog (systems code, 84MB of sessions),
+across four corpora: this repo,
 serverpod-website plus portfolio (frontend, verification-heavy), and
 serverpod-docs plus feature-pages (skills and optimization). Counts below come
 from those transcripts.
