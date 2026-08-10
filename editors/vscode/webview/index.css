@@ -1,0 +1,2414 @@
+/*
+ * Semantic tokens over real VS Code theme keys with fallback chains, so the
+ * panel tracks the user's theme instead of approximating it.
+ */
+:root {
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --radius: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+  /* What the thread fades into above the composer. */
+  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  /* Readable column cap; narrow sidebars fall below it and are unaffected. */
+  --col: 760px;
+
+  --fg: var(--vscode-foreground);
+  --fg-dim: var(--vscode-descriptionForeground);
+  /* Deliberately not --vscode-inlineChatInput-border: themes often set it to an
+     accent color, which reads as a highlight rather than a neutral edge. */
+  --border: var(--vscode-widget-border, rgba(127, 127, 127, 0.28));
+  --hover: var(--vscode-toolbar-hoverBackground);
+  --list-hover: var(--vscode-list-hoverBackground);
+  --surface: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  --mono: var(--vscode-editor-font-family, monospace);
+  --mono-size: var(--vscode-editor-font-size, 12px);
+
+  --sev-critical: var(--vscode-editorError-foreground, #f14c4c);
+  --sev-high: var(--vscode-editorError-foreground, #f14c4c);
+  --sev-medium: var(--vscode-editorWarning-foreground, #cca700);
+  --sev-low: var(--vscode-editorInfo-foreground, #3794ff);
+  --sev-info: var(--fg-dim);
+
+  --diff-add: var(--vscode-gitDecoration-addedResourceForeground, #4ec94e);
+  --diff-del: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* The document never scrolls; the thread viewport is the only scroller. */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--fg);
+  background: transparent;
+}
+
+/* Set below the chrome around it so the thread reads as the surface in focus
+   rather than a slab level with the editor. Mixed from the theme's own colour,
+   so it still tracks the theme instead of pinning one grey. Dark only: light and
+   high-contrast themes are chosen for their contrast and are left alone. */
+body.vscode-dark {
+  background: color-mix(in srgb, var(--bg) 78%, #000);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+}
+
+/* Toolbar */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  padding: var(--s2) var(--s2);
+  gap: var(--s2);
+  flex: none;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: var(--s1);
+}
+
+.toolbar-title {
+  flex: 1;
+  font-size: 0.95em;
+  font-weight: 590;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  line-height: 1;
+}
+
+/* Shared primitives */
+
+.grow {
+  flex: 1;
+}
+
+/* Layers children in one cell so states can crossfade in place. */
+.stack {
+  display: grid;
+  place-items: center;
+}
+
+.stack > * {
+  grid-area: 1 / 1;
+}
+
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font: inherit;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  padding: 3px 6px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.ghost:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ghost svg {
+  flex: none;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font: inherit;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.link:hover {
+  color: var(--fg);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.code-wrap {
+  position: relative;
+  margin: var(--s2) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 2px var(--s1) 2px var(--s2);
+  border-bottom: 1px solid var(--border);
+  background: var(--vscode-editorGroupHeader-tabsBackground, rgba(127, 127, 127, 0.08));
+}
+
+.code-lang {
+  flex: 1;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  text-transform: lowercase;
+}
+
+.code-head .icon-btn {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.code-wrap:hover .icon-btn,
+.code-head .icon-btn:focus-visible {
+  opacity: 1;
+}
+
+.code-block {
+  margin: 0;
+  padding: var(--s2);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+  overflow-x: auto;
+  cursor: pointer;
+}
+
+.code-block:hover {
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.16));
+}
+
+.code-block code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+  font-size: 0.9em;
+}
+
+/*
+ * A sheen swept across the glyphs themselves, so in-flight work reads as alive
+ * without a second spinner competing with the one in the composer.
+ */
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-dim) 35%, var(--fg) 50%, var(--fg-dim) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* Thread */
+
+.thread-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The scroller spans the full panel so the scrollbar rides the edge; the
+   readable column is capped on the inner track instead. */
+.thread-viewport {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* The tail clears the composer so the last line never sits against it. */
+.thread {
+  width: 100%;
+  max-width: var(--col);
+  margin: 0 auto;
+  padding: var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+/* Hugs its content: a wall-width block reads as the agent talking, not you.
+   Pulled left by its own frame so the text inside starts on the same column as
+   an assistant reply, instead of sitting a few pixels in from it. */
+.turn-user {
+  --chip-pad-x: var(--s2);
+  align-self: flex-start;
+  max-width: 100%;
+  margin-left: calc(-1 * (var(--chip-pad-x) + 1px));
+  padding: var(--s1) var(--chip-pad-x);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--vscode-input-background);
+}
+
+.turn-user-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+/* A message the running turn absorbed, sitting where it landed in the flow. */
+.turn-user-injected {
+  margin: var(--s2) 0;
+}
+
+.turn-queued {
+  opacity: 0.72;
+  border-left-style: dashed;
+}
+
+.queued-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s1);
+}
+
+.queued-badge {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.queued-remove {
+  font-size: 0.85em;
+}
+
+/* Blocks inside one turn sit closer than the turns themselves, so a reply and
+   the steps under it read as one unit. */
+.turn-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  overflow-wrap: anywhere;
+}
+
+/* Revealed on hover so a settled reply stays clean text. */
+.turn-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: calc(-1 * var(--s2));
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.turn-assistant:hover .turn-actions,
+.turn-actions:focus-within {
+  opacity: 1;
+}
+
+/* Live status */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--fg-dim);
+  /* Transient chrome: selecting the thread must not pick up the animated
+     letters and hidden copy as stray lines. */
+  user-select: none;
+}
+
+.status .mark {
+  flex: none;
+}
+
+/* Doubled class to outweigh `.empty .mark`'s entrance animation. */
+.mark.mark-busy {
+  animation: markSpin 1.8s linear infinite;
+}
+
+@keyframes markSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.status-pulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--vscode-progressBar-background, var(--fg));
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/*
+ * Letters come out like stars: each rises into place on a stagger, then keeps
+ * its own twinkle phase, brightening toward the foreground and dimming back.
+ */
+.status-word {
+  display: inline-flex;
+  white-space: pre;
+}
+
+.status-letter {
+  display: inline-block;
+  color: var(--fg-dim);
+  animation:
+    starRise 420ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both,
+    twinkle 2.6s ease-in-out infinite;
+  /* The negative twinkle delay desynchronises the letters from the start. */
+  animation-delay: calc(var(--i) * 30ms), calc(var(--i) * -370ms);
+}
+
+@keyframes starRise {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    color: var(--fg-dim);
+  }
+  50% {
+    color: var(--fg);
+  }
+}
+
+.status-elapsed {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--fg-dim);
+  }
+
+  .status-pulse,
+  .mark.mark-busy,
+  .status-letter {
+    animation: none;
+  }
+}
+
+/* Jump-to-latest */
+
+/* Centres the pill without a transform of its own, which would fight the
+   spring that motion drives on the button. */
+.scroll-pill-slot {
+  position: absolute;
+  bottom: var(--s3);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.scroll-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+.scroll-pill[data-labeled="true"] {
+  padding: 0 10px 0 8px;
+}
+
+.scroll-pill:hover {
+  background: var(--hover);
+}
+
+.scroll-pill-label {
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-error {
+  padding: var(--s2);
+  border-radius: var(--radius);
+  border-left: 2px solid var(--sev-critical);
+  background: var(--vscode-inputValidation-errorBackground, transparent);
+  color: var(--vscode-errorForeground);
+  overflow-wrap: anywhere;
+}
+
+.turn-stopped {
+  padding: var(--s1) 0;
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.prose {
+  margin: 0 0 var(--s2);
+  line-height: 1.5;
+}
+
+.prose:last-child {
+  margin-bottom: 0;
+}
+
+/* Markdown blocks */
+
+.md-heading {
+  margin: var(--s3) 0 var(--s2);
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.md-heading:first-child {
+  margin-top: 0;
+}
+
+.md-list {
+  margin: 0 0 var(--s2);
+  padding-left: var(--s4);
+  line-height: 1.5;
+}
+
+.md-list li {
+  margin-bottom: var(--s1);
+}
+
+.md-list li:last-child {
+  margin-bottom: 0;
+}
+
+.md-list:last-child {
+  margin-bottom: 0;
+}
+
+.md-quote {
+  margin: 0 0 var(--s2);
+  padding: var(--s1) var(--s3);
+  border-left: 2px solid var(--border);
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+.md-rule {
+  margin: var(--s3) 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.md-table-wrap {
+  margin: 0 0 var(--s2);
+  overflow-x: auto;
+}
+
+.md-table {
+  border-collapse: collapse;
+  font-size: 0.9em;
+  line-height: 1.4;
+  width: 100%;
+}
+
+.md-table th,
+.md-table td {
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  font-weight: 600;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+}
+
+.md-table tbody tr:nth-child(even) {
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.04));
+}
+
+.md-link {
+  color: var(--vscode-textLink-foreground);
+}
+
+.md-link:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
+/* A locally-answered command: /status, /memory, /diff, /compact. Framed like a
+   tool card so it reads as machinery rather than something the model said. */
+.info-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+  overflow: hidden;
+}
+
+.info-card[data-error="true"] {
+  border-left: 2px solid var(--sev-critical);
+}
+
+.info-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.info-title {
+  font-weight: 600;
+}
+
+.info-head > .icon-btn {
+  margin-left: auto;
+}
+
+.info-note {
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.info-rows {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  gap: var(--s1) var(--s3);
+  margin: 0;
+}
+
+.info-row {
+  display: contents;
+}
+
+.info-row > dt {
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
+.info-row > dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.info-more {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0;
+  font: inherit;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.edits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+  margin-top: var(--s2);
+}
+
+.edits-label {
+  color: var(--fg-dim);
+}
+
+.edit-chip {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--vscode-textLink-foreground);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.edit-chip:hover {
+  background: var(--hover);
+}
+
+/* Tool calls */
+
+/* Flush with the prose above it: the steps are part of the same transcript, not
+   an inset sub-list. */
+/* The rail ties a stretch of actions to the narration above it, so the eye
+   can follow which message drove which steps. */
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 3px;
+  padding-left: var(--s3);
+}
+
+/* One `agent` tool call's swarm: a summary head over per-agent rows. */
+.agent-group {
+  display: flex;
+  flex-direction: column;
+  margin-left: 3px;
+  padding-left: var(--s3);
+  border-left: 2px solid var(--border);
+}
+
+.agent-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-dim);
+  padding: 3px var(--s1);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.agent-group-head:hover {
+  background: var(--list-hover);
+}
+
+.agent-group-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.agent-group-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-count {
+  opacity: 0.7;
+}
+
+.agent-group-caret {
+  display: flex;
+  flex: none;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: var(--s1);
+  padding: var(--s1) 0 var(--s1) var(--s3);
+  border-left: 1px solid var(--border);
+}
+
+.agent-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.agent-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-dim);
+  padding: 3px var(--s1);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.agent-row-toggle:not(:disabled):hover {
+  background: var(--list-hover);
+}
+
+.agent-row-glyph {
+  flex: none;
+}
+
+.agent-row[data-running="true"] .agent-row-glyph {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.agent-row[data-error="true"] .agent-row-glyph {
+  color: var(--sev-critical);
+}
+
+.agent-row-error {
+  color: var(--sev-critical);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-row-caret {
+  display: flex;
+  flex: none;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.agent-row-open {
+  flex: none;
+}
+
+.agent-report {
+  padding: var(--s2) var(--s1) var(--s3) calc(var(--s1) + 14px);
+  color: var(--fg-dim);
+}
+
+/* The whole header is the toggle, so the hit target is the row rather than a
+   chevron the size of a full stop. */
+.tool-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-dim);
+  padding: 3px var(--s1);
+  min-width: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.tool-row:disabled {
+  cursor: default;
+}
+
+.tool-row:not(:disabled):hover {
+  background: var(--list-hover);
+}
+
+/* The rail is drawn per step rather than as one border on the list, so it can
+   begin and end on a diamond instead of overshooting the run, and open a gap
+   where each node sits. `bottom: -1px` closes the list's row gap. */
+.tool-list > * {
+  position: relative;
+  --node: calc(3px + 0.5lh);
+  --node-gap: 7px;
+}
+
+.tool-list > *::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 0;
+  bottom: -1px;
+  width: 2px;
+  background: linear-gradient(
+    var(--border) calc(var(--node) - var(--node-gap)),
+    transparent calc(var(--node) - var(--node-gap)),
+    transparent calc(var(--node) + var(--node-gap)),
+    var(--border) calc(var(--node) + var(--node-gap))
+  );
+}
+
+/* A step that carries no node of its own keeps an unbroken line through it. */
+.tool-list > *:not(:has(> .tool-row))::before {
+  background: var(--border);
+}
+
+.tool-list > :first-child:has(> .tool-row)::before {
+  top: calc(var(--node) + var(--node-gap));
+  background: var(--border);
+}
+
+.tool-list > :last-child:has(> .tool-row)::before {
+  bottom: auto;
+  height: calc(var(--node) - var(--node-gap));
+  background: var(--border);
+}
+
+/* A lone step is a point, not a run. */
+.tool-list > :only-child::before,
+.tool-list > :only-child:has(> .tool-row)::before {
+  display: none;
+}
+
+/* A node on the rail where each step starts, so the line reads as a sequence of
+   moments rather than one long stroke. Top-level steps only: the folded run's
+   own rail is close enough that studding it too turns into noise.
+   Whole-pixel box on a whole-pixel rail center, or the rotated square
+   antialiases unevenly and reads as off-centre. */
+.tool-list > * > .tool-row {
+  position: relative;
+}
+
+.tool-list > * > .tool-row::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: calc(3px + 0.5lh);
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 1px;
+  background: var(--fg-dim);
+  opacity: 0.55;
+  transform: rotate(45deg);
+}
+
+.tool-list > [data-running="true"] > .tool-row::before {
+  background: var(--vscode-progressBar-background, var(--fg));
+  opacity: 1;
+}
+
+.tool-list > [data-error="true"] > .tool-row::before {
+  background: var(--sev-critical);
+  opacity: 1;
+}
+
+/* VS Code injects `:focus { outline: 1px solid var(--vscode-focusBorder) }` into
+   every webview, which leaves a loud ring on every row a mouse has touched. */
+.tool-row:focus,
+.agent-group-head:focus {
+  outline: none;
+}
+
+.tool-row:focus-visible,
+.agent-group-head:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* Reserved even when empty, so labels line up down the column whether or not a
+   step has anything to unfold. */
+.tool-chevron {
+  display: flex;
+  flex: none;
+  width: 14px;
+  padding-top: 2px;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.tool-run-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: var(--s3);
+  border-left: 1px solid var(--border);
+  padding-left: var(--s1);
+}
+
+.tool-run[data-running="true"] .tool-verb {
+  background: linear-gradient(90deg, var(--fg-dim) 35%, var(--fg) 50%, var(--fg-dim) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-run[data-running="true"] .tool-verb {
+    animation: none;
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--fg-dim);
+  }
+}
+
+.tool-run[data-error="true"] .tool-icon,
+.tool-run[data-error="true"] .tool-hint {
+  color: var(--sev-critical);
+}
+
+/* Nudged to sit on the first line's baseline when the label wraps. */
+.tool-icon {
+  display: flex;
+  flex: none;
+  padding-top: 2px;
+  color: var(--fg-dim);
+}
+
+.tool[data-error="true"] .tool-icon {
+  color: var(--sev-critical);
+}
+
+.tool[data-running="true"] .tool-icon {
+  color: var(--vscode-progressBar-background, var(--fg));
+}
+
+/* Clamped to two lines rather than ellipsised on one: a truncated path is
+   unreadable exactly when it matters, and long paths are the common case. */
+.tool-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* A command repeats in full in the card's `in` cell, so the header only has to
+   name it: one line, ellipsised, rather than two lines of flags. */
+.tool-label[data-oneline="true"] {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tool-label[data-oneline="true"] .tool-detail {
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* Standing in for the verb rather than qualifying one, so it carries the row's
+   weight instead of trailing off it. */
+.tool-label[data-lead="true"] .tool-detail {
+  color: var(--fg);
+}
+
+.tool-verb {
+  margin-right: var(--s1);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.tool-detail {
+  color: var(--fg-dim);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* Plain foreground, not the link color: monospace and the bold verb beside it
+   already separate the argument, and themes that tint links amber turned every
+   step into a highlight. */
+.tool-detail[data-code="true"] {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--fg);
+}
+
+.tool[data-running="true"] .tool-verb,
+.tool[data-running="true"] .tool-detail {
+  background: linear-gradient(90deg, var(--fg-dim) 35%, var(--fg) 50%, var(--fg-dim) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool[data-running="true"] .tool-verb,
+  .tool[data-running="true"] .tool-detail {
+    animation: none;
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--fg-dim);
+  }
+}
+
+.tool-hint {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool[data-error="true"] .tool-hint {
+  color: var(--sev-critical);
+}
+
+/* Indented under the header's label, so the icon column stays a clean gutter.
+   Carries the same fill as a markdown code block: both are the transcript's
+   verbatim material and should read as one surface. */
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  margin: var(--s1) 0 var(--s2) calc(var(--s1) + 14px + var(--s2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+  overflow: hidden;
+}
+
+.tool-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: var(--s2) var(--s3);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--fg-dim);
+  min-width: 0;
+}
+
+.tool-cell:first-child {
+  border-top: none;
+}
+
+.tool-cell-body[role="button"] {
+  cursor: pointer;
+}
+
+/* Only the output cell opens anywhere, so only it lights up under the cursor. */
+.tool-cell-out:hover {
+  background: var(--list-hover);
+}
+
+/* Revealed on hover like the code block's, so the card stays quiet at rest. */
+.tool-cell-open {
+  flex: none;
+  opacity: 0;
+}
+
+.tool-cell-out:hover .tool-cell-open,
+.tool-cell-open:focus-visible {
+  opacity: 1;
+}
+
+/* Monospace so `ch` is a real character width: measured in the proportional UI
+   font, "OUT" overruns 3ch and the two cells' content columns stop lining up. */
+.tool-cell-label {
+  flex: none;
+  padding-top: 2px;
+  width: 3ch;
+  font-family: var(--mono);
+  color: var(--fg-dim);
+  opacity: 0.6;
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* The command reads at full strength; its output is the quieter half. */
+.tool-cell-in .tool-cell-body {
+  color: var(--fg);
+}
+
+.tool-cell-body {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: none;
+  padding: 0;
+}
+
+.tool-output {
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+  font: inherit;
+  color: inherit;
+  background: none;
+}
+
+.tool-output code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+  font-size: inherit;
+}
+
+/* One line, scrolled rather than wrapped: a command reads as a single line, and
+   the copy button beside it is the way out for one too long to fit. */
+.tool-input {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 1px;
+}
+
+.tool-input code {
+  white-space: pre;
+}
+
+.tool-cell-copy {
+  display: flex;
+  flex: none;
+}
+
+/* Quiet at rest like the output cell's open button, so the card stays calm. */
+.tool-cell-copy .icon-btn {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.tool-cell-in:hover .tool-cell-copy .icon-btn,
+.tool-cell-copy .icon-btn:focus-visible {
+  opacity: 1;
+}
+
+/* Approval prompt */
+
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+  margin-bottom: var(--s2);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--sev-medium);
+  border-radius: var(--radius);
+}
+
+.approval-head {
+  font-weight: 600;
+}
+
+.approval-preview {
+  margin: 0;
+  padding: var(--s2);
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+}
+
+.approval-preview code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+
+/* Tinted rows with a sign column, so the two sides read at a glance while the
+   code inside each keeps its own syntax colors. */
+.out-line[data-diff="add"] {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(78, 201, 78, 0.12));
+}
+
+.out-line[data-diff="del"] {
+  background: var(--vscode-diffEditor-removedTextBackground, rgba(241, 76, 76, 0.12));
+}
+
+.out-line[data-diff="hunk"],
+.out-line[data-diff="meta"] {
+  color: var(--fg-dim);
+  opacity: 0.8;
+}
+
+.diff-marker {
+  flex: none;
+  width: 1.5em;
+  padding-left: var(--s1);
+  user-select: none;
+}
+
+.out-line[data-diff="add"] .diff-marker {
+  color: var(--diff-add);
+}
+
+.out-line[data-diff="del"] .diff-marker {
+  color: var(--diff-del);
+}
+
+.approval-actions {
+  display: flex;
+  gap: var(--s2);
+}
+
+/* Inline with the tool calls that produced it: the plan reads as part of the
+   transcript, not a pinned overlay. */
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.plan-title {
+  font-size: 0.85em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+.plan-summary {
+  font-size: 0.85em;
+  color: var(--fg-dim);
+}
+
+.plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  line-height: 1.4;
+}
+
+.plan-glyph {
+  flex: none;
+  width: 1.2em;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.plan-step[data-status="done"] .plan-glyph {
+  color: var(--diff-add);
+}
+
+.plan-step[data-status="done"] .plan-label {
+  color: var(--fg-dim);
+}
+
+.plan-step[data-status="in_progress"] .plan-glyph {
+  color: var(--sev-low);
+}
+
+.plan-step[data-status="in_progress"] .plan-label {
+  font-weight: 600;
+}
+
+.plan-step[data-status="blocked"] .plan-glyph {
+  color: var(--sev-high);
+}
+
+.plan-step[data-status="skipped"] .plan-label {
+  color: var(--fg-dim);
+  text-decoration: line-through;
+}
+
+/* Modal to the turn: dims the thread and pins the card just above the composer. */
+.question-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--s4) var(--s4) var(--s2);
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  width: min(560px, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.question-head {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.question-body {
+  font-weight: 600;
+  font-size: 1.05em;
+  line-height: 1.5;
+}
+
+/* Stacked, not a row: options are whole phrases and wrap badly side by side. */
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.question-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font: inherit;
+  text-align: left;
+  line-height: 1.5;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+}
+
+.question-option:hover {
+  background: var(--list-hover);
+  border-color: var(--vscode-focusBorder, var(--border));
+}
+
+/* The keyboard shortcut for the row, doubling as its label. */
+.question-key {
+  flex: none;
+  min-width: 1.5em;
+  text-align: center;
+  font-size: 0.8em;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1px 4px;
+}
+
+.question-option:hover .question-key {
+  color: var(--fg);
+}
+
+.question-skip {
+  align-self: flex-start;
+  font-size: 0.9em;
+}
+
+.btn,
+.btn-primary {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 10px;
+  cursor: pointer;
+  background: none;
+  color: var(--fg);
+}
+
+.btn:hover {
+  background: var(--hover);
+}
+
+.btn-primary {
+  border-color: transparent;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.btn-primary:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+/* Every face occupies the same cell; the widest sets the button's size so the
+   crossfade never reflows the row. */
+.btn-faces .stack {
+  place-items: center;
+}
+
+.btn-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  white-space: nowrap;
+}
+
+.btn-faces:disabled {
+  opacity: 0.85;
+  cursor: default;
+}
+
+/* Review */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--fg-dim);
+  min-width: 0;
+}
+
+.review-phase,
+.review-verdict {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-verdict {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 22px;
+  min-width: 0;
+  color: var(--fg-dim);
+}
+
+.step[data-status="pending"] {
+  opacity: 0.55;
+}
+
+.step[data-status="done"],
+.step[data-status="active"] {
+  color: var(--fg);
+}
+
+.step-badge {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.step-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius);
+}
+
+.step-tick {
+  color: var(--diff-add);
+  background: color-mix(in srgb, var(--diff-add) 14%, transparent);
+}
+
+.step-cross {
+  color: var(--sev-critical);
+  background: color-mix(in srgb, var(--sev-critical) 12%, transparent);
+}
+
+.step-spin {
+  color: var(--fg-dim);
+}
+
+.step-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.step-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-meta {
+  flex: none;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-summary {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
+
+.review-actions {
+  display: flex;
+  gap: var(--s2);
+}
+
+.finding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.finding {
+  border-left: 2px solid var(--sev, var(--fg-dim));
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.finding[data-open="true"] {
+  background: var(--list-hover);
+}
+
+.finding[data-severity="critical"],
+.finding[data-severity="high"] {
+  --sev: var(--sev-critical);
+}
+.finding[data-severity="medium"] {
+  --sev: var(--sev-medium);
+}
+.finding[data-severity="low"] {
+  --sev: var(--sev-low);
+}
+.finding[data-severity="info"] {
+  --sev: var(--sev-info);
+}
+
+.finding-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: var(--s1) var(--s2);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.finding-row:hover {
+  background: var(--list-hover);
+}
+
+.finding-caret {
+  display: flex;
+  flex: none;
+  color: var(--fg-dim);
+}
+
+.finding-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finding[data-open="true"] .finding-title {
+  white-space: normal;
+}
+
+.finding-sev {
+  flex: none;
+  color: var(--sev, var(--fg-dim));
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.finding-detail {
+  padding: 0 var(--s2) var(--s2) calc(var(--s2) + 18px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.finding-desc,
+.finding-fix {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.finding-fix {
+  color: var(--fg-dim);
+}
+
+.finding-fix-label {
+  display: inline-block;
+  margin-right: var(--s1);
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--fg-dim));
+}
+
+.finding-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.finding-loc {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--vscode-textLink-foreground);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.finding-loc:hover {
+  text-decoration: underline;
+}
+
+.finding-tags {
+  flex: none;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
+.finding-fix-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: var(--radius);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.finding-fix-btn:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.finding-fix-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.finding-fix-reason {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
+.spinner-icon {
+  animation: markSpin 1.2s linear infinite;
+}
+
+.review-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.refuted-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding-left: var(--s2);
+  border-left: 1px solid var(--border);
+  font-size: 0.9em;
+}
+
+.refuted-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.refuted-title {
+  color: var(--fg-dim);
+  text-decoration: line-through;
+}
+
+.refuted-reason {
+  color: var(--fg-dim);
+}
+
+/* Empty state */
+
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: safe center;
+  text-align: center;
+  gap: var(--s2);
+  width: 100%;
+  max-width: var(--col);
+  margin: 0 auto;
+  padding: var(--s4);
+  overflow-y: auto;
+}
+
+.empty .mark {
+  margin-bottom: var(--s3);
+  animation: markIn 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+@keyframes markIn {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-18deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mark-clickable {
+  cursor: pointer;
+  transition: transform 0.15s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.mark-clickable:active {
+  transform: scale(0.9);
+}
+
+/* Doubled class so the spin outweighs `.empty .mark`'s entrance animation. */
+.mark.mark-spin {
+  animation: markSpinOnce 0.7s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes markSpinOnce {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty .mark,
+  .mark.mark-spin {
+    animation: none;
+  }
+}
+
+.empty .code-block {
+  width: 100%;
+  text-align: left;
+}
+
+.empty-title {
+  margin: 0;
+  font-size: 1.45em;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.empty-body,
+.empty-hint {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.empty-body {
+  color: var(--fg-dim);
+}
+
+.empty-hint,
+.empty-branch {
+  color: var(--fg-dim);
+}
+
+/* Composer */
+
+/* In an editor tab the panel is as wide as the group, so the column is capped
+   and centred rather than stretched edge to edge. */
+.composer-wrap {
+  position: relative;
+  width: 100%;
+  max-width: var(--col);
+  margin: 0 auto;
+  padding: var(--s2) var(--s3) var(--s3);
+}
+
+.composer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--vscode-input-background);
+  padding: var(--s2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/*
+ * The focus ring carries the permission mode, so the box you type into tells
+ * you what it is allowed to do: neutral for plan/manual, red while edits apply
+ * unattended, dimmed when the repo's policy denies them outright.
+ */
+.composer {
+  --ring: var(--vscode-focusBorder);
+}
+
+.composer[data-permission-mode="auto"],
+.composer[data-permission-mode="edit"] {
+  --ring: var(--sev-critical);
+}
+
+.composer[data-permission-mode="yolo"] {
+  --ring: var(--sev-critical);
+}
+
+.composer[data-permission-mode="plan"] {
+  --ring: var(--fg-dim);
+}
+
+.composer:focus-within {
+  border-color: var(--ring);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--ring) 12%, transparent),
+    0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.input-wrap {
+  position: relative;
+}
+
+/*
+ * The mirror paints the text (and its @mention chips) behind a transparent
+ * textarea, which keeps native caret, selection, and key handling intact.
+ * Its metrics must match .composer-input exactly or the layers drift.
+ */
+.input-mirror,
+.composer-input {
+  font: inherit;
+  line-height: 1.5;
+  padding: 0 2px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.input-mirror {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--vscode-input-foreground);
+  /* Scrolled from script to track the textarea; visible overflow would paint
+     the clipped rows over the footer. */
+  overflow: hidden;
+}
+
+.composer-input {
+  position: relative;
+  display: block;
+  width: 100%;
+  resize: none;
+  border: none;
+  background: none;
+  color: transparent;
+  caret-color: var(--vscode-input-foreground);
+}
+
+/* VS Code injects `:focus { outline: 1px solid var(--vscode-focusBorder) }`
+   into every webview. Match on :focus too so this wins on specificity. */
+.composer-input,
+.composer-input:focus,
+.composer-input:focus-visible {
+  outline: none;
+}
+
+.composer-input::selection {
+  background: var(--vscode-editor-selectionBackground);
+}
+
+.composer-input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+.mention {
+  border-radius: 3px;
+  /* The chip must take exactly the width its raw text would: the mirror has to
+     wrap at the same characters as the textarea, or every line after a mention
+     drifts out of the caret's line. Negative margins pay the padding back. */
+  padding: 1px 3px;
+  margin: 0 -3px;
+  background: var(--vscode-chat-slashCommandBackground, var(--vscode-badge-background));
+  color: var(--vscode-chat-slashCommandForeground, var(--vscode-badge-foreground));
+}
+
+.composer-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  min-width: 0;
+}
+
+.model-btn {
+  max-width: 45%;
+  font-size: 0.9em;
+}
+
+.model-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-effort {
+  flex: none;
+  opacity: 0.6;
+}
+
+.send {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  transition: background-color 0.15s ease;
+}
+
+.send:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stop {
+  background: var(--vscode-errorForeground);
+}
+
+/* Approval picker */
+
+.picker {
+  position: absolute;
+  bottom: calc(100% - var(--s2));
+  left: var(--s3);
+  right: var(--s3);
+  z-index: 10;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--s1);
+  border: 1px solid var(--vscode-menu-border, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--vscode-menu-background, var(--surface));
+  color: var(--vscode-menu-foreground, var(--fg));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+.picker-head {
+  padding: var(--s1) var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  padding: var(--s1) var(--s2);
+  cursor: pointer;
+}
+
+.picker-row > svg {
+  flex: none;
+  margin-top: 2px;
+  opacity: 0.8;
+}
+
+.picker-row:hover,
+.picker-row[data-active="true"] {
+  background: var(--vscode-menu-selectionBackground);
+  color: var(--vscode-menu-selectionForeground);
+}
+
+/* Autocomplete reuses the picker shell but scrolls and sits tighter. */
+.picker[role="listbox"] {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.picker[role="listbox"] .picker-label {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
+.picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.picker-detail {
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.picker-row:hover .picker-detail,
+.picker-row[data-active="true"] .picker-detail {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.picker-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-check {
+  margin-left: auto;
+  flex: none;
+}
+
+/* The on/off box in the MCP panel, sized to the label it sits beside. */
+.picker-mark {
+  flex: none;
+  margin-top: 1px;
+  opacity: 0.8;
+}
+
+.picker-empty {
+  padding: var(--s1) var(--s2) var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+/* Hairline above the escape hatch, so the vetted list reads as the main choice. */
+.picker-add {
+  margin-top: var(--s1);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  color: var(--fg-dim);
+}
+
+.picker-input {
+  width: 100%;
+  margin-top: var(--s1);
+  padding: var(--s1) var(--s2);
+  font: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder, var(--border));
+  border-radius: var(--radius);
+}
+
+.out-line {
+  display: flex;
+  white-space: pre;
+}
+
+.out-line > code {
+  flex: 1;
+  min-width: 0;
+}
+
+.out-gutter {
+  flex: none;
+  padding-right: var(--s3);
+  color: rgba(127, 127, 127, 0.5);
+  user-select: none;
+  text-align: right;
+}
+
+/*
+ * Shiki tokenises against both default VS Code themes at once and writes each
+ * side to a custom property, so switching theme costs a repaint rather than a
+ * re-tokenise. Dark is the default because the panel usually is.
+ */
+.sh {
+  color: var(--shiki-dark);
+}
+
+body.vscode-light .sh,
+body.vscode-high-contrast-light .sh {
+  color: var(--shiki-light);
+}
+
+/* History panel */
+
+.history-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh var(--s2) var(--s2);
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.history-panel {
+  width: min(460px, 100%);
+  max-height: 68vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--vscode-editorWidget-background, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
+}
+
+.history-search {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+
+.history-search input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.history-search input::placeholder {
+  color: var(--fg-dim);
+}
+
+.history-count {
+  flex-shrink: 0;
+  font-size: 0.75em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s1);
+}
+
+.history-empty {
+  padding: var(--s4) var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  text-align: center;
+}
+
+.history-group-label {
+  padding: var(--s2) var(--s2) 4px;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.history-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px var(--s2);
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+}
+
+/* The cursor is the only highlight, so keyboard and pointer never disagree
+   about which row Enter would open. */
+.history-row[data-cursor="true"] {
+  background: var(--hover);
+}
+
+.history-row[data-active="true"] {
+  border-left-color: var(--vscode-textLink-foreground, var(--fg));
+}
+
+.history-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s1);
+}
+
+.history-row-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-row-when {
+  flex-shrink: 0;
+  font-size: 0.75em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+}
+
+.history-row-meta {
+  color: var(--fg-dim);
+  font-size: 0.75em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-dot {
+  margin: 0 4px;
+  opacity: 0.6;
+}
+
+.history-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px var(--s2);
+  border-top: 1px solid var(--border);
+  font-size: 0.72em;
+  color: var(--fg-dim);
+}
+
+.history-foot kbd {
+  padding: 1px 4px;
+  font: inherit;
+  color: var(--fg-dim);
+  background: var(--hover);
+  border-radius: 3px;
+}
