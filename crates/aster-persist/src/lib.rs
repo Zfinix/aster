@@ -55,6 +55,16 @@ impl Store {
         )
     }
 
+    /// Out-of-repo directories approved for *writes*, kept apart from
+    /// [`Self::grants`] so approving a read never hands out a write.
+    pub fn write_grants(&self, repo_root: &Path) -> GrantStore {
+        GrantStore::new(
+            self.home
+                .join("write-grants")
+                .join(format!("{}.json", project_slug(repo_root))),
+        )
+    }
+
     /// Credential directories approved per command for `repo_root`, kept apart
     /// from [`Self::grants`] so a sandbox approval never widens the agent's own
     /// file tools. Entries are stored as `<command>\t<dir>`.
@@ -178,6 +188,43 @@ impl Store {
         // has to come from `created_at`, not from id order.
         metas.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
         Ok(metas)
+    }
+
+    /// Every saved session, across every project this store has seen. Sessions
+    /// are filed per project, so a session started in another checkout is
+    /// invisible to [`Self::list_sessions`] however recent it is.
+    pub fn list_all_sessions(&self) -> Result<Vec<SessionMeta>> {
+        let root = self.home.join("sessions");
+        let Ok(projects) = std::fs::read_dir(&root) else {
+            return Ok(Vec::new());
+        };
+        let mut metas = Vec::new();
+        for project in projects.filter_map(|e| e.ok()) {
+            let Ok(entries) = std::fs::read_dir(project.path()) else {
+                continue;
+            };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if let Ok(header) = read_header(&path) {
+                    metas.push(header);
+                }
+            }
+        }
+        metas.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        Ok(metas)
+    }
+
+    /// Find which project holds `id`, for acting on a session listed with
+    /// `--all` from somewhere else. `None` when no project has it.
+    pub fn find_session_repo(&self, id: &str) -> Option<PathBuf> {
+        self.list_all_sessions()
+            .ok()?
+            .into_iter()
+            .find(|meta| meta.id == id)
+            .map(|meta| PathBuf::from(meta.repo_root))
     }
 
     /// Delete a saved session transcript. Returns whether it existed; the id

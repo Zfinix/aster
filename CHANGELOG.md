@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `aster status` reports what the next turn would run with: model, provider,
+  effort, permission mode, the turn limits, and how many MCP servers, skills,
+  memory blocks, and sessions are wired in. `--json` for front-ends.
+- `aster mcp list --no-connect` lists the configured servers and their on/off
+  state without spawning any of them, so a UI can draw a control panel without
+  paying for a connect.
+- `aster models --providers` lists the endpoint catalog, marking the one this
+  repo points at and naming the env vars that may hold each one's key.
+- `aster chat --compact` folds a `--messages-json` history into a summary and
+  prints the shorter history back, so a front-end that owns its own transcript
+  can compact it the way the TUI's `/compact` does.
+
+### Changed
+
+- **The VS Code panel gets a command menu**, holding everything it can do:
+  conversation actions, model, provider, effort, mode, the review commands,
+  status, diff, memory, MCP servers, and every skill the session can see. Open
+  it from the `/` button, by pressing `/` in an empty composer, with
+  `cmd+alt+k`, or from the editor palette as **Aster: Show Command Menu**. Rows
+  show the setting's current value; effort is set inline on its row; the rest
+  either run, open a picker, or answer with a card in the thread. Commands are
+  no longer typed at the composer as `/name`, which was a terminal habit in a
+  window that can just show the list.
+- The VS Code panel lists skills again. It parsed `aster skills list --json` as
+  a flat array when the command emits scopes and plugins, so the menu had
+  silently shown only its built-ins, and plugin-contributed skills never
+  appeared at all.
+- The VS Code panel renders `explore`, `run_tests`, `update_plan`, `ask_user`,
+  and `exit_plan_mode` steps by name and icon instead of printing the raw tool
+  id.
+
+### Fixed
+
+- **Approving a plan now lets the turn act on it.** `exit_plan_mode` opened the
+  edit tool but left the policy in `plan`, so every edit and command that
+  followed was refused with "permissions mode is `plan`" and the agent looped
+  against a plan it had just been told to carry out. Approval promotes the
+  policy too.
+- **Leaving plan mode sticks in VS Code.** The panel spawns one `aster chat`
+  per turn with `--permission-mode`, so a promotion inside the turn was lost at
+  the next one. `approval_request` now carries `kind` (`plan` or `action`), and
+  approving a plan moves the panel to `edit` the way the TUI already did.
+- `aster chat --permission-mode auto` no longer exits with a usage error. The
+  mode existed in `aster.yaml` and in the VS Code picker but not in the flag,
+  so choosing **Auto** in the panel killed every turn with exit code 2 until
+  another mode was picked.
+
+## [0.4.0] - 2026-08-10
+
+### Added
+
 - Sandbox credential access now asks instead of failing. A command that needs a
   credential directory the sandbox denies (`gh` and `~/.config/gh`, `aws` and
   `~/.aws`, `kubectl` and `~/.kube`, `ssh`/`git` and `~/.ssh`, `gpg` and
@@ -71,10 +122,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Permissions collapse into one rule language.** `allow`, `ask`, and `deny`
+  now hold rules of the form `Edit(<glob>)`, `Read(<glob>)`, and
+  `Bash(<command>:*)` (or `Bash(<command>)` for an exact line); a bare `Edit`,
+  `Read`, or `Bash` covers everything that tool does. That replaces six keys
+  and three separate matcher vocabularies. Precedence is `deny`, `ask`,
+  `allow`, the built-in rules, then `mode`, so one `allow` entry overrides a
+  single built-in without dropping the rest:
+  `allow: ["Read(**/.env)"]` reads env files and leaves every other secret
+  protected.
+- **A `Bash` rule matches inside a shell invocation.** The agent is told to
+  chain work through `bash -lc "one && two"`, which made every command look
+  like `bash` to a matcher that only saw the binary name: `deny_exec: ["rm"]`
+  never stopped `bash -lc "rm -rf x"`, and `sudo` and `curl` never triggered
+  the risky-command pause. Rules are now matched against the command line and
+  every command inside a script it carries, through quotes, past leading
+  environment assignments, and a few levels of nesting.
+- **The mode ladder no longer inverts.** Writing to `.git/**`,
+  `**/.git/**`, `.github/workflows/**`, and `.husky/**` now asks in every mode
+  instead of being refused outright, which is what `auto` already did while the
+  looser `edit` refused. `plan < manual < auto < edit < yolo` now holds for
+  every action: no mode denies something a looser one allows. Reading `.env`,
+  `*.pem`, `*.key` and friends is still refused, since a secret cannot be taken
+  back out of the model's context.
+- `auto` and `edit` still differ in exactly one way, now stated as such: `auto`
+  pauses on the built-in risky-command list (`sudo`, `rm`, `curl`, `ssh` …) and
+  `edit` trusts commands, leaving only your own rules to stop one.
+- `edit_file` writes outside the repository ask for approval instead of
+  failing. `read_file` and `list_files` already did; `edit_file` refused, and
+  the agent routed around it with a shell script, which put the write through
+  the path with no prompt and no diff. Approval covers a directory for the
+  session, `always` persists it, and the grants are stored apart from the read
+  grants so approving a read never hands out a write. Yolo skips the prompt.
 - `--effort` is no longer a global flag. It now belongs to the commands that
   run a model (chat, `aster review`, and `aster fix`), so it stops appearing in
   the help of commands that never reach a provider, and must be written after
   the subcommand: `aster review --effort high`.
+
+### Removed
+
+- `permissions.protected`, `permissions.secret_read`, `permissions.allow_exec`,
+  `permissions.deny_exec`, and `permissions.use_default_protected`, all folded
+  into the rule buckets. Bare globs in `allow` and `deny` are no longer
+  accepted; write `Edit(<glob>)`.
+- The `ask` and `deny` mode aliases retired in 0.3.0.
+
+### Migration notes
+
+- **Rewrite `permissions:` in `aster.yaml`.** A retired key now stops the run
+  naming its replacements rather than silently dropping the protection it asked
+  for. The mapping is direct:
+
+  | Before | After |
+  | --- | --- |
+  | `allow: ["src/**"]` | `allow: ["Edit(src/**)"]` |
+  | `deny: ["infra/**"]` | `deny: ["Edit(infra/**)"]` |
+  | `protected: ["infra/**"]` | `ask: ["Edit(infra/**)"]` or `deny:` |
+  | `secret_read: ["**/*.token"]` | `deny: ["Read(**/*.token)"]` |
+  | `allow_exec: ["cargo"]` | `allow: ["Bash(cargo:*)"]` |
+  | `deny_exec: ["curl"]` | `deny: ["Bash(curl:*)"]` |
+  | `use_default_protected: false` | `use_default_rules: false` |
+
+- **Headless runs cannot answer a prompt**, so anything reaching `ask` is
+  refused there. A script that ran `curl` or `rm` under `mode: edit` now needs
+  an explicit `allow: ["Bash(curl:*)"]`.
 
 ### Fixed
 
@@ -358,3 +469,4 @@ taught workflows without touching its prompt.
 
 [0.2.0]: https://github.com/Zfinix/aster/compare/v0.1.0...v0.2.0
 [0.3.0]: https://github.com/Zfinix/aster/compare/v0.2.0...v0.3.0
+[0.4.0]: https://github.com/Zfinix/aster/compare/v0.3.0...v0.4.0

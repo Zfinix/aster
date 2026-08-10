@@ -1,57 +1,60 @@
-//! Built-in glob lists. A security boundary, distinct from the review scope
-//! filter in `aster-cli` (`DEFAULT_EXCLUDE`); do not conflate the two.
+//! Built-in rules, in the same language as the user's. A security boundary,
+//! distinct from the review scope filter in `aster-cli` (`DEFAULT_EXCLUDE`); do
+//! not conflate the two.
+//!
+//! User rules are consulted first, so an `allow` entry overrides anything here.
 
-/// Paths never writable by default: git internals and execute-on-next-action
-/// files where an unattended edit is effectively remote code execution.
-/// Overridable only via an explicit config `allow` entry.
-pub const PROTECTED: &[&str] = &[
-    ".git/**",
-    "**/.git/**",
-    ".github/workflows/**",
-    ".git/hooks/**",
-    ".husky/**",
+/// Writes that run as code later: a git hook or CI workflow written now
+/// executes outside the sandbox afterwards. Confirmed rather than refused, so
+/// the answer is the user's.
+pub const ASK_EDIT: &[&str] = &[
+    "Edit(.git/**)",
+    "Edit(**/.git/**)",
+    "Edit(.github/workflows/**)",
+    "Edit(.husky/**)",
 ];
 
-/// Binaries `auto` mode still pauses on: privilege escalation, destructive
-/// filesystem ops, process/system control, and network egress. Everything
-/// else runs without a prompt; `allow_exec` overrides an entry here.
-pub const RISKY_EXEC: &[&str] = &[
-    "sudo",
-    "doas",
-    "su",
-    "rm",
-    "rmdir",
-    "dd",
-    "mkfs",
-    "shred",
-    "chmod",
-    "chown",
-    "chgrp",
-    "kill",
-    "killall",
-    "pkill",
-    "shutdown",
-    "reboot",
-    "halt",
-    "systemctl",
-    "launchctl",
-    "curl",
-    "wget",
-    "nc",
-    "ssh",
-    "scp",
-    "rsync",
+/// Commands worth a confirmation: privilege escalation, destructive filesystem
+/// operations, process and system control, and network egress. These are what
+/// `auto` pauses on and `edit` does not, which is the difference between them.
+pub const ASK_BASH: &[&str] = &[
+    "Bash(sudo:*)",
+    "Bash(doas:*)",
+    "Bash(su:*)",
+    "Bash(rm:*)",
+    "Bash(rmdir:*)",
+    "Bash(dd:*)",
+    "Bash(mkfs:*)",
+    "Bash(shred:*)",
+    "Bash(chmod:*)",
+    "Bash(chown:*)",
+    "Bash(chgrp:*)",
+    "Bash(kill:*)",
+    "Bash(killall:*)",
+    "Bash(pkill:*)",
+    "Bash(shutdown:*)",
+    "Bash(reboot:*)",
+    "Bash(halt:*)",
+    "Bash(systemctl:*)",
+    "Bash(launchctl:*)",
+    "Bash(curl:*)",
+    "Bash(wget:*)",
+    "Bash(nc:*)",
+    "Bash(ssh:*)",
+    "Bash(scp:*)",
+    "Bash(rsync:*)",
 ];
 
-/// Files never readable by default: secrets that must not reach the model.
-pub const SECRET_READ: &[&str] = &[
-    "**/.env",
-    "**/.env.*",
-    "**/*.pem",
-    "**/*.key",
-    "**/id_rsa*",
-    "**/*.p12",
-    "**/*.pfx",
-    "**/credentials.json",
-    "**/secrets.*",
+/// Secrets that must not reach the model. Denied rather than confirmed: the
+/// answer cannot be taken back once the file is in the context.
+pub const DENY_READ: &[&str] = &[
+    "Read(**/.env)",
+    "Read(**/.env.*)",
+    "Read(**/*.pem)",
+    "Read(**/*.key)",
+    "Read(**/id_rsa*)",
+    "Read(**/*.p12)",
+    "Read(**/*.pfx)",
+    "Read(**/credentials.json)",
+    "Read(**/secrets.*)",
 ];

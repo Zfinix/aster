@@ -23,6 +23,7 @@ mod review;
 mod sessions;
 mod settings;
 mod skills;
+mod status;
 mod term;
 mod test_runner;
 mod tui;
@@ -98,6 +99,8 @@ enum Command {
     Sessions(sessions::SessionsArgs),
     /// List or add durable memory (project facts and blocks).
     Memory(sessions::MemoryArgs),
+    /// Show what the next turn would run with: provider, model, limits, wiring.
+    Status,
     /// Install, list, and remove agent skills.
     Skills(skills::SkillsArgs),
     /// Install, list, and validate Agent Plugins packages.
@@ -173,6 +176,7 @@ async fn main() -> Result<()> {
         Command::Fix(args) => fix::run(args).await,
         Command::Sessions(args) => sessions::run_sessions(args).await,
         Command::Memory(args) => sessions::run_memory(args),
+        Command::Status => status::run(),
         Command::Skills(args) => skills::run(args).await,
         Command::Plugins(args) => plugins::run(args, std::env::current_dir().ok().as_deref()),
         Command::Web(args) => web::run(args).await,

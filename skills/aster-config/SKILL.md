@@ -28,19 +28,22 @@ review:
 
 ## Permissions block
 
-Gates writes from `aster chat --allow-edits` and `aster fix --apply`, and reads of secret files:
+Gates what the agent edits, reads, and runs:
 
 ```yaml
 permissions:
-  mode: auto              # auto | ask | deny (ask prompts in the TUI; denies when headless)
-  allow: []               # globs always writable, e.g. ["src/**"]
-  deny: []                # globs never writable, e.g. ["**/*.pem"]
-  protected: []           # extra always-blocked write globs (unioned with defaults)
-  secret_read: []         # extra never-readable globs (unioned with defaults)
-  use_default_protected: true   # blocks .git/**, .github/workflows/**, hooks, secret reads
+  mode: edit              # plan | manual | auto | edit | yolo (prompts need the TUI; headless denies)
+  allow: []               # e.g. ["Bash(cargo test:*)", "Edit(src/**)"]
+  ask: []                 # e.g. ["Edit(migrations/**)"]
+  deny: []                # e.g. ["Bash(npm publish:*)", "Edit(infra/**)"]
+  use_default_rules: true # ask on .git/**, workflows; ask on sudo/rm/curl in `auto`; refuse secret reads
 ```
 
-Keep `use_default_protected: true` unless you have a specific reason; it is what stops the agent from writing to CI workflows and git internals.
+One rule language for all three tools: `Edit(<glob>)`, `Read(<glob>)`, `Bash(<command>:*)` for a prefix or `Bash(<command>)` for an exact line. A bare `Edit`, `Read`, or `Bash` covers everything that tool does. Precedence is `deny`, `ask`, `allow`, built-ins, then `mode`, so one `allow` entry overrides a single built-in without dropping the rest.
+
+A `Bash` rule matches inside `bash -lc "…"`, so chaining does not slip a command past it.
+
+Keep `use_default_rules: true` unless you have a specific reason; it is what makes the agent confirm before touching CI workflows and git internals, and what stops it reading env and key files.
 
 ## Environment variables
 
@@ -69,5 +72,5 @@ Review:
 ## Conventions
 
 - `aster init -y` writes the defaults with no wizard; `--force` overwrites an existing file.
-- Deny-first: `deny` and `protected` beat `allow`.
-- In headless runs, `mode: ask` behaves like deny; use `auto` with tight `allow` globs for automation.
+- Deny-first: `deny` beats `ask`, which beats `allow`, which beats the built-ins.
+- A headless run cannot answer a prompt, so anything reaching `ask` is refused there. Automation wants `mode: edit` with tight `allow` rules.

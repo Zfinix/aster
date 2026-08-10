@@ -220,36 +220,53 @@ pub fn expand_home(path: &str) -> PathBuf {
 }
 
 /// Resolve `path` for a file that does not exist yet, so it can be created.
-/// [`resolve_in_repo`] cannot: canonicalizing a missing path always fails. The
-/// nearest existing ancestor is canonicalized instead, so a symlinked directory
-/// still cannot place the new file outside the repo.
-pub fn resolve_new_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
+/// [`resolve_anywhere`] cannot: canonicalizing a missing path always fails. The
+/// nearest existing ancestor is canonicalized instead and the missing tail
+/// rebuilt under it, so a symlink cannot move the write out of the directory
+/// the caller gates on.
+pub fn resolve_new_anywhere(repo_root: &Path, path: &str) -> Result<(PathBuf, Scope)> {
     let root = repo_root
         .canonicalize()
         .with_context(|| format!("resolving repo root {}", repo_root.display()))?;
-    let relative = Path::new(path);
-    if !relative
-        .components()
-        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
-    {
-        bail!("path must be repo-relative and stay inside the repository: {path}");
-    }
+    let expanded = expand_home(path);
+    let joined = if expanded.is_absolute() {
+        expanded
+    } else {
+        root.join(expanded)
+    };
 
-    let target = root.join(relative);
-    let mut existing = target.as_path();
+    let mut existing = joined.as_path();
     while !existing.exists() {
         existing = existing
             .parent()
             .with_context(|| format!("no directory to create {path} in"))?;
     }
-    if !existing
+    let mut target = existing
         .canonicalize()
-        .with_context(|| format!("resolving {}", existing.display()))?
-        .starts_with(&root)
+        .with_context(|| format!("resolving {}", existing.display()))?;
+    // The tail is folded onto the canonical anchor rather than joined: a `..`
+    // in a part that does not exist yet has nothing to resolve against, and
+    // joining it would leave the escape for `starts_with` to miss.
+    for part in joined
+        .strip_prefix(existing)
+        .unwrap_or(Path::new(""))
+        .components()
     {
-        bail!("path escapes the repository: {path}");
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                target.pop();
+            }
+            other => target.push(other),
+        }
     }
-    Ok(target)
+
+    let scope = if target.starts_with(&root) {
+        Scope::InRepo
+    } else {
+        Scope::Outside
+    };
+    Ok((target, scope))
 }
 
 pub fn read_repo_file(repo_root: &Path, path: &str) -> Result<(PathBuf, String)> {
@@ -257,6 +274,15 @@ pub fn read_repo_file(repo_root: &Path, path: &str) -> Result<(PathBuf, String)>
     let content =
         fs::read_to_string(&resolved).with_context(|| format!("reading {}", resolved.display()))?;
     Ok((resolved, content))
+}
+
+/// As [`read_repo_file`], but reports where the path landed instead of failing
+/// on anything outside the repository.
+pub fn read_file_anywhere(repo_root: &Path, path: &str) -> Result<(PathBuf, Scope, String)> {
+    let (resolved, scope) = resolve_anywhere(repo_root, path)?;
+    let content =
+        fs::read_to_string(&resolved).with_context(|| format!("reading {}", resolved.display()))?;
+    Ok((resolved, scope, content))
 }
 
 /// A compact ±diff preview of one block, for dry-runs and logs.

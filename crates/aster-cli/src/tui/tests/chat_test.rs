@@ -14,6 +14,7 @@ fn chat_app(model: String) -> ChatApp {
             auto: sync::Arc::new(Policy::permissive()),
             edit: sync::Arc::new(Policy::permissive()),
             grants: sync::Arc::new(Grants::default()),
+            write_grants: sync::Arc::new(Grants::default()),
             credentials: sync::Arc::new(aster_policy::CommandGrants::default()),
         },
         tx,
@@ -66,8 +67,8 @@ fn command_mode_with_name_switches_and_notes_the_model() {
     let mut client = AiClient::new("http://localhost", "k", "m1");
     let mut app = chat_app(client.model.clone());
     let (mut p, _rx) = pane();
-    app.handle_command("mode auto", &mut client, &mut p);
-    assert_eq!(app.mode, Mode::Auto);
+    app.handle_command("mode manual", &mut client, &mut p);
+    assert_eq!(app.mode, Mode::Manual);
     assert!(app.history.last().is_some_and(is_edit_note));
 
     app.handle_command("mode edit", &mut client, &mut p);
@@ -101,7 +102,7 @@ fn mode_change_mid_turn_says_it_waits() {
     let mut app = chat_app(client.model.clone());
     app.thinking = true;
     let (mut p, _rx) = pane();
-    app.handle_command("mode auto", &mut client, &mut p);
+    app.handle_command("mode manual", &mut client, &mut p);
     assert!(app.flash.unwrap().contains("next message"));
 }
 

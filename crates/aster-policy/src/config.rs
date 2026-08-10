@@ -5,28 +5,27 @@ use serde::Deserialize;
 use crate::decision::Mode;
 
 /// User-facing permission config, compiled into a [`crate::Policy`].
+///
+/// `allow`, `ask`, and `deny` hold rules in one language: `Edit(glob)`,
+/// `Read(glob)`, `Bash(command:*)`. A bare `Edit`, `Read`, or `Bash` covers
+/// everything that tool does.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionsConfig {
-    /// Gate for unmatched edit paths.
+    /// What happens to an action no rule matches.
     pub mode: Mode,
-    /// Globs always writable, overriding the protected list.
+    /// Runs without asking.
     pub allow: Vec<String>,
+    /// Always confirmed first.
+    pub ask: Vec<String>,
+    /// Refused outright.
     pub deny: Vec<String>,
-    /// Extra write globs, unioned with [`crate::defaults::PROTECTED`].
-    pub protected: Vec<String>,
-    /// Extra never-readable globs, unioned with [`crate::defaults::SECRET_READ`].
-    pub secret_read: Vec<String>,
-    /// Include the built-in protected and secret-read lists. Defaults to true.
-    pub use_default_protected: bool,
+    /// Skip the built-in rules. Leaves `.git`, CI workflows, risky commands,
+    /// and secret files gated by nothing but the mode.
+    pub use_default_rules: bool,
     /// Directories outside the repository the agent may read without asking.
     /// Absolute, or `~`-relative. Anything else outside the repo prompts.
     pub additional_directories: Vec<String>,
-    /// Commands the agent may run without asking. Matched by binary name
-    /// (e.g. "cargo", "rg", "npm"). Empty = none allowed.
-    pub allow_exec: Vec<String>,
-    /// Commands the agent may never run. Matched by binary name.
-    pub deny_exec: Vec<String>,
     /// Credential directories a command may read inside the sandbox without
     /// asking, written `<command>:<dir>` (e.g. `gh:~/.config/gh`). Meant for
     /// headless runs, which have no way to answer a prompt.
@@ -38,13 +37,10 @@ impl Default for PermissionsConfig {
         Self {
             mode: Mode::default(),
             allow: Vec::new(),
+            ask: Vec::new(),
             deny: Vec::new(),
-            protected: Vec::new(),
-            secret_read: Vec::new(),
-            use_default_protected: true,
+            use_default_rules: true,
             additional_directories: Vec::new(),
-            allow_exec: Vec::new(),
-            deny_exec: Vec::new(),
             allow_credentials: Vec::new(),
         }
     }

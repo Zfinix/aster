@@ -53,8 +53,11 @@ pub fn default_cases() -> Vec<Case> {
             calls: Vec::new(),
             avoids: vec!["edit_file".into()],
             // `editors/` is gitignored. Before the ignore fallback every
-            // discovery tool came back empty and the model kept guessing.
-            at_most: vec![("find_files".into(), 2)],
+            // discovery tool came back empty and the model kept guessing, at
+            // nine calls and still wrong. Observed runs land between one and
+            // three, so the ceiling sits above the noise and still catches a
+            // return to flailing.
+            at_most: vec![("find_files".into(), 5)],
         },
         Case {
             name: "does not re-run an identical search".into(),

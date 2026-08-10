@@ -1476,6 +1476,11 @@ fn tool_line(name: &str, arguments: &str) -> String {
             &pretty_query(&field(&["pattern", "glob", "query"])),
         ),
         "run_command" => {
+            // The model's summary takes the verb's place: it already reads as one.
+            let summary = field(&["description"]);
+            if !summary.is_empty() {
+                return format!("🖥 <b>{}</b>", markdown::escape(&truncate(&summary, 80)));
+            }
             let mut cmd = field(&["command"]);
             if let Some(args) = args.get("args").and_then(Value::as_array) {
                 let extra: Vec<&str> = args.iter().filter_map(Value::as_str).collect();

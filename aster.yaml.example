@@ -53,26 +53,31 @@ review:
     - "**/*.lock"
     - "**/*.min.js"
 
-# Edit/read permissions for `aster chat --allow-edits` and `aster fix --apply`.
+# What the agent may edit, read, and run.
 permissions:
-  # plan   explore and present a plan, never edit
-  # manual ask for approval before each edit (prompts in the TUI; denies when headless)
-  # auto   apply what passes the safety check, pause for anything risky
-  # edit   edit files without asking
-  mode: edit              # the old `ask` and `deny` names still parse
-  allow: []               # globs always writable, e.g. ["src/**"]
-  deny: []                # globs never writable, e.g. ["**/*.pem"]
-  protected: []           # extra always-blocked write globs (unioned with defaults)
-  secret_read: []         # extra never-readable globs (unioned with defaults)
-  use_default_protected: true   # block writes to .git/**, .github/workflows/**, hooks; block secret reads
+  # plan   explore and present a plan, never edit or run
+  # manual ask before each edit and command (prompts in the TUI; denies when headless)
+  # auto   edit and run, pausing on risky commands (sudo, rm, curl, ssh …)
+  # edit   as auto, but commands are trusted; only a rule stops one
+  # yolo   no rules, no sandbox
+  mode: edit
+  # Rules in one language: Edit(glob), Read(glob), Bash(command:*).
+  # A bare Edit, Read, or Bash covers everything that tool does.
+  # Precedence: deny, then ask, then allow, then the built-ins, then the mode.
+  # A Bash rule matches the command line and every part of a shell script it
+  # carries, so Bash(sudo:*) still fires on `bash -lc "build && sudo install"`.
+  allow: []   # e.g. ["Bash(cargo test:*)", "Edit(src/**)", "Read(**/.env)"]
+  ask: []     # e.g. ["Edit(migrations/**)", "Bash(git push:*)"]
+  deny: []    # e.g. ["Bash(npm publish:*)", "Edit(infra/**)"]
+  # Built-ins ask before writing .git/**, .github/workflows/**, and .husky/**,
+  # ask before sudo, rm, curl, ssh and friends (in `auto`; `edit` trusts
+  # commands), and refuse to read .env, *.pem, *.key and other secrets. One
+  # `allow` entry overrides any single built-in; this switch drops the set.
+  use_default_rules: true
   # Directories outside the repo the agent may read without asking. Absolute or
   # ~-relative. Anything else outside the repo prompts, and an approval lasts
-  # for the rest of the session.
+  # for the rest of the session. Writing outside the repo always prompts.
   additional_directories: []    # e.g. ["~/Desktop", "~/Downloads"]
-  # Commands the agent may run without asking, matched by binary name.
-  # The sandbox restricts filesystem writes and drops secrets regardless.
-  allow_exec: []             # e.g. ["cargo", "rg", "fd", "npm", "node", "python"]
-  deny_exec: []             # always blocked, e.g. ["rm", "sudo", "curl"]
   # Credential directories a command may read inside the sandbox without being
   # asked, written `<command>:<dir>`. The sandbox denies ~/.ssh, ~/.aws,
   # ~/.gnupg, ~/.config/gh, and ~/.kube by default; a tool that needs one

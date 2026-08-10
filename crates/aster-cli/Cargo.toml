@@ -53,5 +53,5 @@ aster-plugins = { path = "../aster-plugins" }
 aster-sandbox = { path = "../aster-sandbox" }
 cliclack = "0.5.5"
 console = "0.16"
-aster-telemetry = { version = "0.3.0", path = "../aster-telemetry" }
-aster-eval = { version = "0.3.0", path = "../aster-eval" }
+aster-telemetry = { version = "0.4.0", path = "../aster-telemetry" }
+aster-eval = { version = "0.4.0", path = "../aster-eval" }

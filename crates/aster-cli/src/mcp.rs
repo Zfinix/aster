@@ -1026,7 +1026,13 @@ pub struct McpArgs {
 #[derive(clap::Subcommand)]
 pub enum McpAction {
     /// Connect every configured server and list the tools it advertises.
-    List,
+    List {
+        /// Report what is configured without starting anything. Every server
+        /// costs a process spawn, so a control panel that only needs names and
+        /// on/off state should not pay for them.
+        #[arg(long)]
+        no_connect: bool,
+    },
     /// Start a configured server so it can be used (clears `disabled`).
     Enable { name: String },
     /// Stop starting a server, keeping its configuration in place.
@@ -1045,14 +1051,17 @@ pub enum McpAction {
 /// then stop them. The same connection path a chat session uses, so a failure
 /// here is the failure a session would hit.
 pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<()> {
-    match &args.action {
-        McpAction::List => {}
+    let no_connect = match &args.action {
+        McpAction::List { no_connect } => *no_connect,
         McpAction::Enable { name } => return set_disabled(repo_root, name, false),
         McpAction::Disable { name } => return set_disabled(repo_root, name, true),
         McpAction::Import { from } => return crate::import::run_mcp_import(*from, repo_root),
         McpAction::Remove { name } => return remove_servers(repo_root, name.as_deref()),
-    }
+    };
     let settings = crate::settings::Settings::load(repo_root)?;
+    if no_connect {
+        return list_configured(&settings.mcp);
+    }
     if settings.mcp.servers.is_empty() {
         if crate::json_mode() {
             println!("{}", json!({ "ok": true, "servers": [], "tools": [] }));
@@ -1194,6 +1203,48 @@ pub fn toggle_server(
             )
         }),
     }
+}
+
+/// `aster mcp list --no-connect`: the configured servers and their on/off
+/// state, straight from the config files. Nothing is spawned, so this answers
+/// fast enough for a UI that redraws a control panel.
+fn list_configured(settings: &McpSettings) -> Result<()> {
+    let servers: Vec<_> = settings
+        .servers
+        .iter()
+        .map(|(name, config)| {
+            json!({
+                "name": name,
+                "disabled": config.disabled,
+                "transport": config.transport().map(Transport::label),
+                "command": config.command,
+                "args": config.args,
+                "url": config.url,
+            })
+        })
+        .collect();
+
+    if crate::json_mode() {
+        println!("{}", json!({ "ok": true, "servers": servers }));
+        return Ok(());
+    }
+    if servers.is_empty() {
+        println!("No MCP servers configured.");
+        return Ok(());
+    }
+    for server in &servers {
+        let mark = if server["disabled"] == true {
+            "◻"
+        } else {
+            "◼"
+        };
+        println!(
+            "{mark} {} ({})",
+            server["name"].as_str().unwrap_or_default(),
+            server["transport"].as_str().unwrap_or("unconfigured")
+        );
+    }
+    Ok(())
 }
 
 fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool) -> Result<()> {

@@ -1,4 +1,5 @@
 use std::env;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use aster_persist::TranscriptEvent;
@@ -9,6 +10,11 @@ use serde_json::{Value, json};
 pub struct SessionsArgs {
     #[command(subcommand)]
     cmd: Option<SessionsCmd>,
+
+    /// List sessions from every project, not just this folder. `show` and
+    /// `delete` already look outside it when the id is not local.
+    #[arg(long, global = true)]
+    all: bool,
 }
 
 impl SessionsArgs {
@@ -53,18 +59,26 @@ enum SessionsCmd {
 /// the chat TUI, `d` deletes it in place.
 pub(crate) async fn pick_session(
     store: aster_persist::Store,
-    repo_root: &std::path::Path,
+    repo_root: &Path,
+    all: bool,
 ) -> Result<()> {
     loop {
-        let metas = store.list_sessions(repo_root)?;
+        let metas = if all {
+            store.list_all_sessions()?
+        } else {
+            store.list_sessions(repo_root)?
+        };
         if metas.is_empty() {
             println!("no sessions for this repo yet");
             return Ok(());
         }
-        let (ids, items): (Vec<String>, Vec<crate::picker::Item>) = metas
+        let (owned, items): (Vec<(String, PathBuf)>, Vec<crate::picker::Item>) = metas
             .into_iter()
             .map(|meta| {
-                let transcript = store.resume(repo_root, &meta.id).ok();
+                // With --all a row can belong to another checkout, so it has to
+                // be read and deleted against its own repo root.
+                let owner = PathBuf::from(&meta.repo_root);
+                let transcript = store.resume(&owner, &meta.id).ok();
                 let turns = transcript
                     .as_ref()
                     .map(|t| t.user_turn_count())
@@ -76,22 +90,28 @@ pub(crate) async fn pick_session(
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "(empty)".into());
                 let when = meta.created_at.format("%Y-%m-%d %H:%M");
+                let project = if all {
+                    format!("{} · ", project_name(&meta.repo_root))
+                } else {
+                    String::new()
+                };
                 let item = crate::picker::Item {
                     name: title,
-                    detail: format!("{when} · {turns} turns · {}", meta.id),
+                    detail: format!("{project}{when} · {turns} turns · {}", meta.id),
                 };
-                (meta.id, item)
+                ((meta.id, owner), item)
             })
             .unzip();
         match crate::picker::select_action("Sessions", &items)? {
             Some((i, crate::picker::Action::Open)) => {
-                let id = ids[i].clone();
+                let id = owned[i].0.clone();
                 drop(store);
                 return crate::chat::run(crate::chat::resume_args(&id)).await;
             }
             Some((i, crate::picker::Action::Delete)) => {
-                store.delete_session(repo_root, &ids[i])?;
-                eprintln!("deleted {}", ids[i]);
+                let (id, owner) = &owned[i];
+                store.delete_session(owner, id)?;
+                eprintln!("deleted {id}");
             }
             None => return Ok(()),
         }
@@ -107,13 +127,22 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
         SessionsCmd::Import { from, dry_run } => {
             return crate::import::run_sessions_import(from, dry_run).await;
         }
-        SessionsCmd::List if interactive => return pick_session(store, &repo_root).await,
+        SessionsCmd::List if interactive => {
+            return pick_session(store, &repo_root, args.all).await;
+        }
         SessionsCmd::List => {
-            let metas = store.list_sessions(&repo_root)?;
+            let metas = if args.all {
+                store.list_all_sessions()?
+            } else {
+                store.list_sessions(&repo_root)?
+            };
             let rows: Vec<(_, usize, String)> = metas
                 .into_iter()
                 .map(|meta| {
-                    let transcript = store.resume(&repo_root, &meta.id).ok();
+                    // With --all a session belongs to another checkout, so it
+                    // has to be read against its own repo root.
+                    let owner = PathBuf::from(&meta.repo_root);
+                    let transcript = store.resume(&owner, &meta.id).ok();
                     let turns = transcript
                         .as_ref()
                         .map(|t| t.user_turn_count())
@@ -144,21 +173,50 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
             } else if rows.is_empty() {
                 println!("no sessions for this repo yet");
             } else {
+                // Ids run from 12 characters to a 43-character UUID, so without
+                // a shared width nothing lines up. They are padded rather than
+                // shortened because `sessions show` needs the whole id.
+                let id_width = rows
+                    .iter()
+                    .map(|(m, ..)| m.id.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                // Which project a session belongs to only matters when the list
+                // spans more than this folder.
+                let project_width = if args.all {
+                    rows.iter()
+                        .map(|(m, ..)| project_name(&m.repo_root).chars().count())
+                        .max()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let room = terminal_width().saturating_sub(id_width + project_width + 16 + 10 + 8);
                 for (meta, turns, title) in rows {
                     let when = meta.created_at.format("%Y-%m-%d %H:%M");
-                    let title = if title.is_empty() {
-                        "(empty)".into()
-                    } else {
-                        title
+                    let title = match one_line(&title) {
+                        text if text.is_empty() => "(empty)".into(),
+                        text => truncate(&text, room.max(20)),
                     };
-                    println!("{}  {when}  {turns:>3} turns  {title}", meta.id);
+                    let turns = format!("{turns} {}", if turns == 1 { "turn" } else { "turns" });
+                    let project = if args.all {
+                        format!("{:<project_width$}  ", project_name(&meta.repo_root))
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "{:<id_width$}  {project}{when}  {turns:>8}  {title}",
+                        meta.id,
+                        id_width = id_width
+                    );
                 }
             }
         }
         SessionsCmd::Show { id } => {
+            let owner = owner_of(&store, &repo_root, &id)?;
             let transcript = store
-                .resume(&repo_root, &id)
-                .with_context(|| format!("no session {id:?} for this repo"))?;
+                .resume(&owner, &id)
+                .with_context(|| format!("could not read session {id:?}"))?;
             if crate::json_mode() {
                 let events: Vec<Value> = transcript
                     .events
@@ -203,8 +261,9 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
             }
         }
         SessionsCmd::Delete { id } => {
-            if !store.delete_session(&repo_root, &id)? {
-                anyhow::bail!("no session {id:?} for this repo");
+            let owner = owner_of(&store, &repo_root, &id)?;
+            if !store.delete_session(&owner, &id)? {
+                anyhow::bail!("no session {id:?}");
             }
             if crate::json_mode() {
                 println!("{}", json!({ "ok": true, "id": id }));
@@ -214,6 +273,32 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The folder a session was started in, as a column: the last path component,
+/// which is what tells two checkouts apart without spending the width.
+fn project_name(repo_root: &str) -> String {
+    Path::new(repo_root)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| repo_root.to_string())
+}
+
+/// The checkout that owns a session: this one when the id is local, otherwise
+/// whichever project holds it. Sessions are filed per project, so an id from a
+/// sibling folder is invisible to a plain lookup however recent it is, and
+/// answering "no such session" there would be a lie.
+fn owner_of(store: &aster_persist::Store, repo_root: &Path, id: &str) -> Result<PathBuf> {
+    if store.resume(repo_root, id).is_ok() {
+        return Ok(repo_root.to_path_buf());
+    }
+    store
+        .list_all_sessions()?
+        .into_iter()
+        .find(|meta| meta.id == id)
+        .map(|meta| PathBuf::from(meta.repo_root))
+        .with_context(|| format!("no session {id:?} in any project"))
 }
 
 fn print_transcript(transcript: &aster_persist::SessionTranscript) {
@@ -370,6 +455,20 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Flatten a title to one line. A preview holding a newline otherwise wraps and
+/// breaks every column below it.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Usable columns, falling back to a sane width when stdout is not a terminal.
+fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(cols, _)| cols as usize)
+        .unwrap_or(100)
+        .max(60)
 }
 
 fn truncate(text: &str, max: usize) -> String {

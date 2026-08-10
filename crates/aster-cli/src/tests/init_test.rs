@@ -56,6 +56,20 @@ fn env_has_key_matches_only_exact_key() {
 }
 
 #[test]
+fn provider_key_vars_are_keyed_on_the_host_not_the_whole_url() {
+    assert_eq!(
+        provider_key_vars("https://api.anthropic.com/v1"),
+        ["ANTHROPIC_API_KEY"]
+    );
+    assert_eq!(
+        provider_key_vars("https://openrouter.ai/api/v1/"),
+        ["OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"]
+    );
+    // A path mentioning a vendor must not be read as that vendor's endpoint.
+    assert!(provider_key_vars("https://example.com/anthropic/v1").is_empty());
+}
+
+#[test]
 fn append_line_adds_trailing_newline_when_missing() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join(".env");

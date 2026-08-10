@@ -112,17 +112,31 @@ mid-chat, `--permission-mode` for one run, or `permissions.mode` in `aster.yaml`
 
 | Mode | What it does |
 | --- | --- |
-| `plan` | Explores and proposes. Never edits. |
-| `manual` | Asks before every edit. |
-| `auto` | Edits what is safe, stops to ask about anything risky. |
-| `edit` | Edits without asking (the default). |
+| `plan` | Explores and proposes. Never edits, never runs a command. |
+| `manual` | Asks before every edit and command. |
+| `auto` | Edits and runs, pausing on risky commands like `sudo`, `rm`, and `curl`. |
+| `edit` | As `auto`, but commands are trusted; only a rule stops one (the default). |
+| `yolo` | No rules, no sandbox. Asks first, and turns the chat red. |
 
-Whatever the mode, commands run in a sandbox: writes are limited to the repo and
-temp directories, and secrets are stripped from the environment. (`/yolo` turns
-the sandbox off. It asks three times first, and turns the chat red.) Writes to
-`.git/`, workflow files, and hooks are blocked, and reads of key and env files
-are blocked. Widen or narrow any of it under `permissions` in
-[`aster.yaml.example`](./aster.yaml.example).
+Rules decide the exceptions, in one language for all three tools:
+
+```yaml
+permissions:
+  allow: ["Bash(cargo test:*)", "Edit(src/**)"]
+  ask:   ["Edit(migrations/**)"]
+  deny:  ["Bash(npm publish:*)"]
+```
+
+Out of the box, the agent asks before writing to `.git/`, workflow files, and
+hooks in every mode, and refuses to read env and key files. The risky-command
+pause is what `auto` adds over `edit`. A `Bash` rule reads inside `bash -lc "…"`,
+so chaining a command does not slip it past the rule.
+
+Outside yolo, commands run in a sandbox: writes are limited to the repo and temp
+directories, and secrets are stripped from the environment. Widen or narrow any
+of it under `permissions` in
+[`aster.yaml.example`](./aster.yaml.example), documented in
+[docs/CONFIG.md](./docs/CONFIG.md#permissions).
 
 ## Review your changes
 
