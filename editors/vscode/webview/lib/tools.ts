@@ -1,0 +1,242 @@
+import type { ToolCall } from "./thread";
+
+/** Verb plus the salient argument, split so the argument can be styled apart. */
+export interface ToolDescription {
+  /** Absent when the detail is a whole sentence that reads worse behind a verb. */
+  verb?: string;
+  detail?: string;
+  /** Rendered monospace: a path or glob rather than prose. */
+  code?: boolean;
+}
+
+/** Arguments stream in, so a partial parse is normal rather than an error. */
+function args(call: ToolCall): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(call.arguments) as unknown;
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function arg(call: ToolCall, key: string): string | undefined {
+  const value = args(call)[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/** `explore` and `update_plan` both carry their work in a `steps` array. */
+function steps(call: ToolCall): unknown[] {
+  const value = args(call).steps;
+  return Array.isArray(value) ? value : [];
+}
+
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "fish"]);
+
+/** The command as the user would type it: shell wrappers (`bash -lc`) elided. */
+function commandLine(call: ToolCall): string | undefined {
+  const binary = arg(call, "command");
+  if (!binary) return undefined;
+  const list = args(call).args;
+  const rest = Array.isArray(list) ? list.filter((a): a is string => typeof a === "string") : [];
+  if (SHELLS.has(binary)) {
+    const script = rest.filter((a) => !/^-[a-z]+$/i.test(a));
+    if (script.length) return script.join(" ");
+  }
+  return [binary, ...rest].join(" ");
+}
+
+/**
+ * The result without the stdout/stderr/exit markers the model needs but the
+ * reader does not. A nonzero exit code is kept: that line is the story.
+ */
+export function displayOutput(call: ToolCall): string | undefined {
+  // Agent reports render in the `agents` block; the raw JSON is for the model.
+  if (call.name === "agent") return undefined;
+  const raw = call.result?.trim();
+  if (!raw) return undefined;
+  if (call.name !== "run_command" && call.name !== "run_tests") return raw;
+  const cleaned = raw
+    .split("\n")
+    .filter((line) => line !== "stdout:" && line !== "stderr:" && line !== "exit code: 0")
+    .join("\n")
+    .trim();
+  return cleaned || undefined;
+}
+
+
+/**
+ * The command a step ran, for the card's `in` cell. Long command lines belong in
+ * a block the reader can scan, not smeared across the header.
+ */
+export function toolInput(call: ToolCall): string | undefined {
+  return call.name === "run_command" || call.name === "run_tests"
+    ? commandLine(call)
+    : undefined;
+}
+
+/** A short name for the scratch tab a step's output opens in. It is the whole
+ *  tab label, so it stays a word or two rather than a description. */
+export function outputTitle(call: ToolCall): string {
+  const path = toolPath(call);
+  if (path) return path.split(/[/\\]/).pop() ?? "output";
+  return call.name.replace(/^(run|read)_/, "").replace(/_/g, "-") || "output";
+}
+
+/** The workspace path a step touched, when it has one that an editor can open. */
+export function toolPath(call: ToolCall): string | undefined {
+  return call.name === "read_file" || call.name === "edit_file" ? arg(call, "path") : undefined;
+}
+
+export function describeTool(call: ToolCall): ToolDescription {
+  switch (call.name) {
+    case "run_command": {
+      // The model's own summary stands alone: the terminal icon already says a
+      // command ran, and "Ran Rebuild the bundle" doubles the verb.
+      const summary = arg(call, "description");
+      if (summary) return { detail: summary };
+      return {
+        verb: call.result === undefined ? "Run" : "Ran",
+        detail: commandLine(call),
+        code: true,
+      };
+    }
+    case "run_tests": {
+      const filter = arg(call, "filter");
+      return {
+        verb: call.result === undefined ? "Run" : "Ran",
+        detail: filter ? `tests matching ${filter}` : "the test suite",
+        code: Boolean(filter),
+      };
+    }
+    case "explore": {
+      // One call, several lookups; naming them all would out-shout the row, so
+      // the header counts them and the output lists them.
+      const count = steps(call).length;
+      return { verb: "Explore", detail: count ? `${count} lookups` : undefined };
+    }
+    case "find_files":
+      return { verb: "Find", detail: arg(call, "pattern"), code: true };
+    case "read_file":
+      return { verb: "Read", detail: arg(call, "path"), code: true };
+    case "list_files":
+      return { verb: "List", detail: arg(call, "dir") ?? "repo root", code: true };
+    case "search_files":
+      return { verb: "Search", detail: arg(call, "query") };
+    case "edit_file":
+      return { verb: "Edit", detail: arg(call, "path"), code: true };
+    case "remember":
+      return { verb: "Remember", detail: arg(call, "fact") };
+    case "recall":
+      return { verb: "Recall", detail: arg(call, "query") };
+    case "read_skill":
+      return { verb: "Skill", detail: arg(call, "name"), code: true };
+    case "update_plan":
+      return { verb: "Plan", detail: `${steps(call).length} steps` };
+    case "ask_user":
+      return { verb: "Ask", detail: arg(call, "header") ?? arg(call, "question") };
+    case "exit_plan_mode":
+      return { detail: "Asked to leave plan mode" };
+    case "agent": {
+      const tasks = args(call).tasks;
+      const names = Array.isArray(tasks)
+        ? tasks
+            .map((t) =>
+              t && typeof t === "object" && typeof (t as { agent?: unknown }).agent === "string"
+                ? ((t as { agent: string }).agent as string)
+                : ""
+            )
+            .filter(Boolean)
+        : [];
+      const unique = [...new Set(names)];
+      if (names.length === 0) return { verb: "Agent" };
+      const prefix = names.length > 1 ? `×${names.length} ` : "";
+      return { verb: "Agent", detail: unique.length === 1 ? `${prefix}${unique[0]}` : unique.join(", ") };
+    }
+    default:
+      return { verb: call.name };
+  }
+}
+
+/**
+ * A one-line result gloss, so a collapsed row still says what happened. Counting
+ * lines beats echoing the head of the output, which is usually a path or a brace.
+ */
+export function resultHint(call: ToolCall): string | undefined {
+  const result = call.result;
+  if (result === undefined) return undefined;
+  if (call.error) return "failed";
+
+  const trimmed = displayOutput(call) ?? "";
+  if (!trimmed) return "empty";
+  if (trimmed === "no matches") return "no matches";
+
+  const lines = trimmed.split("\n").length;
+  switch (call.name) {
+    case "search_files":
+      return `${lines} ${lines === 1 ? "match" : "matches"}`;
+    case "find_files":
+      return `${lines} ${lines === 1 ? "file" : "files"}`;
+    case "list_files":
+      return `${lines} ${lines === 1 ? "entry" : "entries"}`;
+    case "read_file":
+      return `${lines} ${lines === 1 ? "line" : "lines"}`;
+    default:
+      return lines > 1 ? `${lines} lines` : undefined;
+  }
+}
+
+/** A run of consecutive calls to the same tool, folded behind one header. */
+export interface ToolRun {
+  id: string;
+  name: string;
+  calls: ToolCall[];
+}
+
+/** Below this a run is shorter than the header that would hide it. */
+const RUN_MIN = 3;
+
+export function isRun(item: ToolCall | ToolRun): item is ToolRun {
+  return "calls" in item;
+}
+
+/**
+ * Folds consecutive calls to the same tool into runs, so eighteen reads read as
+ * one line. Mixed sequences are left alone: the interleaving is the story.
+ */
+export function groupRuns(calls: ToolCall[]): (ToolCall | ToolRun)[] {
+  const out: (ToolCall | ToolRun)[] = [];
+  let i = 0;
+
+  while (i < calls.length) {
+    let end = i + 1;
+    while (end < calls.length && calls[end].name === calls[i].name) end++;
+
+    if (end - i >= RUN_MIN) {
+      out.push({ id: `run-${calls[i].id}`, name: calls[i].name, calls: calls.slice(i, end) });
+    } else {
+      out.push(...calls.slice(i, end));
+    }
+    i = end;
+  }
+
+  return out;
+}
+
+const RUN_NOUNS: Record<string, [string, string]> = {
+  read_file: ["file", "files"],
+  edit_file: ["file", "files"],
+  list_files: ["directory", "directories"],
+  find_files: ["search", "searches"],
+  search_files: ["search", "searches"],
+  run_command: ["command", "commands"],
+  run_tests: ["test run", "test runs"],
+  read_skill: ["skill", "skills"],
+  explore: ["batch", "batches"],
+};
+
+/** The header a folded run wears, e.g. "Read 6 files". */
+export function runLabel(name: string, count: number): string {
+  const verb = describeTool({ id: "", name, arguments: "{}" }).verb;
+  const noun = RUN_NOUNS[name] ?? ["step", "steps"];
+  return `${verb} ${count} ${count === 1 ? noun[0] : noun[1]}`;
+}

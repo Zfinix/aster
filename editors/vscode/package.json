@@ -1,0 +1,308 @@
+{
+  "name": "aster-vscode",
+  "displayName": "Aster",
+  "description": "AI code review harness — verified, actionable findings in your editor",
+  "version": "0.4.0",
+  "publisher": "instalog",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zfinix/aster",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "AI"
+  ],
+  "keywords": [
+    "code review",
+    "ai",
+    "diff",
+    "aster",
+    "cursor"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aster.reviewBranch",
+        "title": "Aster: Review Current Branch",
+        "icon": "$(play)"
+      },
+      {
+        "command": "aster.reviewRange",
+        "title": "Aster: Review Git Range…"
+      },
+      {
+        "command": "aster.reviewPr",
+        "title": "Aster: Review GitHub PR…"
+      },
+      {
+        "command": "aster.cancelReview",
+        "title": "Aster: Cancel Review",
+        "icon": "$(stop-circle)"
+      },
+      {
+        "command": "aster.clearFindings",
+        "title": "Aster: Clear Findings",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "aster.openFinding",
+        "title": "Aster: Open Finding"
+      },
+      {
+        "command": "aster.fixFinding",
+        "title": "Aster: Fix Finding",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "aster.openPanel",
+        "title": "Aster: Open",
+        "category": "Aster",
+        "icon": {
+          "light": "media/aster.svg",
+          "dark": "media/aster.svg"
+        }
+      },
+      {
+        "command": "aster.openInNewTab",
+        "title": "Open in New Tab",
+        "category": "Aster",
+        "icon": {
+          "light": "media/aster.svg",
+          "dark": "media/aster.svg"
+        }
+      },
+      {
+        "command": "aster.openInPrimaryEditor",
+        "title": "Open in Primary Editor",
+        "category": "Aster"
+      },
+      {
+        "command": "aster.openInNewWindow",
+        "title": "Open in New Window",
+        "category": "Aster"
+      },
+      {
+        "command": "aster.openInSidebar",
+        "title": "Open in Side Bar",
+        "category": "Aster"
+      },
+      {
+        "command": "aster.newConversation",
+        "title": "New Conversation",
+        "category": "Aster"
+      },
+      {
+        "command": "aster.commandMenu",
+        "title": "Show Command Menu",
+        "category": "Aster"
+      },
+      {
+        "command": "aster.reopenSession",
+        "title": "Reopen Session",
+        "category": "Aster"
+      },
+      {
+        "command": "aster.insertMention",
+        "title": "Insert @-Mention Reference",
+        "category": "Aster"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "aster.insertMention",
+        "key": "alt+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "aster.openPanel",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "aster.newConversation",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n"
+      },
+      {
+        "command": "aster.commandMenu",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
+      },
+      {
+        "command": "aster.reopenSession",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "asterSecondary",
+          "title": "Aster",
+          "icon": "media/aster.svg",
+          "when": "!aster.noSecondarySidebar"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "aster",
+          "title": "Aster",
+          "icon": "media/aster.svg"
+        }
+      ]
+    },
+    "views": {
+      "asterSecondary": [
+        {
+          "id": "asterChat",
+          "name": "Aster",
+          "type": "webview",
+          "contextualTitle": "Aster",
+          "when": "!aster.noSecondarySidebar"
+        }
+      ],
+      "aster": [
+        {
+          "id": "asterChatPrimary",
+          "name": "Aster",
+          "type": "webview",
+          "contextualTitle": "Aster",
+          "when": "aster.noSecondarySidebar"
+        },
+        {
+          "id": "asterFindings",
+          "name": "Findings",
+          "icon": "media/aster.svg",
+          "contextualTitle": "Aster Findings"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "asterFindings",
+        "contents": "No findings yet.\n[Review Current Branch](command:aster.reviewBranch)\nAster reviews your diff and only shows findings that survive verification."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aster.reviewBranch",
+          "when": "(view == asterChat || view == asterChatPrimary) && !aster.reviewRunning",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aster.cancelReview",
+          "when": "(view == asterChat || view == asterChatPrimary) && aster.reviewRunning",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aster.clearFindings",
+          "when": "view == asterFindings",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "aster.openPanel",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aster.fixFinding",
+          "when": "viewItem == finding",
+          "group": "inline@1"
+        },
+        {
+          "command": "aster.fixFinding",
+          "when": "viewItem == finding",
+          "group": "1_fix@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "aster.openFinding",
+          "when": "false"
+        },
+        {
+          "command": "aster.fixFinding",
+          "when": "false"
+        },
+        {
+          "command": "aster.cancelReview",
+          "when": "aster.reviewRunning"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Aster",
+      "properties": {
+        "aster.binaryPath": {
+          "type": "string",
+          "default": "aster",
+          "description": "Path to the aster binary. Defaults to `aster` on PATH."
+        },
+        "aster.minConfidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Drop findings below this confidence. Falls back to aster.yaml when unset."
+        },
+        "aster.publishDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also report findings in the Problems tab. Off by default: findings live in the Aster panel and the Aster Findings view, so a review does not bury real compiler and linter problems."
+        },
+        "aster.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments appended to every `aster review` invocation, e.g. [\"--no-index\"]."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "bun run build:host && bun run build:webview",
+    "build:host": "tsc -p ./",
+    "build:webview": "tsc -p tsconfig.webview.json && vite build",
+    "watch": "tsc -watch -p ./",
+    "package": "bun run build && vsce package --no-dependencies",
+    "vscode:prepublish": "bun run build",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@shikijs/core": "^4.3.1",
+    "@shikijs/langs": "^4.3.1",
+    "@shikijs/themes": "^4.3.1",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vscode/vsce": "^3.0.0",
+    "motion": "^12.43.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "shiki": "^4.3.1",
+    "typescript": "^5.5.0",
+    "vite": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

@@ -17,7 +17,12 @@ Cargo.lock.orig
 paper/
 web/
 .githooks/
-editors/
+
+# VS Code extension: source is tracked, build output and packages are not.
+editors/vscode/node_modules/
+editors/vscode/out/
+editors/vscode/media/webview/
+editors/vscode/*.vsix
 
 # Local
 _archive/

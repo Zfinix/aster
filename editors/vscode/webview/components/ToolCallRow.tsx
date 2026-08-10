@@ -1,0 +1,142 @@
+import { useState, type ReactElement } from "react";
+import { languageFromPath } from "../lib/highlight";
+import { post } from "../lib/host";
+import type { ToolCall } from "../lib/thread";
+import { describeTool, displayOutput, outputTitle, resultHint, toolInput, toolPath } from "../lib/tools";
+import { Disclosure } from "../interior/disclosure";
+import { Code } from "./Code";
+import { CopyButton } from "./CopyButton";
+import { ToolOutput } from "./ToolOutput";
+import {
+  AlertIcon,
+  BookIcon,
+  BrainIcon,
+  ChevronIcon,
+  ExternalIcon,
+  FileIcon,
+  FolderIcon,
+  LayersIcon,
+  PencilIcon,
+  SearchIcon,
+  TerminalIcon,
+} from "./icons";
+
+const ICONS: Record<string, ReactElement> = {
+  read_file: <FileIcon />,
+  list_files: <FolderIcon />,
+  find_files: <FolderIcon />,
+  search_files: <SearchIcon />,
+  edit_file: <PencilIcon />,
+  run_command: <TerminalIcon />,
+  run_tests: <TerminalIcon />,
+  explore: <LayersIcon />,
+  remember: <BrainIcon />,
+  recall: <BrainIcon />,
+  read_skill: <BookIcon />,
+  ask_user: <BrainIcon />,
+  exit_plan_mode: <BookIcon />,
+};
+
+/** Commands show their output without being asked: what ran and what came back
+ *  is the transcript's story. */
+const OPEN_BY_DEFAULT = new Set(["run_command", "run_tests"]);
+
+/** One step, collapsed to its header until asked: eighteen reads stay a list
+ *  rather than a wall. Failures open themselves, since that is the one case the
+ *  reader was always going to expand. */
+export function ToolCallRow({ call }: { call: ToolCall }) {
+  const running = call.result === undefined;
+  const output = displayOutput(call);
+  const input = toolInput(call);
+  const [expanded, setExpanded] = useState(OPEN_BY_DEFAULT.has(call.name));
+  const { verb, detail, code } = describeTool(call);
+  const path = toolPath(call);
+  const card = Boolean(output || input);
+  const open = card && (expanded || call.error === true);
+
+  /** A path opens the real file; anything else opens its output as a scratch
+   *  tab, which is where find, folding, and highlighting live. */
+  const openInEditor = () => {
+    if (window.getSelection()?.isCollapsed === false) return;
+    if (path) {
+      post({ type: "openFile", path });
+    } else if (output) {
+      post({ type: "openUntitled", content: output, title: outputTitle(call) });
+    }
+  };
+
+  return (
+    <div className="tool" data-error={call.error === true} data-running={running}>
+      <button
+        className="tool-row"
+        onClick={() => setExpanded(!expanded)}
+        disabled={!card}
+        aria-expanded={card ? open : undefined}
+        title={card ? (open ? "Hide details" : "Show details") : undefined}
+      >
+        <span className="tool-icon">
+          {call.error ? <AlertIcon /> : (ICONS[call.name] ?? <FileIcon />)}
+        </span>
+        <span className="tool-label" data-oneline={Boolean(input)} data-lead={!verb}>
+          {verb && <span className="tool-verb">{verb}</span>}
+          {/* A real space, not just flex gap: copied text glues the spans. */}
+          {detail && (
+            <span className="tool-detail" data-code={code === true}>
+              {verb ? " " : ""}
+              {detail}
+            </span>
+          )}
+        </span>
+        <span className="tool-hint">{running ? "running…" : resultHint(call)}</span>
+        <span className="tool-chevron">{card && <ChevronIcon open={open} />}</span>
+      </button>
+
+      <Disclosure open={open}>
+        <div className="tool-card">
+          {input && (
+            <div className="tool-cell tool-cell-in">
+              <span className="tool-cell-label">in</span>
+              <span className="tool-cell-body">
+                <pre className="tool-output tool-input">
+                  <code>
+                    <Code code={input} lang="shellscript" />
+                  </code>
+                </pre>
+              </span>
+              <span className="tool-cell-copy">
+                <CopyButton text={input} label="Copy command" />
+              </span>
+            </div>
+          )}
+          {output && (
+            <div className="tool-cell tool-cell-out">
+              <span className="tool-cell-label">out</span>
+              <span
+                className="tool-cell-body"
+                role="button"
+                tabIndex={0}
+                onClick={openInEditor}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  openInEditor();
+                }}
+                title={path ? `Open ${path}` : "Open output in an editor tab"}
+              >
+                <ToolOutput output={output} lang={languageFromPath(path)} />
+              </span>
+              <button
+                className="icon-btn tool-cell-open"
+                onClick={openInEditor}
+                title="Open in editor"
+                aria-label="Open in editor"
+              >
+                <ExternalIcon />
+              </button>
+            </div>
+          )}
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
