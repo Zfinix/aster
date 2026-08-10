@@ -67,11 +67,16 @@ struct Cli {
     /// Hidden alias for `--json`, matching the `--format json` spelling other CLIs use.
     #[arg(long, global = true, value_name = "FORMAT", hide = true)]
     format: Option<OutputFormat>,
+}
 
+/// Flattened into the commands that reach a provider, so the flag stays off
+/// the help of the ones that never run a model.
+#[derive(clap::Args, Clone, Copy)]
+pub struct EffortArgs {
     /// Reasoning budget for thinking models: off, low, medium, or high.
     /// Overrides ASTER_EFFORT and aster.yaml `review.effort`.
-    #[arg(long, global = true, value_name = "LEVEL")]
-    effort: Option<Effort>,
+    #[arg(long, value_name = "LEVEL")]
+    pub effort: Option<Effort>,
 }
 
 #[derive(Subcommand)]
@@ -122,7 +127,7 @@ pub fn json_mode() -> bool {
     JSON.load(Ordering::Relaxed)
 }
 
-/// Set once from the root `--effort` flag; `None` leaves env and aster.yaml in charge.
+/// Set once from the command's `--effort` flag; `None` leaves env and aster.yaml in charge.
 static EFFORT: OnceLock<Option<Effort>> = OnceLock::new();
 
 /// The `--effort` level this run was started with, if any.
@@ -140,10 +145,15 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let json = cli.json || matches!(cli.format, Some(OutputFormat::Json));
     JSON.store(json, Ordering::Relaxed);
-    let _ = EFFORT.set(cli.effort);
 
     // No subcommand means chat: the flattened root flags are the chat args.
     let command = cli.command.unwrap_or(Command::Chat(cli.chat));
+    let _ = EFFORT.set(match &command {
+        Command::Chat(a) => a.effort.effort,
+        Command::Review(a) => a.effort.effort,
+        Command::Fix(a) => a.effort.effort,
+        _ => None,
+    });
     // Full-screen TUI logs must go to a file, not stderr.
     let chat_tui = matches!(&command, Command::Chat(a) if a.is_interactive());
     // Interactive `aster sessions` can hand off into the chat TUI on enter.
