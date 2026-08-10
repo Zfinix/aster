@@ -258,6 +258,30 @@ fn a_broken_rule_fails_the_compile_with_its_bucket() {
 }
 
 #[test]
+fn promote_loosens_and_demote_tightens() {
+    let mut c = cfg();
+    c.mode = Mode::Plan;
+    let mut p = policy(c);
+    p.promote(Mode::Edit);
+    assert_eq!(p.mode(), Mode::Edit);
+    p.demote(Mode::Plan);
+    assert_eq!(p.mode(), Mode::Plan);
+}
+
+// Neither is a way around the configured ceiling: promote refuses to loosen
+// past it, and demote only ever tightens.
+#[test]
+fn neither_move_goes_the_wrong_way() {
+    let mut c = cfg();
+    c.mode = Mode::Manual;
+    let mut p = policy(c);
+    p.demote(Mode::Edit);
+    assert_eq!(p.mode(), Mode::Manual, "demote must not loosen");
+    p.promote(Mode::Plan);
+    assert_eq!(p.mode(), Mode::Manual, "promote must not tighten");
+}
+
+#[test]
 fn a_deny_reason_names_the_rule_that_matched() {
     let mut c = cfg();
     c.deny = vec!["Edit(infra/**)".into()];

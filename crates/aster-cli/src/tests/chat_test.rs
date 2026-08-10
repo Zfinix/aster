@@ -458,6 +458,7 @@ async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
         &arguments.to_string(),
         &mut Vec::new(),
         &SessionCtx::default(),
+        None,
     )
     .await
 }
@@ -492,6 +493,7 @@ async fn run_tool_with(
         &arguments.to_string(),
         &mut Vec::new(),
         ctx,
+        None,
     )
     .await
 }
