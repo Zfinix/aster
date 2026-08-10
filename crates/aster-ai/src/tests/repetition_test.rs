@@ -124,3 +124,43 @@ async fn degenerate_non_streaming_reply_is_rejected() {
         "unexpected error: {err:#}"
     );
 }
+
+/// The buffer is trimmed at a byte offset computed from its length, so a
+/// multi-byte character straddling that offset used to panic the streaming
+/// task: "end byte index 216 is not a char boundary; it is inside '├'".
+#[test]
+fn a_multibyte_character_on_the_trim_boundary_does_not_panic() {
+    // A directory tree is the everyday case: the glyphs are three bytes each.
+    let tree = "├─ crates/aster-ai\n│  └─ src/lib.rs\n";
+    for chunk in 1..=8 {
+        let mut guard = RepetitionGuard::default();
+        let text = tree.repeat(40);
+        let mut cut = 0;
+        while cut < text.len() {
+            let mut end = (cut + chunk).min(text.len());
+            while !text.is_char_boundary(end) {
+                end += 1;
+            }
+            guard.feed(&text[cut..end]);
+            cut = end;
+        }
+    }
+}
+
+#[test]
+fn emoji_and_cjk_survive_the_window_split() {
+    let mut guard = RepetitionGuard::default();
+    for delta in ["🙂".repeat(200), "日本語のテキスト".repeat(50)] {
+        guard.feed(&delta);
+    }
+    // Nothing to assert beyond not panicking: the guard may or may not trip on
+    // repeated emoji, and either verdict is fine.
+    assert!(!is_degenerate("🙂 one 🙂 two 🙂 three"));
+}
+
+#[test]
+fn a_repeated_tree_still_trips_the_guard() {
+    // Boundary rounding must not cost the guard its job.
+    let out = "├─ same line every time\n".repeat(60);
+    assert!(is_degenerate(&out));
+}

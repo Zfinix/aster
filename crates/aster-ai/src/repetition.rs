@@ -48,13 +48,13 @@ impl RepetitionGuard {
     pub fn feed(&mut self, delta: &str) -> bool {
         self.buf.push_str(delta);
         if self.buf.len() > REPETITION_BUF {
-            let keep = self.buf.len() - REPETITION_BUF;
+            let keep = boundary(&self.buf, self.buf.len() - REPETITION_BUF);
             self.buf.drain(..keep);
         }
         if self.buf.len() < 2 * REPETITION_WINDOW {
             return false;
         }
-        let split = self.buf.len() - REPETITION_WINDOW;
+        let split = boundary(&self.buf, self.buf.len() - REPETITION_WINDOW);
         let (window, tail) = self.buf.split_at(split);
         if tail.chars().filter(|c| c.is_alphabetic()).count() < MIN_CHUNK_LETTERS {
             self.repeat = 0;
@@ -68,6 +68,18 @@ impl RepetitionGuard {
             false
         }
     }
+}
+
+/// The first char boundary at or after `index`. Both cuts here are computed
+/// from byte lengths, so a multi-byte character straddling one would otherwise
+/// panic mid-stream: box-drawing glyphs, emoji, and CJK all reach this.
+/// Rounding forward shortens the window slightly rather than splitting a char.
+fn boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 /// Whether assembled content is degenerate, for responses that arrive whole.
