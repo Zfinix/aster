@@ -79,3 +79,76 @@ fn bwrap_args_contain_repo() {
     assert!(args.contains(&"/repo".to_string()));
     assert!(args.contains(&"--unshare-net".to_string()));
 }
+
+#[test]
+fn credentials_are_matched_by_command_name_not_path() {
+    assert_eq!(command_name("/opt/homebrew/bin/gh"), "gh");
+    assert_eq!(command_name("gh.exe"), "gh");
+    assert_eq!(command_name("gh"), "gh");
+}
+
+#[test]
+fn only_the_tools_that_need_a_credential_dir_ask_for_one() {
+    assert!(credentials_for("cat", &[]).is_empty());
+    assert!(credentials_for("curl", &["https://example.com".into()]).is_empty());
+    assert!(credentials_for("rg", &["token".into()]).is_empty());
+}
+
+#[test]
+fn git_asks_only_when_it_reaches_a_remote() {
+    let sub = |s: &str| vec![s.to_string()];
+    // Local plumbing never needs a key.
+    assert!(credentials_for("git", &sub("status")).is_empty());
+    assert!(credentials_for("git", &sub("diff")).is_empty());
+    assert!(credentials_for("git", &sub("log")).is_empty());
+    // Flags before the subcommand must not hide it.
+    let flagged = vec!["-C".to_string(), "/repo".to_string(), "status".to_string()];
+    assert!(credentials_for("git", &flagged).is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_approved_credential_dir_leaves_the_deny_list() {
+    let Some(home) = dirs::home_dir() else { return };
+    let gh = home.join(".config/gh");
+    if !gh.exists() {
+        return;
+    }
+    let repo = std::env::temp_dir();
+    let denied = SandboxProfile::new(&repo).seatbelt_profile();
+    assert!(denied.contains(".config/gh"), "denied by default");
+
+    let allowed = SandboxProfile::new(&repo)
+        .allow_credentials(vec![gh.clone()])
+        .seatbelt_profile();
+    assert!(!allowed.contains(".config/gh"), "{allowed}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn keychains_can_never_be_approved() {
+    let Some(home) = dirs::home_dir() else { return };
+    let keychains = home.join("Library/Keychains");
+    if !keychains.exists() {
+        return;
+    }
+    let profile = SandboxProfile::new(&std::env::temp_dir())
+        .allow_credentials(vec![keychains])
+        .seatbelt_profile();
+    assert!(profile.contains("Keychains"), "{profile}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn approving_one_credential_dir_leaves_the_others_denied() {
+    let Some(home) = dirs::home_dir() else { return };
+    let (gh, ssh) = (home.join(".config/gh"), home.join(".ssh"));
+    if !gh.exists() || !ssh.exists() {
+        return;
+    }
+    let profile = SandboxProfile::new(&std::env::temp_dir())
+        .allow_credentials(vec![gh])
+        .seatbelt_profile();
+    assert!(!profile.contains(".config/gh"));
+    assert!(profile.contains(".ssh"), "{profile}");
+}

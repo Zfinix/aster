@@ -1173,3 +1173,30 @@ fn environment_note_lists_task_runners_and_scripts() {
     assert_eq!(note.matches("just <name>").count(), 1, "{note}");
     assert!(note.contains("build, check, dev"), "{note}");
 }
+
+#[test]
+fn credential_grants_are_seeded_from_the_configured_pairs() {
+    let permissions = aster_policy::PermissionsConfig {
+        allow_credentials: vec!["gh:~/.config/gh".into(), "aws : ~/.aws".into()],
+        ..Default::default()
+    };
+    let grants = configured_credentials(&permissions, Path::new("/tmp/repo"));
+    let home = dirs::home_dir().expect("a home directory");
+    assert!(grants.allows("gh", &home.join(".config/gh")));
+    // Whitespace around either half is tolerated.
+    assert!(grants.allows("aws", &home.join(".aws")));
+    // The pairing is the point: gh's approval is not aws's.
+    assert!(!grants.allows("gh", &home.join(".aws")));
+}
+
+#[test]
+fn a_malformed_credential_entry_is_dropped_not_fatal() {
+    let permissions = aster_policy::PermissionsConfig {
+        allow_credentials: vec!["no-colon-here".into(), "gh:~/.config/gh".into()],
+        ..Default::default()
+    };
+    let grants = configured_credentials(&permissions, Path::new("/tmp/repo"));
+    let home = dirs::home_dir().expect("a home directory");
+    assert_eq!(grants.granted().len(), 1);
+    assert!(grants.allows("gh", &home.join(".config/gh")));
+}

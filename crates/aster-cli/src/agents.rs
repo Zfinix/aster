@@ -70,6 +70,9 @@ pub(crate) struct AgentDeps {
     pub repo_root: PathBuf,
     pub policy: Arc<Policy>,
     pub grants: Arc<Grants>,
+    /// The parent's credential approvals: a sub-agent is the same user in the
+    /// same session, so it inherits them rather than re-asking.
+    pub credentials: Arc<aster_policy::CommandGrants>,
     pub probe: Arc<bash_tools::ToolProbe>,
     pub environment: Option<String>,
     pub limits: crate::chat::Limits,
@@ -115,6 +118,7 @@ async fn run_agent(
     let child_ctx = SessionCtx {
         recorder: None,
         store: None,
+        credentials: deps.credentials.clone(),
         skills: Arc::new(aster_skills::SkillSet::default()),
         instructions: Arc::new(crate::instructions::Instructions::default()),
         probe: deps.probe.clone(),

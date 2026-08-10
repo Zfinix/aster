@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Sandbox credential access now asks instead of failing. A command that needs a
+  credential directory the sandbox denies (`gh` and `~/.config/gh`, `aws` and
+  `~/.aws`, `kubectl` and `~/.kube`, `ssh`/`git` and `~/.ssh`, `gpg` and
+  `~/.gnupg`) prompts for approval, with yes / always / no. An approval covers
+  one command and one directory, so approving `gh` never lets the next `cat`
+  read the token, and it is stored apart from the file-read grants so it cannot
+  widen `read_file`. `~/Library/Keychains` stays denied and is not grantable.
+  Preauthorize headless runs with `permissions.allow_credentials`
+  (`["gh:~/.config/gh"]`).
+
 - Remote MCP servers over Streamable HTTP and the deprecated HTTP+SSE binding,
   alongside the existing stdio transport. Declare one with a `url` (plus
   optional `headers`) in `aster.yaml`, `.mcp.json`, or a plugin's `mcp.json`;
@@ -52,8 +62,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correction.
 - [docs/LIVING-HARNESS.md](docs/LIVING-HARNESS.md): the transcript-study
   design behind all of the above.
+- [docs/CONFIG.md](docs/CONFIG.md), a full `aster.yaml` reference: every key
+  with its type, default, and environment equivalent, the built-in
+  protected/secret/exclude lists, and the per-section rules for how the project
+  file merges over the global one. `aster.yaml.example` gains the keys it was
+  missing (`agents`, `review.astgrep_rules`, the `mcp` inventory budget, and
+  per-server `env`).
+
+### Changed
+
+- `--effort` is no longer a global flag. It now belongs to the commands that
+  run a model (chat, `aster review`, and `aster fix`), so it stops appearing in
+  the help of commands that never reach a provider, and must be written after
+  the subcommand: `aster review --effort high`.
 
 ### Fixed
+
+- The `cli-toolbox` skill now tells the agent to read a tool before guessing at
+  it: confirm the binary exists, run `--help` after a usage error rather than
+  re-sending a near-identical shape, and go read the docs online when help does
+  not settle it. Blind retries were burning a turn's budget without ever
+  resolving the question.
+- Sandbox denials are recognized on macOS again. The coaching that explains a
+  blocked path matched `permission denied` and `eperm`, but macOS prints
+  `operation not permitted`, so the note never fired on the platform it was
+  written for.
 
 - Timed-out commands now return the output they produced before the kill,
   with guidance, instead of discarding it.

@@ -194,6 +194,7 @@ fn merge_permissions(
         ),
         allow_exec: union(global.allow_exec, project.allow_exec),
         deny_exec: union(global.deny_exec, project.deny_exec),
+        allow_credentials: union(global.allow_credentials, project.allow_credentials),
         use_default_protected: global.use_default_protected && project.use_default_protected,
     }
 }

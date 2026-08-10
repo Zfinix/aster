@@ -14,6 +14,7 @@ fn chat_app(model: String) -> ChatApp {
             auto: sync::Arc::new(Policy::permissive()),
             edit: sync::Arc::new(Policy::permissive()),
             grants: sync::Arc::new(Grants::default()),
+            credentials: sync::Arc::new(aster_policy::CommandGrants::default()),
         },
         tx,
         events_tx,
@@ -412,6 +413,17 @@ fn a_command_step_names_the_command_it_ran() {
     assert_eq!(
         step_label("run_command", r#"{"command":"cargo"}"#),
         "Ran cargo"
+    );
+}
+
+#[test]
+fn a_command_step_prefers_the_models_own_summary() {
+    assert_eq!(
+        step_label(
+            "run_command",
+            r#"{"command":"bun","args":["run","build"],"description":"Rebuild the webview bundle"}"#
+        ),
+        "Rebuild the webview bundle"
     );
 }
 
