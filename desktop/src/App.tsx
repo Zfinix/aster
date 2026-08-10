@@ -252,10 +252,19 @@ function App() {
     document.body.dataset.state = view;
   }, [view]);
 
-  const onRespondApproval = useCallback((allow: boolean) => {
-    setApproval(null);
-    answerApproval(allow).catch(() => {});
-  }, []);
+  // A turn runs as its own process with `--permission-mode`, so an approved
+  // plan has to move the app's mode or the next turn relaunches in `plan` and
+  // refuses the plan it just approved.
+  const onRespondApproval = useCallback(
+    (allow: boolean) => {
+      if (allow && approval?.plan) {
+        onPermissionMode("edit");
+      }
+      setApproval(null);
+      answerApproval(allow).catch(() => {});
+    },
+    [approval, onPermissionMode],
+  );
 
   const refreshAuth = useCallback(() => {
     authStatus().then(setAuth).catch(() => setAuth(null));
@@ -415,7 +424,7 @@ function App() {
           );
           break;
         case "approval_request":
-          setApproval({ preview: ev.preview });
+          setApproval({ preview: ev.preview, plan: ev.kind === "plan" });
           break;
         case "notice":
           toast(ev.message);

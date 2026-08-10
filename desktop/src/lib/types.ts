@@ -56,7 +56,8 @@ export type ChatStreamEvent =
       done: number;
       total: number;
     }
-  | { type: "approval_request"; preview: string }
+  /** `plan` means approving promotes the mode; `action` is a one-off. */
+  | { type: "approval_request"; kind?: "plan" | "action"; preview: string }
   | { type: "done"; reply: string; edits: string[]; usage?: Usage }
   /** A generated name for the session, sent once the conversation has shape. */
   | { type: "title"; title: string }
