@@ -25,6 +25,9 @@ use inline_tools::{TokenGate, split_inline_tool_calls};
 mod repetition;
 pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
 
+mod wire;
+use wire::{fold_system_chat, fold_system_notes};
+
 mod models;
 pub use models::{
     Annotation, AssistantMessage, ChatMessage, ToolCall, ToolCallFunction, UrlCitation,
@@ -255,7 +258,7 @@ impl AiClient {
         ChatRequest {
             model: model.to_string(),
             temperature: Some(temperature),
-            messages,
+            messages: fold_system_chat(messages),
             stream,
             stream_options: stream.then_some(StreamOptions {
                 include_usage: true,
@@ -418,6 +421,7 @@ impl AiClient {
         tools: Vec<serde_json::Value>,
         temperature: f32,
     ) -> Result<AssistantMessage> {
+        let messages = fold_system_notes(messages);
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
         let request = ToolChatRequest {
             model: model.to_string(),
@@ -536,6 +540,7 @@ impl AiClient {
         temperature: f32,
         mut on_token: impl FnMut(&str),
     ) -> Result<AssistantMessage> {
+        let messages = fold_system_notes(messages);
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
         let request = ToolChatRequest {
             model: model.to_string(),
