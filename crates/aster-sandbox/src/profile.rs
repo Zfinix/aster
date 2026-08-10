@@ -20,6 +20,10 @@ pub struct SandboxProfile {
     pub network: bool,
     /// Maximum execution time in seconds.
     pub timeout_secs: u64,
+    /// Credential directories the user approved for this command. Subtracted
+    /// from the credential deny list; [`hard_denied`] paths are never listed
+    /// here, so approving one is impossible rather than merely refused.
+    pub allowed_credentials: Vec<PathBuf>,
 }
 
 impl SandboxProfile {
@@ -30,7 +34,19 @@ impl SandboxProfile {
             writable_dirs: Vec::new(),
             network: false,
             timeout_secs: 30,
+            allowed_credentials: Vec::new(),
         }
+    }
+
+    /// Grant read access to credential directories the user approved for this
+    /// command. Anything not in [`credential_paths`] is ignored.
+    pub fn allow_credentials(mut self, dirs: Vec<PathBuf>) -> Self {
+        let known = credential_paths();
+        self.allowed_credentials = resolve_existing(dirs)
+            .into_iter()
+            .filter(|dir| known.contains(dir))
+            .collect();
+        self
     }
 
     pub fn readable(mut self, dir: PathBuf) -> Self {
@@ -90,10 +106,14 @@ impl SandboxProfile {
             profile.push_str(")\n");
         }
 
-        let sensitive = sensitive_read_paths();
-        if !sensitive.is_empty() {
+        let denied: Vec<PathBuf> = hard_denied()
+            .into_iter()
+            .chain(credential_paths())
+            .filter(|path| !self.allowed_credentials.contains(path))
+            .collect();
+        if !denied.is_empty() {
             profile.push_str("(deny file-read* file-write*");
-            for path in sensitive {
+            for path in denied {
                 profile.push_str(&format!(" (subpath \"{}\")", escape(&path)));
             }
             profile.push_str(")\n");
@@ -175,6 +195,14 @@ impl SandboxProfile {
             args.push(dir.display().to_string());
         }
 
+        // `$HOME` is not bound at all here, so an approved credential
+        // directory has to be mounted in explicitly.
+        for dir in &self.allowed_credentials {
+            args.push("--ro-bind".into());
+            args.push(dir.display().to_string());
+            args.push(dir.display().to_string());
+        }
+
         for dir in &self.writable_dirs {
             args.push("--bind".into());
             args.push(dir.display().to_string());
@@ -203,31 +231,86 @@ impl SandboxProfile {
     }
 }
 
-/// Credential stores a sandboxed command has no business reading. Under bwrap
-/// these need no rule: `$HOME` is simply not bound into the namespace.
-#[cfg(target_os = "macos")]
-fn sensitive_read_paths() -> Vec<PathBuf> {
+/// Credential stores no command may read, approved or not. Under bwrap these
+/// need no rule: `$HOME` is simply not bound into the namespace.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn hard_denied() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    resolve_existing(["Library/Keychains"].map(|d| home.join(d)).to_vec())
+}
+
+/// Credential stores a command reaches only with the user's approval. A tool
+/// that legitimately needs one names it through [`credentials_for`]; the host
+/// asks, and passes what was approved to [`SandboxProfile::allow_credentials`].
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn credential_paths() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
     resolve_existing(
-        [
-            ".ssh",
-            ".aws",
-            ".gnupg",
-            ".config/gh",
-            ".kube",
-            "Library/Keychains",
-        ]
-        .map(|d| home.join(d))
-        .to_vec(),
+        [".ssh", ".aws", ".gnupg", ".config/gh", ".kube"]
+            .map(|d| home.join(d))
+            .to_vec(),
     )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn credential_paths() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// The credential directories `binary` legitimately needs, if any. Matching is
+/// on the file name, so an absolute path resolves the same as a bare name.
+/// `git` only reaches for keys when it talks to a remote or signs.
+pub fn credentials_for(binary: &str, args: &[String]) -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let wanted: &[&str] = match command_name(binary).as_str() {
+        "gh" => &[".config/gh"],
+        "aws" | "sam" => &[".aws"],
+        "kubectl" | "helm" | "k9s" => &[".kube"],
+        "ssh" | "scp" | "sftp" | "ssh-add" => &[".ssh"],
+        "gpg" | "gpg2" => &[".gnupg"],
+        "git" if reaches_remote(args) => &[".ssh", ".gnupg"],
+        _ => &[],
+    };
+    resolve_existing(wanted.iter().map(|d| home.join(d)).collect())
+}
+
+/// The name a command is keyed by: its file name, without a Windows suffix, so
+/// `/opt/homebrew/bin/gh` and `gh` are the same command.
+pub fn command_name(binary: &str) -> String {
+    let name = Path::new(binary)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| binary.to_string());
+    name.strip_suffix(".exe").unwrap_or(&name).to_string()
+}
+
+/// Whether a `git` invocation is one that needs a key: talking to a remote, or
+/// signing. Everything else stays inside the repository.
+fn reaches_remote(args: &[String]) -> bool {
+    const REMOTE: [&str; 8] = [
+        "push",
+        "fetch",
+        "pull",
+        "clone",
+        "ls-remote",
+        "remote",
+        "commit",
+        "tag",
+    ];
+    args.iter()
+        .find(|arg| !arg.starts_with('-'))
+        .is_some_and(|sub| REMOTE.contains(&sub.as_str()))
 }
 
 /// Resolve paths through symlinks and drop the missing ones: Seatbelt rejects
 /// the whole profile over one unresolvable `subpath`, and on macOS `/tmp` and
 /// `/var` are symlinks into `/private`.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn resolve_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for path in paths {

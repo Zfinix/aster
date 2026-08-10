@@ -55,6 +55,17 @@ impl Store {
         )
     }
 
+    /// Credential directories approved per command for `repo_root`, kept apart
+    /// from [`Self::grants`] so a sandbox approval never widens the agent's own
+    /// file tools. Entries are stored as `<command>\t<dir>`.
+    pub fn credential_grants(&self, repo_root: &Path) -> GrantStore {
+        GrantStore::new(
+            self.home
+                .join("credentials")
+                .join(format!("{}.json", project_slug(repo_root))),
+        )
+    }
+
     fn sessions_dir(&self, repo_root: &Path) -> PathBuf {
         self.home.join("sessions").join(project_slug(repo_root))
     }

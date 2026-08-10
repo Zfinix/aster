@@ -182,6 +182,7 @@ pub async fn run_chat(
             auto: policy_for(Mode::Auto)?,
             edit: policy_for(Mode::Edit)?,
             grants: sync::Arc::new(crate::chat::configured_grants(&perms, &repo_root)),
+            credentials: sync::Arc::new(crate::chat::configured_credentials(&perms, &repo_root)),
         },
         approval_tx,
         events_tx,
@@ -817,9 +818,12 @@ fn step_label(name: &str, args: &str) -> String {
         },
         "search_files" => format!("Searched \u{201c}{}\u{201d}", s("query")),
         "find_files" => format!("Found files matching {}", s("pattern")),
-        "run_command" => match command_line(&parsed) {
-            None => "Ran a command".to_string(),
-            Some(line) => format!("Ran {line}"),
+        "run_command" => match s("description") {
+            "" => match command_line(&parsed) {
+                None => "Ran a command".to_string(),
+                Some(line) => format!("Ran {line}"),
+            },
+            summary => summary.to_string(),
         },
         "edit_file" => match s("path") {
             "" => "Edited file".to_string(),
@@ -949,6 +953,7 @@ struct SessionPermissions {
     auto: sync::Arc<Policy>,
     edit: sync::Arc<Policy>,
     grants: sync::Arc<Grants>,
+    credentials: sync::Arc<aster_policy::CommandGrants>,
 }
 
 impl SessionPermissions {
@@ -1459,6 +1464,7 @@ impl ChatApp {
         let ctx = SessionCtx {
             recorder: self.recorder.clone(),
             store: self.store.clone(),
+            credentials: self.perms.credentials.clone(),
             skills: crate::chat::discover_skills(&repo_root),
             instructions: self.instructions.clone(),
             probe: std::sync::Arc::new(bash_tools::ToolProbe::detect()),

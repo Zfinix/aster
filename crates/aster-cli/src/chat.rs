@@ -43,6 +43,9 @@ pub(crate) struct SessionCtx {
     pub environment: Option<String>,
     /// YOLO mode: the session is running without sandbox restrictions.
     pub yolo: bool,
+    /// Credential directories approved per command this session. Kept apart
+    /// from the file-read grants: approving `gh` must not widen `read_file`.
+    pub credentials: Arc<aster_policy::CommandGrants>,
     /// Ranges already read this turn, keyed by path and range, with the file's
     /// modification time. A repeat read of an unchanged range is answered with
     /// a pointer instead of a second full copy in the history.
@@ -843,6 +846,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let yolo = permissions.mode == aster_policy::Mode::Yolo;
     let policy = Arc::new(Policy::compile(&permissions)?);
     let grants = Arc::new(configured_grants(&permissions, &repo_root));
+    let credentials = Arc::new(configured_credentials(&permissions, &repo_root));
 
     let limits = Limits::resolve(&settings.agent);
     let swarm = SwarmLimits::resolve(&settings.agents);
@@ -893,11 +897,12 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             mcp,
             limits,
             yolo,
+            credentials,
         )
         .await;
     }
 
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo)?;
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo, credentials)?;
     let titling = history.clone();
 
     let mut edited: Vec<String> = Vec::new();
@@ -961,6 +966,7 @@ fn prepare_turn(
     mcp: Option<crate::mcp::McpRuntime>,
     limits: Limits,
     yolo: bool,
+    credentials: Arc<aster_policy::CommandGrants>,
 ) -> Result<(SessionCtx, Vec<ChatMessage>)> {
     let new_turns = read_history(args)?;
     let store = crate::persist::store().ok();
@@ -971,6 +977,7 @@ fn prepare_turn(
     let ctx = SessionCtx {
         recorder,
         store,
+        credentials,
         skills: discover_skills(repo_root),
         instructions: Arc::new(crate::instructions::discover(repo_root)),
         probe: Arc::new(bash_tools::ToolProbe::detect()),
@@ -1113,8 +1120,9 @@ async fn run_stream(
     mcp: Option<crate::mcp::McpRuntime>,
     limits: Limits,
     yolo: bool,
+    credentials: Arc<aster_policy::CommandGrants>,
 ) -> Result<()> {
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo)?;
+    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo, credentials)?;
     // The router owns stdin from here: replies feed the approver, and typed-in
     // `{"message"}` lines join the turn at the next round boundary.
     let replies = spawn_stdin_router(ctx.injected.clone());
@@ -2383,6 +2391,9 @@ async fn exec_tool(
                     repo_root,
                     policy,
                     approver,
+                    credentials: &ctx.credentials,
+                    store: ctx.store.as_ref(),
+                    yolo: ctx.yolo,
                 };
                 run_command_tool(&env, &cmd, &cmd_args, run_opts(&args, ctx)).await
             }
@@ -2393,6 +2404,9 @@ async fn exec_tool(
                 repo_root,
                 policy,
                 approver,
+                credentials: &ctx.credentials,
+                store: ctx.store.as_ref(),
+                yolo: ctx.yolo,
             };
             run_tests_tool(
                 &env,
@@ -2864,6 +2878,11 @@ struct ExecEnv<'a> {
     repo_root: &'a Path,
     policy: &'a Policy,
     approver: Option<&'a UiSender>,
+    credentials: &'a aster_policy::CommandGrants,
+    /// Where an "always" answer is written, when the session persists at all.
+    store: Option<&'a Store>,
+    /// No sandbox means no credential boundary to ask about.
+    yolo: bool,
 }
 
 /// Sandbox switches and the per-command timeout.
@@ -2883,21 +2902,65 @@ async fn authorize_exec(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Res
         binary,
         args: &arg_refs,
     }) {
-        Decision::Allow => Ok(()),
+        Decision::Allow => Ok::<(), anyhow::Error>(()),
         Decision::Deny { reason } => bail!("{reason}"),
         Decision::Prompt { preview } => {
-            if request_approval(env.approver, preview, None)
+            if !request_approval(env.approver, preview, None)
                 .await
                 .allowed()
             {
-                Ok(())
-            } else {
                 bail!(
                     "command `{binary}` needs user approval; it was rejected or this run cannot ask"
-                )
+                );
+            }
+            Ok(())
+        }
+    }?;
+    authorize_credentials(env, binary, args).await
+}
+
+/// A tool that keeps its credentials outside the repository is asked about
+/// rather than refused. The sandbox denies those directories by default, which
+/// used to fail the command outright: `gh` could not read `~/.config/gh`, so
+/// every GitHub operation died even though a core skill prescribes `gh`.
+///
+/// An approval covers one command and one directory, so approving `gh` never
+/// lets the next `cat` read the token.
+async fn authorize_credentials(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Result<()> {
+    if env.yolo {
+        return Ok(());
+    }
+    let command = aster_sandbox::command_name(binary);
+    for dir in aster_sandbox::credentials_for(binary, args) {
+        if env.credentials.allows(&command, &dir) {
+            continue;
+        }
+        let preview = format!(
+            "`{command}` needs to read credentials outside the repository:\n  {}",
+            crate::edits::display_home(&dir)
+        );
+        match request_approval(env.approver, preview, Some(dir.clone())).await {
+            Answer::No => bail!(
+                "`{command}` needs to read {} and was not allowed to; it was rejected, \
+                 or this run has no way to ask. Preauthorize it with \
+                 `permissions.allow_credentials: [\"{command}:{}\"]` in aster.yaml",
+                crate::edits::display_home(&dir),
+                crate::edits::display_home(&dir),
+            ),
+            Answer::Yes => env.credentials.grant(&command, dir),
+            Answer::Always => {
+                env.credentials.grant(&command, dir.clone());
+                if let Some(store) = env.store
+                    && let Err(e) = store
+                        .credential_grants(env.repo_root)
+                        .add(Path::new(&format!("{command}\t{}", dir.display())))
+                {
+                    tracing::warn!("could not persist the credential grant: {e:#}");
+                }
             }
         }
     }
+    Ok(())
 }
 
 /// Run sandboxed unless yolo, returning the raw streams for the caller to shape.
@@ -2926,7 +2989,11 @@ async fn run_raw(
     }
     let profile = aster_sandbox::SandboxProfile::new(env.repo_root)
         .timeout(opts.timeout_secs)
-        .network(!opts.turbo);
+        .network(!opts.turbo)
+        .allow_credentials(
+            env.credentials
+                .dirs_for(&aster_sandbox::command_name(binary)),
+        );
     let config = aster_sandbox::SandboxConfig::new(profile);
     aster_sandbox::run_command(&config, binary, args).await
 }
@@ -2976,7 +3043,13 @@ fn command_coaching(output: &aster_sandbox::CommandOutput, sandboxed: bool) -> V
         );
     }
 
-    let denial = ["permission denied", "permissiondenied", "eperm"]
+    let denial = [
+        "permission denied",
+        "permissiondenied",
+        "eperm",
+        // What macOS actually prints when Seatbelt refuses a read.
+        "operation not permitted",
+    ]
         .iter()
         .any(|marker| lower.contains(marker))
         // ssh's "Permission denied (publickey)" is auth, not the sandbox.
@@ -3145,6 +3218,31 @@ pub(crate) fn configured_grants(
         .map(|store| store.grants(repo_root).load())
         .unwrap_or_default();
     Grants::new(configured.chain(persisted))
+}
+
+/// Seed the session's credential grants from `permissions.allow_credentials`
+/// (written `<command>:<dir>`) and the persisted store, whose entries are
+/// `<command>\t<dir>`. A malformed entry is dropped rather than failing the
+/// run: a typo in aster.yaml should not stop the agent from starting.
+pub(crate) fn configured_credentials(
+    permissions: &aster_policy::PermissionsConfig,
+    repo_root: &Path,
+) -> aster_policy::CommandGrants {
+    let configured = permissions
+        .allow_credentials
+        .iter()
+        .filter_map(|entry| entry.split_once(':'))
+        .map(|(command, dir)| (command.trim().to_string(), edits::expand_home(dir.trim())));
+    let persisted = crate::persist::store()
+        .map(|store| store.credential_grants(repo_root).load())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let text = entry.to_string_lossy().into_owned();
+            let (command, dir) = text.split_once('\t')?;
+            Some((command.to_string(), PathBuf::from(dir)))
+        });
+    aster_policy::CommandGrants::new(configured.chain(persisted))
 }
 
 /// The directory an approval covers: the file's parent, or the directory itself.
@@ -3550,6 +3648,7 @@ async fn dispatch_agent_tool(
         repo_root: repo_root.to_path_buf(),
         policy: Arc::new(policy.clone()),
         grants: Arc::new(Grants::default()),
+        credentials: ctx.credentials.clone(),
         probe: ctx.probe.clone(),
         environment: ctx.environment.clone(),
         limits: ctx.limits,

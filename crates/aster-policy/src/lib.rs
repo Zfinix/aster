@@ -15,5 +15,5 @@ mod policy;
 pub use action::Action;
 pub use config::PermissionsConfig;
 pub use decision::{Decision, Mode};
-pub use grants::Grants;
+pub use grants::{CommandGrants, Grants};
 pub use policy::Policy;

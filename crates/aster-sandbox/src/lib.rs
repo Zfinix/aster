@@ -13,7 +13,7 @@
 mod profile;
 mod runner;
 
-pub use profile::SandboxProfile;
+pub use profile::{SandboxProfile, command_name, credential_paths, credentials_for};
 pub use runner::{CommandOutput, SandboxConfig, run_command};
 
 /// Which sandbox backend is active on this platform

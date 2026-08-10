@@ -60,6 +60,64 @@ impl Grants {
     }
 }
 
+/// Credential directories a *named command* may read inside the sandbox,
+/// approved one at a time by the user.
+///
+/// Deliberately not [`Grants`]: that set widens the agent's own file tools, and
+/// approving `gh` must not make `~/.config/gh` readable to `read_file` or to
+/// the next `cat`. Keying on the command is the whole point, so the pair is
+/// what gets stored.
+#[derive(Debug, Default)]
+pub struct CommandGrants {
+    pairs: Mutex<HashSet<(String, PathBuf)>>,
+}
+
+impl CommandGrants {
+    /// Seed from already-expanded `(command, directory)` pairs.
+    pub fn new(pairs: impl IntoIterator<Item = (String, PathBuf)>) -> Self {
+        Self {
+            pairs: Mutex::new(pairs.into_iter().collect()),
+        }
+    }
+
+    /// True when `command` may read `dir` or something under an approved parent.
+    pub fn allows(&self, command: &str, dir: &Path) -> bool {
+        let pairs = self.lock();
+        dir.ancestors()
+            .any(|a| pairs.contains(&(command.to_string(), a.to_path_buf())))
+    }
+
+    pub fn grant(&self, command: &str, dir: PathBuf) {
+        if self.allows(command, &dir) {
+            return;
+        }
+        self.lock().insert((command.to_string(), dir));
+    }
+
+    /// Every approved pair, sorted. For display and for persisting.
+    pub fn granted(&self) -> Vec<(String, PathBuf)> {
+        let mut out: Vec<(String, PathBuf)> = self.lock().iter().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// The directories `command` may read, for handing to the sandbox.
+    pub fn dirs_for(&self, command: &str) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .lock()
+            .iter()
+            .filter(|(name, _)| name == command)
+            .map(|(_, dir)| dir.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<(String, PathBuf)>> {
+        self.pairs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/grants_test.rs"]
 mod tests;

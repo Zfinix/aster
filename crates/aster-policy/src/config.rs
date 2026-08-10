@@ -27,6 +27,10 @@ pub struct PermissionsConfig {
     pub allow_exec: Vec<String>,
     /// Commands the agent may never run. Matched by binary name.
     pub deny_exec: Vec<String>,
+    /// Credential directories a command may read inside the sandbox without
+    /// asking, written `<command>:<dir>` (e.g. `gh:~/.config/gh`). Meant for
+    /// headless runs, which have no way to answer a prompt.
+    pub allow_credentials: Vec<String>,
 }
 
 impl Default for PermissionsConfig {
@@ -41,6 +45,7 @@ impl Default for PermissionsConfig {
             additional_directories: Vec::new(),
             allow_exec: Vec::new(),
             deny_exec: Vec::new(),
+            allow_credentials: Vec::new(),
         }
     }
 }

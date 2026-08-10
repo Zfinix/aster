@@ -283,3 +283,55 @@ async fn working_directory_is_repo_root() {
         "expected {expected}, got {actual}"
     );
 }
+
+/// The bug this exists for: `gh` could not read `~/.config/gh`, so every
+/// GitHub operation died inside the sandbox even though a core skill
+/// prescribes `gh`. Approving the directory for one command must actually
+/// change what the OS permits, not just what the profile string says.
+#[tokio::test]
+async fn an_approved_credential_directory_becomes_readable() {
+    if !can_run_sandboxed().await || detect_backend() == SandboxBackend::ProcessLevel {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else { return };
+    let gh = home.join(".config/gh");
+    if !gh.is_dir() {
+        return;
+    }
+    let target = gh.join("config.yml");
+    if !target.is_file() {
+        return;
+    }
+    let arg = target.display().to_string();
+
+    let denied = SandboxConfig::new(SandboxProfile::new(Path::new(".")));
+    let out = run_command(&denied, "cat", std::slice::from_ref(&arg))
+        .await
+        .unwrap();
+    assert!(!out.success(), "credentials must be denied by default");
+
+    let approved =
+        SandboxConfig::new(SandboxProfile::new(Path::new(".")).allow_credentials(vec![gh.clone()]));
+    let out = run_command(&approved, "cat", std::slice::from_ref(&arg))
+        .await
+        .unwrap();
+    assert!(out.success(), "approved read failed: {}", out.stderr);
+}
+
+/// Approving one credential directory must not open the others.
+#[tokio::test]
+async fn approving_one_directory_leaves_the_rest_denied() {
+    if !can_run_sandboxed().await || detect_backend() == SandboxBackend::ProcessLevel {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else { return };
+    let (gh, ssh) = (home.join(".config/gh"), home.join(".ssh"));
+    if !gh.is_dir() || !ssh.is_dir() {
+        return;
+    }
+    let cfg = SandboxConfig::new(SandboxProfile::new(Path::new(".")).allow_credentials(vec![gh]));
+    let out = run_command(&cfg, "ls", &[ssh.display().to_string()])
+        .await
+        .unwrap();
+    assert!(!out.success(), "~/.ssh should still be denied");
+}

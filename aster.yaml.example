@@ -3,7 +3,12 @@
 #
 # Precedence: CLI flags > shell env > this file > built-in defaults.
 # API keys are NEVER read from this file — use ASTER_API_KEY or `aster login`.
+#
+# Full reference, including defaults and how the two files merge:
+# docs/CONFIG.md.
 
+# Models and the review pipeline. `model`, `base_url`, `effort`, and
+# `web_search` apply to chat and `aster fix` too; the rest is review-only.
 review:
   # Models (any OpenAI-compatible provider). `model` is the fallback used for a
   # stage that has no explicit override.
@@ -22,6 +27,10 @@ review:
   # Available: semgrep (needs `semgrep`/`opengrep` on PATH), ast-grep (needs
   # `ast-grep`/`sg` on PATH; point ASTER_ASTGREP_RULES at a rule file).
   analyzers: []            # e.g. [ast-grep] or [semgrep, ast-grep]
+
+  # Repo-relative ast-grep rule file for the `ast-grep` backend. An unreadable
+  # path warns and runs without rules.
+  # astgrep_rules: .aster/rules.yml
 
   # Reasoning budget for thinking models: off | low | medium | high.
   effort: low
@@ -64,6 +73,12 @@ permissions:
   # The sandbox restricts filesystem writes and drops secrets regardless.
   allow_exec: []             # e.g. ["cargo", "rg", "fd", "npm", "node", "python"]
   deny_exec: []             # always blocked, e.g. ["rm", "sudo", "curl"]
+  # Credential directories a command may read inside the sandbox without being
+  # asked, written `<command>:<dir>`. The sandbox denies ~/.ssh, ~/.aws,
+  # ~/.gnupg, ~/.config/gh, and ~/.kube by default; a tool that needs one
+  # prompts, and an approval covers that command only. Preauthorize here for
+  # headless runs, which have no way to answer. Keychains are never grantable.
+  allow_credentials: []     # e.g. ["gh:~/.config/gh", "aws:~/.aws"]
 
 # Limits on one agent turn. Env overrides: ASTER_MAX_TOOL_ROUNDS,
 # ASTER_COMMAND_TIMEOUT, ASTER_COMPACT_BUDGET.
@@ -77,15 +92,33 @@ agent:
   # Lower it for small-context models.
   compact_budget_chars: 192000
 
+# Fan-out limits for the sub-agents the `agent` tool spawns. Env overrides:
+# ASTER_COLLECTOR_MODEL, ASTER_AGENT_MAX_CONCURRENT, ASTER_AGENT_MAX_PER_TURN,
+# ASTER_AGENT_TIMEOUT.
+agents:
+  # Cheap model for collector agents. Falls back to the session model.
+  # collector_model: deepseek/deepseek-v4-flash
+  max_concurrent: 8         # sub-agents running at once
+  max_per_turn: 24          # `agent` tasks accepted in one turn
+  agent_timeout_secs: 300   # seconds a single sub-agent may run
+
 # MCP servers that give the agent extra tools. `aster mcp list` shows what they
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.
 # Installed plugins add their own here as `<plugin>/<server>`; see
 # docs/PLUGINS.md.
 mcp:
+  # How much of the context the tool inventory may spend before the prompt
+  # drops to server names only and the model searches for what it needs.
+  context_tokens: 100000
+  inventory_percent: 1.5
+  search_limit: 10          # matches returned by one `search`
   servers:
     chrome:
       command: npx
       args: ["-y", "chrome-devtools-mcp@latest"]
+      # Extra environment for the server, merged over the inherited one.
+      # env:
+      #   CHROME_PATH: /usr/bin/chromium
       # Working directory for the server; inherited when unset.
       # cwd: ./tools/chrome
       disabled: true
