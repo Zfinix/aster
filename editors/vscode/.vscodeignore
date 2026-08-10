@@ -1,0 +1,9 @@
+src/**
+webview/**
+node_modules/**
+tsconfig.json
+tsconfig.webview.json
+vite.config.ts
+out/**/*.map
+bun.lock
+.gitignore
