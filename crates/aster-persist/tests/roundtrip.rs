@@ -72,9 +72,9 @@ fn append_and_reload_preserves_full_fidelity() {
     let chat = transcript.to_chat_messages();
     assert_eq!(chat.len(), 2);
     assert_eq!(chat[0].role, "user");
-    assert_eq!(chat[0].content, "read main.rs");
+    assert_eq!(chat[0].content.text(), "read main.rs");
     assert_eq!(chat[1].role, "assistant");
-    assert_eq!(chat[1].content, "It is the entrypoint.");
+    assert_eq!(chat[1].content.text(), "It is the entrypoint.");
 }
 
 #[test]

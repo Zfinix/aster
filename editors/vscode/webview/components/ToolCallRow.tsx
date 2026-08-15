@@ -35,6 +35,7 @@ const ICONS: Record<string, ReactElement> = {
   read_skill: <BookIcon />,
   ask_user: <BrainIcon />,
   exit_plan_mode: <BookIcon />,
+  aster_mcp: <LayersIcon />,
 };
 
 /** Commands show their output without being asked: what ran and what came back

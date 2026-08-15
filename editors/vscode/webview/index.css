@@ -82,9 +82,26 @@ body.vscode-dark {
   flex: none;
 }
 
+/* Trailing edge, so the title reads from the leading one. */
 .toolbar-actions {
   display: flex;
   gap: var(--s1);
+  margin-left: auto;
+  flex: none;
+}
+
+/* A bare glyph needs a square hit area and more presence than a labelled
+   button, whose text carries it. */
+.icon-action {
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.icon-action svg {
+  width: 17px;
+  height: 17px;
 }
 
 .toolbar-title {
@@ -529,7 +546,6 @@ code {
 .turn-error {
   padding: var(--s2);
   border-radius: var(--radius);
-  border-left: 2px solid var(--sev-critical);
   background: var(--vscode-inputValidation-errorBackground, transparent);
   color: var(--vscode-errorForeground);
   overflow-wrap: anywhere;
@@ -646,7 +662,7 @@ code {
 }
 
 .info-card[data-error="true"] {
-  border-left: 2px solid var(--sev-critical);
+  border-color: var(--sev-critical);
 }
 
 .info-head {
@@ -1272,7 +1288,6 @@ code {
   padding: var(--s2);
   margin-bottom: var(--s2);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--sev-medium);
   border-radius: var(--radius);
 }
 
@@ -1329,6 +1344,69 @@ code {
 .approval-actions {
   display: flex;
   gap: var(--s2);
+}
+
+/* Numbered rows rather than a button pair: the digit is the shortcut, and a
+   stacked list has room to say what "always" would actually remember. */
+.approval-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: var(--s1) var(--s2);
+  cursor: pointer;
+}
+
+.approval-option:hover,
+.approval-option:focus-visible {
+  background: var(--list-hover);
+  border-color: var(--border);
+  outline: none;
+}
+
+.approval-key {
+  flex: none;
+  width: 1em;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+.approval-label {
+  min-width: 0;
+}
+
+.approval-instead {
+  width: 100%;
+  resize: none;
+  font: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--s1) var(--s2);
+}
+
+.approval-instead:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
+}
+
+.approval-hint {
+  color: var(--fg-dim);
+  font-size: 0.85em;
 }
 
 /* Inline with the tool calls that produced it: the plan reads as part of the
@@ -1659,8 +1737,7 @@ code {
 }
 
 .finding {
-  border-left: 2px solid var(--sev, var(--fg-dim));
-  border-radius: 0 var(--radius) var(--radius) 0;
+  border-radius: var(--radius);
 }
 
 .finding[data-open="true"] {
@@ -1946,11 +2023,20 @@ code {
 }
 
 .composer {
+  position: relative;
+  z-index: 6;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--vscode-input-background);
-  padding: var(--s2);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Catches the click that dismisses a popup, so it does not also land on a
+   button in the thread behind it. The composer sits above it and stays live. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
 }
 
 /*
@@ -1960,11 +2046,13 @@ code {
  */
 .composer {
   --ring: var(--vscode-focusBorder);
+  --send: var(--vscode-button-background);
 }
 
 .composer[data-permission-mode="auto"],
 .composer[data-permission-mode="edit"] {
   --ring: var(--sev-critical);
+  --send: var(--sev-critical);
 }
 
 /* Dropped files become @mentions, so the box says it will take them. */
@@ -1975,6 +2063,7 @@ code {
 
 .composer[data-permission-mode="yolo"] {
   --ring: var(--sev-critical);
+  --send: var(--sev-critical);
 }
 
 .composer[data-permission-mode="plan"] {
@@ -1988,8 +2077,11 @@ code {
     0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
+/* Margin, not padding: the mirror is inset against this box, so anything that
+   moves its edges moves the painted text off the caret. */
 .input-wrap {
   position: relative;
+  margin: var(--s2) var(--s2) 0;
 }
 
 /*
@@ -2054,12 +2146,69 @@ code {
   color: var(--vscode-chat-slashCommandForeground, var(--vscode-badge-foreground));
 }
 
+/* A bar of its own under the text, so the controls read as the box's edge
+   rather than as more of the message. */
 .composer-foot {
   display: flex;
   align-items: center;
-  gap: var(--s1);
+  gap: 2px;
   margin-top: var(--s2);
+  padding: var(--s1);
+  border-top: 1px solid var(--border);
   min-width: 0;
+}
+
+/* Every glyph-only control sits on the same square, so the row reads as one
+   strip of buttons instead of a line of differently sized ones. */
+.foot-btn {
+  flex: none;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.add {
+  position: relative;
+  flex: none;
+}
+
+.add-menu {
+  position: absolute;
+  bottom: calc(100% + var(--s1));
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 210px;
+  padding: var(--s1);
+  border: 1px solid var(--vscode-menu-border, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--vscode-menu-background, var(--surface));
+  color: var(--vscode-menu-foreground, var(--fg));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  animation: popupIn 0.12s ease-out;
+}
+
+.add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s1) var(--s2);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.add-row:hover {
+  background: var(--vscode-menu-selectionBackground);
+  color: var(--vscode-menu-selectionForeground);
 }
 
 .model-btn {
@@ -2078,23 +2227,65 @@ code {
   opacity: 0.6;
 }
 
+/* A dial rather than a number: the exact figure only matters near the end, and
+   that is what the warning colour is for. */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.context-meter:hover {
+  background: var(--hover);
+}
+
+.context-track {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  opacity: 0.25;
+  color: var(--fg-dim);
+}
+
+.context-fill {
+  fill: none;
+  stroke: var(--fg-dim);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.context-meter[data-low="true"] .context-fill {
+  stroke: var(--sev-medium);
+}
+
+/* Filled with the mode's own colour, so the button you press to hand over a
+   turn is the colour of what that turn is allowed to do. */
 .send {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   border: none;
-  border-radius: 50%;
+  border-radius: var(--radius);
   cursor: pointer;
   color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  transition: background-color 0.15s ease;
+  background: var(--send, var(--vscode-button-background));
+  transition: filter 0.15s ease;
 }
 
 .send:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
+  filter: brightness(1.15);
 }
 
 .send:disabled {
@@ -2108,12 +2299,29 @@ code {
 
 /* Approval picker */
 
+/* Popups grow out of the composer they belong to, so they rise from its edge
+   rather than appearing whole. */
+@keyframes popupIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picker,
+  .cmd {
+    animation: none;
+  }
+}
+
 .picker {
   position: absolute;
   bottom: calc(100% - var(--s2));
   left: var(--s3);
   right: var(--s3);
   z-index: 10;
+  animation: popupIn 0.12s ease-out;
   max-height: 320px;
   overflow-y: auto;
   padding: var(--s1);
@@ -2157,15 +2365,46 @@ code {
   color: var(--vscode-menu-selectionForeground);
 }
 
-/* Autocomplete reuses the picker shell but scrolls and sits tighter. */
+/* Autocomplete reuses the picker shell, but reads as a file tree: one line per
+   entry, its glyph on the left, and a neutral highlight instead of the menu's
+   accent so a long list of paths stays quiet. */
 .picker[role="listbox"] {
-  max-height: 240px;
+  max-height: 280px;
   overflow-y: auto;
+  padding: var(--s2);
+  border-radius: var(--radius-xl);
+}
+
+.picker[role="listbox"] .picker-row {
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2);
+  border-radius: var(--radius-lg);
+  color: var(--fg-dim);
+}
+
+.picker[role="listbox"] .picker-row > svg {
+  margin-top: 0;
+  opacity: 0.65;
+}
+
+.picker[role="listbox"] .picker-row:hover,
+.picker[role="listbox"] .picker-row[data-active="true"] {
+  background: var(--list-hover);
+  color: var(--fg);
+}
+
+.picker[role="listbox"] .picker-body {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--s2);
+  overflow: hidden;
 }
 
 .picker[role="listbox"] .picker-label {
-  font-family: var(--mono);
-  font-size: var(--mono-size);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .picker-body {
@@ -2232,6 +2471,7 @@ code {
   z-index: 10;
   display: flex;
   flex-direction: column;
+  animation: popupIn 0.12s ease-out;
   max-height: min(60vh, 460px);
   border: 1px solid var(--vscode-menu-border, var(--border));
   border-radius: var(--radius-lg);
@@ -2361,10 +2601,6 @@ code {
   padding: var(--s1) var(--s2);
   color: var(--fg-dim);
   font-size: 0.9em;
-}
-
-.cmd-btn {
-  flex: none;
 }
 
 .picker-input {

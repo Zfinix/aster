@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The first turn already knows what the repository is.** One walk at session
+  start builds a short profile — the project's name, what it says it does, how
+  many files it has in each language and where those packages live, the
+  top-level layout, and the pages in its docs directory — and that profile
+  leads the note the model starts every turn with. Before this the model knew
+  the platform, the date, and the git state but nothing about the project
+  itself unless the repo happened to keep an `AGENTS.md`, so an opening
+  question got an answer written for no codebase in particular. On Aster's own
+  repo the profile is six lines and 24ms. The description comes from the
+  README's opening prose, skipping headings, badges, and HTML; a repo with no
+  README, or one whose README opens with a logo, falls back to the
+  `description` in `Cargo.toml`, `package.json`, `pyproject.toml`,
+  `composer.json`, or `pubspec.yaml`. A workspace collapses to the directory
+  holding most of it, dependency and build directories are left out, a language
+  with a handful of stray files is not reported as a stack, and the walk stops
+  at 20,000 entries so a huge monorepo cannot hold the UI up.
 - `aster status` reports what the next turn would run with: model, provider,
   effort, permission mode, the turn limits, and how many MCP servers, skills,
   memory blocks, and sessions are wired in. `--json` for front-ends.
@@ -39,9 +55,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The VS Code panel renders `explore`, `run_tests`, `update_plan`, `ask_user`,
   and `exit_plan_mode` steps by name and icon instead of printing the raw tool
   id.
+- The VS Code approval prompt takes numbered answers: `1` allows, `2` allows
+  and remembers when the ask carries a scope to remember it against, `3` and
+  `Esc` reject. A box under them rejects and tells the agent what to do
+  instead, in one step.
+- The VS Code composer shows how much of the history budget is left before the
+  CLI auto-compacts, as a ring that fills and warns under 25%. Clicking it
+  compacts now. It measures what the next turn would actually send, not the
+  whole thread, since older turns are dropped before they reach the CLI.
+- The VS Code toolbar's actions moved to the trailing edge with larger glyphs,
+  and "new conversation" is a speech bubble with a plus rather than a pencil,
+  which read as editing the conversation already open.
 
 ### Fixed
 
+- **Chat turns no longer carry a forced web search.** OpenRouter's `web` plugin
+  searches on every request it rides along with and pastes the hits into the
+  prompt, and it was attached to the tool-calling requests too, so an unrelated
+  page could turn up in the `Sources` footer of a turn that never asked to
+  search. Chat now leans on the `openrouter:web_search` server tool the model
+  calls when it wants one; the plugin stays on the tool-less review stages.
+- **`review.web_search` defaults to off**, since a search the turn did not ask
+  for spends money per result and drags outside pages into the context. Set
+  `web_search: true` in `aster.yaml` or `ASTER_WEB_SEARCH=1` to get it back.
+- **`explore` runs outside-repo lookups in yolo instead of refusing them.** Yolo
+  drops the sandbox and the write gate, but the read gate still bounced any path
+  that left the repository out of the batch, so a lookup the mode had already
+  allowed came back as "call this tool on its own". It now says what a step
+  actually got wrong (no tool named, not a lookup, or bad arguments) rather than
+  blaming the path, and a step is read whether the model labels it
+  `tool`/`args`, `name`/`arguments`, or sends its arguments as a JSON string.
+- **The VS Code panel no longer dies on a streamed table.** A table row is a
+  block start, but the table branch only claims one when the separator row is
+  already there, so mid-stream — header in, `|---|` not yet — no branch
+  consumed the line and the renderer spun on it, pushing an empty paragraph per
+  pass until the webview ran out of memory. It looked like a crash on tables
+  that "went away" on reopening, because a replayed transcript arrives whole.
+- **New conversation no longer wipes the one already open.** `reveal()` created
+  a fresh editor tab every time instead of revealing the tab already there, and
+  `attach` only claimed the active surface when none was set, so the new
+  conversation went to a new tab while the "start fresh" message landed on the
+  old one. Both ended up empty. The open tab is now reused wherever a command
+  needs a surface, and a new conversation opens beside the old one, which keeps
+  its thread. In the sidebar, which is a single surface, it still starts over
+  in place.
+- **Auto-scroll stops switching itself off.** A hidden panel measures zero
+  height, which the follow logic read as "scrolled away" and left following off
+  after the panel came back. Zero-height metrics are now ignored, and sending a
+  message always returns you to the bottom wherever you had scrolled to.
 - **Approving a plan now lets the turn act on it.** `exit_plan_mode` opened the
   edit tool but left the policy in `plan`, so every edit and command that
   followed was refused with "permissions mode is `plan`" and the agent looped

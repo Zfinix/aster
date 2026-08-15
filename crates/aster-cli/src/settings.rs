@@ -161,27 +161,34 @@ impl Settings {
 }
 
 /// Servers union by name, the project's definition winning a collision, so a
-/// repo can point a shared server name at its own binary.
+/// repo can point a shared server name at its own binary. The tool filter
+/// unions like permissions do: a global `deny` is a decision, and a project
+/// file omitting the key must not undo it.
 fn merge_mcp(
     mut global: crate::mcp::McpSettings,
     project: crate::mcp::McpSettings,
 ) -> crate::mcp::McpSettings {
     global.servers.extend(project.servers);
+    global.tools = crate::mcp::ToolFilter {
+        allow: union(global.tools.allow, project.tools.allow),
+        deny: union(global.tools.deny, project.tools.deny),
+    };
     global
+}
+
+fn union(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
+    for item in b {
+        if !a.contains(&item) {
+            a.push(item);
+        }
+    }
+    a
 }
 
 fn merge_permissions(
     global: aster_policy::PermissionsConfig,
     project: aster_policy::PermissionsConfig,
 ) -> aster_policy::PermissionsConfig {
-    fn union(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
-        for item in b {
-            if !a.contains(&item) {
-                a.push(item);
-            }
-        }
-        a
-    }
     aster_policy::PermissionsConfig {
         mode: global.mode.stricter(project.mode),
         allow: union(global.allow, project.allow),
@@ -228,25 +235,30 @@ fn parse(path: &Path) -> Result<Settings> {
     serde_yaml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Save review settings where the next start will read them: the repo's config
-/// when one exists, else the global one (created if need be). The file is
-/// edited line by line so comments and layout survive.
-pub fn persist_review(
-    repo_root: Option<&Path>,
-    pairs: &[(&str, &str)],
-) -> Result<std::path::PathBuf> {
+/// Where a setting the next start must read belongs: the repo's config when
+/// one exists, else the global one, which the caller creates.
+pub(crate) fn writable_config(repo_root: Option<&Path>) -> Result<std::path::PathBuf> {
     let project = repo_root.and_then(|root| {
         ["aster.yaml", "aster.yml", ".aster.yaml"]
             .iter()
             .map(|name| root.join(name))
             .find(|path| path.exists())
     });
-    let path = match project {
-        Some(path) => path,
-        None => dirs::home_dir()
+    match project {
+        Some(path) => Ok(path),
+        None => Ok(dirs::home_dir()
             .context("no home directory for the global config")?
-            .join(".aster/aster.yaml"),
-    };
+            .join(".aster/aster.yaml")),
+    }
+}
+
+/// Save review settings where the next start will read them. The file is
+/// edited line by line so comments and layout survive.
+pub fn persist_review(
+    repo_root: Option<&Path>,
+    pairs: &[(&str, &str)],
+) -> Result<std::path::PathBuf> {
+    let path = writable_config(repo_root)?;
     let mut text = std::fs::read_to_string(&path).unwrap_or_default();
     for (key, value) in pairs {
         text = with_review_key(&text, key, value);
@@ -350,9 +362,9 @@ impl PathFilter {
             include: if include.is_empty() {
                 None
             } else {
-                Some(build(include)?)
+                Some(glob_set(include)?)
             },
-            exclude: build(&excludes)?,
+            exclude: glob_set(&excludes)?,
         })
     }
 
@@ -368,7 +380,7 @@ impl PathFilter {
     }
 }
 
-fn build(patterns: &[String]) -> Result<GlobSet> {
+pub(crate) fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
         builder.add(Glob::new(p).with_context(|| format!("invalid glob: {p}"))?);

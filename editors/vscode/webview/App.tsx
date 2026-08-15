@@ -51,6 +51,7 @@ interface Init {
   model: string | null;
   models: string[];
   recommended: string[];
+  contextBudget: number;
   binaryOk: boolean;
   skills: SkillCommand[];
 }
@@ -132,6 +133,7 @@ export function App() {
           model: message.model,
           models: message.models,
           recommended: message.recommended,
+          contextBudget: message.contextBudget,
           binaryOk: message.binaryOk,
           skills: message.skills,
         });
@@ -335,7 +337,10 @@ export function App() {
         break;
       case "approval_request":
         planApprovalRef.current = event.kind === "plan";
-        patchAssistant(id, (turn) => ({ ...turn, approval: event.preview }));
+        patchAssistant(id, (turn) => ({
+          ...turn,
+          approval: { preview: event.preview, scope: event.scope, kind: event.kind },
+        }));
         break;
       case "question":
         patchAssistant(id, (turn) => ({
@@ -418,13 +423,22 @@ export function App() {
     post({ type: "setPermissionMode", mode });
   };
 
-  const answerApproval = (allow: boolean) => {
-    post({ type: "approval", allow });
+  const answerApproval = (allow: boolean, always?: boolean) => {
+    post({ type: "approval", allow, always });
     const plan = planApprovalRef.current;
     planApprovalRef.current = false;
     if (plan && allow) {
       choosePermissionMode("edit");
     }
+  };
+
+  /** Reject, then hand the turn the alternative. The CLI routes `message`
+   *  lines to the injection queue, so it lands as guidance rather than as the
+   *  approval reply. */
+  const redirectApproval = (instead: string) => {
+    answerApproval(false);
+    setQueued((prev) => [...prev, instead]);
+    post({ type: "inject", text: instead });
   };
 
   const startTurn = (text: string) => {
@@ -538,6 +552,14 @@ export function App() {
     post({ type: "searchFiles", query, requestId });
   };
 
+  // What the next turn would actually send, which is what the CLI measures
+  // against its compact budget — not the whole thread, since older turns are
+  // already dropped before they reach it.
+  const contextUsed = useMemo(
+    () => buildMessages(turns).reduce((n, m) => n + m.content.length, 0),
+    [turns]
+  );
+
   const title = useMemo(() => {
     const first = turns.find((t) => t.role === "user");
     return first ? first.text.slice(0, 45).replace(/\s+$/, "") : "Aster";
@@ -564,6 +586,7 @@ export function App() {
           turns={turns}
           queued={queued}
           onApproval={answerApproval}
+          onRedirect={redirectApproval}
           onAnswer={(choice) => {
             post({ type: "answer", choice });
             if (activeRef.current) {
@@ -583,6 +606,8 @@ export function App() {
         onRefreshModels={refreshModels}
         permissionMode={permissionMode}
         effort={effort}
+        contextUsed={contextUsed}
+        contextBudget={init?.contextBudget ?? 0}
         skills={init?.skills ?? []}
         mcpServers={mcpServers}
         providers={providers}

@@ -11,7 +11,10 @@ anyhow = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-std"] }
 tracing = { workspace = true }
 async-trait = "0.1"
 aster-mcp = { path = "../aster-mcp" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-std", "test-util"] }

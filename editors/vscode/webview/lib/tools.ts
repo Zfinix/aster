@@ -30,6 +30,74 @@ function steps(call: ToolCall): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/** Tools whose id does not say what they do. Both search backends read the
+ *  same on purpose: which provider served it is not the reader's concern. */
+const TOOL_NAMES: Record<string, string> = {
+  "websearch/search": "Web Search",
+  "websearch/fetch_content": "Web Fetch",
+  "web/search": "Web Search",
+  "web/extract": "Web Fetch",
+  "web/crawl": "Web Crawl",
+  "web/sitemap": "Sitemap",
+  "web/screenshot": "Screenshot",
+};
+
+/** Past this the server has crowded out the verb, so the verb wins. */
+const LABEL_MAX = 24;
+
+function titleCase(segment: string): string {
+  return segment
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/**
+ * A tool id as a person would say it: `linear/save_issue` reads "Linear Save
+ * Issue". The server stays, since two servers often carry the same verb, but it
+ * is dropped once the pair grows too long to scan: `chrome-devtools/
+ * take_screenshot` is "Take Screenshot", not its full address.
+ */
+export function humanize(name: string): string {
+  const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
+  const tool = parts.pop() ?? name;
+  // A plugin server is keyed `<plugin>/<server>`, which repeats a name as often
+  // as not, so only the innermost distinct one is the server here.
+  const server = parts.filter((part, i) => part !== parts[i - 1]).pop();
+
+  const named = TOOL_NAMES[name] ?? (server && TOOL_NAMES[`${server}/${tool}`]);
+  if (named) return named;
+
+  const label = titleCase(tool) || name;
+  if (!server) return label;
+  const full = `${titleCase(server)} ${label}`;
+  return full.length <= LABEL_MAX ? full : label;
+}
+
+/** Keys worth putting in a header, most identifying first. */
+const SALIENT = ["query", "url", "path", "command", "name", "id", "prompt", "message", "text"];
+
+/** The one argument that says what an MCP call was about. */
+function salientArg(values: Record<string, unknown>): string | undefined {
+  const strings = (key: string) => {
+    const value = values[key];
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  };
+  for (const key of SALIENT) {
+    const found = strings(key);
+    if (found) return found;
+  }
+  return Object.keys(values).map(strings).find(Boolean);
+}
+
+/** The MCP tool an `execute` call names, e.g. `websearch/search`. */
+export function mcpTarget(call: ToolCall): string | undefined {
+  return call.name === "aster_mcp" && args(call).action === "execute"
+    ? arg(call, "name")
+    : undefined;
+}
+
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "fish"]);
 
 /** The command as the user would type it: shell wrappers (`bash -lc`) elided. */
@@ -79,7 +147,8 @@ export function toolInput(call: ToolCall): string | undefined {
 export function outputTitle(call: ToolCall): string {
   const path = toolPath(call);
   if (path) return path.split(/[/\\]/).pop() ?? "output";
-  return call.name.replace(/^(run|read)_/, "").replace(/_/g, "-") || "output";
+  const name = mcpTarget(call)?.split("/").pop() ?? call.name;
+  return name.replace(/^(run|read)_/, "").replace(/_/g, "-") || "output";
 }
 
 /** The workspace path a step touched, when it has one that an editor can open. */
@@ -152,8 +221,30 @@ export function describeTool(call: ToolCall): ToolDescription {
       const prefix = names.length > 1 ? `×${names.length} ` : "";
       return { verb: "Agent", detail: unique.length === 1 ? `${prefix}${unique[0]}` : unique.join(", ") };
     }
+    case "aster_mcp": {
+      // The bridge is plumbing. A reader wants the tool it reached, not the
+      // three-action wrapper it went through.
+      switch (args(call).action) {
+        case "search":
+          return { verb: "Find tools", detail: arg(call, "query") };
+        case "describe":
+          return { verb: "Inspect", detail: arg(call, "name"), code: true };
+        case "execute": {
+          const target = arg(call, "name");
+          if (!target) return { verb: "Run tool" };
+          const values = args(call).arguments;
+          const detail =
+            typeof values === "object" && values !== null
+              ? salientArg(values as Record<string, unknown>)
+              : undefined;
+          return { verb: humanize(target), detail };
+        }
+        default:
+          return { verb: "MCP" };
+      }
+    }
     default:
-      return { verb: call.name };
+      return { verb: humanize(call.name) };
   }
 }
 
@@ -232,6 +323,7 @@ const RUN_NOUNS: Record<string, [string, string]> = {
   run_tests: ["test run", "test runs"],
   read_skill: ["skill", "skills"],
   explore: ["batch", "batches"],
+  aster_mcp: ["tool call", "tool calls"],
 };
 
 /** The header a folded run wears, e.g. "Read 6 files". */

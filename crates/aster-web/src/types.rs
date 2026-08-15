@@ -77,6 +77,35 @@ impl Default for CrawlOptions {
     }
 }
 
+/// Parameters that control a search. Only the keyless DuckDuckGo provider
+/// honours `region` and `safesearch`; the API-backed ones take `limit` alone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchOptions {
+    /// Results to return (1-20).
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+    /// Region/language code such as `us-en`, `de-de`, or `wt-wt` for none.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Adult-content filter: `strict`, `moderate`, or `off`.
+    #[serde(default)]
+    pub safesearch: Option<String>,
+}
+
+fn default_limit() -> u32 {
+    10
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            limit: default_limit(),
+            region: None,
+            safesearch: None,
+        }
+    }
+}
+
 /// The result of a full crawl.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlResult {

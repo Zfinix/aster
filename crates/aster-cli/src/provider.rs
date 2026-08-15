@@ -61,7 +61,8 @@ fn resolve_effort(review: &Review) -> Effort {
         .unwrap_or_default()
 }
 
-/// `ASTER_WEB_SEARCH` wins, then aster.yaml, then off.
+/// `ASTER_WEB_SEARCH` wins, then aster.yaml, then off: a search the turn did not
+/// ask for spends money and drags unrelated pages into the context.
 fn resolve_web_search(review: &Review) -> bool {
     env_or("ASTER_WEB_SEARCH", None)
         .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))

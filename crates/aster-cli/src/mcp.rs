@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use aster_mcp::{Injection, Injector, McpCatalog, McpTool, ProgressiveConfig};
+use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -126,6 +127,8 @@ impl ServerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct McpSettings {
     pub servers: BTreeMap<String, ServerConfig>,
+    /// Which of the connected servers' tools the model may see.
+    pub tools: ToolFilter,
     /// Context the inventory is measured against.
     pub context_tokens: usize,
     /// Share of `context_tokens` the tool inventory may spend. Above it the
@@ -139,11 +142,57 @@ impl Default for McpSettings {
     fn default() -> Self {
         Self {
             servers: BTreeMap::new(),
+            tools: ToolFilter::default(),
             context_tokens: 100_000,
             // Deliberately below the crate default: an inventory is a standing
             // cost on every turn, and search recovers anything it hides.
             inventory_percent: 1.5,
             search_limit: 10,
+        }
+    }
+}
+
+/// Per-tool on/off, as globs over the `server/tool` id every tool already has.
+/// One switch covers the in-process servers and every third-party one alike.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolFilter {
+    /// Empty means every tool, so a config that only denies still works.
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+}
+
+impl ToolFilter {
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty() && self.deny.is_empty()
+    }
+
+    fn compile(&self) -> Result<ToolMatcher> {
+        Ok(ToolMatcher {
+            allow: match self.allow.is_empty() {
+                true => None,
+                false => Some(crate::settings::glob_set(&self.allow)?),
+            },
+            deny: crate::settings::glob_set(&self.deny)?,
+        })
+    }
+}
+
+/// Compiled [`ToolFilter`]. `deny` wins, so denying a tool an `allow` also
+/// names still turns it off.
+struct ToolMatcher {
+    allow: Option<globset::GlobSet>,
+    deny: globset::GlobSet,
+}
+
+impl ToolMatcher {
+    fn allows(&self, id: &str) -> bool {
+        if self.deny.is_match(id) {
+            return false;
+        }
+        match &self.allow {
+            Some(set) => set.is_match(id),
+            None => true,
         }
     }
 }
@@ -192,43 +241,11 @@ struct WebConnection {
 }
 
 impl WebConnection {
+    /// Takes the qualified id the catalog uses and hands the bare name to the
+    /// backend, which owns the one dispatch table.
     async fn call(&self, tool: &str, arguments: &Value) -> Result<Value> {
-        // Dispatch to web backend based on tool name
-        match tool {
-            "web/extract" => {
-                let url = arguments["url"].as_str().context("missing url")?;
-                let result = self.backend.extract(url).await?;
-                Ok(serde_json::to_value(result)?)
-            }
-            "web/search" => {
-                let query = arguments["query"].as_str().context("missing query")?;
-                let limit = arguments["limit"].as_u64().unwrap_or(10) as u32;
-                let result = self.backend.search(query, limit).await?;
-                Ok(serde_json::to_value(result)?)
-            }
-            "web/screenshot" => {
-                let url = arguments["url"].as_str().context("missing url")?;
-                let full_page = arguments["full_page"].as_bool().unwrap_or(false);
-                let result = self.backend.screenshot(url, full_page).await?;
-                Ok(serde_json::to_value(result)?)
-            }
-            "web/sitemap" => {
-                let url = arguments["url"].as_str().context("missing url")?;
-                let max_links = arguments["max_links"].as_u64().unwrap_or(100) as u32;
-                let url_regex = arguments["url_regex"].as_str();
-                let result = self.backend.sitemap(url, max_links, url_regex).await?;
-                Ok(serde_json::to_value(result)?)
-            }
-            "web/crawl" => {
-                let url = arguments["url"].as_str().context("missing url")?;
-                let result = self
-                    .backend
-                    .crawl(url, &aster_web::CrawlOptions::default())
-                    .await?;
-                Ok(serde_json::to_value(result)?)
-            }
-            _ => bail!("unknown web tool: {tool}"),
-        }
+        let name = tool.strip_prefix("web/").unwrap_or(tool);
+        self.backend.call(name, arguments).await
     }
 }
 
@@ -761,6 +778,9 @@ pub struct McpRuntime {
     connections: Arc<Mutex<BTreeMap<String, Connection>>>,
     web_connection: Option<Arc<WebConnection>>,
     disabled_servers: Vec<DisabledServer>,
+    /// Tools `mcp.tools` held back, kept so `aster mcp list` can say a tool is
+    /// off rather than let it silently vanish from the catalog.
+    filtered_tools: Vec<String>,
 }
 
 /// A server the agent knows about but cannot use yet — it can ask the user
@@ -823,6 +843,24 @@ impl McpRuntime {
             }
         }
 
+        // Filtering here, after every server has listed, is what makes one
+        // switch cover the in-process servers and the spawned ones alike.
+        let mut filtered_tools = Vec::new();
+        if !settings.tools.is_empty() {
+            match settings.tools.compile() {
+                Ok(matcher) => tools.retain(|tool| {
+                    let id = tool.id();
+                    let keep = matcher.allows(&id);
+                    if !keep {
+                        filtered_tools.push(id);
+                    }
+                    keep
+                }),
+                // A typo should cost that rule, not the session's whole catalog.
+                Err(e) => problems.push(format!("mcp.tools ignored: {e:#}")),
+            }
+        }
+
         if tools.is_empty() && disabled_servers.is_empty() {
             return (None, problems);
         }
@@ -844,6 +882,7 @@ impl McpRuntime {
             connections: Arc::new(Mutex::new(connections)),
             web_connection,
             disabled_servers,
+            filtered_tools,
         };
         (Some(runtime), problems)
     }
@@ -898,17 +937,22 @@ impl McpRuntime {
         let mut prompt = String::from(
             "Disabled MCP servers are available but not running. Do not mention them \
              unless the user asks about them, or a task genuinely cannot be done \
-             another way. For web fetches, prefer `run_command` with `curl` (or a \
-             similar CLI) first; only suggest enabling a browser server when the task \
-             needs a real browser (JavaScript-heavy pages, screenshots, interaction). \
-             To enable one, edit its `disabled: true` line in aster.yaml to \
-             `disabled: false`. The user will need to restart the session for the \
+             another way. For reading a page, use `web/extract`; only suggest enabling \
+             `browser` when the task needs a real browser (JavaScript-heavy pages, \
+             screenshots, clicking through a flow). To enable one, run \
+             `aster mcp enable <name>`, or edit its `disabled: true` line in aster.yaml \
+             to `disabled: false`. The user will need to restart the session for the \
              change to take effect.\n\n",
         );
         for ds in &self.disabled_servers {
             prompt.push_str(&format!("- {}: {}\n", ds.name, ds.description));
         }
         Some(prompt)
+    }
+
+    /// Ids `mcp.tools` turned off, in catalog order.
+    pub fn filtered_tools(&self) -> &[String] {
+        &self.filtered_tools
     }
 
     pub fn server_names(&self) -> Vec<String> {
@@ -925,7 +969,7 @@ impl McpRuntime {
     pub async fn call(&self, tool: &McpTool, arguments: &Value) -> Result<Value> {
         if tool.server == "web" {
             if let Some(web) = &self.web_connection {
-                return web.call(&tool.name, arguments).await;
+                return web.call(&tool.id(), arguments).await;
             }
             bail!("web tools are not configured");
         }
@@ -960,21 +1004,50 @@ fn pick_version(offered: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Flatten an MCP `tools/call` result into text for the model. The spec puts
-/// the payload in `content`, a list of typed parts.
-pub fn render_result(result: &Value) -> String {
+/// What one tool call produced: text for the transcript, and any images it
+/// returned as `data:` URLs ready to attach to a message.
+#[derive(Debug, Default, PartialEq)]
+pub struct ToolOutput {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
+impl ToolOutput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+}
+
+impl From<String> for ToolOutput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+/// Flatten an MCP `tools/call` result for the model. The spec puts the payload
+/// in `content`, a list of typed parts.
+pub fn render_result(result: &Value) -> ToolOutput {
     // Modern results are typed. An absent `resultType` means "complete", which
     // is what every pre-2026 server returns.
     match result.get("resultType").and_then(Value::as_str) {
         None | Some("complete") => {}
         Some("input_required") => {
-            return "the MCP tool needs more input to finish; Aster does not yet \
-                    carry multi round-trip requests, so treat this call as unfinished"
-                .to_string();
+            return ToolOutput::text(
+                "the MCP tool needs more input to finish; Aster does not yet \
+                 carry multi round-trip requests, so treat this call as unfinished",
+            );
         }
-        Some(other) => return format!("the MCP tool returned an unsupported result type: {other}"),
+        Some(other) => {
+            return ToolOutput::text(format!(
+                "the MCP tool returned an unsupported result type: {other}"
+            ));
+        }
     }
     let mut out = String::new();
+    let mut images = Vec::new();
     let parts = result
         .get("content")
         .and_then(Value::as_array)
@@ -990,31 +1063,53 @@ pub fn render_result(result: &Value) -> String {
                     out.push_str(text);
                 }
             }
-            // Images and audio are not renderable in a text transcript; name
-            // them so the model knows something came back.
-            Some(kind) => {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(&format!("[{kind} content omitted]"));
-            }
+            Some("image") => match image_part(part) {
+                Some(url) => images.push(url),
+                // A malformed or oversized image must not cost the call: the
+                // text beside it is usually the answer.
+                None => push_line(&mut out, "[image content omitted]"),
+            },
+            // Audio is not renderable in a text transcript; name it so the
+            // model knows something came back.
+            Some(kind) => push_line(&mut out, &format!("[{kind} content omitted]")),
             None => {}
         }
     }
     // A tool with an `outputSchema` returns `structuredContent` and *should*
     // repeat it as text. When it does not, that field is the whole answer.
     if out.is_empty()
+        && images.is_empty()
         && let Some(structured) = result.get("structuredContent")
     {
         out = serde_json::to_string_pretty(structured).unwrap_or_else(|_| structured.to_string());
     }
     if result.get("isError").and_then(Value::as_bool) == Some(true) {
-        return format!("the MCP tool reported an error: {out}");
+        return ToolOutput::text(format!("the MCP tool reported an error: {out}"));
+    }
+    if out.is_empty() && images.is_empty() {
+        return ToolOutput::text(result.to_string());
     }
     if out.is_empty() {
-        return result.to_string();
+        out = format!("{} image(s) returned, attached below.", images.len());
     }
-    out
+    ToolOutput { text: out, images }
+}
+
+fn push_line(out: &mut String, line: &str) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(line);
+}
+
+/// One `image` content part as a `data:` URL. Re-encoded rather than passed
+/// through, so the size and dimension caps apply to a screenshot too.
+fn image_part(part: &Value) -> Option<String> {
+    let data = part.get("data").and_then(Value::as_str)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
+    crate::images::encode_bytes(&bytes).ok()
 }
 
 #[derive(clap::Args)]
@@ -1033,9 +1128,11 @@ pub enum McpAction {
         #[arg(long)]
         no_connect: bool,
     },
-    /// Start a configured server so it can be used (clears `disabled`).
+    /// Start a configured server so it can be used (clears `disabled`), or
+    /// with a `server/tool` id, take that tool back out of `mcp.tools.deny`.
     Enable { name: String },
-    /// Stop starting a server, keeping its configuration in place.
+    /// Stop starting a server, keeping its configuration in place. A
+    /// `server/tool` id (globs allowed) turns off that tool alone.
     Disable { name: String },
     /// Copy MCP servers from another coding tool (Claude Code, Codex, Cursor, opencode, Hermes) into .mcp.json.
     Import {
@@ -1045,11 +1142,26 @@ pub enum McpAction {
     },
     /// Delete servers from the config files declaring them. Without a name, pick interactively.
     Remove { name: Option<String> },
+    /// Speak MCP on stdio as one of the servers Aster bundles. Plugins Aster
+    /// ships invoke this; it is not meant to be run by hand.
+    #[command(hide = true)]
+    Serve { name: String },
 }
 
 /// `aster mcp list`: start the configured servers, report what they expose,
 /// then stop them. The same connection path a chat session uses, so a failure
 /// here is the failure a session would hit.
+/// Serve a bundled server on this process's stdio. Stdout is the wire, so
+/// nothing else may write to it for the life of the call.
+async fn serve_builtin(name: &str) -> Result<()> {
+    match name {
+        // `websearch` is the retired name of the same server, kept so a stale
+        // plugin left on disk starts rather than failing mid-session.
+        "web" | "websearch" => aster_web::serve().await,
+        other => bail!("Aster bundles no MCP server named `{other}`"),
+    }
+}
+
 pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<()> {
     let no_connect = match &args.action {
         McpAction::List { no_connect } => *no_connect,
@@ -1057,6 +1169,7 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
         McpAction::Disable { name } => return set_disabled(repo_root, name, true),
         McpAction::Import { from } => return crate::import::run_mcp_import(*from, repo_root),
         McpAction::Remove { name } => return remove_servers(repo_root, name.as_deref()),
+        McpAction::Serve { name } => return serve_builtin(name).await,
     };
     let settings = crate::settings::Settings::load(repo_root)?;
     if no_connect {
@@ -1094,6 +1207,8 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
                     "id": t.id(),
                     "description": t.description,
                 })).collect::<Vec<_>>(),
+                "filtered_tools": runtime.as_ref()
+                    .map(|r| r.filtered_tools().to_vec()).unwrap_or_default(),
             })
         );
     } else {
@@ -1122,6 +1237,14 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
                     );
                 }
                 print_tool_tree(tools, &settings.mcp);
+                let filtered = runtime.filtered_tools();
+                if !filtered.is_empty() {
+                    println!(
+                        "\n{} turned off by mcp.tools: {}",
+                        filtered.len(),
+                        filtered.join(", ")
+                    );
+                }
             }
             None if problems.is_empty() => println!("No servers advertised any tools."),
             None => {}
@@ -1248,6 +1371,9 @@ fn list_configured(settings: &McpSettings) -> Result<()> {
 }
 
 fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool) -> Result<()> {
+    if name.contains('/') {
+        return set_tool_denied(repo_root, name, disabled);
+    }
     let path = toggle_server(repo_root, name, disabled)?;
     let verb = if disabled { "disabled" } else { "enabled" };
     if crate::json_mode() {
@@ -1261,6 +1387,43 @@ fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool)
         if !disabled {
             println!("Check it starts: aster mcp list");
         }
+    }
+    Ok(())
+}
+
+/// Turn one tool off or on by writing its `server/tool` id into
+/// `mcp.tools.deny`. The id may be a glob, so `browser/*` works too.
+fn set_tool_denied(repo_root: Option<&std::path::Path>, id: &str, denied: bool) -> Result<()> {
+    let path = crate::settings::writable_config(repo_root)?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let verb = if denied { "disabled" } else { "enabled" };
+    let Some(mut updated) = with_denied_tool(&text, id, denied) else {
+        if crate::json_mode() {
+            println!(
+                "{}",
+                json!({ "ok": true, "tool": id, "denied": denied,
+                                   "changed": false })
+            );
+        } else {
+            println!("{id} is already {verb}");
+        }
+        return Ok(());
+    };
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))?;
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({ "ok": true, "tool": id, "denied": denied, "changed": true,
+                    "path": path.display().to_string() })
+        );
+    } else {
+        println!("{verb} {id} in {}", path.display());
     }
     Ok(())
 }
@@ -1613,9 +1776,98 @@ fn join(lines: &[String], original: &str) -> String {
     out
 }
 
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// First line past the block opened at `start`: everything indented deeper
+/// than it belongs to that block, blank lines included.
+fn block_end(lines: &[String], start: usize) -> usize {
+    let indent = indent_of(&lines[start]);
+    (start + 1..lines.len())
+        .find(|&i| !lines[i].trim().is_empty() && indent_of(&lines[i]) <= indent)
+        .unwrap_or(lines.len())
+}
+
+/// `key` among the direct children of the mapping at `parent`. Depth is taken
+/// from the first child rather than assumed, so a four-space file works too.
+fn child_key(lines: &[String], parent: usize, key: &str) -> Option<usize> {
+    let end = block_end(lines, parent);
+    let mut level = None;
+    for (i, line) in lines.iter().enumerate().take(end).skip(parent + 1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = indent_of(line);
+        level.get_or_insert(indent);
+        if level == Some(indent) && line.trim() == key {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// The value of a `- item` line, unquoted.
+fn list_item(line: &str) -> Option<&str> {
+    let item = line.trim().strip_prefix("- ")?;
+    Some(item.trim().trim_matches(['"', '\'']))
+}
+
+/// Add or remove one `server/tool` id under `mcp.tools.deny`, creating the
+/// blocks it needs. `None` when the id already reads that way.
+fn with_denied_tool(text: &str, id: &str, denied: bool) -> Option<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mcp = lines
+        .iter()
+        .position(|l| l.trim_end() == "mcp:" && indent_of(l) == 0);
+    let tools = mcp.and_then(|m| child_key(&lines, m, "tools:"));
+    let deny = tools.and_then(|t| child_key(&lines, t, "deny:"));
+
+    if let Some(deny) = deny {
+        let end = block_end(&lines, deny);
+        let existing = (deny + 1..end).find(|&i| list_item(&lines[i]) == Some(id));
+        return match (denied, existing) {
+            (true, Some(_)) | (false, None) => None,
+            (false, Some(i)) => {
+                lines.remove(i);
+                Some(join(&lines, text))
+            }
+            (true, None) => {
+                let indent = indent_of(&lines[deny]) + 2;
+                lines.insert(deny + 1, format!("{}- \"{id}\"", " ".repeat(indent)));
+                Some(join(&lines, text))
+            }
+        };
+    }
+    // With no `deny:` block there is nothing to take an id out of.
+    if !denied {
+        return None;
+    }
+    let (at, mut block, indent) = match (mcp, tools) {
+        (_, Some(tools)) => (tools + 1, Vec::new(), indent_of(&lines[tools]) + 2),
+        (Some(mcp), None) => {
+            let indent = indent_of(&lines[mcp]) + 2;
+            let at = block_end(&lines, mcp);
+            (
+                at,
+                vec![format!("{}tools:", " ".repeat(indent))],
+                indent + 2,
+            )
+        }
+        (None, None) => (lines.len(), vec!["mcp:".into(), "  tools:".into()], 4),
+    };
+    block.push(format!("{}deny:", " ".repeat(indent)));
+    block.push(format!("{}- \"{id}\"", " ".repeat(indent + 2)));
+    lines.splice(at..at, block);
+    Some(join(&lines, text))
+}
+
 /// Short description for well-known servers so the agent can decide when to ask.
 fn describe_disabled_server(name: &str) -> String {
     match name {
+        "browser" => "Drive a real browser: navigate, click, type, read page state, and \
+                      screenshot. Needs uv and Python 3.11+."
+            .into(),
         "chrome" => {
             "Browse the web, take screenshots, and inspect pages with Chrome DevTools.".into()
         }

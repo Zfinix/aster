@@ -45,32 +45,168 @@ fn removing_a_server_deletes_its_whole_block_and_nothing_else() {
     assert!(out.contains("chrome:"), "{out}");
 }
 
+fn filter(allow: &[&str], deny: &[&str]) -> ToolMatcher {
+    ToolFilter {
+        allow: allow.iter().map(|s| s.to_string()).collect(),
+        deny: deny.iter().map(|s| s.to_string()).collect(),
+    }
+    .compile()
+    .expect("valid globs")
+}
+
 #[test]
-fn text_parts_are_joined_and_typed_parts_are_named() {
+fn an_empty_filter_keeps_every_tool() {
+    let matcher = filter(&[], &[]);
+    assert!(matcher.allows("web/search"));
+    assert!(matcher.allows("browser/browser_click"));
+}
+
+#[test]
+fn deny_turns_off_one_tool_and_leaves_its_siblings() {
+    let matcher = filter(&[], &["web/crawl"]);
+    assert!(!matcher.allows("web/crawl"));
+    assert!(matcher.allows("web/search"));
+}
+
+#[test]
+fn a_glob_turns_off_a_whole_server_without_disabling_it() {
+    let matcher = filter(&[], &["browser/*"]);
+    assert!(!matcher.allows("browser/browser_click"));
+    assert!(matcher.allows("web/search"));
+}
+
+#[test]
+fn allow_is_exclusive_and_deny_still_wins_inside_it() {
+    let matcher = filter(&["web/*"], &["web/crawl"]);
+    assert!(matcher.allows("web/search"));
+    assert!(!matcher.allows("web/crawl"));
+    assert!(!matcher.allows("browser/browser_click"));
+}
+
+#[test]
+fn a_bad_glob_is_reported_rather_than_silently_matching_nothing() {
+    let filter = ToolFilter {
+        allow: Vec::new(),
+        deny: vec!["web/[".into()],
+    };
+    assert!(filter.compile().is_err());
+}
+
+#[test]
+fn denying_a_tool_creates_the_blocks_it_needs() {
+    let out = with_denied_tool(SAMPLE_YAML, "web/crawl", true).expect("changed");
+    assert!(
+        out.contains("  tools:\n    deny:\n      - \"web/crawl\"\n"),
+        "{out}"
+    );
+    assert!(out.contains("# Ships with Chrome."), "{out}");
+}
+
+#[test]
+fn denying_a_second_tool_reuses_the_existing_deny_block() {
+    let once = with_denied_tool(SAMPLE_YAML, "web/crawl", true).expect("changed");
+    let twice = with_denied_tool(&once, "web/sitemap", true).expect("changed");
+    assert!(twice.contains("- \"web/crawl\""), "{twice}");
+    assert!(twice.contains("- \"web/sitemap\""), "{twice}");
+    assert_eq!(twice.matches("deny:").count(), 1, "{twice}");
+}
+
+#[test]
+fn enabling_takes_the_id_back_out() {
+    let denied = with_denied_tool(SAMPLE_YAML, "web/crawl", true).expect("changed");
+    let out = with_denied_tool(&denied, "web/crawl", false).expect("changed");
+    assert!(!out.contains("web/crawl"), "{out}");
+}
+
+#[test]
+fn toggling_a_tool_already_in_that_state_rewrites_nothing() {
+    assert!(with_denied_tool(SAMPLE_YAML, "web/crawl", false).is_none());
+    let denied = with_denied_tool(SAMPLE_YAML, "web/crawl", true).expect("changed");
+    assert!(with_denied_tool(&denied, "web/crawl", true).is_none());
+}
+
+#[test]
+fn a_config_without_an_mcp_block_gets_a_whole_one() {
+    let out = with_denied_tool("review:\n  model: x\n", "web/crawl", true).expect("changed");
+    assert!(
+        out.ends_with("mcp:\n  tools:\n    deny:\n      - \"web/crawl\"\n"),
+        "{out}"
+    );
+    assert!(out.starts_with("review:\n  model: x\n"), "{out}");
+}
+
+/// A one-pixel PNG, base64 encoded the way a server sends an image part.
+const PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+#[test]
+fn text_parts_are_joined_and_unrenderable_parts_are_named() {
     let result = json!({
         "content": [
             { "type": "text", "text": "first" },
-            { "type": "image", "data": "..." },
+            { "type": "audio", "data": "..." },
             { "type": "text", "text": "second" }
         ]
     });
-    assert_eq!(
-        render_result(&result),
-        "first\n[image content omitted]\nsecond"
+    let out = render_result(&result);
+    assert_eq!(out.text, "first\n[audio content omitted]\nsecond");
+    assert!(out.images.is_empty());
+}
+
+#[test]
+fn an_image_part_is_carried_out_as_a_data_url() {
+    let result = json!({
+        "content": [
+            { "type": "text", "text": "here is the page" },
+            { "type": "image", "data": PIXEL_PNG, "mimeType": "image/png" }
+        ]
+    });
+    let out = render_result(&result);
+    assert_eq!(out.text, "here is the page");
+    assert_eq!(out.images.len(), 1);
+    assert!(
+        out.images[0].starts_with("data:image/png;base64,"),
+        "{out:?}"
     );
+}
+
+#[test]
+fn an_image_only_result_still_says_something_in_the_transcript() {
+    let result = json!({
+        "content": [{ "type": "image", "data": PIXEL_PNG, "mimeType": "image/png" }]
+    });
+    let out = render_result(&result);
+    assert_eq!(out.images.len(), 1);
+    assert!(out.text.contains("1 image(s) returned"), "{out:?}");
+}
+
+#[test]
+fn an_undecodable_image_is_named_rather_than_losing_the_call() {
+    let result = json!({
+        "content": [
+            { "type": "text", "text": "kept" },
+            { "type": "image", "data": "not base64 png" }
+        ]
+    });
+    let out = render_result(&result);
+    assert!(out.images.is_empty());
+    assert_eq!(out.text, "kept\n[image content omitted]");
 }
 
 #[test]
 fn an_error_result_says_so_rather_than_reading_as_success() {
     let result =
         json!({ "isError": true, "content": [{ "type": "text", "text": "no such repo" }] });
-    assert!(render_result(&result).starts_with("the MCP tool reported an error"));
+    assert!(
+        render_result(&result)
+            .text
+            .starts_with("the MCP tool reported an error")
+    );
 }
 
 #[test]
 fn an_unfamiliar_shape_falls_back_to_the_raw_payload() {
     let result = json!({ "value": 42 });
-    assert_eq!(render_result(&result), result.to_string());
+    assert_eq!(render_result(&result).text, result.to_string());
 }
 
 /// A whole MCP server in one argument, so the transport test needs no
@@ -204,7 +340,7 @@ async fn a_server_handshakes_lists_and_answers_a_call() {
         .call(&tool, &json!({ "repo": "aster" }))
         .await
         .unwrap();
-    assert_eq!(render_result(&result), "ran create_issue");
+    assert_eq!(render_result(&result).text, "ran create_issue");
     runtime.shutdown().await;
 }
 
@@ -228,7 +364,7 @@ async fn a_modern_server_is_driven_without_an_initialize_handshake() {
         .call(&tool, &json!({ "repo": "aster" }))
         .await
         .unwrap();
-    assert_eq!(render_result(&result), "ran create_issue");
+    assert_eq!(render_result(&result).text, "ran create_issue");
     runtime.shutdown().await;
 }
 
@@ -331,13 +467,13 @@ async fn a_server_without_a_tools_capability_is_quiet_not_an_error() {
 #[test]
 fn structured_content_is_used_when_the_server_sends_no_text() {
     let result = json!({ "structuredContent": { "temperature": 22.5 } });
-    assert!(render_result(&result).contains("22.5"));
+    assert!(render_result(&result).text.contains("22.5"));
 }
 
 #[test]
 fn an_incomplete_modern_result_is_not_reported_as_success() {
     let result = json!({ "resultType": "input_required", "content": [] });
-    assert!(render_result(&result).contains("unfinished"));
+    assert!(render_result(&result).text.contains("unfinished"));
 }
 
 #[tokio::test]
@@ -750,7 +886,7 @@ async fn drive(settings: &McpSettings) -> String {
         .await
         .unwrap();
     runtime.shutdown().await;
-    render_result(&result)
+    render_result(&result).text
 }
 
 #[tokio::test]
@@ -879,4 +1015,75 @@ fn event_frames_are_parsed_across_chunk_boundaries() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].name, "");
     assert_eq!(events[0].data, "one\ntwo");
+}
+
+/// Regression: the runtime handed the web connection `tool.name` while the
+/// connection matched on `tool.id()`, so every `web/*` call reported the tool
+/// as unknown instead of running it. Both spellings now reach the backend.
+#[tokio::test]
+async fn web_tools_are_dispatched_by_name_or_qualified_id() {
+    let config = aster_web::WebConfig::from_env();
+    let backend = aster_web::WebBackend::from_env(&config);
+    if backend.is_api_backed() {
+        return;
+    }
+    let web = WebConnection { backend };
+
+    // `crawl` has no keyless provider, so reaching the backend is an error
+    // naming the keys to set rather than a network call.
+    for tool in ["crawl", "web/crawl"] {
+        let err = web
+            .call(tool, &json!({"url": "https://example.com"}))
+            .await
+            .expect_err("no crawl provider is configured");
+        assert!(err.to_string().contains("CONTEXT_DEV_API_KEY"), "{err:#}");
+    }
+
+    let err = web
+        .call("web/nope", &json!({}))
+        .await
+        .expect_err("no such tool");
+    assert!(err.to_string().contains("unknown web tool"), "{err}");
+}
+
+#[tokio::test]
+async fn a_denied_tool_never_reaches_the_catalog() {
+    let mut settings = McpSettings::default();
+    settings.tools.deny = vec!["web/extract".into()];
+    // A disabled server keeps the runtime alive however few tools survive the
+    // filter, so this asserts the filter rather than the environment's keys.
+    settings.servers.insert(
+        "chrome".into(),
+        ServerConfig {
+            command: "npx".into(),
+            disabled: true,
+            ..ServerConfig::default()
+        },
+    );
+    let (runtime, _) = McpRuntime::connect(&settings).await;
+    let runtime = runtime.expect("a disabled server keeps the runtime alive");
+    assert!(runtime.injector().catalog().get("web/extract").is_none());
+    assert_eq!(runtime.filtered_tools(), ["web/extract"]);
+}
+
+#[tokio::test]
+async fn the_runtime_routes_a_web_tool_to_the_web_connection() {
+    let config = aster_web::WebConfig::from_env();
+    if aster_web::WebBackend::from_env(&config).is_api_backed() {
+        return;
+    }
+    let (runtime, _) = McpRuntime::connect(&McpSettings::default()).await;
+    let runtime = runtime.expect("web tools keep the runtime alive");
+    let tool = runtime
+        .injector()
+        .catalog()
+        .get("web/extract")
+        .expect("extract is always registered")
+        .clone();
+
+    let err = runtime
+        .call(&tool, &json!({}))
+        .await
+        .expect_err("no url was supplied");
+    assert!(err.to_string().contains("missing url"), "{err:#}");
 }

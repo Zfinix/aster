@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 use crate::edits::{self, EditBlock};
+use crate::mcp::ToolOutput;
 use crate::persist::Recorder;
 use crate::util::usage_json;
 
@@ -304,16 +305,40 @@ pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
     )
 }
 
-/// Session-start snapshot: platform, date, git state, and which package
-/// manager each lockfile pins. Taken once, so the model starts a turn knowing
-/// what a round of discovery commands would have told it.
+/// A message opening with `/skill-name` says which skill to apply, the way a
+/// command reads. The model is told about skills by name, not by slash, so the
+/// ask is spelled out here rather than sent as a slash it has to guess at.
+/// Anything else, a path included, is left exactly as typed.
+pub(crate) fn expand_skill(text: &str, skills: &aster_skills::SkillSet) -> String {
+    let Some(rest) = text.strip_prefix('/') else {
+        return text.to_string();
+    };
+    let (name, task) = match rest.split_once(char::is_whitespace) {
+        Some((name, task)) => (name, task.trim_start()),
+        None => (rest, ""),
+    };
+    match skills.get(name) {
+        Some(skill) => format!("Use the \"{}\" skill: {task}", skill.name)
+            .trim_end()
+            .to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// Session-start snapshot: what the repository is, then platform, date, git
+/// state, and which package manager each lockfile pins. Taken once, so the
+/// model starts a turn knowing what a round of discovery commands would have
+/// told it.
 pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
-    let mut note = format!(
+    let mut note = crate::project::snapshot(repo_root)
+        .map(|project| format!("{project}\n"))
+        .unwrap_or_default();
+    note.push_str(&format!(
         "## Environment\n- Platform: {} ({})\n- Today's date: {}\n",
         std::env::consts::OS,
         std::env::consts::ARCH,
         chrono::Local::now().format("%Y-%m-%d")
-    );
+    ));
     if let Some(git) = git_snapshot(repo_root) {
         note.push_str(&git);
     }
@@ -918,7 +943,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let reply = if args.no_tools {
         let mut messages = vec![ChatMessage {
             role: "system".into(),
-            content: system_prompt(&ctx, false),
+            content: system_prompt(&ctx, false).into(),
         }];
         messages.extend(history);
         let reply = client
@@ -977,7 +1002,9 @@ fn prepare_turn(
     yolo: bool,
     credentials: Arc<aster_policy::CommandGrants>,
 ) -> Result<(SessionCtx, Vec<ChatMessage>)> {
-    let new_turns = read_history(args)?;
+    let mut new_turns = read_history(args)?;
+    expand_skill_asks(&mut new_turns, repo_root);
+    attach_images(&mut new_turns, repo_root);
     let store = crate::persist::store().ok();
     let (recorder, prior) =
         resolve_headless_session(store.as_ref(), repo_root, args, &client.model)?;
@@ -1008,7 +1035,7 @@ fn prepare_turn(
     // Record only the new user turn. On the wire path `new_turns` is the full
     // replayed history, whose earlier turns were recorded on previous calls.
     if let Some(last) = new_turns.last().filter(|m| m.role == "user") {
-        ctx.record(MessageEvent::user(last.content.clone()));
+        ctx.record(MessageEvent::user(last.content.text()));
     }
     let mut history = prior;
     history.extend(new_turns);
@@ -1185,6 +1212,32 @@ async fn run_stream(
     Ok(())
 }
 
+/// Spell out every `/skill-name` the conversation opens a question with, so a
+/// front-end can show the command the user typed and still have the model told
+/// what it meant. Every turn, not just the newest: a replayed history would
+/// otherwise carry a bare slash the model was never taught to read.
+fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
+    let asks = |m: &ChatMessage| m.role == "user" && m.content.text().starts_with('/');
+    if !turns.iter().any(asks) {
+        return;
+    }
+    let skills = discover_skills(repo_root);
+    for turn in turns.iter_mut().filter(|m| asks(m)) {
+        turn.content = expand_skill(&turn.content.text(), &skills).into();
+    }
+}
+
+/// Attach the images the newest question mentions.
+///
+/// Only that turn: a front-end replays the whole conversation each turn, and
+/// re-encoding every image it ever carried would grow the request without
+/// telling the model anything it was not already told.
+fn attach_images(turns: &mut [ChatMessage], repo_root: &Path) {
+    if let Some(last) = turns.last_mut().filter(|m| m.role == "user") {
+        last.content = crate::images::attach(&last.content.text(), repo_root);
+    }
+}
+
 /// The conversation to send, minus the system prompt.
 fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
     if let Some(path) = args.messages_json.as_deref() {
@@ -1215,7 +1268,7 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
             .map(|m| match m.role.as_str() {
                 "user" | "assistant" | "system" => Ok(ChatMessage {
                     role: m.role,
-                    content: m.content,
+                    content: m.content.into(),
                 }),
                 other => bail!("unsupported role {other:?} in --messages-json"),
             })
@@ -1244,7 +1297,7 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
         if !buf.trim().is_empty() {
             return Ok(vec![ChatMessage {
                 role: "user".into(),
-                content: buf.trim().to_string(),
+                content: buf.trim().into(),
             }]);
         }
     }
@@ -1554,7 +1607,7 @@ async fn agent_loop(
                 tracing::debug!("model rejected tools; falling back to plain chat: {e:#}");
                 let mut messages = vec![ChatMessage {
                     role: "system".into(),
-                    content: system_prompt(ctx, false),
+                    content: system_prompt(ctx, false).into(),
                 }];
                 messages.extend(history.iter().cloned());
                 let reply = client
@@ -1604,11 +1657,17 @@ async fn agent_loop(
                 emit(json!({ "type": "text", "content": text }));
             }
         }
-        wire.push(json!({
+        let mut assistant = json!({
             "role": "assistant",
             "content": msg.content,
             "tool_calls": msg.tool_calls,
-        }));
+        });
+        // Carried verbatim and in order: the provider rejects a reasoning
+        // sequence that does not match what it emitted.
+        if !msg.reasoning_details.is_empty() {
+            assistant["reasoning_details"] = json!(msg.reasoning_details);
+        }
+        wire.push(assistant);
         for call in &msg.tool_calls {
             emit(json!({
                 "type": "tool_call",
@@ -1665,21 +1724,23 @@ async fn agent_loop(
                 error = tracing::field::Empty,
             );
             let result = match prefetched {
-                Some(result) => result,
+                Some(result) => ToolOutput::text(result),
                 None => {
                     if call.function.name == "agent" {
-                        dispatch_agent_tool(
-                            repo_root,
-                            client,
-                            &call.function.arguments,
-                            &policy,
-                            grants,
-                            ctx,
-                            &call.id,
-                            events,
+                        ToolOutput::text(
+                            dispatch_agent_tool(
+                                repo_root,
+                                client,
+                                &call.function.arguments,
+                                &policy,
+                                grants,
+                                ctx,
+                                &call.id,
+                                events,
+                            )
+                            .instrument(span.clone())
+                            .await,
                         )
-                        .instrument(span.clone())
-                        .await
                     } else {
                         exec_tool(
                             repo_root,
@@ -1701,13 +1762,17 @@ async fn agent_loop(
             // Re-asking costs a round either way, but the answer is already
             // above; a pointer keeps the history from carrying it twice.
             let result = if is_repeat_lookup(ctx, &call.function.name, &call.function.arguments) {
-                format!(
+                ToolOutput::text(format!(
                     "[identical {} call earlier in this turn — scroll up for the result]",
                     call.function.name
-                )
+                ))
             } else {
                 result
             };
+            let ToolOutput {
+                text: result,
+                images,
+            } = result;
             // The same rule aster-eval applies offline, so a live dashboard and
             // a session report never disagree about what counted as barren.
             span.record("result_chars", result.len());
@@ -1729,6 +1794,7 @@ async fn agent_loop(
                 "name": call.function.name,
                 "result": result,
                 "error": result.starts_with("error: "),
+                "images": images.len(),
             }));
             ctx.record(MessageEvent::tool(&call.id, &result));
             wire.push(json!({
@@ -1736,6 +1802,9 @@ async fn agent_loop(
                 "tool_call_id": call.id,
                 "content": result,
             }));
+            if !images.is_empty() {
+                wire.push(image_turn(&call.function.name, &images));
+            }
         }
         match no_progress.feed(round_signature(&round_sig), round_all_errors) {
             RoundVerdict::Continue => {}
@@ -1830,7 +1899,7 @@ async fn name_session(
         },
         ChatMessage {
             role: "user".into(),
-            content: title_context(history),
+            content: title_context(history).into(),
         },
     ];
     let reply = match client.complete_messages(&messages, 0.2).await {
@@ -1853,7 +1922,10 @@ fn title_context(history: &[ChatMessage]) -> String {
         .iter()
         .filter(|m| m.role == "user" || m.role == "assistant")
     {
-        let body = truncate(m.content.trim(), if m.role == "user" { 2000 } else { 500 });
+        let body = truncate(
+            m.content.text().trim(),
+            if m.role == "user" { 2000 } else { 500 },
+        );
         out.push_str(&m.role);
         out.push_str(": ");
         out.push_str(&body);
@@ -1881,7 +1953,7 @@ async fn compact_if_needed(
     ctx: &SessionCtx,
     system_chars: usize,
 ) -> Result<(Vec<ChatMessage>, Option<Vec<ChatMessage>>)> {
-    let total: usize = history.iter().map(|m| m.content.len()).sum();
+    let total: usize = history.iter().map(|m| m.content.chars()).sum();
     let budget = crate::budget::history_budget(ctx.limits.compact_budget_chars, system_chars);
     if total <= budget || !can_compact(history) {
         return Ok((history.to_vec(), None));
@@ -1910,7 +1982,7 @@ pub(crate) async fn compact_now(
     let mut compacted = Vec::with_capacity(COMPACT_KEEP_TAIL + 1);
     compacted.push(ChatMessage {
         role: "assistant".into(),
-        content: format!("Summary of earlier conversation:\n{summary}"),
+        content: format!("Summary of earlier conversation:\n{summary}").into(),
     });
     compacted.extend(history[split..].iter().cloned());
     Ok((compacted, summary, split))
@@ -1945,7 +2017,7 @@ async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
     for m in head {
         transcript.push_str(&m.role);
         transcript.push_str(": ");
-        transcript.push_str(&m.content);
+        transcript.push_str(&m.content.text());
         transcript.push_str("\n\n");
     }
     let messages = vec![
@@ -1955,7 +2027,7 @@ async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
         },
         ChatMessage {
             role: "user".into(),
-            content: transcript,
+            content: transcript.into(),
         },
     ];
     client.complete_messages(&messages, 0.2).await
@@ -2307,10 +2379,19 @@ async fn exec_tool(
     edited: &mut Vec<String>,
     ctx: &SessionCtx,
     _events: Option<&ChatEventSink>,
-) -> String {
+) -> ToolOutput {
+    // The MCP bridge is the only tool that can return an image, so it is taken
+    // before the match below, which deals in text alone.
+    if name == "aster_mcp" {
+        return mcp_bridge(policy, approver, ctx, arguments)
+            .await
+            .unwrap_or_else(|e| ToolOutput::text(format!("error: {e:#}")));
+    }
     let args: Value = match parse_arguments(arguments) {
         Ok(v) => v,
-        Err(e) => return format!("error: tool arguments were not valid JSON: {e}"),
+        Err(e) => {
+            return ToolOutput::text(format!("error: tool arguments were not valid JSON: {e}"));
+        }
     };
     let str_arg = |key: &str| args[key].as_str().map(str::to_string);
 
@@ -2363,7 +2444,7 @@ async fn exec_tool(
         )),
         "read_file" => match str_arg("path").context("read_file needs a `path`") {
             Ok(path) if !edits::exists_anywhere(repo_root, &path) => {
-                return missing_path(repo_root, &path);
+                return ToolOutput::text(missing_path(repo_root, &path));
             }
             Ok(path) => {
                 match resolve_for_read(repo_root, policy, grants, approver, ctx, &path).await {
@@ -2379,7 +2460,7 @@ async fn exec_tool(
             Err(e) => Err(e),
         },
         "list_files" => match missing_dir(repo_root, &str_arg("dir")) {
-            Some(dir) => return missing_path(repo_root, &dir),
+            Some(dir) => return ToolOutput::text(missing_path(repo_root, &dir)),
             None => {
                 match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir")).await {
                     Ok(base) => list_files(&ctx.probe, &base),
@@ -2471,13 +2552,29 @@ async fn exec_tool(
             )
             .await
         }
-        "aster_mcp" => mcp_bridge(policy, approver, ctx, arguments).await,
         other => Err(anyhow::anyhow!(
             "unknown tool: {other}. Available tools: {}",
             tool_names(*allow_edits, approver.is_some()).join(", ")
         )),
     };
-    result.unwrap_or_else(|e| format!("error: {e:#}"))
+    ToolOutput::text(result.unwrap_or_else(|e| format!("error: {e:#}")))
+}
+
+/// Images a tool returned, as the turn that carries them to the model. They
+/// ride a user message rather than the tool one: an OpenAI-shaped endpoint
+/// takes content parts on a user turn and a bare string on a tool turn.
+fn image_turn(tool: &str, images: &[String]) -> Value {
+    let mut parts = vec![json!({
+        "type": "text",
+        "text": format!("Image(s) returned by the {tool} call above:"),
+    })];
+    parts.extend(images.iter().map(|url| {
+        json!({
+            "type": "image_url",
+            "image_url": { "url": url },
+        })
+    }));
+    json!({ "role": "user", "content": parts })
 }
 
 /// Tools a round may run on parallel threads: read-only, no approval prompts,
@@ -2529,45 +2626,74 @@ async fn explore(
     let handles: Vec<_> = steps
         .iter()
         .map(|step| {
-            let name = step["tool"].as_str().unwrap_or_default().to_string();
-            let arguments = step
-                .get("args")
-                .cloned()
-                .unwrap_or_else(|| json!({}))
-                .to_string();
-            let label = step_label(&name, &step["args"]);
+            let name = step_tool(step);
+            let step_args = step_args(step);
+            let arguments = step_args.to_string();
+            let label = step_label(&name, &step_args);
             let repo_root = repo_root.to_path_buf();
             let policy = policy.clone();
             let ctx = ctx.clone();
             tokio::task::spawn_blocking(move || {
-                (
-                    label,
-                    read_only_call(&repo_root, &policy, &ctx, &name, &arguments),
-                )
+                let text = read_only_call(&repo_root, &policy, &ctx, &name, &arguments)
+                    .unwrap_or_else(|| step_refused(&name));
+                (label, text)
             })
         })
         .collect();
 
     let mut out = String::new();
     for (i, handle) in handles.into_iter().enumerate() {
-        let (label, result) = match handle.await {
+        let (label, text) = match handle.await {
             Ok(pair) => pair,
-            Err(e) => (format!("step {}", i + 1), Some(format!("error: {e}"))),
+            Err(e) => (format!("step {}", i + 1), format!("error: {e}")),
         };
         if i > 0 {
             out.push('\n');
         }
-        out.push_str(&format!("[{}] {label}\n", i + 1));
-        match result {
-            Some(text) => out.push_str(&text),
-            None => out.push_str(
-                "not runnable in a batch (outside the repository, or not a lookup); \
-                 call this tool on its own",
-            ),
-        }
-        out.push('\n');
+        out.push_str(&format!("[{}] {label}\n{text}\n", i + 1));
     }
     Ok(out.trim_end().to_string())
+}
+
+/// The tool a step names. Models reach for `name` about as often as `tool`,
+/// and a step naming neither is told so rather than reported as a bad path.
+fn step_tool(step: &Value) -> String {
+    ["tool", "name"]
+        .iter()
+        .find_map(|key| step.get(key).and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A step's arguments, under any of the keys models use for them, and parsed
+/// when they arrive as a JSON string instead of an object.
+fn step_args(step: &Value) -> Value {
+    ["args", "arguments", "input", "parameters"]
+        .iter()
+        .find_map(|key| match step.get(key) {
+            Some(Value::Object(map)) => Some(Value::Object(map.clone())),
+            Some(Value::String(raw)) => serde_json::from_str(raw).ok(),
+            _ => None,
+        })
+        .unwrap_or_else(|| json!({}))
+}
+
+/// Why a step did not run, specific enough that the model can fix it instead
+/// of resending the same step.
+fn step_refused(tool: &str) -> String {
+    if tool.is_empty() {
+        return format!(
+            "no tool named; every step is {{\"tool\": one of {}, \"args\": {{...}}}}",
+            PARALLEL_READ_TOOLS.join(", ")
+        );
+    }
+    if !PARALLEL_READ_TOOLS.contains(&tool) {
+        return format!("`{tool}` is not a lookup; call it on its own");
+    }
+    format!(
+        "`{tool}` did not run in a batch (a required argument is missing, or the path \
+         is outside the repository); call it on its own"
+    )
 }
 
 /// Name a step by its most identifying argument, so the model can tell which
@@ -2596,7 +2722,7 @@ fn read_only_call(
     let str_arg = |key: &str| args[key].as_str().map(str::to_string);
     let resolve_dir =
         |dir: &Option<String>| match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-            Some(dir) => resolve_in_repo(repo_root, policy, dir),
+            Some(dir) => resolve_in_repo(repo_root, policy, ctx, dir),
             None => Some(Ok(repo_root.to_path_buf())),
         };
 
@@ -2606,7 +2732,7 @@ fn read_only_call(
             if !edits::exists_anywhere(repo_root, &path) {
                 return Some(missing_path(repo_root, &path));
             }
-            match resolve_in_repo(repo_root, policy, &path)? {
+            match resolve_in_repo(repo_root, policy, ctx, &path)? {
                 Ok(target) => cached_read(
                     ctx,
                     &target,
@@ -2880,7 +3006,7 @@ async fn mcp_bridge(
     approver: Option<&UiSender>,
     ctx: &SessionCtx,
     arguments: &str,
-) -> Result<String> {
+) -> Result<ToolOutput> {
     let runtime = ctx
         .mcp
         .as_ref()
@@ -2888,16 +3014,16 @@ async fn mcp_bridge(
     let action = runtime.injector().route(arguments)?;
     let (tool, call_args) = match action {
         aster_mcp::BridgeAction::Search(matches) => {
-            return Ok(serde_json::to_string_pretty(
+            return Ok(ToolOutput::text(serde_json::to_string_pretty(
                 &json!({ "matches": matches }),
-            )?);
+            )?));
         }
         aster_mcp::BridgeAction::Describe(tool) => {
-            return Ok(serde_json::to_string_pretty(&json!({
+            return Ok(ToolOutput::text(serde_json::to_string_pretty(&json!({
                 "id": tool.id(),
                 "description": tool.description,
                 "input_schema": tool.input_schema,
-            }))?);
+            }))?));
         }
         aster_mcp::BridgeAction::Execute { tool, arguments } => (tool, arguments),
     };
@@ -3324,15 +3450,21 @@ fn grant_root(resolved: &Path) -> PathBuf {
     resolved.parent().unwrap_or(resolved).to_path_buf()
 }
 
-/// Sync resolution for in-repo reads, usable off the async loop. `None` means
-/// the path leaves the repo and needs the approval flow.
-fn resolve_in_repo(repo_root: &Path, policy: &Policy, path: &str) -> Option<Result<PathBuf>> {
+/// Sync resolution for reads that need nobody's approval, usable off the async
+/// loop. `None` means the path leaves the repo and needs the approval flow.
+fn resolve_in_repo(
+    repo_root: &Path,
+    policy: &Policy,
+    ctx: &SessionCtx,
+    path: &str,
+) -> Option<Result<PathBuf>> {
     let (resolved, scope) = match edits::resolve_anywhere(repo_root, path) {
         Ok(pair) => pair,
         Err(e) => return Some(Err(e)),
     };
     if !matches!(scope, edits::Scope::InRepo) {
-        return None;
+        // Yolo has already dropped the sandbox, so it drops this gate too.
+        return ctx.yolo.then_some(Ok(resolved));
     }
     let root = repo_root.canonicalize().unwrap_or_default();
     let relative = resolved.strip_prefix(&root).unwrap_or(&resolved);
@@ -3355,7 +3487,7 @@ async fn resolve_for_read(
     ctx: &SessionCtx,
     path: &str,
 ) -> Result<PathBuf> {
-    if let Some(result) = resolve_in_repo(repo_root, policy, path) {
+    if let Some(result) = resolve_in_repo(repo_root, policy, ctx, path) {
         return result;
     }
     let (resolved, scope) = edits::resolve_anywhere(repo_root, path)?;

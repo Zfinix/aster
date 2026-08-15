@@ -72,6 +72,9 @@ pub(super) struct MenuEntry {
     name: String,
     desc: String,
     takes_arg: bool,
+    /// Names a skill, so picking it fills the composer and leaves the sending
+    /// to the user; a command runs on the spot instead.
+    skill: bool,
 }
 
 impl From<&CommandDesc> for MenuEntry {
@@ -80,6 +83,7 @@ impl From<&CommandDesc> for MenuEntry {
             name: c.name.to_string(),
             desc: c.desc.to_string(),
             takes_arg: c.takes_arg,
+            skill: false,
         }
     }
 }
@@ -268,6 +272,11 @@ impl<E: Clone + 'static> BottomPane<E> {
                 let index = window_start_of(sel, len, MENU_ROWS) + row as usize;
                 if (row as usize) < MENU_ROWS && index < len {
                     self.menu_sel = index;
+                    if self.selected_command().is_some_and(|c| c.skill) {
+                        self.complete_command();
+                        self.menu_sel = 0;
+                        return InputResult::None;
+                    }
                     let cmd = self.command_to_run();
                     self.composer.clear();
                     self.menu_sel = 0;
@@ -415,6 +424,12 @@ impl<E: Clone + 'static> BottomPane<E> {
             // The menu is open and a row is highlighted, so enter picks that
             // row. Without this a bare `/` submits as a message, and arrowing
             // to a command does nothing, since the draft is still just `/`.
+            // A skill is a message the user has not finished writing, so enter
+            // fills its name in and hands the line back rather than sending.
+            KeyCode::Enter if menu_open && self.selected_command().is_some_and(|c| c.skill) => {
+                self.complete_command();
+                self.menu_sel = 0;
+            }
             KeyCode::Enter if menu_open => {
                 let cmd = self.command_to_run();
                 self.composer.clear();
@@ -483,6 +498,7 @@ impl<E: Clone + 'static> BottomPane<E> {
                 name,
                 desc: format!("skill · {}", crate::tui::helpers::clip_row(&desc, 60)),
                 takes_arg: true,
+                skill: true,
             })
             .collect();
     }
@@ -538,7 +554,8 @@ impl<E: Clone + 'static> BottomPane<E> {
     /// True when the draft should run as a slash command rather than submit as
     /// a message. A leading `/` alone is not enough: a dragged-in absolute
     /// path (`/Users/chizi/…`) also starts with `/`. The first word must name
-    /// or prefix a known command.
+    /// or prefix a known command. A skill is not one of them: `/name` is a
+    /// message, expanded on its way out.
     fn looks_like_command(&self) -> bool {
         let text = self.composer.text().trim_start();
         let Some(rest) = text.strip_prefix('/') else {
@@ -550,7 +567,6 @@ impl<E: Clone + 'static> BottomPane<E> {
             return false;
         }
         self.commands.iter().any(|c| c.name.starts_with(first))
-            || self.skills.iter().any(|s| s.name.contains(first))
     }
 
     /// A typed command with args runs as-is; a bare prefix, or a bare `/`,
@@ -566,9 +582,7 @@ impl<E: Clone + 'static> BottomPane<E> {
         if rest.contains(char::is_whitespace) {
             return rest;
         }
-        if self.commands.iter().any(|c| c.name == rest)
-            || self.skills.iter().any(|s| s.name == rest)
-        {
+        if self.commands.iter().any(|c| c.name == rest) {
             return rest;
         }
         self.selected_command().map(|c| c.name).unwrap_or(rest)

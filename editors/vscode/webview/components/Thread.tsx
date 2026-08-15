@@ -13,16 +13,21 @@ import { ReviewTurn } from "./ReviewTurn";
 import { StatusLine } from "./StatusLine";
 import { AgentGroup } from "./AgentGroup";
 import { ToolGroup } from "./ToolGroup";
+
+const isUser = (turn: Turn) => turn.role === "user";
+
 export function Thread({
   turns,
   queued,
   onApproval,
+  onRedirect,
   onAnswer,
   onUnqueue,
 }: {
   turns: Turn[];
   queued: string[];
-  onApproval: (allow: boolean) => void;
+  onApproval: (allow: boolean, always?: boolean) => void;
+  onRedirect: (instead: string) => void;
   onAnswer: (choice: string | null) => void;
   onUnqueue: (index: number) => void;
 }) {
@@ -41,6 +46,17 @@ export function Thread({
       setUnread((n) => n + added);
     }
   }, [turns.length, atBottom]);
+
+  // Your own message always brings you back down, wherever you had scrolled to.
+  // Following only what you were already following is right for the agent's
+  // output, but reading back and then sending should not leave you up there.
+  const sent = useRef(turns.filter(isUser).length);
+  useEffect(() => {
+    const count = turns.filter(isUser).length;
+    const mine = count > sent.current;
+    sent.current = count;
+    if (mine) scrollToBottom(false);
+  }, [turns, scrollToBottom]);
 
   return (
     <div className="thread-container">
@@ -79,7 +95,13 @@ export function Thread({
                   )
                 )}
 
-                {turn.approval && <ApprovalPrompt preview={turn.approval} onRespond={onApproval} />}
+                {turn.approval && (
+                  <ApprovalPrompt
+                    ask={turn.approval}
+                    onRespond={onApproval}
+                    onRedirect={onRedirect}
+                  />
+                )}
 
                 {turn.question && (
                   <QuestionPrompt question={turn.question} onAnswer={onAnswer} />

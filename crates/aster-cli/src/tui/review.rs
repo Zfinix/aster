@@ -251,7 +251,7 @@ impl App {
         if let Some(ctx) = &self.ctx {
             msgs.push(ChatMessage {
                 role: "assistant".into(),
-                content: ctx.clone(),
+                content: ctx.clone().into(),
             });
         }
         self.chat_msgs.push(ChatMessage {

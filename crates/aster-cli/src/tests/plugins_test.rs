@@ -101,3 +101,104 @@ fn summarizes_what_a_plugin_contributes() {
     );
     assert!(line.ends_with("A demo plugin"), "{line}");
 }
+
+/// Nothing is bundled today, so the machinery is exercised against a fixture:
+/// it is the shipping path for a future bundle, not dead weight.
+const BUNDLED: Builtin = Builtin {
+    name: "demo",
+    manifest: MANIFEST,
+    mcp: MCP,
+};
+
+#[test]
+fn a_bundled_package_installs_as_a_valid_plugin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (root, data_root) = (dir.path().join("plugins"), dir.path().join("plugin-data"));
+    BUNDLED.install(&root, &data_root).expect("install");
+
+    let plugin = aster_plugins::load(&root.join("demo"), &data_root).expect("load");
+    assert!(plugin.warnings.is_empty(), "{:?}", plugin.warnings);
+    assert_eq!(plugin.name(), "demo");
+
+    let servers: Vec<&str> = plugin.stdio_servers().map(|(name, _)| name).collect();
+    assert_eq!(servers, ["local"]);
+}
+
+#[test]
+fn installing_twice_leaves_the_files_untouched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (root, data_root) = (dir.path().join("plugins"), dir.path().join("plugin-data"));
+    BUNDLED.install(&root, &data_root).expect("install");
+
+    let manifest = root.join("demo/plugin.json");
+    let before = fs::metadata(&manifest)
+        .and_then(|m| m.modified())
+        .expect("mtime");
+    BUNDLED.install(&root, &data_root).expect("reinstall");
+    let after = fs::metadata(&manifest)
+        .and_then(|m| m.modified())
+        .expect("mtime");
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_local_edit_is_restored_on_the_next_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (root, data_root) = (dir.path().join("plugins"), dir.path().join("plugin-data"));
+    BUNDLED.install(&root, &data_root).expect("install");
+
+    let mcp = root.join("demo/mcp.json");
+    fs::write(&mcp, "{}").expect("clobber");
+    BUNDLED.install(&root, &data_root).expect("reinstall");
+    assert!(
+        fs::read_to_string(&mcp)
+            .expect("read")
+            .contains("mcpServers")
+    );
+}
+
+#[test]
+fn a_removed_builtin_is_not_reinstalled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (root, data_root) = (dir.path().join("plugins"), dir.path().join("plugin-data"));
+    fs::create_dir_all(data_root.join("demo")).expect("dirs");
+    fs::write(data_root.join("demo").join(UNINSTALLED), "").expect("marker");
+
+    BUNDLED
+        .install(&root, &data_root)
+        .expect("install is a no-op");
+    assert!(!root.join("demo").exists());
+}
+
+#[test]
+fn a_retired_bundle_is_cleared_out_of_an_existing_install() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("plugins");
+    let stale = root.join("websearch");
+    fs::create_dir_all(&stale).expect("dirs");
+    fs::write(stale.join(aster_plugins::MANIFEST_FILE), MANIFEST).expect("manifest");
+    fs::write(stale.join(aster_plugins::MCP_FILE), MCP).expect("mcp");
+
+    remove_retired(&root);
+    assert!(!stale.exists());
+}
+
+#[test]
+fn a_package_the_user_installed_under_a_retired_name_survives() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("plugins");
+    let theirs = root.join("websearch");
+    fs::create_dir_all(&theirs).expect("dirs");
+    fs::write(theirs.join(aster_plugins::MANIFEST_FILE), MANIFEST).expect("manifest");
+
+    remove_retired(&root);
+    assert!(theirs.exists());
+}
+
+#[test]
+fn only_bundled_names_get_an_uninstall_marker() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_root = dir.path().join("plugin-data");
+    mark_uninstalled("demo", &data_root);
+    assert!(!data_root.join("demo").exists());
+}

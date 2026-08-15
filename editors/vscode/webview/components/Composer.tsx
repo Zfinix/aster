@@ -2,16 +2,19 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   Effort,
   McpServer,
+  PastedFile,
   PermissionMode,
   Provider,
   SkillCommand,
 } from "../../src/protocol";
-import { applyTrigger, triggerAt, type Trigger } from "../lib/trigger";
+import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
 import { post } from "../lib/host";
 import { modelShort } from "../lib/model";
+import { AddMenu } from "./AddMenu";
 import { ApprovalPicker, permissionLabel } from "./ApprovalPicker";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
-import { CommandMenu, type MenuSection } from "./CommandMenu";
+import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
+import { ContextMeter } from "./ContextMeter";
 import { McpPicker } from "./McpPicker";
 import { ModelPicker } from "./ModelPicker";
 import { ProviderPicker } from "./ProviderPicker";
@@ -45,6 +48,8 @@ export function Composer({
   onRefreshModels,
   permissionMode,
   effort,
+  contextUsed,
+  contextBudget,
   skills,
   mcpServers,
   providers,
@@ -73,6 +78,9 @@ export function Composer({
   onRefreshModels: () => void;
   permissionMode: PermissionMode;
   effort: Effort | null;
+  /** Characters the next turn would send, against the CLI's compact budget. */
+  contextUsed: number;
+  contextBudget: number;
   skills: SkillCommand[];
   mcpServers: McpServer[];
   providers: Provider[];
@@ -97,6 +105,9 @@ export function Composer({
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [menu, setMenu] = useState<Menu>("none");
+  /** Escape on a typed `/name` puts the menu away without taking the text with
+   *  it; it comes back when the caret next lands on a fresh one. */
+  const [dismissed, setDismissed] = useState(false);
   const [active, setActive] = useState(0);
   /** True while a drag hovers the composer, so it reads as a drop target. */
   const [dropping, setDropping] = useState(false);
@@ -113,13 +124,23 @@ export function Composer({
     if (area && mirror) mirror.scrollTop = area.scrollTop;
   };
 
-  const trigger: Trigger | null = menu === "none" ? triggerAt(text, caret) : null;
+  // A popup opened from a button owns the composer; otherwise what the caret
+  // sits on decides which one is up, the way typing `@` or `/` reads.
+  const triggers = triggersAt(text, caret);
+  const trigger: Trigger | null = menu === "none" ? triggers.mention : null;
+  const command: Trigger | null =
+    menu === "none" && !dismissed ? triggers.command : null;
 
   useEffect(() => {
     if (trigger) onSearchFiles(trigger.query);
   }, [trigger?.query]);
 
   useEffect(() => setActive(0), [trigger?.query]);
+
+  const typingCommand = triggers.command !== null;
+  useEffect(() => {
+    if (!typingCommand) setDismissed(false);
+  }, [typingCommand]);
 
   useEffect(() => {
     if (openMenu) {
@@ -133,12 +154,12 @@ export function Composer({
   const suggestions: Suggestion[] = useMemo(
     () =>
       trigger
-        ? fileResults.slice(0, 8).map((path) => ({
-            value: `@${basename(path)}`,
-            label: basename(path),
-            detail: dirname(path),
-            full: path,
-          }))
+        ? fileResults.slice(0, 10).map((path) => {
+            const dir = path.endsWith("/");
+            const trimmed = dir ? path.slice(0, -1) : path;
+            const name = dir ? `${basename(trimmed)}/` : basename(trimmed);
+            return { value: `@${name}`, label: name, detail: dirname(trimmed), full: path, dir };
+          })
         : [],
     [trigger, fileResults]
   );
@@ -165,37 +186,33 @@ export function Composer({
     setCaret(el.selectionStart);
   };
 
-  /**
-   * A drop carries its files as URIs, under whichever flavour the source used:
-   * VS Code's own explorer and editor tabs write `resourceurls` (JSON, and
-   * percent-encoded), everything else the standard `text/uri-list`. The host
-   * turns them into repo-relative mentions.
-   */
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDropping(false);
-    const data = e.dataTransfer;
-
-    const resources = data.getData("resourceurls");
-    if (resources) {
-      try {
-        const uris = (JSON.parse(resources) as string[]).map(decodeURIComponent);
-        if (uris.length) return post({ type: "dropFiles", uris });
-      } catch {
-        // Fall through to the standard flavours below.
-      }
-    }
-
-    const list = data.getData("text/uri-list") || data.getData("text/plain");
-    const uris = list
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      // `#` opens a comment line in uri-list, and a bare path is not a drop we
-      // can resolve; only real file URIs go to the host.
-      .filter((line) => line.startsWith("file://"));
+    const uris = fileUris(e.dataTransfer);
     if (uris.length) {
       post({ type: "dropFiles", uris });
     }
+  };
+
+  /**
+   * A paste is the drop's poorer cousin: the OS clipboard rarely carries a URI,
+   * so the file arrives as bytes and a bare name and the host has to work out
+   * which file that was. Plain text is left to the textarea.
+   */
+  const onPaste = (e: React.ClipboardEvent) => {
+    const uris = fileUris(e.clipboardData);
+    if (uris.length) {
+      e.preventDefault();
+      return post({ type: "dropFiles", uris });
+    }
+
+    const files = Array.from(e.clipboardData.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    void Promise.all(files.map(readPasted)).then((pasted) =>
+      post({ type: "pasteFiles", files: pasted })
+    );
   };
 
   const pick = (item: Suggestion) => {
@@ -203,17 +220,14 @@ export function Composer({
     if (item.full) {
       mentions.current.set(item.value, `@${item.full}`);
     }
-    const next = applyTrigger(text, trigger, caret, item.value);
+    write(applyTrigger(text, trigger, item.value), trigger.start + item.value.length + 1);
+  };
+
+  /** Put `next` in the box and leave the caret where the next word goes. */
+  const write = (next: string, at = next.length) => {
     setText(next);
-    const at = trigger.start + item.value.length + 1;
-    requestAnimationFrame(() => {
-      const area = areaRef.current;
-      if (area) {
-        area.focus();
-        area.setSelectionRange(at, at);
-        setCaret(at);
-      }
-    });
+    setCaret(at);
+    focusInput(at);
   };
 
   // Sending while busy is allowed: App queues it and flushes when the run ends.
@@ -237,31 +251,64 @@ export function Composer({
    *  instead of landing on nothing. */
   const closeMenu = () => {
     setMenu("none");
+    setDismissed(true);
     focusInput();
   };
 
-  /** Put text in the box, for the menu rows that start a message rather than
-   *  doing something. The caret follows it so an inserted `@` opens the file
+  /** Append to what is already typed, for the rows that start a message rather
+   *  than doing something. The caret follows so an inserted `@` opens the file
    *  list straight away. */
-  const compose = (value: string) => {
-    const next = text ? `${text.replace(/\s*$/, "")} ${value}` : value;
-    setText(next);
-    setCaret(next.length);
-    focusInput(next.length);
+  const compose = (value: string, base = text) => {
+    const head = base.replace(/\s*$/, "");
+    write(head ? `${head} ${value}` : value);
+  };
+
+  /**
+   * Tab, a row that takes an argument, or a `/name` typed mid-sentence all
+   * complete the name into the box so the rest of the line can follow it.
+   * Enter on anything else runs the row and takes the name back out, which is
+   * what the CLI does with the same keystroke.
+   */
+  const runItem = (item: MenuItem, complete: boolean) => {
+    if (item.kind !== "action") return;
+    if (!command) {
+      item.run(text);
+      if (!item.keepOpen) closeMenu();
+      return;
+    }
+    if (item.slash && (complete || item.takesArg || text.slice(0, command.start).trim())) {
+      write(applyTrigger(text, command, item.slash), command.start + item.slash.length + 1);
+      return;
+    }
+    const rest = dropTrigger(text, command);
+    write(rest, command.start);
+    item.run(rest);
   };
 
   // Only while the menu is up: mapping every skill on each streamed token
   // would be a real cost for a list nobody is looking at.
+  const menuOpen = menu === "commands" || command !== null;
   const sections: MenuSection[] = useMemo(() => {
-    if (menu !== "commands") return [];
+    if (!menuOpen) return [];
     const enabled = mcpServers.filter((s) => !s.disabled).length;
     const provider = providers.find((p) => p.current);
+    /** Mirrors one of the CLI's own commands, under the same name. */
     const action = (id: string, label: string, hint?: string) => ({
       kind: "action" as const,
       id,
       label,
       hint,
+      slash: `/${id}`,
       run: () => onCommand(id),
+    });
+    /** Opens another surface, so it must not be run by completing its name. */
+    const opens = (id: string, label: string, next: Menu, hint?: string) => ({
+      kind: "action" as const,
+      id,
+      label,
+      hint,
+      keepOpen: true,
+      run: () => setMenu(next),
     });
 
     return [
@@ -275,27 +322,15 @@ export function Composer({
             kind: "action" as const,
             id: "mention",
             label: "Mention a file…",
-            run: () => compose("@"),
+            run: (rest: string) => compose("@", rest),
           },
         ],
       },
       {
         title: "Model",
         items: [
-          {
-            kind: "action" as const,
-            id: "model",
-            label: "Switch model…",
-            hint: modelShort(model),
-            run: () => setMenu("model"),
-          },
-          {
-            kind: "action" as const,
-            id: "provider",
-            label: "Switch provider…",
-            hint: provider?.name,
-            run: () => setMenu("provider"),
-          },
+          opens("model", "Switch model…", "model", modelShort(model)),
+          opens("provider", "Switch provider…", "provider", provider?.name),
           {
             kind: "choice" as const,
             id: "effort",
@@ -304,13 +339,7 @@ export function Composer({
             options: EFFORTS,
             onSelect: (value: string) => onEffort((value || null) as Effort | null),
           },
-          {
-            kind: "action" as const,
-            id: "mode",
-            label: "Mode…",
-            hint: permissionLabel(permissionMode),
-            run: () => setMenu("permission"),
-          },
+          opens("mode", "Mode…", "permission", permissionLabel(permissionMode)),
         ],
       },
       {
@@ -322,46 +351,36 @@ export function Composer({
           action("diff", "Show uncommitted changes"),
           action("status", "Status"),
           action("memory", "Memory"),
-          {
-            kind: "action" as const,
-            id: "mcp",
-            label: "MCP servers…",
-            hint: mcpServers.length ? `${enabled} of ${mcpServers.length} on` : undefined,
-            run: () => setMenu("mcp"),
-          },
+          opens(
+            "mcp",
+            "MCP servers…",
+            "mcp",
+            mcpServers.length ? `${enabled} of ${mcpServers.length} on` : undefined
+          ),
         ],
       },
       {
         title: "Skills",
+        limit: SKILLS_SHOWN,
         items: skills.map((skill) => ({
           kind: "action" as const,
           id: `skill:${skill.name}`,
-          label: skill.name,
+          label: `/${skill.name}`,
+          slash: `/${skill.name}`,
           detail: skill.plugin ? `${skill.plugin} · ${skill.detail}` : skill.detail,
-          // The agent applies a skill by reading it, so this opens the sentence
-          // that asks for it and leaves the task to the user.
-          run: () => compose(`Use the "${skill.name}" skill:`),
+          // The name stays in the box, as a command reads; what it means to the
+          // agent is settled on the way out, in `expandSkills`.
+          takesArg: true,
+          run: () => {},
         })),
       },
-    ].map((section) =>
-      section.title === "Skills" && section.items.length > SKILLS_SHOWN
-        ? {
-            ...section,
-            items: section.items.slice(0, SKILLS_SHOWN),
-            note: `${section.items.length - SKILLS_SHOWN} more; type to filter`,
-          }
-        : section
-    );
-  }, [menu, model, providers, effort, permissionMode, mcpServers, skills, onCommand, onEffort]);
+    ];
+  }, [menuOpen, model, providers, effort, permissionMode, mcpServers, skills, onCommand, onEffort]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // `/` on an empty box is the menu's shortcut, not a character: a GUI should
-    // not make anyone type a command name at a prompt.
-    if (e.key === "/" && !text) {
-      e.preventDefault();
-      setMenu("commands");
-      return;
-    }
+    // The command menu reads its own keys off the document, ahead of this, so
+    // Enter on a highlighted row must not also send the line.
+    if (command) return;
     if (suggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -387,6 +406,9 @@ export function Composer({
 
   return (
     <div className="composer-wrap">
+      {/* A click meant for "put that away" should not also hit whatever was
+          under the popup, so it lands here instead. */}
+      {(menuOpen || menu !== "none") && <div className="scrim" onMouseDown={closeMenu} />}
       {menu === "permission" && (
         <ApprovalPicker
           mode={permissionMode}
@@ -407,8 +429,13 @@ export function Composer({
           onClose={closeMenu}
         />
       )}
-      {menu === "commands" && (
-        <CommandMenu sections={sections} onClose={closeMenu} />
+      {menuOpen && (
+        <CommandMenu
+          sections={sections}
+          query={command ? command.query : null}
+          onRun={runItem}
+          onClose={closeMenu}
+        />
       )}
       {menu === "provider" && (
         <ProviderPicker
@@ -459,12 +486,15 @@ export function Composer({
             onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
             onClick={(e) => setCaret(e.currentTarget.selectionStart)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             onScroll={syncScroll}
           />
         </div>
         <div className="composer-foot">
+          <AddMenu onUpload={() => post({ type: "attachFiles" })} onMention={() => compose("@")} />
+
           <button
-            className="ghost cmd-btn"
+            className="ghost foot-btn"
             onClick={() => setMenu(menu === "commands" ? "none" : "commands")}
             title="Show command menu (/)"
             aria-label="Show command menu"
@@ -473,6 +503,10 @@ export function Composer({
           >
             <CommandIcon />
           </button>
+
+          <ContextMeter used={contextUsed} budget={contextBudget} onCompact={() => onCommand("compact")} />
+
+          <span className="grow" />
 
           <button
             className="ghost"
@@ -483,8 +517,6 @@ export function Composer({
             <ShieldIcon />
             {permissionLabel(permissionMode)}
           </button>
-
-          <span className="grow" />
 
           <button
             className="ghost model-btn"
@@ -519,6 +551,66 @@ export function Composer({
       </div>
     </div>
   );
+}
+
+/**
+ * The file URIs a transfer carries, under whichever flavour the source used:
+ * VS Code's own explorer and editor tabs write `resourceurls` (JSON, and
+ * percent-encoded), everything else the standard `text/uri-list`.
+ */
+function fileUris(data: DataTransfer): string[] {
+  const resources = data.getData("resourceurls");
+  if (resources) {
+    try {
+      const uris = (JSON.parse(resources) as string[]).map(decodeURIComponent);
+      if (uris.length) return uris;
+    } catch {
+      // Fall through to the standard flavours below.
+    }
+  }
+
+  // An editor tab dragged out of its group writes this one instead, and nothing
+  // else: without it, dropping the file you are looking at does nothing.
+  const editors = data.getData("codeeditors");
+  if (editors) {
+    try {
+      const uris = (JSON.parse(editors) as { resource?: { external?: string; fsPath?: string } }[])
+        .map(({ resource }) =>
+          resource?.external ?? (resource?.fsPath ? `file://${encodeURI(resource.fsPath)}` : "")
+        )
+        .filter((uri) => uri.startsWith("file://"));
+      if (uris.length) return uris;
+    } catch {
+      // Fall through to the standard flavours below.
+    }
+  }
+
+  const list = data.getData("text/uri-list") || data.getData("text/plain");
+  return (
+    list
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      // `#` opens a comment line in uri-list, and a bare path is not something
+      // we can resolve; only real file URIs go to the host.
+      .filter((line) => line.startsWith("file://"))
+  );
+}
+
+/** Past this the bytes are not worth pushing through the message channel; the
+ *  host still gets the name and can match it against the workspace. */
+const MAX_PASTE_BYTES = 10 * 1024 * 1024;
+
+async function readPasted(file: File): Promise<PastedFile> {
+  if (file.size > MAX_PASTE_BYTES) {
+    return { name: file.name, size: file.size };
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  // Chunked: spreading megabytes of bytes into one call overflows the stack.
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return { name: file.name, data: btoa(binary), size: file.size };
 }
 
 function basename(path: string): string {

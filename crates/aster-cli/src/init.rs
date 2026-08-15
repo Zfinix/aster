@@ -215,12 +215,17 @@ pub fn run(args: InitArgs) -> Result<()> {
         return Ok(());
     };
 
-    emit(
-        write_yaml(&yaml_path, &cfg.base_url, &cfg.model, args.force)?,
-        true,
-    )?;
     let env_path = yaml_path.with_file_name(".env");
     let gitignore = args.local;
+
+    let configured_provider = !cfg.base_url.is_empty();
+    if configured_provider {
+        emit(
+            write_yaml(&yaml_path, &cfg.base_url, &cfg.model, args.force)?,
+            true,
+        )?;
+    }
+
     let mut stored_key = false;
     if let Some(key) = cfg.api_key.filter(|k| !k.trim().is_empty()) {
         emit(
@@ -242,7 +247,9 @@ pub fn run(args: InitArgs) -> Result<()> {
         )?;
     }
 
-    let next = if !stored_key && !has_api_key() {
+    let next = if !configured_provider {
+        "Nothing to set up · run `aster init` again anytime"
+    } else if !stored_key && !has_api_key() {
         NO_KEY_HINT
     } else if global_config {
         "You're set. cd into any repo and run: aster"
@@ -274,16 +281,29 @@ enum Setup {
 fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     let Some(picked) = or_cancel(
         multiselect("What do you want to set up? (space to toggle · enter to confirm)")
-            .initial_values(vec![Setup::Provider])
             .required(false)
             .item(Setup::Provider, "Model provider", "the model Aster runs on")
-            .item(Setup::ContextDev, "Web crawl", "Context.dev API key")
-            .item(Setup::Jina, "Web reading", "Jina API key")
+            .item(
+                Setup::ContextDev,
+                "Web crawl",
+                "scrape websites via Context.dev",
+            )
+            .item(Setup::Jina, "Web reading", "read web pages via Jina AI")
             .interact(),
     )?
     else {
         return Ok(None);
     };
+
+    if picked.is_empty() {
+        return Ok(Some(Configured {
+            base_url: String::new(),
+            model: String::new(),
+            api_key: None,
+            context_dev_key: None,
+            jina_key: None,
+        }));
+    }
 
     let default = default_provider(providers);
     let mut cfg = Configured {
@@ -307,7 +327,7 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     // are kept rather than thrown away.
     if picked.contains(&Setup::ContextDev) {
         cfg.context_dev_key = or_cancel(
-            password("Context.dev API key (enter to skip)")
+            password("Context.dev API key for web crawl (enter to skip)")
                 .mask('•')
                 .interact(),
         )?;
@@ -315,7 +335,7 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
 
     if picked.contains(&Setup::Jina) {
         cfg.jina_key = or_cancel(
-            password("Jina API key (enter to skip)")
+            password("Jina API key for web reading (enter to skip)")
                 .mask('•')
                 .interact(),
         )?;
@@ -480,23 +500,39 @@ fn yaml_contents(base_url: &str, model: &str) -> String {
          \x20   - \"node_modules/**\"\n\n\
          # MCP servers that give the agent extra tools. Disabled servers are\n\
          # kept in the config but never started.\n\
+         #\n\
+         # Web search and page reading need no server and no key: they ship in\n\
+         # the binary as `web/search` and `web/extract`.\n\
          mcp:\n\
          \x20 servers:\n\
-         \x20   # Ships with Chrome. Let the agent browse, screenshot, and inspect pages.\n\
-         \x20   # Set `disabled: false` or remove the line to enable it.\n\
-         \x20   chrome:\n\
-         \x20     command: npx\n\
+         \x20   # Drive a real browser: navigate, click, type, and screenshot.\n\
+         \x20   # Needs uv (https://docs.astral.sh/uv) and Python 3.11+, then\n\
+         \x20   # `uvx browser-use install` once to fetch Chromium.\n\
+         \x20   # It browses in its own profile under ~/.config/browseruse, not\n\
+         \x20   # the Chrome you are signed into. Set `disabled: false` to enable.\n\
+         \x20   browser:\n\
+         \x20     command: uvx\n\
          \x20     args:\n\
-         \x20       - \"-y\"\n\
-         \x20       - \"chrome-devtools-mcp@latest\"\n\
-         \x20     disabled: true\n\
-         \x20   # Headless browser via Playwright. Heavier but needs no Chrome flag tweaks.\n\
-         \x20   playwright:\n\
-         \x20     command: npx\n\
-         \x20     args:\n\
-         \x20       - \"-y\"\n\
-         \x20       - \"@playwright/mcp@latest\"\n\
-         \x20     disabled: true\n"
+         \x20       - \"--from\"\n\
+         \x20       - \"browser-use\"\n\
+         \x20       - \"browser-use\"\n\
+         \x20       - \"--mcp\"\n\
+         \x20     env:\n\
+         \x20       # browser-use reports usage to its vendor unless this is set.\n\
+         \x20       ANONYMIZED_TELEMETRY: \"False\"\n\
+         \x20       # Without this the browser opens a window on your screen.\n\
+         \x20       BROWSER_USE_HEADLESS: \"true\"\n\
+         \x20       # Uncomment to confine the agent to named hosts.\n\
+         \x20       # BROWSER_USE_ALLOWED_DOMAINS: \"example.com,docs.rs\"\n\
+         \x20     disabled: true\n\n\
+         \x20 # Turn individual tools off by their `server/tool` id. Globs work.\n\
+         \x20 # Also settable with `aster mcp disable web/crawl`.\n\
+         \x20 tools:\n\
+         \x20   deny:\n\
+         \x20     # These two need a second LLM API key, and the retry tool runs\n\
+         \x20     # a whole agent loop inside one tool call.\n\
+         \x20     - \"browser/browser_extract_content\"\n\
+         \x20     - \"browser/retry_with_browser_use_agent\"\n"
     )
 }
 

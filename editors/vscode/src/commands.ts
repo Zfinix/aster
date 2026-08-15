@@ -52,16 +52,52 @@ function firstLine(description: string): string {
   return sentence.length > 120 ? `${sentence.slice(0, 117)}…` : sentence;
 }
 
-/** Workspace files matching a fuzzy query, for @ mentions. */
+/** Directories no search should ever walk into. */
+export const IGNORED = "**/{node_modules,target,dist,.git}/**";
+
+/**
+ * Workspace files and folders matching a fuzzy query, for @ mentions. Folders
+ * keep a trailing slash so the picker can tell the two apart; `findFiles` only
+ * yields files, so the folders are read back off the paths under them.
+ */
 export async function searchFiles(query: string): Promise<string[]> {
-  const pattern = query ? `**/*${query}*` : "**/*";
-  const uris = await vscode.workspace.findFiles(
-    pattern,
-    "**/{node_modules,target,dist,.git}/**",
-    50
-  );
+  const [files, nested] = await Promise.all([
+    vscode.workspace.findFiles(query ? `**/*${query}*` : "**/*", IGNORED, 50),
+    vscode.workspace.findFiles(query ? `**/*${query}*/**` : "*/**", IGNORED, 1000),
+  ]);
+  const paths = new Set(relative(files));
+  for (const path of relative(nested)) {
+    for (const folder of folders(path)) {
+      if (matches(folder, query)) {
+        paths.add(`${folder}/`);
+      }
+    }
+  }
+  return [...paths].sort(shallowestFirst).slice(0, 50);
+}
+
+function relative(uris: vscode.Uri[]): string[] {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  return uris
-    .map((uri) => (root && uri.fsPath.startsWith(root) ? uri.fsPath.slice(root.length + 1) : uri.fsPath))
-    .sort((a, b) => a.length - b.length);
+  return uris.map((uri) => {
+    const path = root && uri.fsPath.startsWith(root) ? uri.fsPath.slice(root.length + 1) : uri.fsPath;
+    return path.replace(/\\/g, "/");
+  });
+}
+
+/** Every folder on the way to `path`, outermost first. */
+function folders(path: string): string[] {
+  const parts = path.split("/").slice(0, -1);
+  return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+}
+
+function matches(path: string, query: string): boolean {
+  return path.slice(path.lastIndexOf("/") + 1).toLowerCase().includes(query.toLowerCase());
+}
+
+/** Root entries before anything nested, then alphabetical, as the tree reads. */
+function shallowestFirst(a: string, b: string): number {
+  const left = a.replace(/\/$/, "");
+  const right = b.replace(/\/$/, "");
+  const depth = left.split("/").length - right.split("/").length;
+  return depth !== 0 ? depth : left.localeCompare(right);
 }

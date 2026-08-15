@@ -30,7 +30,7 @@ fn review_tui_chat_carries_findings_into_messages() {
     let msgs = app.build_chat("how do i fix it");
     assert!(
         msgs.iter()
-            .any(|m| m.content.contains("SQL Injection vulnerability")),
+            .any(|m| m.content.text().contains("SQL Injection vulnerability")),
         "chat messages must include the review findings as context"
     );
 }

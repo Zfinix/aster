@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli } from "./asterCli";
 import * as info from "./info";
 import { ChatRunner } from "./chatRunner";
-import { searchFiles, skillCommands } from "./commands";
+import { IGNORED, searchFiles, skillCommands } from "./commands";
 import { listSessions, loadSession } from "./sessions";
 import { FindingDiagnostics } from "./diagnostics";
 import { FindingsTreeProvider, openFinding } from "./findingsTree";
@@ -10,6 +10,7 @@ import { OutputContentProvider } from "./outputProvider";
 import {
   ChatMessage,
   Effort,
+  PastedFile,
   PermissionMode,
   ReviewSource,
   ToHost,
@@ -135,6 +136,9 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       this.detach(tab.webview);
     });
     this.attach(tab.webview);
+    // A command that opened a tab meant that tab: `attach` only fills `active`
+    // when nothing holds it, which would leave replies going to the old surface.
+    this.active = tab.webview;
   }
 
   /** Open as an editor tab, then hand that tab to a new OS window. */
@@ -144,12 +148,20 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Bring the panel into view wherever it already lives. An existing sidebar
-   * view is left alone; otherwise this opens (or reveals) the editor tab, which
-   * is the default surface.
+   * Bring the panel into view wherever it already lives: the sidebar if it is
+   * showing, else the most recent editor tab, else a new one. Reusing the open
+   * tab is the point — this runs from every command that needs a surface, and
+   * spawning one each time would leave a trail of empty conversations.
    */
   reveal(): void {
     if (this.sidebar?.visible) {
+      this.active = this.sidebar.webview;
+      return;
+    }
+    const open = [...this.tabs].pop();
+    if (open) {
+      open.reveal(open.viewColumn ?? vscode.ViewColumn.Active);
+      this.active = open.webview;
       return;
     }
     this.openInEditor(vscode.ViewColumn.Active);
@@ -181,10 +193,19 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.broadcastRunState();
   }
 
-  /** Clear the thread and start a fresh session. */
+  /**
+   * Start a fresh conversation without disturbing one already open. The sidebar
+   * is a single surface, so it starts over in place; editor tabs are not, so a
+   * new one opens beside the old, which keeps its thread. A new webview has no
+   * persisted state of its own, so it comes up clean without being told to.
+   */
   newConversation(): void {
-    this.reveal();
-    this.post({ type: "newConversation" });
+    if (this.sidebar?.visible) {
+      this.active = this.sidebar.webview;
+      this.post({ type: "newConversation" });
+      return;
+    }
+    this.openInEditor(vscode.ViewColumn.Active);
   }
 
   /** Everything the panel can do, from the editor's own palette or a chord. */
@@ -238,6 +259,54 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     if (mentions.length > 0) {
       this.post({ type: "insertMention", text: mentions.join(" ") });
     }
+  }
+
+  /**
+   * Pastes arrive as bytes and a name. A file copied out of the workspace is
+   * matched back to it, name and size, so the agent reads the real file instead
+   * of a stale copy; anything else (a screenshot, a file from elsewhere) is
+   * written under the extension's storage, because the clipboard is all we have
+   * of it.
+   */
+  private async insertPasted(files: PastedFile[]): Promise<void> {
+    const uris: string[] = [];
+    for (const file of files) {
+      const found = await this.findPasted(file);
+      if (found) {
+        uris.push(found.toString());
+        continue;
+      }
+      if (file.data === undefined) {
+        void vscode.window.showWarningMessage(
+          `Aster: ${file.name} is too large to paste; mention it with @ instead.`
+        );
+        continue;
+      }
+      uris.push((await this.writePasted(file, file.data)).toString());
+    }
+    this.insertPaths(uris);
+  }
+
+  private async findPasted(file: PastedFile): Promise<vscode.Uri | undefined> {
+    if (/[[\]{}*?]/.test(file.name)) {
+      return undefined;
+    }
+    // Two candidates: one match is the file, more than one is a guess.
+    const found = await vscode.workspace.findFiles(`**/${file.name}`, IGNORED, 2);
+    if (found.length !== 1) {
+      return undefined;
+    }
+    const stat = await vscode.workspace.fs.stat(found[0]);
+    return stat.size === file.size ? found[0] : undefined;
+  }
+
+  private async writePasted(file: PastedFile, data: string): Promise<vscode.Uri> {
+    const dir = vscode.Uri.joinPath(this.context.globalStorageUri, "pasted");
+    await vscode.workspace.fs.createDirectory(dir);
+    // Stamped, so a second screenshot never overwrites the one already mentioned.
+    const target = vscode.Uri.joinPath(dir, `${Date.now().toString(36)}-${file.name}`);
+    await vscode.workspace.fs.writeFile(target, Buffer.from(data, "base64"));
+    return target;
   }
 
   /** Reopen a saved session by picking it from a quick pick. */
@@ -407,8 +476,21 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       case "info":
         await this.sendInfo(message.id, message.topic);
         break;
+      case "attachFiles": {
+        const root = workspaceRoot();
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: true,
+          openLabel: "Attach",
+          defaultUri: root ? vscode.Uri.file(root) : undefined,
+        });
+        this.insertPaths((picked ?? []).map((uri) => uri.toString()));
+        break;
+      }
       case "dropFiles":
         this.insertPaths(message.uris);
+        break;
+      case "pasteFiles":
+        await this.insertPasted(message.files);
         break;
       case "listMcp":
         await this.sendMcpServers();
@@ -610,6 +692,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       model,
       models: [...MODELS, ...this.customModels().filter((m) => !MODELS.includes(m))],
       recommended: [...MODELS],
+      contextBudget: root ? await info.contextBudget(root, this.env()) : 0,
       permissionMode: this.permissionMode(),
       effort: this.effort(),
       binaryOk: await checkBinary(cliConfig().binary),

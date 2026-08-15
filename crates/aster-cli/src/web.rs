@@ -75,6 +75,14 @@ pub struct SearchArgs {
     /// Maximum number of results (default 5).
     #[arg(long, default_value = "5")]
     pub limit: u32,
+
+    /// Region/language code such as us-en or de-de. Keyless search only.
+    #[arg(long)]
+    pub region: Option<String>,
+
+    /// Adult-content filter: strict, moderate, or off. Keyless search only.
+    #[arg(long)]
+    pub safesearch: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -203,7 +211,12 @@ pub async fn run(args: WebArgs) -> Result<()> {
         }
         WebAction::Search(a) => {
             let status = Status::begin(format!("Searching \"{}\"", a.query));
-            let results = status.end(backend.search(&a.query, a.limit).await, |r| {
+            let opts = aster_web::SearchOptions {
+                limit: a.limit,
+                region: a.region.clone(),
+                safesearch: a.safesearch.clone(),
+            };
+            let results = status.end(backend.search(&a.query, &opts).await, |r| {
                 format!("{} results", r.len())
             })?;
             if crate::json_mode() {

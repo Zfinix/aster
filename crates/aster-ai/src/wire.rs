@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::models::ChatMessage;
+use crate::models::{ChatMessage, IMAGE_OMITTED};
 
 /// Wrapper kept around a folded note, so the model reads it as harness state
 /// rather than as something the user typed.
@@ -54,7 +54,7 @@ pub(crate) fn fold_system_chat(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
             out.push(message);
             continue;
         }
-        let note = wrap(&message.content);
+        let note = wrap(&message.content.text());
         match out.last_mut() {
             Some(previous) if previous.role == "user" => {
                 previous.content.push_str("\n\n");
@@ -62,11 +62,47 @@ pub(crate) fn fold_system_chat(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
             }
             _ => out.push(ChatMessage {
                 role: "user".into(),
-                content: note,
+                content: note.into(),
             }),
         }
     }
     out
+}
+
+/// Whether any turn carries an image, and so whether the model's modalities
+/// matter for this request at all.
+pub(crate) fn carries_images(messages: &[Value]) -> bool {
+    messages.iter().any(|m| {
+        m.get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts
+                    .iter()
+                    .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"))
+            })
+    })
+}
+
+/// Replace every image with [`IMAGE_OMITTED`], leaving a turn the model can
+/// still read. Collapses back to a plain string, which is the shape a
+/// text-only endpoint is likeliest to accept.
+pub(crate) fn strip_image_parts(messages: &mut [Value]) {
+    for message in messages.iter_mut() {
+        let Some(parts) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        let text = parts
+            .iter()
+            .map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("image_url") => IMAGE_OMITTED,
+                _ => part.get("text").and_then(Value::as_str).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(object) = message.as_object_mut() {
+            object.insert("content".into(), Value::String(text));
+        }
+    }
 }
 
 fn wrap(text: &str) -> String {

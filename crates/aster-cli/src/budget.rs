@@ -10,6 +10,9 @@ const RESPONSE_HEADROOM_CHARS: usize = 16_000;
 const KEEP_RECENT: usize = 8;
 /// Tool results below this size are not worth stubbing out.
 const MIN_EVICT_CHARS: usize = 1_000;
+/// What one attached image is charged against the budget: roughly 1500 tokens
+/// at four characters each, near what most providers bill an image at.
+const IMAGE_CHARS: usize = 6_000;
 
 /// One message stubbed out to fit the budget.
 pub(crate) struct Eviction {
@@ -29,9 +32,24 @@ pub(crate) fn history_budget(total: usize, system_chars: usize) -> usize {
 }
 
 pub(crate) fn used(wire: &[Value]) -> usize {
-    wire.iter()
-        .map(|m| m["content"].as_str().map_or(0, str::len))
-        .sum()
+    wire.iter().map(|m| content_chars(&m["content"])).sum()
+}
+
+/// An image is charged flat rather than by the length of its base64: what it
+/// costs is tokens for pixels, which the encoding says nothing about. Counting
+/// the characters instead would let one screenshot swamp the whole budget.
+fn content_chars(content: &Value) -> usize {
+    match content {
+        Value::String(text) => text.len(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("image_url") => IMAGE_CHARS,
+                _ => part.get("text").and_then(Value::as_str).map_or(0, str::len),
+            })
+            .sum(),
+        _ => 0,
+    }
 }
 
 /// Evict by policy: stale tool results first, oldest first, never the recent

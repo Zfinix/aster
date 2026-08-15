@@ -58,6 +58,29 @@ plugins from colliding on a common name like `search`. They are injected through
 the same progressive bridge, and reached over the same transports, as any other
 server ([docs/MCP.md](./MCP.md)).
 
+## Bundled plugins
+
+Aster carries one plugin inside its own binary and writes it into the global
+plugin root the first time it looks for plugins:
+
+| Plugin | Contributes |
+| --- | --- |
+| `websearch` | `search` and `fetch_content`, keyless, over DuckDuckGo |
+
+From then on it is an ordinary installed plugin: it appears in `aster plugins
+list`, its server can be turned off with `aster mcp disable websearch/websearch`,
+and `aster plugins remove websearch` uninstalls it for good. Removal is
+remembered in the plugin's data directory, so a later session does not put it
+back; `aster plugins remove --purge websearch` still keeps that one marker.
+
+Its server is Aster itself, run as `aster mcp serve websearch`, so the package
+carries no code and nothing else has to be installed. That does mean `aster` has
+to be on `PATH` for the server to start.
+
+It is the search of last resort. `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, or
+`BROWSERBASE_API_KEY` gives `web/search` a real backend, whose results carry page
+content rather than a snippet.
+
 ## What Aster supports
 
 Aster implements the whole v1 format:

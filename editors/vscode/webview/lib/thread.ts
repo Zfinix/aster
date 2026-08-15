@@ -68,6 +68,14 @@ export function parsePlan(args: string): PlanStep[] | null {
   }
 }
 
+/** An open approval. `scope` is the directory or credential a "don't ask again"
+ *  would be remembered against; without one there is nothing to remember. */
+export interface ApprovalAsk {
+  preview: string;
+  scope?: string | null;
+  kind?: "plan" | "action";
+}
+
 /** An open `ask_user` prompt: a headline, the question, and the offered answers. */
 export interface Question {
   header: string;
@@ -82,7 +90,7 @@ export interface AssistantTurn {
   text: string;
   blocks: TurnBlock[];
   /** Set while the CLI blocks waiting for an approval reply. */
-  approval?: string;
+  approval?: ApprovalAsk;
   /** Set while `ask_user` blocks waiting for a choice. */
   question?: Question;
   /** True once any token delta arrived, so `text` is already the full answer. */

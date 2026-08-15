@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::{ContentPart, ImageUrl, MessageContent};
 
 fn roles(messages: &[Value]) -> Vec<&str> {
     messages.iter().filter_map(|m| role_of(m)).collect()
@@ -109,7 +110,7 @@ fn the_typed_path_folds_the_same_way() {
     let roles: Vec<&str> = folded.iter().map(|m| m.role.as_str()).collect();
     assert_eq!(roles, ["system", "user", "assistant", "user"]);
     assert_eq!(
-        folded[3].content,
+        folded[3].content.text(),
         "<system-note>Edits are now enabled (auto)</system-note>"
     );
 }
@@ -123,4 +124,91 @@ fn a_conversation_with_no_notes_is_unchanged() {
         json!({ "role": "user", "content": "bye" }),
     ];
     assert_eq!(fold_system_notes(messages.clone()), messages);
+}
+
+#[test]
+fn a_text_turn_still_goes_over_the_wire_as_a_bare_string() {
+    let message = ChatMessage {
+        role: "user".into(),
+        content: "what changed".into(),
+    };
+    let wire = serde_json::to_value(&message).unwrap();
+    assert_eq!(wire["content"], json!("what changed"));
+}
+
+#[test]
+fn a_turn_with_an_image_goes_over_as_the_parts_array() {
+    let message = ChatMessage {
+        role: "user".into(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "what is this".into(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,AAA".into(),
+                },
+            },
+        ]),
+    };
+    let wire = serde_json::to_value(&message).unwrap();
+    assert_eq!(
+        wire["content"],
+        json!([
+            { "type": "text", "text": "what is this" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } },
+        ])
+    );
+}
+
+#[test]
+fn stripping_leaves_a_text_turn_the_model_can_still_read() {
+    let mut wire = vec![json!({
+        "role": "user",
+        "content": [
+            { "type": "text", "text": "what is in @shot.png" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } },
+        ],
+    })];
+    assert!(carries_images(&wire));
+
+    strip_image_parts(&mut wire);
+
+    assert!(!carries_images(&wire));
+    assert_eq!(
+        wire[0]["content"],
+        json!(format!("what is in @shot.png\n{IMAGE_OMITTED}"))
+    );
+}
+
+#[test]
+fn a_conversation_of_text_carries_no_images_to_strip() {
+    let wire = vec![json!({ "role": "user", "content": "plain" })];
+    assert!(!carries_images(&wire));
+}
+
+#[test]
+fn a_note_folded_into_a_turn_with_an_image_keeps_the_image() {
+    let folded = fold_system_chat(vec![
+        ChatMessage {
+            role: "user".into(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "what is this".into(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,AAA".into(),
+                    },
+                },
+            ]),
+        },
+        ChatMessage {
+            role: "system".into(),
+            content: "Edits are now enabled (auto)".into(),
+        },
+    ]);
+    assert_eq!(folded.len(), 1);
+    assert!(folded[0].content.has_images());
+    assert!(folded[0].content.text().contains("<system-note>"));
 }

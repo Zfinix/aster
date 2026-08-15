@@ -165,12 +165,13 @@ export function SpinnerIcon() {
   );
 }
 
-/** A pencil-on-page glyph for starting a fresh conversation. */
+/** A speech bubble with a plus: a pencil reads as "edit this one", and what
+ *  the button does is start another. */
 export function NewChatIcon() {
   return (
     <svg {...base}>
-      <path d="M11.5 2.5l2 2L6 12l-3 1 1-3 7.5-7.5z" />
-      <path d="M2.5 14h11" />
+      <path d="M14 7.4c0 2.7-2.7 4.9-6 4.9a7 7 0 0 1-1.8-.2L3 13.3l1-2.4C2.8 10 2 8.8 2 7.4c0-2.7 2.7-4.9 6-4.9s6 2.2 6 4.9z" />
+      <path d="M8 5.6v3.6M6.2 7.4h3.6" />
     </svg>
   );
 }
@@ -185,3 +186,21 @@ export function HistoryIcon() {
   );
 }
 
+
+/** Opens the add menu: files from disk, or a mention of one in the repo. */
+export function PlusIcon() {
+  return (
+    <svg {...base}>
+      <path d="M8 3.5v9M3.5 8h9" />
+    </svg>
+  );
+}
+
+export function UploadIcon() {
+  return (
+    <svg {...base}>
+      <path d="M8 10.5v-8M4.8 5.7L8 2.5l3.2 3.2" />
+      <path d="M2.8 11v1.5A1.5 1.5 0 004.3 14h7.4a1.5 1.5 0 001.5-1.5V11" />
+    </svg>
+  );
+}

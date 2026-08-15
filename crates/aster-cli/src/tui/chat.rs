@@ -361,9 +361,7 @@ pub async fn run_chat(
                         pane.set_mention_results(&query, paths)
                     }
                     AppEvent::SkillPicked(name) => app.open_skill_actions(&name, &mut pane),
-                    AppEvent::SkillUse(name) => {
-                        pane.composer.insert_str(&format!("Use the \"{name}\" skill: "))
-                    }
+                    AppEvent::SkillUse(name) => pane.composer.insert_str(&format!("/{name} ")),
                     AppEvent::SkillDelete(name) => app.confirm_skill_delete(&name, &mut pane),
                     AppEvent::SkillDeleteConfirmed(name) => {
                         app.delete_skill(&name);
@@ -992,7 +990,7 @@ fn mode_glyph(mode: Mode) -> &'static str {
 const EDIT_NOTE_PREFIX: &str = "Edits are now ";
 
 fn is_edit_note(msg: &ChatMessage) -> bool {
-    msg.role == "system" && msg.content.starts_with(EDIT_NOTE_PREFIX)
+    msg.role == "system" && msg.content.text().starts_with(EDIT_NOTE_PREFIX)
 }
 
 /// Keys the composer answers to. None of them are visible on screen, so
@@ -1443,12 +1441,20 @@ impl ChatApp {
         if self.recorder.is_none() {
             self.start_new_session();
         }
-        let content = render_user_content(text, refs);
+        // Only for a line that opens with one: discovery walks the skills roots
+        // and every installed plugin, which no ordinary message should pay for.
+        let asked = if text.starts_with('/') {
+            let skills = crate::chat::discover_skills(&self.repo_root);
+            crate::chat::expand_skill(text, &skills)
+        } else {
+            text.to_string()
+        };
+        let content = render_user_content(&asked, refs);
         let block = history::user(&content, self.width);
         self.emit(block);
         self.history.push(ChatMessage {
             role: "user".into(),
-            content: content.clone(),
+            content: crate::images::attach(&content, repo_root),
         });
         self.record_user(&content);
         self.thinking = true;
@@ -1569,8 +1575,10 @@ impl ChatApp {
         let turns = messages.iter().filter(|m| m.role == "user").count();
         for m in &messages {
             let block = match m.role.as_str() {
-                "user" => history::user(&m.content, self.width),
-                "assistant" => history::assistant(markdown::render(&m.content), true, self.width),
+                "user" => history::user(&m.content.text(), self.width),
+                "assistant" => {
+                    history::assistant(markdown::render(&m.content.text()), true, self.width)
+                }
                 _ => continue,
             };
             self.emit(block);
@@ -1875,17 +1883,17 @@ impl ChatApp {
         if !instructions.is_empty() {
             fields.push(("instructions", instructions.join(", ")));
         }
-        fields.push((
-            "tools",
-            crate::chat::tool_names(self.mode.can_edit(), true).join(", "),
-        ));
+        let tools = crate::chat::tool_names(self.mode.can_edit(), true);
+        fields.push(("tools", listed(tools.iter().map(String::as_str))));
         if !self.agents.is_empty() {
-            let names: Vec<&str> = self.agents.iter().map(|a| a.name.as_str()).collect();
-            fields.push(("agents", names.join(", ")));
+            fields.push((
+                "agents",
+                listed(self.agents.iter().map(|a| a.name.as_str())),
+            ));
         }
         let skills = crate::chat::discover_skills(&self.repo_root);
         if !skills.is_empty() {
-            fields.push(("skills", listed(skills.iter().map(|s| s.name.as_str()), 10)));
+            fields.push(("skills", listed(skills.iter().map(|s| s.name.as_str()))));
         }
         // MCP is deliberately absent: the `mcp connected` note lands on its
         // own once the servers finish starting.
@@ -2129,19 +2137,9 @@ impl ChatApp {
             "skills" => self.open_skills_picker(pane),
             "memory" => self.show_memory(),
             "quit" | "q" | "exit" => self.should_quit = true,
-            // A skill name typed as a command starts a message that applies
-            // it, with anything after the name carried along as the task.
-            other => {
-                let skills = crate::chat::discover_skills(&self.repo_root);
-                match skills.get(other) {
-                    Some(skill) => {
-                        let task = arg.unwrap_or_default();
-                        pane.composer
-                            .insert_str(&format!("Use the \"{}\" skill: {task}", skill.name));
-                    }
-                    None => self.note(&format!("unknown command: /{other} (try /help)")),
-                }
-            }
+            // Skills never reach here: `/name` submits as a message, so the
+            // composer keeps the command and `expand_skill` spells it out.
+            other => self.note(&format!("unknown command: /{other} (try /help)")),
         }
     }
 
@@ -2164,7 +2162,7 @@ impl ChatApp {
         }
         self.history.push(ChatMessage {
             role: "system".into(),
-            content,
+            content: content.into(),
         });
     }
 
@@ -2249,7 +2247,7 @@ impl ChatApp {
     }
 
     fn show_status(&mut self) {
-        let chars: usize = self.history.iter().map(|m| m.content.len()).sum();
+        let chars: usize = self.history.iter().map(|m| m.content.chars()).sum();
         let mcp = match &self.mcp {
             Some(rt) => format!(
                 "{} ({} tools)",

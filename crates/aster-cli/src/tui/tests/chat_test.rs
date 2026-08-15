@@ -644,7 +644,7 @@ fn resume_by_id_reopens_that_session() {
         .unwrap()
         .unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content, "the first one");
+    assert_eq!(messages[0].content.text(), "the first one");
 }
 
 #[test]
@@ -786,7 +786,7 @@ async fn a_submit_after_mcp_connects_runs_straight_away() {
     assert!(
         app.history
             .iter()
-            .any(|m| m.role == "user" && m.content == "go")
+            .any(|m| m.role == "user" && m.content.text() == "go")
     );
     turn.unwrap().abort();
 }
