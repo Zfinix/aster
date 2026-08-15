@@ -48,6 +48,10 @@ impl WebConfig {
         resolve_key(|name| env::var(name).ok(), &["FIRECRAWL_API_KEY"])
     }
 
+    pub fn resolve_exa_key(&self) -> Option<String> {
+        resolve_key(|name| env::var(name).ok(), &["EXA_API_KEY"])
+    }
+
     pub fn resolve_jina_key(&self) -> Option<String> {
         resolve_key(|name| env::var(name).ok(), &["JINA_API_KEY"])
     }

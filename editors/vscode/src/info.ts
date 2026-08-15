@@ -57,6 +57,17 @@ export async function status(cwd: string, env?: NodeJS.ProcessEnv): Promise<Info
   ];
 }
 
+/** The history size the CLI auto-compacts above, so the panel can show how much
+ *  of it the conversation has spent. Zero when the CLI cannot be asked. */
+export async function contextBudget(cwd: string, env?: NodeJS.ProcessEnv): Promise<number> {
+  try {
+    const s = await json<StatusJson>(["status"], cwd, env);
+    return s.limits.compact_budget_chars;
+  } catch {
+    return 0;
+  }
+}
+
 export async function memoryBlocks(cwd: string): Promise<InfoRow[]> {
   const parsed = await json<{ blocks?: { name: string; description: string }[] }>(
     ["memory", "list"],

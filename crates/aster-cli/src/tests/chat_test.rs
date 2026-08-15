@@ -91,8 +91,74 @@ async fn explore_refuses_to_run_what_needs_the_sequential_path() {
         ]}),
     )
     .await;
-    assert_eq!(out.matches("call this tool on its own").count(), 2, "{out}");
+    assert_eq!(out.matches("call it on its own").count(), 2, "{out}");
+    assert!(out.contains("`run_command` is not a lookup"), "{out}");
     assert!(!out.contains("localhost"), "outside read leaked: {out}");
+}
+
+#[tokio::test]
+async fn explore_reads_outside_the_repo_in_yolo() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("notes.txt");
+    std::fs::write(&path, "outside the repo\n").unwrap();
+    let ctx = SessionCtx {
+        yolo: true,
+        ..SessionCtx::default()
+    };
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &ctx,
+        "explore",
+        json!({ "steps": [
+            { "tool": "read_file", "args": { "path": path.to_string_lossy() } },
+        ]}),
+    )
+    .await;
+    assert!(out.contains("outside the repo"), "{out}");
+    assert!(!out.contains("on its own"), "{out}");
+}
+
+#[tokio::test]
+async fn explore_names_the_tool_a_step_left_out() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [{ "path": "a.rs" }] }),
+    )
+    .await;
+    assert!(out.contains("no tool named"), "{out}");
+    assert!(out.contains("read_file"), "{out}");
+}
+
+#[tokio::test]
+async fn explore_takes_the_other_names_models_use_for_a_step() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("a.rs"), "fn only() {}\n").unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [
+            { "name": "read_file", "arguments": { "path": "a.rs" } },
+            { "tool": "read_file", "args": "{\"path\": \"a.rs\"}" },
+        ]}),
+    )
+    .await;
+    assert!(out.contains("[1] read_file a.rs"), "{out}");
+    assert!(out.contains("[2] read_file a.rs"), "{out}");
+    assert!(!out.contains("on its own"), "{out}");
 }
 
 #[tokio::test]
@@ -461,6 +527,7 @@ async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
         None,
     )
     .await
+    .text
 }
 
 /// A policy in `plan`, the mode the plan tools are reached from.
@@ -496,6 +563,7 @@ async fn run_tool_with(
         None,
     )
     .await
+    .text
 }
 
 #[tokio::test]
@@ -1425,7 +1493,7 @@ fn the_titler_sees_the_user_turns_in_full_and_clips_the_assistant() {
         },
         ChatMessage {
             role: "assistant".into(),
-            content: "x".repeat(900),
+            content: "x".repeat(900).into(),
         },
     ];
     let ctx = title_context(&history);
@@ -1473,4 +1541,54 @@ fn a_malformed_credential_entry_is_dropped_not_fatal() {
     let home = dirs::home_dir().expect("a home directory");
     assert_eq!(grants.granted().len(), 1);
     assert!(grants.allows("gh", &home.join(".config/gh")));
+}
+
+/// A skills root holding one skill, so `/name` has something to resolve to.
+fn skill_set(dir: &std::path::Path, name: &str) -> aster_skills::SkillSet {
+    let root = dir.join("skills").join(name);
+    std::fs::create_dir_all(&root).expect("dirs");
+    std::fs::write(
+        root.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Does the thing.\n---\n\nBody.\n"),
+    )
+    .expect("skill");
+    aster_skills::SkillSet::discover(&[dir.join("skills")])
+}
+
+#[test]
+fn a_leading_skill_name_becomes_the_ask_that_applies_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let skills = skill_set(dir.path(), "write-tests");
+    assert_eq!(
+        expand_skill("/write-tests", &skills),
+        "Use the \"write-tests\" skill:"
+    );
+}
+
+#[test]
+fn what_follows_the_name_is_carried_along_as_the_task() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let skills = skill_set(dir.path(), "write-tests");
+    assert_eq!(
+        expand_skill("/write-tests the parser", &skills),
+        "Use the \"write-tests\" skill: the parser"
+    );
+}
+
+#[test]
+fn a_name_no_skill_answers_to_is_left_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let skills = skill_set(dir.path(), "write-tests");
+    assert_eq!(expand_skill("/compact", &skills), "/compact");
+}
+
+// A dropped path opens with a slash too, and is not an ask for anything.
+#[test]
+fn a_path_is_not_a_skill() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let skills = skill_set(dir.path(), "write-tests");
+    assert_eq!(
+        expand_skill("/Users/chizi/write-tests", &skills),
+        "/Users/chizi/write-tests"
+    );
 }

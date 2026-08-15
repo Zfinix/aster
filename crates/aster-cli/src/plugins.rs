@@ -153,9 +153,93 @@ fn scope_roots(scope: Scope, repo_root: Option<&Path>) -> Result<(PathBuf, PathB
     Ok((base.join("plugins"), base.join("plugin-data")))
 }
 
+/// A plugin Aster carries inside its own binary. It is written into the global
+/// plugin root before discovery, so from then on it is an ordinary installed
+/// plugin: listed, disableable, and removable.
+struct Builtin {
+    name: &'static str,
+    manifest: &'static str,
+    mcp: &'static str,
+}
+
+const BUILTINS: &[Builtin] = &[];
+
+/// Bundled plugins Aster no longer ships. Their directories are removed on
+/// startup: discovery would otherwise keep finding one and spawning a server
+/// whose tools now live in the binary.
+const RETIRED: &[&str] = &["websearch"];
+
+/// Left in a builtin's data directory when the user removes it, so that a later
+/// session does not helpfully put it back.
+const UNINSTALLED: &str = ".uninstalled";
+
+impl Builtin {
+    fn install(&self, root: &Path, data_root: &Path) -> Result<()> {
+        if data_root.join(self.name).join(UNINSTALLED).exists() {
+            return Ok(());
+        }
+        let dir = root.join(self.name);
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        write_if_changed(&dir.join(aster_plugins::MANIFEST_FILE), self.manifest)?;
+        write_if_changed(&dir.join(aster_plugins::MCP_FILE), self.mcp)
+    }
+}
+
+fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
+    if std::fs::read_to_string(path).is_ok_and(|existing| existing == contents) {
+        return Ok(());
+    }
+    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Materialize the bundled plugins and clear out the retired ones. A failure
+/// here is logged, never fatal: the session still works, it just has fewer
+/// tools.
+fn install_builtins() {
+    let Ok((root, data_root)) = scope_roots(Scope::Global, None) else {
+        return;
+    };
+    for builtin in BUILTINS {
+        if let Err(e) = builtin.install(&root, &data_root) {
+            tracing::debug!(plugin = builtin.name, "bundled plugin not installed: {e:#}");
+        }
+    }
+    remove_retired(&root);
+}
+
+/// Delete the directories of plugins Aster used to bundle. Only a directory
+/// Aster wrote itself is removed, so a package the user installed under the
+/// same name survives.
+fn remove_retired(root: &Path) {
+    for name in RETIRED {
+        let dir = root.join(name);
+        if !dir.join(aster_plugins::MCP_FILE).exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            tracing::debug!(plugin = name, "retired plugin not removed: {e}");
+        }
+    }
+}
+
+/// Record that a bundled plugin was removed on purpose. Written even under
+/// `--purge`, since the alternative is the plugin reappearing next session.
+fn mark_uninstalled(name: &str, data_root: &Path) {
+    if !BUILTINS.iter().any(|b| b.name == name) {
+        return;
+    }
+    let dir = data_root.join(name);
+    let marked =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(UNINSTALLED), ""));
+    if let Err(e) = marked {
+        tracing::debug!(plugin = name, "could not record the removal: {e}");
+    }
+}
+
 /// Every installed plugin, this project's shadowing a global one of the same
 /// name. Problems are returned rather than printed so each caller decides.
 pub(crate) fn installed(repo_root: Option<&Path>) -> (Vec<Plugin>, Vec<String>) {
+    install_builtins();
     let mut plugins: Vec<Plugin> = Vec::new();
     let mut problems = Vec::new();
     for scope in [Scope::Project, Scope::Global] {
@@ -407,6 +491,7 @@ fn list(repo_root: Option<&Path>, project_only: bool, global_only: bool) -> Resu
         (_, true) => &[Scope::Global],
         _ => &[Scope::Project, Scope::Global],
     };
+    install_builtins();
 
     let mut sections = Vec::new();
     for &scope in scopes {
@@ -524,6 +609,7 @@ fn remove(
                     .with_context(|| format!("removing {}", data.display()))?;
             }
         }
+        mark_uninstalled(name, &data_root);
         removed.push(name.clone());
         if !json {
             println!("removed {name}");

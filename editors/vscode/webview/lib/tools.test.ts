@@ -7,6 +7,7 @@ import {
   isRun,
   resultHint,
   outputTitle,
+  humanize,
   runLabel,
   toolInput,
   toolPath,
@@ -59,8 +60,9 @@ describe("describeTool", () => {
     });
   });
 
-  it("falls back to the raw name for a tool it does not know", () => {
-    expect(describeTool(call("frobnicate", {}))).toEqual({ verb: "frobnicate" });
+  it("reads a tool it does not know as words, not as an identifier", () => {
+    expect(describeTool(call("frobnicate", {}))).toEqual({ verb: "Frobnicate" });
+    expect(describeTool(call("fetch_content", {}))).toEqual({ verb: "Fetch Content" });
   });
 
   it("counts an explore batch rather than naming every lookup", () => {
@@ -226,6 +228,82 @@ describe("runLabel", () => {
   });
 
   it("falls back to steps for a tool it does not know", () => {
-    expect(runLabel("frobnicate", 4)).toBe("frobnicate 4 steps");
+    expect(runLabel("frobnicate", 4)).toBe("Frobnicate 4 steps");
+  });
+
+  it("counts bridged MCP work as tool calls", () => {
+    expect(runLabel("aster_mcp", 3)).toBe("MCP 3 tool calls");
+  });
+});
+
+describe("humanize", () => {
+  it("reads a tool id as a person would say it, server and all", () => {
+    expect(humanize("linear/save_issue")).toBe("Linear Save Issue");
+    expect(humanize("railway/list-branches")).toBe("Railway List Branches");
+    expect(humanize("fetch_content")).toBe("Fetch Content");
+  });
+
+  it("drops the server once the pair is too long to scan", () => {
+    expect(humanize("chrome-devtools/take_screenshot")).toBe("Take Screenshot");
+    expect(humanize("heroui-native/get_component_docs")).toBe("Get Component Docs");
+  });
+
+  it("does not say a plugin server's name twice", () => {
+    expect(humanize("websearch/websearch/search")).toBe("Web Search");
+    expect(humanize("demo/demo/save_issue")).toBe("Demo Save Issue");
+  });
+
+  it("gives the web tools names that say what they do", () => {
+    expect(humanize("websearch/search")).toBe("Web Search");
+    expect(humanize("websearch/fetch_content")).toBe("Web Fetch");
+    expect(humanize("web/extract")).toBe("Web Fetch");
+    expect(humanize("web/search")).toBe("Web Search");
+  });
+
+  it("leaves a name it cannot improve alone", () => {
+    expect(humanize("search")).toBe("Search");
+    expect(humanize("")).toBe("");
+  });
+});
+
+describe("describeTool on the MCP bridge", () => {
+  it("names the tool an execute reached, not the bridge", () => {
+    const run = call("aster_mcp", {
+      action: "execute",
+      name: "websearch/search",
+      arguments: { query: "agent client protocol" },
+    });
+    expect(describeTool(run)).toEqual({
+      verb: "Web Search",
+      detail: "agent client protocol",
+    });
+  });
+
+  it("falls back to any string argument when it knows no salient key", () => {
+    const run = call("aster_mcp", {
+      action: "execute",
+      name: "railway/deploy",
+      arguments: { serviceName: "api" },
+    });
+    expect(describeTool(run)).toEqual({ verb: "Railway Deploy", detail: "api" });
+  });
+
+  it("says what a discovery call was looking for", () => {
+    const run = call("aster_mcp", { action: "search", query: "web search" });
+    expect(describeTool(run)).toEqual({ verb: "Find tools", detail: "web search" });
+  });
+
+  it("shows the tool id for a describe, monospaced", () => {
+    const run = call("aster_mcp", { action: "describe", name: "linear/save_issue" });
+    expect(describeTool(run)).toEqual({
+      verb: "Inspect",
+      detail: "linear/save_issue",
+      code: true,
+    });
+  });
+
+  it("stays readable while the arguments are still streaming", () => {
+    expect(describeTool(call("aster_mcp", '{"action":"exec'))).toEqual({ verb: "MCP" });
+    expect(describeTool(call("aster_mcp", { action: "execute" }))).toEqual({ verb: "Run tool" });
   });
 });

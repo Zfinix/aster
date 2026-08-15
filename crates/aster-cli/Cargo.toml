@@ -55,3 +55,5 @@ cliclack = "0.5.5"
 console = "0.16"
 aster-telemetry = { version = "0.4.0", path = "../aster-telemetry" }
 aster-eval = { version = "0.4.0", path = "../aster-eval" }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+base64 = "0.23.1"

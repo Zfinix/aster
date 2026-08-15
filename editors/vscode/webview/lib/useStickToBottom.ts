@@ -3,6 +3,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** Within this many px of the bottom still counts as pinned. */
 const THRESHOLD = 48;
 
+export interface ScrollMetrics {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}
+
+/**
+ * Whether the viewport counts as sitting at the bottom. `null` when its metrics
+ * say nothing: a hidden panel reports a zero client height, and treating that as
+ * "scrolled away" is what silently switches following off.
+ */
+export function nearBottom(m: ScrollMetrics): boolean | null {
+  if (m.clientHeight === 0) return null;
+  return m.scrollHeight - m.scrollTop - m.clientHeight <= THRESHOLD;
+}
+
 /**
  * Follows the bottom of a scroll container as content grows, but only while the
  * reader has not scrolled away. Unconditional auto-scroll makes reading back
@@ -25,7 +41,8 @@ export function useStickToBottom() {
   const onScroll = useCallback(() => {
     const el = viewport.current;
     if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+    const near = nearBottom(el);
+    if (near === null) return;
     pinned.current = near;
     setAtBottom(near);
   }, []);
@@ -43,7 +60,10 @@ export function useStickToBottom() {
       // Content also shrinks (a reply replacing tool output, a collapsed row),
       // which leaves `pinned` false with no scroll event coming to correct it
       // and the jump-to-latest pill stranded over a thread that already fits.
-      const near = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+      // A hidden panel is exempt: it reports zero height, which would read as
+      // "scrolled away" and leave following off for good once it came back.
+      const near = nearBottom(el);
+      if (near === null) return;
       pinned.current = near;
       setAtBottom(near);
     });

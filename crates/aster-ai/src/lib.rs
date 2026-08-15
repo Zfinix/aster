@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use tokio::sync::OnceCell;
 
 pub mod retry;
 use retry::RetryWithBackoff;
@@ -26,12 +27,12 @@ mod repetition;
 pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
 
 mod wire;
-use wire::{fold_system_chat, fold_system_notes};
+use wire::{carries_images, fold_system_chat, fold_system_notes, strip_image_parts};
 
 mod models;
 pub use models::{
-    Annotation, AssistantMessage, ChatMessage, ToolCall, ToolCallFunction, UrlCitation,
-    WebSearchPlugin,
+    Annotation, AssistantMessage, ChatMessage, ContentPart, IMAGE_OMITTED, ImageUrl,
+    MessageContent, ReasoningDetail, ToolCall, ToolCallFunction, UrlCitation, WebSearchPlugin,
 };
 use models::{
     ChatRequest, ChatResponse, ChatStreamChunk, Reasoning, StreamOptions, ToolChatRequest,
@@ -94,6 +95,9 @@ pub struct AiClient {
     /// provider runs a web search once per request. Tool-calling requests use
     /// the `openrouter:web_search` server tool instead (see `chat.rs`).
     web_search: bool,
+    /// Whether `model` takes image input, asked of the catalog once and only
+    /// when a request actually carries one.
+    images: Arc<OnceCell<bool>>,
 }
 
 impl AiClient {
@@ -177,6 +181,7 @@ impl AiClient {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_default(),
             web_search: env_truthy("ASTER_WEB_SEARCH"),
+            images: Arc::new(OnceCell::new()),
         }
     }
 
@@ -283,8 +288,9 @@ impl AiClient {
         }
     }
 
-    /// The OpenRouter `web` plugin, only when web search is enabled. Empty vec
-    /// serializes to nothing, so non-OpenRouter endpoints are unaffected.
+    /// The OpenRouter `web` plugin: a forced search on every request, so only
+    /// the tool-less paths take it. Tool-calling requests carry the model-invoked
+    /// `openrouter:web_search` server tool instead (see `chat.rs`).
     fn plugins(&self) -> Vec<WebSearchPlugin> {
         if self.web_search {
             vec![WebSearchPlugin {
@@ -361,10 +367,21 @@ impl AiClient {
         messages: &[ChatMessage],
         temperature: f32,
     ) -> Result<String> {
-        let prompt_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-        let request = self.build_request_from(&self.model, messages.to_vec(), temperature, false);
+        let prompt_chars: usize = messages.iter().map(|m| m.content.chars()).sum();
+        let mut messages = messages.to_vec();
+        let images = messages.iter().any(|m| m.content.has_images());
+        if images && !self.supports_images().await {
+            messages.iter_mut().for_each(|m| m.content.strip_images());
+        }
+        let mut request = self.build_request_from(&self.model, messages, temperature, false);
 
-        let response = self.send_with_retry(&request, "chat request").await?;
+        let response = match self.send_with_retry(&request, "chat request").await {
+            Err(err) if images && rejected_images(&err) => {
+                strip_images(&mut request.messages);
+                self.send_with_retry(&request, "chat request").await?
+            }
+            result => result?,
+        };
         let body = response.text().await.context("reading response body")?;
 
         let parsed: ChatResponse =
@@ -373,7 +390,7 @@ impl AiClient {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .map(|c| c.message.content.text().into_owned())
             .context("no choices in model response")?;
         self.record_usage(parsed.usage, prompt_chars, content.len());
         Ok(content)
@@ -397,7 +414,7 @@ impl AiClient {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .map(|c| c.message.content.text().into_owned())
             .context("no choices in model response")?;
         self.record_usage(parsed.usage, system.len() + user.len(), content.len());
         Ok(content)
@@ -421,9 +438,10 @@ impl AiClient {
         tools: Vec<serde_json::Value>,
         temperature: f32,
     ) -> Result<AssistantMessage> {
-        let messages = fold_system_notes(messages);
+        let mut messages = fold_system_notes(messages);
+        let images = self.settle_images(&mut messages).await;
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
-        let request = ToolChatRequest {
+        let mut request = ToolChatRequest {
             model: model.to_string(),
             temperature: Some(temperature),
             messages,
@@ -433,10 +451,17 @@ impl AiClient {
             seed: self.seed,
             max_tokens: self.max_tokens,
             reasoning: self.reasoning(),
-            plugins: self.plugins(),
+            plugins: Vec::new(),
         };
 
-        let response = self.send_with_retry(&request, "tool chat request").await?;
+        let response = match self.send_with_retry(&request, "tool chat request").await {
+            Err(err) if images && rejected_images(&err) => {
+                tracing::debug!(model, "endpoint rejected the images; retrying without them");
+                strip_image_parts(&mut request.messages);
+                self.send_with_retry(&request, "tool chat request").await?
+            }
+            result => result?,
+        };
         let body = response.text().await.context("reading response body")?;
 
         let parsed: ToolChatResponse =
@@ -540,9 +565,10 @@ impl AiClient {
         temperature: f32,
         mut on_token: impl FnMut(&str),
     ) -> Result<AssistantMessage> {
-        let messages = fold_system_notes(messages);
+        let mut messages = fold_system_notes(messages);
+        let images = self.settle_images(&mut messages).await;
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
-        let request = ToolChatRequest {
+        let mut request = ToolChatRequest {
             model: model.to_string(),
             temperature: Some(temperature),
             messages: messages.clone(),
@@ -554,17 +580,27 @@ impl AiClient {
             seed: self.seed,
             max_tokens: self.max_tokens,
             reasoning: self.reasoning(),
-            plugins: self.plugins(),
+            plugins: Vec::new(),
         };
 
-        let response = self
+        let response = match self
             .send_with_retry(&request, "streaming tool chat request")
-            .await?;
+            .await
+        {
+            Err(err) if images && rejected_images(&err) => {
+                tracing::debug!(model, "endpoint rejected the images; retrying without them");
+                strip_image_parts(&mut request.messages);
+                self.send_with_retry(&request, "streaming tool chat request")
+                    .await?
+            }
+            result => result?,
+        };
 
         let mut content = String::new();
         let mut usage: Option<Usage> = None;
         let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
         let mut annotations: Vec<Annotation> = Vec::new();
+        let mut reasoning_details: Vec<ReasoningDetail> = Vec::new();
         // Some models write their tool calls into the content. The gate keeps
         // that markup off the screen; the block is parsed back out below.
         let mut gate = TokenGate::default();
@@ -595,6 +631,9 @@ impl AiClient {
             }
             if !choice.delta.annotations.is_empty() {
                 annotations = choice.delta.annotations;
+            }
+            for fragment in choice.delta.reasoning_details {
+                merge_reasoning(&mut reasoning_details, fragment);
             }
             for fragment in choice.delta.tool_calls {
                 let slot = partials.entry(fragment.index).or_default();
@@ -672,6 +711,7 @@ impl AiClient {
             content: (!content.is_empty()).then_some(content),
             tool_calls,
             annotations,
+            reasoning_details,
         })
     }
 
@@ -724,22 +764,119 @@ impl AiClient {
 
     /// Fetch available model IDs from the provider's `/models` endpoint, sorted.
     pub async fn fetch_models(&self) -> Result<Vec<String>> {
+        let mut ids: Vec<String> = self
+            .fetch_model_catalog()
+            .await?
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// As [`AiClient::fetch_models`], with the capabilities the endpoint declares
+    /// alongside each ID. Order is the endpoint's own.
+    pub async fn fetch_model_catalog(&self) -> Result<Vec<ModelInfo>> {
         let response = self
             .get_with_retry("/models", "fetching model list")
             .await?;
         let body = response.text().await.context("reading models response")?;
         let parsed: ModelListResponse = serde_json::from_str(&body)
             .with_context(|| format!("parsing models response: {body}"))?;
-        let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
-        ids.sort();
-        Ok(ids)
+        Ok(parsed.data.into_iter().map(ModelInfo::from).collect())
+    }
+
+    /// Drop images the model has already said it cannot take, and report
+    /// whether any survive — the caller needs that to know whether a later
+    /// rejection is worth retrying without them.
+    async fn settle_images(&self, messages: &mut [serde_json::Value]) -> bool {
+        if !carries_images(messages) {
+            return false;
+        }
+        if self.supports_images().await {
+            return true;
+        }
+        strip_image_parts(messages);
+        false
+    }
+
+    /// Whether this client's model takes image input.
+    ///
+    /// Optimistic by design: only an endpoint that declares its modalities and
+    /// leaves images out answers `false`. Most OpenAI-compatible endpoints
+    /// declare nothing, and refusing images there would be worse than trying
+    /// and falling back on the rejection.
+    pub async fn supports_images(&self) -> bool {
+        *self
+            .images
+            .get_or_init(|| async {
+                match self.fetch_model_catalog().await {
+                    Ok(catalog) => catalog
+                        .into_iter()
+                        .find(|m| m.id == self.model)
+                        .and_then(|m| m.takes_images)
+                        .unwrap_or(true),
+                    Err(err) => {
+                        tracing::debug!(%err, "model catalog unavailable; assuming image input");
+                        true
+                    }
+                }
+            })
+            .await
     }
 }
 
-/// Minimal model-list entry from `GET /models`.
+/// An endpoint that refuses an image says so in the error body. Its catalog
+/// declared nothing, or declared wrongly, so the images go and the turn is
+/// tried once more rather than failing outright.
+fn rejected_images(err: &anyhow::Error) -> bool {
+    let text = err.to_string().to_lowercase();
+    ["image", "vision", "multimodal"]
+        .iter()
+        .any(|word| text.contains(word))
+}
+
+fn strip_images(messages: &mut [ChatMessage]) {
+    for message in messages.iter_mut() {
+        message.content.strip_images();
+    }
+}
+
+/// One model the endpoint serves, with what it says about its own inputs.
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    pub id: String,
+    /// `None` when the endpoint declares no modalities, which is not the same
+    /// as declaring text only.
+    pub takes_images: Option<bool>,
+}
+
+impl From<ModelEntry> for ModelInfo {
+    fn from(entry: ModelEntry) -> Self {
+        let takes_images = entry
+            .architecture
+            .filter(|a| !a.input_modalities.is_empty())
+            .map(|a| a.input_modalities.iter().any(|m| m == "image"));
+        Self {
+            id: entry.id,
+            takes_images,
+        }
+    }
+}
+
+/// Model-list entry from `GET /models`. Everything past `id` is OpenRouter's
+/// extension and absent elsewhere, so all of it defaults.
 #[derive(serde::Deserialize)]
 struct ModelEntry {
     id: String,
+    #[serde(default)]
+    architecture: Option<Architecture>,
+}
+
+#[derive(serde::Deserialize)]
+struct Architecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -829,6 +966,36 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn env_f64(key: &str) -> Option<f64> {
     env::var(key).ok().and_then(|v| v.trim().parse().ok())
+}
+
+/// Rejoin a streamed reasoning fragment with the block it belongs to. The
+/// provider only accepts the sequence back when it matches what it emitted, so
+/// fragments sharing an index have to become one block again, in arrival order.
+fn merge_reasoning(out: &mut Vec<ReasoningDetail>, fragment: ReasoningDetail) {
+    let existing = out
+        .iter_mut()
+        .find(|d| d.kind == fragment.kind && d.index.is_some() && d.index == fragment.index);
+    let Some(slot) = existing else {
+        out.push(fragment);
+        return;
+    };
+    extend(&mut slot.text, fragment.text);
+    extend(&mut slot.summary, fragment.summary);
+    extend(&mut slot.data, fragment.data);
+    if fragment.signature.is_some() {
+        slot.signature = fragment.signature;
+    }
+    if fragment.id.is_some() {
+        slot.id = fragment.id;
+    }
+}
+
+fn extend(slot: &mut Option<String>, more: Option<String>) {
+    let Some(more) = more else { return };
+    match slot {
+        Some(existing) => existing.push_str(&more),
+        None => *slot = Some(more),
+    }
 }
 
 /// `ASTER_*` env flags: "1", "true", "yes", "on" (case-insensitive) are truthy.

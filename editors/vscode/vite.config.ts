@@ -6,6 +6,9 @@ import { defineConfig } from "vite";
 // names that panel.ts can reference.
 export default defineConfig({
   plugins: [react()],
+  test: {
+    setupFiles: ["webview/test-setup.ts"],
+  },
   build: {
     outDir: "media/webview",
     emptyOutDir: true,

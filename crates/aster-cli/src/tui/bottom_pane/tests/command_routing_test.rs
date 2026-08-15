@@ -331,3 +331,25 @@ fn the_slash_menu_window_follows_the_selection() {
     );
     assert!(shown.last().unwrap().to_string().contains("+2 more"));
 }
+
+/// A skill is a message the user is still writing, so enter on its row fills
+/// the name in and hands the line back, the way the panel's menu does.
+#[test]
+fn enter_on_a_skill_completes_it_instead_of_running_it() {
+    let mut p = pane();
+    p.set_skills(vec![("academic-paper".into(), "writes papers".into())]);
+    let result = type_and_enter(&mut p, "/acad");
+    assert!(matches!(result, InputResult::None), "must not dispatch");
+    assert_eq!(p.composer.text(), "/academic-paper ");
+}
+
+#[test]
+fn a_skill_with_its_task_submits_as_a_message() {
+    let mut p = pane();
+    p.set_skills(vec![("academic-paper".into(), "writes papers".into())]);
+    let result = type_and_enter(&mut p, "/academic-paper on sandboxes");
+    match result {
+        InputResult::Submitted { text, .. } => assert_eq!(text, "/academic-paper on sandboxes"),
+        _ => panic!("a skill with a task must submit, not dispatch"),
+    }
+}

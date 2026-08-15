@@ -68,3 +68,15 @@ fn eviction_stops_once_under_budget() {
     );
     assert!(used(&wire) <= 110_000);
 }
+
+#[test]
+fn an_attached_image_is_charged_flat_rather_than_by_its_encoding() {
+    let wire = vec![json!({
+        "role": "user",
+        "content": [
+            { "type": "text", "text": "what is this" },
+            { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{}", "A".repeat(400_000)) } },
+        ],
+    })];
+    assert_eq!(used(&wire), "what is this".len() + IMAGE_CHARS);
+}

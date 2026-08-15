@@ -149,7 +149,12 @@ function Prose({ text }: { text: string }) {
       continue;
     }
 
-    const buf: string[] = [];
+    // The first line is taken unconditionally. A block start that reached here
+    // is one no branch above claimed — a table row whose separator has not
+    // streamed in yet — and leaving it for the loop condition to reject would
+    // spin on the same line forever.
+    const buf: string[] = [line.trim()];
+    i++;
     while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) {
       buf.push(lines[i].trim());
       i++;

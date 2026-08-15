@@ -18,6 +18,11 @@ pub struct ModelsArgs {
     /// the one this repo is pointed at.
     #[arg(long)]
     providers: bool,
+
+    /// Report what each model accepts rather than its ID alone. Kept behind a
+    /// flag so the plain list stays the array of strings callers parse.
+    #[arg(long)]
+    capabilities: bool,
 }
 
 pub async fn run(args: ModelsArgs) -> Result<()> {
@@ -27,12 +32,39 @@ pub async fn run(args: ModelsArgs) -> Result<()> {
     if args.providers {
         return list_providers(client.base_url());
     }
+    if args.capabilities {
+        return list_capabilities(&client).await;
+    }
     let models = client.fetch_models().await?;
     if crate::json_mode() {
         println!("{}", serde_json::to_string(&models)?);
     } else {
         for m in &models {
             println!("{m}");
+        }
+    }
+    Ok(())
+}
+
+/// `images: null` is the endpoint saying nothing about its modalities, which
+/// Aster reads as "try it"; `false` is the endpoint ruling images out.
+async fn list_capabilities(client: &aster_ai::AiClient) -> Result<()> {
+    let mut catalog = client.fetch_model_catalog().await?;
+    catalog.sort_by(|a, b| a.id.cmp(&b.id));
+    if crate::json_mode() {
+        let rows: Vec<_> = catalog
+            .iter()
+            .map(|m| serde_json::json!({ "id": m.id, "images": m.takes_images }))
+            .collect();
+        println!("{}", serde_json::to_string(&rows)?);
+    } else {
+        for m in &catalog {
+            let images = match m.takes_images {
+                Some(true) => "images",
+                Some(false) => "text only",
+                None => "unknown",
+            };
+            println!("{}\t{images}", m.id);
         }
     }
     Ok(())

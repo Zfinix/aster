@@ -143,7 +143,7 @@ async fn run_agent(
 
     let history = vec![aster_ai::ChatMessage {
         role: "user".into(),
-        content: task.to_string(),
+        content: task.into(),
     }];
 
     let allow_edits = def

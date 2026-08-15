@@ -51,6 +51,7 @@ fn empty_result_serializes() {
 /// the environment keeps the dispatch tests independent of each other.
 #[derive(Default)]
 struct Configured {
+    exa: bool,
     context_dev: bool,
     firecrawl: bool,
     browserbase: bool,
@@ -60,6 +61,9 @@ struct Configured {
 fn backend(with: Configured) -> WebBackend {
     let timeout = WebConfig::default().defaults.timeout_ms;
     WebBackend {
+        exa: with
+            .exa
+            .then(|| exa::ExaClient::new("exa-key".into(), timeout)),
         context_dev: with
             .context_dev
             .then(|| context_dev::ContextDevClient::new("ctxt-key".into(), timeout)),
@@ -73,6 +77,7 @@ fn backend(with: Configured) -> WebBackend {
             cloudflare_br::CloudflareBrClient::new("acct".into(), "cf-token".into(), timeout)
         }),
         jina: jina::JinaClient::new(None, timeout),
+        duckduckgo: std::sync::Arc::new(duckduckgo::DuckDuckGoClient::new()),
         plain_http: plain_http::PlainHttpClient::new(timeout),
     }
 }
@@ -142,8 +147,9 @@ fn crawl_is_offered_only_by_a_provider_that_supports_it() {
 }
 
 #[test]
-fn search_is_offered_only_by_a_provider_that_supports_it() {
+fn search_is_offered_whether_or_not_a_key_is_set() {
     for with in [
+        Configured::default(),
         Configured {
             context_dev: true,
             ..Default::default()
@@ -156,19 +162,69 @@ fn search_is_offered_only_by_a_provider_that_supports_it() {
             browserbase: true,
             ..Default::default()
         },
-    ] {
-        assert!(tool_names(&backend(with)).contains(&"search".to_string()));
-    }
-
-    for with in [
-        Configured::default(),
         Configured {
             cloudflare: true,
             ..Default::default()
         },
     ] {
-        assert!(!tool_names(&backend(with)).contains(&"search".to_string()));
+        assert!(tool_names(&backend(with)).contains(&"search".to_string()));
     }
+}
+
+#[test]
+fn exa_leads_search_but_not_extract() {
+    let described = |with: Configured, name: &str| {
+        register_tools(&backend(with))
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} is offered"))
+            .description
+    };
+    let both = || Configured {
+        exa: true,
+        context_dev: true,
+        ..Default::default()
+    };
+    assert!(described(both(), "search").contains("Exa"));
+    assert!(!described(both(), "extract").contains("Exa"));
+
+    // On its own Exa still serves extract, just below the specialists.
+    let alone = Configured {
+        exa: true,
+        ..Default::default()
+    };
+    assert!(described(alone, "extract").contains("Exa"));
+}
+
+#[test]
+fn exa_alone_makes_the_backend_api_backed() {
+    assert!(
+        backend(Configured {
+            exa: true,
+            ..Default::default()
+        })
+        .is_api_backed()
+    );
+}
+
+#[test]
+fn a_keyed_provider_wins_the_search_name_from_duckduckgo() {
+    let keyless = register_tools(&backend(Configured::default()));
+    let described = |tools: &[McpTool]| {
+        tools
+            .iter()
+            .find(|t| t.name == "search")
+            .expect("search is always offered")
+            .description
+            .clone()
+    };
+    assert!(described(&keyless).contains("DuckDuckGo"));
+
+    let keyed = register_tools(&backend(Configured {
+        context_dev: true,
+        ..Default::default()
+    }));
+    assert!(!described(&keyed).contains("DuckDuckGo"));
 }
 
 #[test]
@@ -201,16 +257,13 @@ async fn crawl_without_a_capable_provider_says_which_keys_to_set() {
     assert!(msg.contains("FIRECRAWL_API_KEY"), "{msg}");
 }
 
-#[tokio::test]
-async fn search_without_a_capable_provider_says_which_keys_to_set() {
-    let err = backend(Configured::default())
-        .search("rust", 5)
-        .await
-        .expect_err("only Context.dev, Firecrawl, and Browserbase search");
-    let msg = err.to_string();
-    assert!(msg.contains("CONTEXT_DEV_API_KEY"), "{msg}");
-    assert!(msg.contains("FIRECRAWL_API_KEY"), "{msg}");
-    assert!(msg.contains("BROWSERBASE_API_KEY"), "{msg}");
+#[test]
+fn search_falls_through_to_the_keyless_provider() {
+    // Reaching DuckDuckGo would be a network call, so this asserts the tier
+    // exists rather than running it: with no key, search no longer errors.
+    let names = tool_names(&backend(Configured::default()));
+    assert!(names.contains(&"search".to_string()));
+    assert!(names.contains(&"extract".to_string()));
 }
 
 #[tokio::test]
@@ -234,6 +287,7 @@ async fn screenshot_without_context_dev_says_which_key_to_set() {
 #[test]
 fn every_tool_name_is_offered_once_with_all_providers_configured() {
     let all = backend(Configured {
+        exa: true,
         context_dev: true,
         firecrawl: true,
         browserbase: true,

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -57,7 +59,141 @@ pub struct Reasoning {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: MessageContent,
+}
+
+/// What a model that cannot see an image is sent in its place.
+pub const IMAGE_OMITTED: &str = "[image content omitted because this model has no image input]";
+
+/// How an attached image reads wherever a turn is rendered as text: the
+/// transcript, a title, a summary. The mention beside it names the file.
+pub const IMAGE_MARK: &str = "[image]";
+
+/// A turn's content: plain text, or the parts array multimodal turns need.
+///
+/// Untagged, so a text turn still serializes as a bare JSON string and every
+/// endpoint that only ever saw strings sees the same bytes it always did.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+/// One part of a multimodal turn, in the OpenAI shape OpenRouter normalizes
+/// every upstream provider to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// `url` is a `data:` URL: images are always inlined, never fetched by the
+/// provider on our behalf.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+impl MessageContent {
+    /// The turn as text, with each image standing in as [`IMAGE_OMITTED`]. What
+    /// summarizing, titling, and the transcript read.
+    pub fn text(&self) -> Cow<'_, str> {
+        match self {
+            Self::Text(text) => Cow::Borrowed(text),
+            Self::Parts(parts) => Cow::Owned(
+                parts
+                    .iter()
+                    .map(|part| match part {
+                        ContentPart::Text { text } => text.as_str(),
+                        ContentPart::ImageUrl { .. } => IMAGE_MARK,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        }
+    }
+
+    pub fn has_images(&self) -> bool {
+        matches!(self, Self::Parts(parts) if parts
+            .iter()
+            .any(|p| matches!(p, ContentPart::ImageUrl { .. })))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Text(text) => text.is_empty(),
+            Self::Parts(parts) => parts.is_empty(),
+        }
+    }
+
+    /// Append to the trailing text, or start a new text part. Keeps a folded
+    /// system note beside the turn it belongs to without disturbing its images.
+    pub fn push_str(&mut self, extra: &str) {
+        match self {
+            Self::Text(text) => text.push_str(extra),
+            Self::Parts(parts) => match parts.last_mut() {
+                Some(ContentPart::Text { text }) => text.push_str(extra),
+                _ => parts.push(ContentPart::Text {
+                    text: extra.to_string(),
+                }),
+            },
+        }
+    }
+
+    /// Images stand in at a flat rate: their real cost is in tokens the provider
+    /// charges for pixels, which the base64 length says nothing about.
+    pub fn chars(&self) -> usize {
+        match self {
+            Self::Text(text) => text.len(),
+            Self::Parts(parts) => parts
+                .iter()
+                .map(|part| match part {
+                    ContentPart::Text { text } => text.len(),
+                    ContentPart::ImageUrl { .. } => IMAGE_CHARS,
+                })
+                .sum(),
+        }
+    }
+
+    /// Replace every image with [`IMAGE_OMITTED`], for a model that cannot take
+    /// one. A turn left with nothing but text collapses back to a string.
+    pub fn strip_images(&mut self) {
+        let Self::Parts(parts) = self else {
+            return;
+        };
+        for part in parts.iter_mut() {
+            if matches!(part, ContentPart::ImageUrl { .. }) {
+                *part = ContentPart::Text {
+                    text: IMAGE_OMITTED.to_string(),
+                };
+            }
+        }
+        *self = Self::Text(self.text().into_owned());
+    }
+}
+
+/// Roughly 1500 tokens at four characters each, the flat cost the majority of
+/// providers bill an image at.
+const IMAGE_CHARS: usize = 6_000;
+
+impl From<String> for MessageContent {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl From<&str> for MessageContent {
+    fn from(text: &str) -> Self {
+        Self::Text(text.to_string())
+    }
+}
+
+impl std::fmt::Display for MessageContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text())
+    }
 }
 
 #[derive(Deserialize)]
@@ -118,6 +254,51 @@ pub struct AssistantMessage {
     /// source link below the answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<Annotation>,
+    /// The turn's thinking, replayed on the next request so a reasoning model
+    /// resumes its chain of thought after a tool result instead of restarting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_details: Vec<ReasoningDetail>,
+}
+
+/// One block of a reasoning turn. `kind` is `reasoning.text`,
+/// `reasoning.encrypted`, or `reasoning.summary`; `format` names the provider
+/// dialect that produced it, such as `anthropic-claude-v1`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReasoningDetail {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+}
+
+impl ReasoningDetail {
+    /// Whether a different model may be shown this block. Encrypted payloads
+    /// and signed text are sealed against the model that produced them, so
+    /// replaying either after a `/model` switch is rejected upstream.
+    pub fn portable(&self) -> bool {
+        self.kind != "reasoning.encrypted" && self.signature.is_none()
+    }
+
+    /// The block as prose, for the paths that can only carry text.
+    pub fn plain(&self) -> Option<&str> {
+        self.text
+            .as_deref()
+            .or(self.summary.as_deref())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    }
 }
 
 /// A citation annotation on an assistant message. OpenRouter returns these as
@@ -186,6 +367,8 @@ pub struct ChatDelta {
     /// Citations arrive on the final streaming chunk, not per-delta.
     #[serde(default)]
     pub annotations: Vec<Annotation>,
+    #[serde(default)]
+    pub reasoning_details: Vec<ReasoningDetail>,
 }
 
 #[derive(Deserialize)]

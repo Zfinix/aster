@@ -35,9 +35,9 @@ review:
   # Reasoning budget for thinking models: off | low | medium | high.
   effort: low
 
-  # OpenRouter web search. When true, the agent gets a web-search server tool
-  # and review stages get the `web` plugin. No effect on non-OpenRouter
-  # endpoints. Also settable via ASTER_WEB_SEARCH=1.
+  # OpenRouter web search, off by default. On, the agent gets a web-search
+  # server tool and review stages search every request. No effect on
+  # non-OpenRouter endpoints. Set true here or ASTER_WEB_SEARCH=1.
   web_search: false
 
   # Bias the hypothesis pass toward these defect classes.

@@ -26,6 +26,12 @@ fn the_welcome_closes_with_one_tip() {
 }
 
 #[test]
+fn the_tip_is_not_pinned_to_one_entry() {
+    let picks: std::collections::HashSet<&str> = (0..64).map(|_| tip()).collect();
+    assert!(picks.len() > 1, "{picks:?}");
+}
+
+#[test]
 fn an_error_box_frames_and_wraps_every_failure() {
     let problems = vec![
         "linkedin-mcp crashed: Cannot find package '@modelcontextprotocol/sdk'".to_string(),

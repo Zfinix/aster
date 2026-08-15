@@ -44,7 +44,7 @@ marked "review only" are limited to the review pipeline.
 | `model` | string | `openai/gpt-4o-mini` | Fallback for any stage without its own override. Env `ASTER_MODEL`, flag `--model`. |
 | `base_url` | string | `https://openrouter.ai/api/v1` | Any OpenAI-compatible endpoint. Env `ASTER_BASE_URL`. |
 | `effort` | `off` \| `low` \| `medium` \| `high` | `low` | Reasoning budget for thinking models. Env `ASTER_EFFORT` or `ASTER_REASONING_EFFORT`, flag `--effort`. |
-| `web_search` | bool | `false` | OpenRouter web search: the agent gets a server tool, review stages get the `web` plugin. No effect on other endpoints. Env `ASTER_WEB_SEARCH` (`1`, `true`, `yes`, `on`). |
+| `web_search` | bool | `false` | OpenRouter web search: the agent gets a server tool it calls when it needs one, review stages get the `web` plugin, which searches on every request whether or not the diff calls for it. No effect on other endpoints. Env `ASTER_WEB_SEARCH` (`1`, `true`, `yes`, `on`). |
 | `hypothesis_model` | string | same as `model` | Review only. Cheap, high-recall model for the first pass. Env `ASTER_HYPOTHESIS_MODEL`. |
 | `verify_model` | string | same as `model` | Review only. Independent model for the adversarial verify pass. Env `ASTER_VERIFY_MODEL`. |
 | `min_confidence` | float 0.0-1.0 | `0.5` | Review only. Findings below it are dropped. Flag `--min-confidence`. |

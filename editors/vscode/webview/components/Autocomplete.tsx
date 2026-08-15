@@ -1,9 +1,13 @@
+import { FileIcon, FolderIcon } from "./icons";
+
 export interface Suggestion {
   value: string;
   label: string;
   detail?: string;
   /** For file mentions: the repo-relative path `value`'s basename stands for. */
   full?: string;
+  /** A folder, drawn with the folder glyph and a trailing slash. */
+  dir?: boolean;
 }
 
 export function Autocomplete({
@@ -33,6 +37,7 @@ export function Autocomplete({
             onPick(item);
           }}
         >
+          {item.dir ? <FolderIcon /> : <FileIcon />}
           <span className="picker-body">
             <span className="picker-label">{item.label}</span>
             {item.detail && <span className="picker-detail">{item.detail}</span>}

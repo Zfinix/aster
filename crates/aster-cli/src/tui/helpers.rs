@@ -149,13 +149,32 @@ pub(super) fn human_count(n: usize) -> String {
     crate::util::human(n as u64)
 }
 
-/// Join names with commas, keeping the first `max` and counting the rest.
-pub(super) fn listed<'a>(names: impl Iterator<Item = &'a str>, max: usize) -> String {
+/// Names a header list spells out before the rest collapse to `+N more`.
+pub(super) const LIST_MAX: usize = 8;
+
+/// Marks where a `listed` value stops naming and starts counting.
+pub(super) const MORE: &str = "… +";
+
+/// Join names with commas, keeping the first `LIST_MAX` and counting the rest.
+pub(super) fn listed<'a>(names: impl Iterator<Item = &'a str>) -> String {
     let all: Vec<&str> = names.collect();
-    if all.len() <= max {
+    if all.len() <= LIST_MAX {
         return all.join(", ");
     }
-    format!("{} … +{} more", all[..max].join(", "), all.len() - max)
+    format!(
+        "{} {MORE}{} more",
+        all[..LIST_MAX].join(", "),
+        all.len() - LIST_MAX
+    )
+}
+
+/// Split a `listed` value into its names and the `… +N more` tail, which the
+/// caller dims.
+pub(super) fn split_more(value: &str) -> (&str, Option<&str>) {
+    match value.find(MORE) {
+        Some(at) => (value[..at].trim_end(), Some(&value[at..])),
+        None => (value, None),
+    }
 }
 
 /// Clip to `max` display columns with an ellipsis. Measured in columns, not

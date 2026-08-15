@@ -47,6 +47,32 @@ fn yaml_contains_selected_provider() {
 }
 
 #[test]
+fn the_scaffolded_config_parses_with_the_browser_off_and_its_keyed_tools_denied() {
+    let y = yaml_contents("http://localhost:11434/v1", "qwen2.5-coder");
+    let settings: crate::settings::Settings =
+        serde_yaml::from_str(&y).expect("the config Aster writes must be one it can read");
+
+    let browser = settings
+        .mcp
+        .servers
+        .get("browser")
+        .expect("browser is scaffolded");
+    assert!(browser.disabled, "the browser must be opt-in");
+    assert_eq!(browser.command, "uvx");
+    assert_eq!(browser.env["ANONYMIZED_TELEMETRY"], "False");
+
+    assert!(
+        settings
+            .mcp
+            .tools
+            .deny
+            .contains(&"browser/retry_with_browser_use_agent".to_string()),
+        "{:?}",
+        settings.mcp.tools.deny
+    );
+}
+
+#[test]
 fn env_has_key_matches_only_exact_key() {
     let dir = tempfile::tempdir().unwrap();
     let env = dir.path().join(".env");

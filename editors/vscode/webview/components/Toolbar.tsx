@@ -1,7 +1,7 @@
 import { HistoryIcon, NewChatIcon } from "./icons";
 
-/** Compact action bar above the thread: two buttons on the left, conversation
- *  title centered. No border underline. */
+/** Compact action bar above the thread: the conversation title reads first,
+ *  its actions sit out at the trailing edge where a toolbar's controls belong. */
 export function Toolbar({
   title,
   onNewChat,
@@ -13,15 +13,25 @@ export function Toolbar({
 }) {
   return (
     <div className="toolbar">
+      <span className="toolbar-title">{title}</span>
       <div className="toolbar-actions">
-        <button className="ghost" onClick={onNewChat} title="New conversation" aria-label="New conversation">
+        <button
+          className="ghost icon-action"
+          onClick={onNewChat}
+          title="New conversation"
+          aria-label="New conversation"
+        >
           <NewChatIcon />
         </button>
-        <button className="ghost" onClick={onHistory} title="Reopen a session" aria-label="History">
+        <button
+          className="ghost icon-action"
+          onClick={onHistory}
+          title="Reopen a session"
+          aria-label="History"
+        >
           <HistoryIcon />
         </button>
       </div>
-      <span className="toolbar-title">{title}</span>
     </div>
   );
 }

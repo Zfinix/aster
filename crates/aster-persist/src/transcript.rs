@@ -305,7 +305,7 @@ impl SessionTranscript {
         if let Some(summary) = self.latest_summary() {
             out.push(ChatMessage {
                 role: "assistant".into(),
-                content: format!("Summary of earlier conversation:\n{summary}"),
+                content: format!("Summary of earlier conversation:\n{summary}").into(),
             });
         }
         for event in &self.events {
@@ -323,7 +323,7 @@ impl SessionTranscript {
             }
             out.push(ChatMessage {
                 role: m.role.clone(),
-                content: content.to_string(),
+                content: content.into(),
             });
         }
         out

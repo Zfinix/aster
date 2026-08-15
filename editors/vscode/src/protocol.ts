@@ -98,6 +98,15 @@ export interface Provider {
   key_env: string[];
 }
 
+/** A file pasted into the composer: the clipboard carries bytes and a name, never
+ *  the path it came from. */
+export interface PastedFile {
+  name: string;
+  /** Base64 contents, absent when the file is too big to carry through. */
+  data?: string;
+  size: number;
+}
+
 /** A label/value pair in an info card, e.g. one `/status` row. */
 export interface InfoRow {
   label: string;
@@ -144,8 +153,12 @@ export type ToHost =
   | { type: "fetchModels" }
   /** `/status`, `/memory`, `/diff`: each answers with one `info` card. */
   | { type: "info"; id: string; topic: "status" | "memory" | "diff" }
+  /** Pick files from disk, for the composer's `+`; answered with a mention. */
+  | { type: "attachFiles" }
   /** Files dropped on the composer, as `file://` URIs; answered with a mention. */
   | { type: "dropFiles"; uris: string[] }
+  /** Files pasted into the composer; also answered with a mention. */
+  | { type: "pasteFiles"; files: PastedFile[] }
   | { type: "listMcp" }
   | { type: "toggleMcp"; name: string; disabled: boolean }
   | { type: "listProviders" }
@@ -165,6 +178,8 @@ export type ToWebview =
       models: string[];
       /** The vetted subset, shown first; see `MODELS` in panel.ts. */
       recommended: string[];
+      /** History size (chars) the CLI auto-compacts above; 0 when unknown. */
+      contextBudget: number;
       permissionMode: PermissionMode;
       effort: Effort | null;
       binaryOk: boolean;

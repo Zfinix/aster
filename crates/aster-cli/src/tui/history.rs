@@ -427,15 +427,35 @@ pub(super) fn welcome(fields: &[(&str, String)], width: usize) -> Vec<Line<'stat
     // value column instead of running off the edge.
     let value_w = width.saturating_sub(key_w).max(16);
     for (key, value) in fields {
-        for (i, row) in wrap::lines(value, value_w).into_iter().enumerate() {
+        let (names, more) = super::helpers::split_more(value);
+        let mut rows: Vec<Line<'static>> = wrap::lines(names, value_w)
+            .into_iter()
+            .map(|row| Line::from(Span::styled(row, Style::default().fg(theme::get().text))))
+            .collect();
+        // The count of what was cut trails the names, dimmed, and drops to its
+        // own row when the last one has no space left.
+        if let Some(more) = more {
+            let tail = Span::styled(more.to_string(), theme::get().dimmer_style());
+            let fits = rows
+                .last()
+                .is_some_and(|l| l.width() + 1 + wrap::width(more) <= value_w);
+            match fits {
+                true => {
+                    let last = rows.last_mut().expect("fits implies a last row");
+                    last.spans.push(Span::raw(" "));
+                    last.spans.push(tail);
+                }
+                false => rows.push(Line::from(tail)),
+            }
+        }
+        for (i, row) in rows.into_iter().enumerate() {
             let head = match i {
                 0 => Span::styled(format!("{key:<key_w$}"), theme::get().dimmer_style()),
                 _ => Span::raw(" ".repeat(key_w)),
             };
-            lines.push(Line::from(vec![
-                head,
-                Span::styled(row, Style::default().fg(theme::get().text)),
-            ]));
+            let mut spans = vec![head];
+            spans.extend(row.spans);
+            lines.push(Line::from(spans));
         }
     }
     // None of the keys are on screen anywhere else, so the header is where a
@@ -478,12 +498,12 @@ const TIPS: &[&str] = &[
     "/effort cycles the reasoning budget when called with no argument",
 ];
 
+/// Seeded off the hasher rather than the clock: system time lands on whole
+/// microseconds, so `nanos % TIPS.len()` collapses to the same tip every launch.
 fn tip() -> &'static str {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as usize)
-        .unwrap_or(0);
-    TIPS[nanos % TIPS.len()]
+    use std::hash::BuildHasher;
+    let seed = std::hash::RandomState::new().hash_one(TIPS.len()) as usize;
+    TIPS[seed % TIPS.len()]
 }
 
 /// A newer release on GitHub: headline, changelog, and where to get it.
