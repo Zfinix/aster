@@ -50,6 +50,14 @@ export type Turn =
       pending?: boolean;
       error?: boolean;
       steps?: ToolStep[];
+      /** The model's thinking, joined across the turn's rounds. */
+      reasoning?: string;
+      /** Running/final token estimate for the reasoning shown above. */
+      reasoningTokens?: number;
+      /** Wall-clock time the reasoning round took, in milliseconds. */
+      reasoningDurationMs?: number;
+      /** True once `reasoning_done` closed the block. */
+      reasoningDone?: boolean;
       /** Live per-sub-agent state from `agent_status` events. */
       agents?: AgentRun[];
       usage?: Usage | null;
@@ -154,8 +162,95 @@ interface RawEvent {
   type?: string;
   role?: string;
   content?: string;
+  ts?: string;
   tool_call_id?: string;
   tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+  reasoning?: { text?: string; tokens?: number; duration_ms?: number };
+}
+
+function toStep(
+  tc: { id: string; function: { name: string; arguments: string } },
+  results: Map<string, string>,
+): ToolStep {
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(tc.function.arguments || "{}");
+  } catch {
+    args = {};
+  }
+  return {
+    id: tc.id,
+    name: tc.function.name,
+    label: stepLabel(tc.function.name, args),
+    output: results.get(tc.id),
+  };
+}
+
+/**
+ * Rebuild a whole conversation from a saved transcript, so reopening the app
+ * shows the thread rather than an empty pane. Every assistant round between two
+ * user messages folds into one turn, the way it was shown live: steps
+ * accumulate, thinking joins with a blank line, and commentary joins the reply.
+ */
+export function turnsFromEvents(events: unknown[], idPrefix = "h"): Turn[] {
+  const evs = (events as RawEvent[]).filter((e) => e?.type === "message");
+  // Results arrive as their own `tool` events after the call that produced them.
+  const results = new Map<string, string>();
+  for (const e of evs) {
+    if (e.role === "tool" && e.tool_call_id) {
+      results.set(e.tool_call_id, e.content ?? "");
+    }
+  }
+
+  const turns: Turn[] = [];
+  let n = 0;
+  const nextId = () => `${idPrefix}${++n}`;
+  const stamp = (e: RawEvent) => {
+    const ms = e.ts ? Date.parse(e.ts) : NaN;
+    return Number.isNaN(ms) ? undefined : ms;
+  };
+  // The assistant turn currently absorbing rounds; a user message closes it.
+  let open: Extract<Turn, { role: "assistant" }> | null = null;
+
+  for (const e of evs) {
+    if (e.role === "user") {
+      const text = e.content ?? "";
+      if (!text.trim()) continue;
+      open = null;
+      turns.push({ id: nextId(), role: "user", text, ts: stamp(e) });
+      continue;
+    }
+    // Harness steering is recorded as `system`, and tool results were indexed
+    // above; neither is a turn.
+    if (e.role !== "assistant") continue;
+
+    if (!open) {
+      open = { id: nextId(), role: "assistant", text: "", ts: stamp(e) };
+      turns.push(open);
+    }
+    const text = (e.content ?? "").trim();
+    if (text) {
+      open.text = open.text ? `${open.text}\n\n${text}` : text;
+    }
+    const thinking = e.reasoning?.text?.trim();
+    if (thinking) {
+      open.reasoning = open.reasoning ? `${open.reasoning}\n\n${thinking}` : thinking;
+      // The live panel shows the newest round's count over the joined text, so
+      // a reopened turn has to read the same rather than a total.
+      open.reasoningTokens = e.reasoning?.tokens;
+      open.reasoningDurationMs = e.reasoning?.duration_ms;
+      open.reasoningDone = true;
+    }
+    if (e.tool_calls?.length) {
+      open.steps = [...(open.steps ?? []), ...e.tool_calls.map((tc) => toStep(tc, results))];
+    }
+  }
+
+  // A turn that ran tools and never answered (stopped, or the cap tripped) is
+  // still worth showing; one that carries nothing at all is not.
+  return turns.filter(
+    (t) => t.role !== "assistant" || t.text || t.steps?.length || t.reasoning,
+  );
 }
 
 /** Extract the tool calls of the most recent turn from a session transcript:
@@ -180,20 +275,7 @@ export function stepsFromEvents(events: unknown[]): ToolStep[] {
   for (let i = lastUser + 1; i < evs.length; i++) {
     const e = evs[i];
     if (e?.type === "message" && e.role === "assistant" && e.tool_calls?.length) {
-      for (const tc of e.tool_calls) {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(tc.function.arguments || "{}");
-        } catch {
-          args = {};
-        }
-        steps.push({
-          id: tc.id,
-          name: tc.function.name,
-          label: stepLabel(tc.function.name, args),
-          output: results.get(tc.id),
-        });
-      }
+      steps.push(...e.tool_calls.map((tc) => toStep(tc, results)));
     }
   }
   return steps;
