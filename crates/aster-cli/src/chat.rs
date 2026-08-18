@@ -4,12 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
-use aster_ai::{AiClient, Annotation, ChatMessage, DegenerateOutput, UsageSnapshot};
+use aster_ai::{
+    AiClient, Annotation, ChatMessage, DegenerateOutput, ReasoningDetail, UsageSnapshot,
+};
 use aster_persist::{
-    EventUsage, EvictionEvent, MessageEvent, Store, SummaryEvent, TranscriptEvent,
+    EventUsage, EvictionEvent, MessageEvent, ReasoningRecord, Store, SummaryEvent, TranscriptEvent,
 };
 use aster_policy::{Action, Decision, Grants, Policy};
 use clap::Args;
@@ -1065,6 +1068,58 @@ fn emit_citations(annotations: &[Annotation], emit: &impl Fn(Value)) {
     emit(json!({ "type": "citations", "sources": sources }));
 }
 
+/// Rough token estimate from char count (~4 chars/token), matching the client's
+/// estimate when a provider omits usage.
+fn estimate_reasoning_tokens(chars: usize) -> u64 {
+    (chars as u64).div_ceil(4)
+}
+
+/// The turn's thinking, for the hosts that render it as a collapsed block.
+/// Sealed blocks carry no readable text, so a model that only reasons under
+/// encryption emits nothing rather than an empty panel. This whole-blob form is
+/// the fallback for endpoints that answered without streaming reasoning deltas.
+fn emit_reasoning(details: &[ReasoningDetail], duration_ms: u64, emit: &impl Fn(Value)) {
+    let text = reasoning_text(details);
+    if !text.is_empty() {
+        emit(json!({
+            "type": "reasoning",
+            "content": text,
+            "tokens": estimate_reasoning_tokens(text.chars().count()),
+            "duration_ms": duration_ms,
+        }));
+    }
+}
+
+/// The readable thinking across a round's blocks. Shared with [`emit_reasoning`]
+/// so what a reopened session shows cannot drift from what was shown live.
+fn reasoning_text(details: &[ReasoningDetail]) -> String {
+    details
+        .iter()
+        .filter_map(ReasoningDetail::plain)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The round's thinking as a transcript record, or `None` when the model
+/// reasoned under encryption and left nothing readable behind.
+fn reasoning_record(details: &[ReasoningDetail], duration_ms: u64) -> Option<ReasoningRecord> {
+    let text = reasoning_text(details);
+    if text.is_empty() {
+        return None;
+    }
+    Some(ReasoningRecord {
+        tokens: Some(estimate_reasoning_tokens(text.chars().count())),
+        duration_ms: Some(duration_ms),
+        text,
+    })
+}
+
+/// Close a live reasoning block: the final token count and how long the round
+/// took, so a host flips its label from "Thinking…" to "Thought for Xs".
+fn emit_reasoning_done(tokens: u64, duration_ms: u64, emit: &impl Fn(Value)) {
+    emit(json!({ "type": "reasoning_done", "tokens": tokens, "duration_ms": duration_ms }));
+}
+
 /// Read stdin forever, splitting lines by kind: `{"message"}` injections go
 /// into the running turn's queue, everything else is a prompt reply.
 fn spawn_stdin_router(injected: Arc<std::sync::Mutex<Vec<String>>>) -> mpsc::Receiver<Value> {
@@ -1405,6 +1460,11 @@ enum RoundVerdict {
     Correct,
     /// Already corrected and it looped again; abort the turn.
     Abort,
+    /// Rounds keep going by without an edit or a command; tell it to act.
+    /// Carries the streak length, which the injected message names.
+    Nudge(usize),
+    /// Told to act and it kept gathering; stop the tools and make it answer.
+    Wrap,
 }
 
 /// Message injected once when a tool loop is detected. It changes the prompt,
@@ -1417,20 +1477,51 @@ const LOOP_CORRECTION: &str = "You repeated the same tool calls with the same \
 /// cap is a backstop, so it cannot stretch indefinitely.
 const MAX_ROUND_EXTENSIONS: usize = 2;
 
-/// Consecutive identical tool rounds, and consecutive all-error rounds, mean the
-/// model is spinning: correct once, then abort instead of burning the round cap.
+/// Consecutive lookup-only rounds before the model is told to act. Long
+/// investigations are legitimate, so this is high enough to let one finish and
+/// low enough that a wandering turn is caught well before the round cap.
+const BARREN_ROUNDS: usize = 10;
+
+/// Injected once when the model gathers without ever acting. [`LOOP_CORRECTION`]
+/// cannot catch this: the calls differ every round, they just go nowhere.
+fn barren_correction(rounds: usize) -> String {
+    format!(
+        "You have spent {rounds} tool rounds reading and searching without \
+         editing a file or running a command. Stop gathering: nothing you have \
+         searched for so far has changed the answer. Act on what is already \
+         above, or say in one line what is blocking you."
+    )
+}
+
+/// Told once, at the halfway mark, what the turn has left. Without it the model
+/// has no idea a budget exists and no reason to converge before it runs out.
+fn budget_notice(spent: usize, cap: usize) -> String {
+    format!(
+        "You are {spent} tool rounds into this turn; {} remain before it ends \
+         and you have to answer with whatever you have. Spend them finishing, \
+         not gathering.",
+        cap.saturating_sub(spent)
+    )
+}
+
+/// Consecutive identical tool rounds, all-error rounds, and lookup-only rounds
+/// all mean the model is spinning: correct once, then stop instead of burning
+/// the round cap.
 #[derive(Default)]
 struct NoProgress {
     last_round: Option<u64>,
     identical_rounds: usize,
     error_rounds: usize,
+    barren_rounds: usize,
     corrected: bool,
+    nudged: bool,
 }
 
 impl NoProgress {
-    /// Feed one round's signature (hashed name/args/result) and whether every
-    /// result was an error. Returns what the loop should do next.
-    fn feed(&mut self, sig: u64, all_errors: bool) -> RoundVerdict {
+    /// Feed one round's signature (hashed name/args/result), whether every
+    /// result was an error, and whether anything but a lookup ran. Returns what
+    /// the loop should do next.
+    fn feed(&mut self, sig: u64, all_errors: bool, productive: bool) -> RoundVerdict {
         if self.last_round == Some(sig) {
             self.identical_rounds += 1;
         } else {
@@ -1438,18 +1529,41 @@ impl NoProgress {
             self.identical_rounds = 1;
         }
         self.error_rounds = if all_errors { self.error_rounds + 1 } else { 0 };
-        let looping = self.identical_rounds >= 3 || self.error_rounds >= 3;
-        if !looping {
-            return RoundVerdict::Continue;
+        self.barren_rounds = if productive {
+            0
+        } else {
+            self.barren_rounds + 1
+        };
+        if self.identical_rounds >= 3 || self.error_rounds >= 3 {
+            if !self.corrected {
+                self.corrected = true;
+                self.identical_rounds = 0;
+                self.error_rounds = 0;
+                return RoundVerdict::Correct;
+            }
+            return RoundVerdict::Abort;
         }
-        if !self.corrected {
-            self.corrected = true;
-            self.identical_rounds = 0;
-            self.error_rounds = 0;
-            return RoundVerdict::Correct;
+        // Checked after repetition: a model stuck on both is stuck on the
+        // harder one, and that path ends the turn with a clearer reason.
+        if self.barren_rounds >= BARREN_ROUNDS {
+            let streak = std::mem::take(&mut self.barren_rounds);
+            if !self.nudged {
+                self.nudged = true;
+                return RoundVerdict::Nudge(streak);
+            }
+            return RoundVerdict::Wrap;
         }
-        RoundVerdict::Abort
+        RoundVerdict::Continue
     }
+}
+
+/// True when the round did something beyond looking the repository up. Edits,
+/// commands, sub-agents, plan updates, and MCP calls all count; the read tools
+/// and `explore` do not, since a round of those leaves the repo untouched.
+fn is_productive_round(round: &[(String, String, String)]) -> bool {
+    round
+        .iter()
+        .any(|(name, _, _)| !PARALLEL_READ_TOOLS.contains(&name.as_str()) && name != "explore")
 }
 
 /// Hash a round's (tool name, arguments, result) triples so identical rounds
@@ -1499,6 +1613,15 @@ async fn agent_loop(
             sink(event);
         }
     };
+    // Harness-to-model steering. It rides a user turn because a mid-conversation
+    // system message is not portable across providers, but it is recorded as
+    // `system` and never emitted: the user did not say it, so showing it as
+    // though they had would be a lie about who is talking, and replaying it into
+    // a later turn would re-nag the model about a turn that already ended.
+    let steer = |wire: &mut Vec<Value>, content: String| {
+        ctx.record(MessageEvent::system(content.clone()));
+        wire.push(json!({ "role": "user", "content": content }));
+    };
     // Measured first so its reservation (persona, instructions, memory,
     // skills) comes off the top of the budget the history may spend.
     let system = system_prompt(ctx, true);
@@ -1519,6 +1642,9 @@ async fn agent_loop(
     let mut plan_at_extension = plan_snapshot(ctx);
     let mut extensions = 0usize;
     let mut no_progress = NoProgress::default();
+    // The turn tells the model what it has left exactly once. Repeating it
+    // every round would spend more context than the pressure is worth.
+    let mut budget_told = false;
     for round in 0.. {
         if round >= round_cap {
             let now = plan_snapshot(ctx);
@@ -1547,6 +1673,14 @@ async fn agent_loop(
             emit(json!({ "type": "injected", "content": content }));
             ctx.record(MessageEvent::user(content.clone()));
             wire.push(json!({ "role": "user", "content": content }));
+        }
+        // Halfway through the allotment, and only once: the model cannot see
+        // the round counter, so without this it converges only when the cap
+        // forces it to, which reads to the user as the agent never finishing.
+        if !budget_told && round > 0 && round * 2 >= round_cap {
+            budget_told = true;
+            tracing::debug!(round, round_cap, "telling the model its round budget");
+            steer(&mut wire, budget_notice(round, round_cap));
         }
         // Tool results accumulate inside a turn too; evict by policy before
         // each request and leave a trace of everything the model lost.
@@ -1584,6 +1718,11 @@ async fn agent_loop(
         // False when the endpoint ignored `stream` and the client fell back to a
         // whole response, which the commentary emit below has to make up for.
         let mut streamed = false;
+        // Live thinking: chars accumulated across reasoning deltas, so the host
+        // can show a growing token count before the round closes.
+        let mut reasoning_chars = 0usize;
+        let mut streamed_reasoning = false;
+        let started = Instant::now();
         // The client only exposes a cumulative counter, so this round's spend is
         // the delta across the call.
         let before = client.usage_snapshot();
@@ -1596,6 +1735,15 @@ async fn agent_loop(
                 |delta| {
                     streamed = true;
                     emit(json!({ "type": "token", "content": delta }));
+                },
+                |delta| {
+                    streamed_reasoning = true;
+                    reasoning_chars += delta.chars().count();
+                    emit(json!({
+                        "type": "reasoning_delta",
+                        "content": delta,
+                        "tokens": estimate_reasoning_tokens(reasoning_chars),
+                    }));
                 },
             )
             .await
@@ -1621,7 +1769,21 @@ async fn agent_loop(
             }
             Err(e) => return Err(e),
         };
+        let duration_ms = started.elapsed().as_millis() as u64;
         let usage = round_usage(before, client.usage_snapshot());
+        if streamed_reasoning {
+            emit_reasoning_done(
+                estimate_reasoning_tokens(reasoning_chars),
+                duration_ms,
+                &emit,
+            );
+        } else {
+            emit_reasoning(&msg.reasoning_details, duration_ms, &emit);
+        }
+        // Recorded from the assembled blocks either way: the streaming path only
+        // counted characters as they flew past, so this is the one place the
+        // whole thinking exists once the round closes.
+        let reasoning = reasoning_record(&msg.reasoning_details, duration_ms);
 
         if msg.tool_calls.is_empty() {
             let reply = msg
@@ -1633,11 +1795,14 @@ async fn agent_loop(
                 ctx.record(
                     MessageEvent::assistant(Some(reply.clone()), Vec::new())
                         .with_annotations(msg.annotations.clone())
+                        .with_reasoning(reasoning)
                         .with_usage(usage),
                 );
             } else {
                 ctx.record(
-                    MessageEvent::assistant(Some(reply.clone()), Vec::new()).with_usage(usage),
+                    MessageEvent::assistant(Some(reply.clone()), Vec::new())
+                        .with_reasoning(reasoning)
+                        .with_usage(usage),
                 );
             }
             return Ok((reply, compacted));
@@ -1646,6 +1811,7 @@ async fn agent_loop(
         ctx.record(
             MessageEvent::assistant(msg.content.clone(), msg.tool_calls.clone())
                 .with_annotations(msg.annotations.clone())
+                .with_reasoning(reasoning)
                 .with_usage(usage),
         );
         // Text the model emitted alongside its tool calls: its running commentary.
@@ -1779,7 +1945,7 @@ async fn agent_loop(
             span.record("barren", aster_eval::barren(&result));
             span.record("error", result.starts_with("error: "));
             tracing::debug!(tool = %call.function.name, "tool call executed");
-            let result = truncate(&result, MAX_TOOL_RESULT_CHARS);
+            let result = truncate(&crate::redact::redact(&result), MAX_TOOL_RESULT_CHARS);
             round_sig.push((
                 call.function.name.clone(),
                 call.function.arguments.clone(),
@@ -1806,37 +1972,62 @@ async fn agent_loop(
                 wire.push(image_turn(&call.function.name, &images));
             }
         }
-        match no_progress.feed(round_signature(&round_sig), round_all_errors) {
+        let verdict = no_progress.feed(
+            round_signature(&round_sig),
+            round_all_errors,
+            is_productive_round(&round_sig),
+        );
+        match verdict {
             RoundVerdict::Continue => {}
             RoundVerdict::Correct => {
                 tracing::warn!("model looped on tool calls; injecting one correction");
-                emit(json!({ "type": "injected", "content": LOOP_CORRECTION }));
-                ctx.record(MessageEvent::user(LOOP_CORRECTION.to_string()));
-                wire.push(json!({ "role": "user", "content": LOOP_CORRECTION }));
+                steer(&mut wire, LOOP_CORRECTION.to_string());
             }
             RoundVerdict::Abort => {
                 bail!(
                     "the model kept repeating the same tool calls after being told to stop; ending the turn"
                 );
             }
+            RoundVerdict::Nudge(streak) => {
+                tracing::warn!(
+                    streak,
+                    "model kept gathering without acting; telling it to act"
+                );
+                steer(&mut wire, barren_correction(streak));
+            }
+            // Unlike Abort this is not a failed turn: the model gathered plenty,
+            // it just never committed. Fall through to the forced final answer
+            // so the user gets what it found instead of an error.
+            RoundVerdict::Wrap => {
+                tracing::warn!("model kept gathering after being told to act; forcing an answer");
+                break;
+            }
         }
     }
 
-    // Round cap tripped with no plan progress: force a final plain answer out
-    // of what was gathered. Logged rather than shown; the answer itself says
-    // what was not finished.
+    // The round cap tripped, or the model kept gathering after being told to
+    // act. Either way force a final plain answer out of what it did collect.
+    // Logged rather than shown; the answer itself says what was not finished.
     tracing::warn!(
         round_cap,
-        "stopped after the tool-round cap with no plan progress; forcing a final answer"
+        "stopped without a final answer of the model's own; forcing one"
     );
-    wire.push(json!({
-        "role": "user",
-        "content": "Stop using tools and answer now with what you have. Say plainly what you did not get to.",
-    }));
+    steer(
+        &mut wire,
+        "Stop using tools and answer now with what you have. Say plainly what you did not get to."
+            .to_string(),
+    );
     let msg = client
-        .complete_tools_stream_with(&client.model, wire, Vec::new(), CHAT_TEMPERATURE, |delta| {
-            emit(json!({ "type": "token", "content": delta }));
-        })
+        .complete_tools_stream_with(
+            &client.model,
+            wire,
+            Vec::new(),
+            CHAT_TEMPERATURE,
+            |delta| {
+                emit(json!({ "type": "token", "content": delta }));
+            },
+            |_| {},
+        )
         .await?;
     let reply = msg
         .content
@@ -2617,11 +2808,23 @@ async fn explore(
     ctx: &SessionCtx,
     args: &Value,
 ) -> Result<String> {
-    let steps = args["steps"]
-        .as_array()
-        .context("explore needs a `steps` array")?;
+    // A missing or empty `steps` is a recoverable argument mistake, not a tool
+    // failure: answer with the shape so the model can retry instead of showing
+    // the panel a hard "failed" for something it can self-correct.
+    let Some(steps) = steps_array(args) else {
+        return Ok(format!(
+            "no `steps` array given; send the lookups you need as an array of \
+             {{\"tool\": one of {}, \"args\": {{…}}}} objects, in the order you \
+             want them reported",
+            PARALLEL_READ_TOOLS.join(", ")
+        ));
+    };
     if steps.is_empty() {
-        bail!("explore needs at least one step");
+        return Ok(
+            "`steps` was empty; add at least one lookup, or call the single \
+             lookup tool directly instead"
+                .to_string(),
+        );
     }
     let handles: Vec<_> = steps
         .iter()
@@ -2653,6 +2856,16 @@ async fn explore(
         out.push_str(&format!("[{}] {label}\n{text}\n", i + 1));
     }
     Ok(out.trim_end().to_string())
+}
+
+/// The steps an `explore` call names, accepted as an array or, for models that
+/// encode arguments as JSON strings, a string holding one.
+fn steps_array(args: &Value) -> Option<Vec<Value>> {
+    match args.get("steps") {
+        Some(Value::Array(steps)) => Some(steps.clone()),
+        Some(Value::String(raw)) => serde_json::from_str(raw).ok(),
+        _ => None,
+    }
 }
 
 /// The tool a step names. Models reach for `name` about as often as `tool`,

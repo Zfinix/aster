@@ -555,8 +555,10 @@ impl AiClient {
 
     /// Streaming tool-call completion: the same contract as
     /// [`Self::complete_tools_with`], but `on_token` receives each content delta
-    /// as it arrives. Tool-call fragments are reassembled by index. Falls back to
-    /// a non-streaming call when the endpoint yields nothing.
+    /// as it arrives and `on_reasoning` each plaintext thinking fragment, so a
+    /// caller can show reasoning live instead of once the round closes.
+    /// Tool-call fragments are reassembled by index. Falls back to a
+    /// non-streaming call when the endpoint yields nothing.
     pub async fn complete_tools_stream_with(
         &self,
         model: &str,
@@ -564,6 +566,7 @@ impl AiClient {
         tools: Vec<serde_json::Value>,
         temperature: f32,
         mut on_token: impl FnMut(&str),
+        mut on_reasoning: impl FnMut(&str),
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
         let images = self.settle_images(&mut messages).await;
@@ -633,6 +636,14 @@ impl AiClient {
                 annotations = choice.delta.annotations;
             }
             for fragment in choice.delta.reasoning_details {
+                if let Some(delta) = fragment
+                    .text
+                    .as_deref()
+                    .or(fragment.summary.as_deref())
+                    .filter(|s| !s.is_empty())
+                {
+                    on_reasoning(delta);
+                }
                 merge_reasoning(&mut reasoning_details, fragment);
             }
             for fragment in choice.delta.tool_calls {
@@ -969,12 +980,16 @@ fn env_f64(key: &str) -> Option<f64> {
 }
 
 /// Rejoin a streamed reasoning fragment with the block it belongs to. The
-/// provider only accepts the sequence back when it matches what it emitted, so
-/// fragments sharing an index have to become one block again, in arrival order.
+/// provider only accepts the sequence back when it matches what it emitted,
+/// so fragments with the same kind and index have to become one block again,
+/// in arrival order. Fragments without an index merge into the last block
+/// of the same kind, since the provider does not give us a way to
+/// distinguish them.
 fn merge_reasoning(out: &mut Vec<ReasoningDetail>, fragment: ReasoningDetail) {
     let existing = out
         .iter_mut()
-        .find(|d| d.kind == fragment.kind && d.index.is_some() && d.index == fragment.index);
+        .rev()
+        .find(|d| d.kind == fragment.kind && d.index == fragment.index);
     let Some(slot) = existing else {
         out.push(fragment);
         return;

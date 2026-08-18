@@ -80,6 +80,32 @@ fn detail(kind: &str, index: u32) -> ReasoningDetail {
 }
 
 #[test]
+fn reasoning_fragments_without_index_merge_into_last_block() {
+    let mut out = Vec::new();
+    let kind = |text: &str, index: Option<u32>| ReasoningDetail {
+        kind: "reasoning.text".into(),
+        format: Some("anthropic-claude-v1".into()),
+        text: Some(text.into()),
+        summary: None,
+        data: None,
+        signature: None,
+        id: None,
+        index,
+    };
+
+    // A normal indexed block
+    merge_reasoning(&mut out, kind("first block ", Some(0)));
+
+    // Two fragments without an index — they should merge into one
+    merge_reasoning(&mut out, kind("fragment a ", None));
+    merge_reasoning(&mut out, kind("fragment b", None));
+
+    assert_eq!(out.len(), 2, "indexed block and unindexed merged block");
+    assert_eq!(out[0].text.as_deref(), Some("first block "));
+    assert_eq!(out[1].text.as_deref(), Some("fragment a fragment b"));
+}
+
+#[test]
 fn streamed_reasoning_fragments_sharing_an_index_rejoin_in_order() {
     let mut out = Vec::new();
     for chunk in ["the ", "config ", "is inert"] {

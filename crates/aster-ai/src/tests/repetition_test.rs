@@ -93,7 +93,7 @@ async fn degenerate_stream_is_cut_off_mid_turn() {
 
     let client = AiClient::new(server.uri(), "test-key", "mock-model");
     let err = client
-        .complete_tools_stream_with("mock-model", vec![], vec![], 0.0, |_| {})
+        .complete_tools_stream_with("mock-model", vec![], vec![], 0.0, |_| {}, |_| {})
         .await
         .unwrap_err();
     assert!(
