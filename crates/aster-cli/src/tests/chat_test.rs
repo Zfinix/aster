@@ -76,6 +76,41 @@ async fn explore_reports_steps_in_the_order_they_were_sent() {
 }
 
 #[tokio::test]
+async fn explore_without_steps_answers_with_the_shape_instead_of_failing() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({}),
+    )
+    .await;
+    assert!(!out.starts_with("error: "), "{out}");
+    assert!(out.contains("`steps` array"), "{out}");
+    assert!(out.contains("read_file"), "{out}");
+}
+
+#[tokio::test]
+async fn explore_accepts_steps_as_a_json_string() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("a.rs"), "fn needle() {}\n").unwrap();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": "[{\"tool\":\"read_file\",\"args\":{\"path\":\"a.rs\"}}]" }),
+    )
+    .await;
+    assert!(out.contains("needle"), "{out}");
+}
+
+#[tokio::test]
 async fn explore_refuses_to_run_what_needs_the_sequential_path() {
     let repo = tempfile::tempdir().unwrap();
     let out = run_tool_with(
@@ -162,7 +197,7 @@ async fn explore_takes_the_other_names_models_use_for_a_step() {
 }
 
 #[tokio::test]
-async fn explore_needs_at_least_one_step() {
+async fn explore_with_empty_steps_suggests_a_single_lookup() {
     let repo = tempfile::tempdir().unwrap();
     let out = run_tool_with(
         repo.path(),
@@ -174,7 +209,8 @@ async fn explore_needs_at_least_one_step() {
         json!({ "steps": [] }),
     )
     .await;
-    assert!(out.starts_with("error: "), "{out}");
+    assert!(!out.starts_with("error: "), "{out}");
+    assert!(out.contains("empty"), "{out}");
 }
 
 #[tokio::test]
@@ -1395,49 +1431,115 @@ fn read_file_is_left_to_its_own_mtime_cache() {
 #[test]
 fn no_progress_corrects_then_aborts_on_identical_rounds() {
     let mut np = NoProgress::default();
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Correct));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Correct));
     // Corrected once; another three identical rounds are the hard abort.
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Abort));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Abort));
 }
 
 #[test]
 fn no_progress_corrects_then_aborts_on_error_storm() {
     let mut np = NoProgress::default();
     // Different failing calls still count as an error storm.
-    assert!(matches!(np.feed(1, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(2, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(3, true), RoundVerdict::Correct));
-    assert!(matches!(np.feed(4, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(5, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(6, true), RoundVerdict::Abort));
+    assert!(matches!(np.feed(1, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(2, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(3, true, true), RoundVerdict::Correct));
+    assert!(matches!(np.feed(4, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(5, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(6, true, true), RoundVerdict::Abort));
 }
 
 #[test]
 fn no_progress_a_differing_round_resets_the_streak() {
     let mut np = NoProgress::default();
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
     // A new round breaks the streak.
-    assert!(matches!(np.feed(2, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(1, false), RoundVerdict::Correct));
+    assert!(matches!(np.feed(2, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, false, true), RoundVerdict::Correct));
 }
 
 #[test]
 fn no_progress_a_good_round_resets_the_error_streak() {
     let mut np = NoProgress::default();
-    assert!(matches!(np.feed(1, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(2, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(1, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(2, true, true), RoundVerdict::Continue));
     // A round with a non-error result resets the storm.
-    assert!(matches!(np.feed(3, false), RoundVerdict::Continue));
-    assert!(matches!(np.feed(4, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(5, true), RoundVerdict::Continue));
-    assert!(matches!(np.feed(6, true), RoundVerdict::Correct));
+    assert!(matches!(np.feed(3, false, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(4, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(5, true, true), RoundVerdict::Continue));
+    assert!(matches!(np.feed(6, true, true), RoundVerdict::Correct));
+}
+
+/// The wandering case the repetition guard cannot see: every round differs, so
+/// the signature never repeats, and nothing ever gets edited.
+#[test]
+fn no_progress_nudges_then_wraps_on_lookup_only_rounds() {
+    let mut np = NoProgress::default();
+    for round in 0..BARREN_ROUNDS - 1 {
+        assert!(matches!(
+            np.feed(round as u64, false, false),
+            RoundVerdict::Continue
+        ));
+    }
+    let nudged = np.feed(BARREN_ROUNDS as u64, false, false);
+    assert!(matches!(nudged, RoundVerdict::Nudge(n) if n == BARREN_ROUNDS));
+    // Nudged once; a second barren allotment ends the turn with an answer.
+    for round in 0..BARREN_ROUNDS - 1 {
+        assert!(matches!(
+            np.feed(100 + round as u64, false, false),
+            RoundVerdict::Continue
+        ));
+    }
+    assert!(matches!(np.feed(999, false, false), RoundVerdict::Wrap));
+}
+
+#[test]
+fn no_progress_acting_resets_the_barren_streak() {
+    let mut np = NoProgress::default();
+    for round in 0..BARREN_ROUNDS - 1 {
+        assert!(matches!(
+            np.feed(round as u64, false, false),
+            RoundVerdict::Continue
+        ));
+    }
+    // One edit clears the streak, so a long read before a change is fine.
+    assert!(matches!(np.feed(50, false, true), RoundVerdict::Continue));
+    for round in 0..BARREN_ROUNDS - 1 {
+        assert!(matches!(
+            np.feed(100 + round as u64, false, false),
+            RoundVerdict::Continue
+        ));
+    }
+    assert!(matches!(np.feed(999, false, false), RoundVerdict::Nudge(_)));
+}
+
+#[test]
+fn a_round_of_only_lookups_is_not_productive() {
+    let lookup = |name: &str| (name.to_string(), "{}".to_string(), "ok".to_string());
+    assert!(!is_productive_round(&[
+        lookup("search_files"),
+        lookup("read_file"),
+        lookup("explore"),
+    ]));
+    // One edit beside the reads makes the whole round count.
+    assert!(is_productive_round(&[
+        lookup("search_files"),
+        lookup("edit_file"),
+    ]));
+    assert!(is_productive_round(&[lookup("run_command")]));
+}
+
+#[test]
+fn budget_notice_names_what_is_left() {
+    let notice = budget_notice(30, 60);
+    assert!(notice.contains("30 tool rounds into this turn"));
+    assert!(notice.contains("30 remain"));
 }
 
 #[test]
