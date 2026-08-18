@@ -22,3 +22,6 @@ web/
 _archive/
 .buildcache/
 .mcp.json
+
+# Node
+node_modules/
