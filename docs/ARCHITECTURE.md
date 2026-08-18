@@ -43,12 +43,16 @@ crates/
   aster-agents/      agent definitions: AGENT.md parsing, discovery, registry
   aster-tools/       tiered search/list/find/suggest (rg/fd native, hand-rolled fallback)
   aster-sandbox/     OS-native command sandbox (macOS Seatbelt, Linux bubblewrap)
-  aster-web/         web extraction/crawling via pluggable providers, MCP tools
+  aster-web/         search/extract/crawl over pluggable providers, keyless by default
   aster-cli/         CLI and TUI entry points, chat loop, tool dispatch
+  aster-eval/        grades recorded sessions and sweeps models through fixed cases
 ```
 
 Chat sessions and durable memory are documented separately in
 [`MEMORY.md`](./MEMORY.md).
+
+How the two evaluation instruments work, what their metrics mean, and the limits
+on what they can claim are documented in [`EVAL.md`](./EVAL.md).
 
 The Agent Plugins package format, and how a plugin's skills and MCP servers
 reach a session, are documented in [`PLUGINS.md`](./PLUGINS.md).

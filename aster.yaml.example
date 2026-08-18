@@ -111,6 +111,9 @@ agents:
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.
 # Installed plugins add their own here as `<plugin>/<server>`; see
 # docs/PLUGINS.md.
+#
+# Web search and page reading need no server and no key: they ship in the
+# binary as `web/search` and `web/extract`. See docs/MCP.md.
 mcp:
   # How much of the context the tool inventory may spend before the prompt
   # drops to server names only and the model searches for what it needs.
@@ -118,14 +121,19 @@ mcp:
   inventory_percent: 1.5
   search_limit: 10          # matches returned by one `search`
   servers:
-    chrome:
-      command: npx
-      args: ["-y", "chrome-devtools-mcp@latest"]
-      # Extra environment for the server, merged over the inherited one.
-      # env:
-      #   CHROME_PATH: /usr/bin/chromium
-      # Working directory for the server; inherited when unset.
-      # cwd: ./tools/chrome
+    # A real browser: navigate, click, type, screenshot. Needs uv and Python
+    # 3.11+, then `uvx browser-use install` once to fetch Chromium. It browses
+    # in its own profile under ~/.config/browseruse, not your signed-in Chrome.
+    browser:
+      command: uvx
+      args: ["--from", "browser-use", "browser-use", "--mcp"]
+      env:
+        # browser-use reports usage to its vendor unless this is set.
+        ANONYMIZED_TELEMETRY: "False"
+        # Without this the browser opens a window on your screen.
+        BROWSER_USE_HEADLESS: "true"
+        # Uncomment to confine the agent to named hosts.
+        # BROWSER_USE_ALLOWED_DOMAINS: "example.com,docs.rs"
       disabled: true
     # A remote server names a url instead of a command. The transport is
     # Streamable HTTP unless `type: sse` asks for the older binding.
@@ -133,3 +141,14 @@ mcp:
       url: https://mcp.deepwiki.com/mcp
       # headers:
       #   X-Tenant: acme
+
+  # Turn individual tools off by their `server/tool` id; globs work. `deny`
+  # wins over `allow`, and an empty `allow` means every tool. Also settable
+  # with `aster mcp disable web/crawl`.
+  tools:
+    allow: []
+    deny:
+      # Both want a second LLM API key, and the retry tool runs a whole agent
+      # loop inside one tool call.
+      - "browser/browser_extract_content"
+      - "browser/retry_with_browser_use_agent"

@@ -211,6 +211,8 @@ probability, so treat the number as a ranking signal rather than odds.
 | `aster sessions` | Past conversations. `list`, `show`, `delete`, `prune`. |
 | `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `bundled`, `remove`. |
 | `aster plugins` | Agent Plugins packages of skills and MCP servers. `add`, `list`, `remove`, `validate`. |
+| `aster provider` | The endpoint Aster talks to. `list`, `use`. |
+| `aster model` | The model it runs. `list`, `use`, `recommended`. |
 | `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`. |
 | `aster web` | Fetch a page or crawl a site as Markdown. |
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
@@ -223,6 +225,30 @@ reasoning budget on the commands that run a model: chat, `review`, and `fix`.
 aster --json sessions list
 aster review --effort high
 ```
+
+### Provider and model
+
+Aster talks to any OpenAI-compatible endpoint. Switching is one command, and it
+switches everywhere: the terminal, the VS Code panel, and the desktop app all
+resolve from the same `aster.yaml`.
+
+```bash
+aster provider list                        # the endpoints Aster knows
+aster provider use openai                  # repoint, adopting a model it serves
+aster provider use openai --model gpt-5.5  # or name the model yourself
+aster model list                           # what this endpoint serves
+aster model use gpt-5.5                    # change the model, keep the endpoint
+```
+
+`provider use` writes the endpoint and the model together, because an endpoint
+kept with the last one's model fails on the next turn. Both commands then print
+what the next turn actually resolves to, which is not always what you just
+saved: `ASTER_MODEL` and `ASTER_BASE_URL` outrank the file, and either one being
+set in your shell is reported rather than left to surprise you.
+
+Keys follow the endpoint. A var named for it wins over the shared
+`ASTER_API_KEY`, so `ANTHROPIC_API_KEY` is picked up the moment you switch to
+Anthropic. In the TUI, `/provider` and `/model` do the same thing interactively.
 
 ### Memory
 
@@ -335,6 +361,7 @@ diagrams and the reasoning behind each decision, lives in the docs:
 | [MCP.md](./docs/MCP.md) | Progressive tool injection: one bridge, schemas on demand. |
 | [PLUGINS.md](./docs/PLUGINS.md) | The Agent Plugins package format, and what Aster supports. |
 | [ANALYZERS.md](./docs/ANALYZERS.md) | Wiring semgrep and ast-grep into review. |
+| [EVAL.md](./docs/EVAL.md) | How Aster measures itself, and what those numbers cannot claim. |
 | [ROADMAP.md](./docs/ROADMAP.md) | What is next. |
 
 ## Repository layout
