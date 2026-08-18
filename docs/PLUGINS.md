@@ -60,26 +60,18 @@ server ([docs/MCP.md](./MCP.md)).
 
 ## Bundled plugins
 
-Aster carries one plugin inside its own binary and writes it into the global
-plugin root the first time it looks for plugins:
+Aster carries no plugin inside its binary today. The machinery is still there:
+a bundled plugin is written into the global plugin root the first time Aster
+looks for plugins, and from then on it is an ordinary installed plugin, listed
+by `aster plugins list` and removable with `aster plugins remove`. Removal is
+remembered in the plugin's data directory so a later session does not put it
+back.
 
-| Plugin | Contributes |
-| --- | --- |
-| `websearch` | `search` and `fetch_content`, keyless, over DuckDuckGo |
-
-From then on it is an ordinary installed plugin: it appears in `aster plugins
-list`, its server can be turned off with `aster mcp disable websearch/websearch`,
-and `aster plugins remove websearch` uninstalls it for good. Removal is
-remembered in the plugin's data directory, so a later session does not put it
-back; `aster plugins remove --purge websearch` still keeps that one marker.
-
-Its server is Aster itself, run as `aster mcp serve websearch`, so the package
-carries no code and nothing else has to be installed. That does mean `aster` has
-to be on `PATH` for the server to start.
-
-It is the search of last resort. `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, or
-`BROWSERBASE_API_KEY` gives `web/search` a real backend, whose results carry page
-content rather than a snippet.
+Aster used to bundle a `websearch` plugin that ran `aster mcp serve websearch`
+as a subprocess of itself. Web search now ships in the binary as `web/search`,
+so that plugin is gone and its directory is deleted from existing installs on
+the next start. See [docs/MCP.md](./MCP.md#web-tools) for the tools that
+replaced it.
 
 ## What Aster supports
 

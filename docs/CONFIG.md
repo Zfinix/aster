@@ -29,9 +29,22 @@ CLI flags, then shell environment, then the project file, then the global file,
 then built-in defaults. A non-empty environment variable beats the file; an
 empty one counts as unset.
 
-API keys are never read from `aster.yaml`. They come from `ASTER_API_KEY` or
-`OPEN_ROUTER_API_KEY` in the environment, which `aster init` writes to `.env`
-next to the config, or from `aster login` for GitHub.
+API keys are never read from `aster.yaml`. They come from the environment, which
+`aster init` writes to `.env` next to the config, or from `aster login` for
+GitHub.
+
+A key named for the endpoint in use wins over the shared one, so switching
+provider picks up a key you already export instead of demanding you move it:
+
+1. The endpoint's own var, when it has one: `ANTHROPIC_API_KEY`,
+   `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`,
+   `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `OPEN_ROUTER_API_KEY` or
+   `OPENROUTER_API_KEY`
+2. `ASTER_API_KEY`, then `OPEN_ROUTER_API_KEY`
+
+`aster provider use` reports which of the two it would use, and says so when it
+falls back to the shared key: a key issued for the last endpoint is usually
+rejected by the next one.
 
 ## `review`
 
@@ -180,6 +193,7 @@ MCP servers and the budget their tool inventory may spend. See
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `servers` | map of name to server | `{}` | One entry per server. |
+| `tools` | `allow`/`deny` glob lists | `{}` | Which tools reach the model, by `server/tool` id. See below. |
 | `context_tokens` | int | `100000` | Context the inventory is measured against. |
 | `inventory_percent` | float | `1.5` | Share of `context_tokens` the inventory may spend. Above it the prompt lists servers only and the model searches. Clamped to 0.01-100. |
 | `search_limit` | int | `10` | Matches returned by one `search`. |
@@ -206,6 +220,29 @@ root and `~/.aster/mcp.json` are read natively, and installed plugins contribute
 theirs as `<plugin>/<server>`. Both only fill names `aster.yaml` did not already
 define, so the YAML always wins a collision.
 
+### `mcp.tools`
+
+`disabled` turns off a whole server. `mcp.tools` turns off one tool, matching
+globs against the `server/tool` id.
+
+```yaml
+mcp:
+  tools:
+    allow: []          # empty means every tool
+    deny:
+      - "web/crawl"
+      - "browser/*"
+```
+
+`deny` wins over `allow`, so denying a tool an `allow` also names still turns it
+off. The filter runs after every server has listed, so it covers the in-process
+`web` server as well as third-party ones. A bad glob is reported and that one
+rule is dropped, rather than costing the session its catalogue.
+
+`aster mcp disable web/crawl` writes the id into `deny`, and `aster mcp enable
+web/crawl` removes it. Without a `/` those commands still flip a server's
+`disabled` line, as before. `aster mcp list` reports what the filter held back.
+
 ## Merging
 
 The project file layers over the global one, but not uniformly. The rules differ
@@ -223,6 +260,8 @@ leave it true.
 
 **`mcp.servers`** unions by name, with the project's definition winning a
 collision, so a repo can point a shared server name at its own binary.
+**`mcp.tools`** unions both lists, like `permissions`: a global `deny` is a
+decision, and a project file omitting the key must not undo it.
 
 ## Settings that are environment-only
 
@@ -230,7 +269,7 @@ A few knobs have no `aster.yaml` key.
 
 | Env var | What it does | Default |
 | --- | --- | --- |
-| `ASTER_API_KEY` | Provider key. `OPEN_ROUTER_API_KEY` is accepted too. | required |
+| `ASTER_API_KEY` | Provider key. `OPEN_ROUTER_API_KEY` is accepted too, and a var named for the endpoint beats both; see [Precedence](#precedence). | required |
 | `ASTER_MAX_TOKENS` | Cap on generated tokens; `0`, `none`, or `off` removes the cap. | `8000` |
 | `ASTER_SEED` | Fixed sampling seed; `none` or `off` disables it. | `0` |
 | `ASTER_VERIFY_CONCURRENCY` | Verify passes run at once during review. | `8` |
@@ -246,3 +285,23 @@ A few knobs have no `aster.yaml` key.
 `review.model` and `review.base_url` back into whichever file is in play, the
 project's when one exists and the global one otherwise. Those edits rewrite a
 single line and leave the rest of the file, comments included, byte for byte.
+
+From outside the TUI, the same two keys are written by:
+
+| Command | Writes |
+| --- | --- |
+| `aster provider use <id\|name\|url> [--model ID]` | `base_url` and `model` together, adopting the catalog's example model when `--model` is left off |
+| `aster model use <ID>` | `model` |
+
+Both then print what the next turn actually resolves to, which is not always
+what was just saved: `ASTER_MODEL` and `ASTER_BASE_URL` outrank the file, so
+either one being set in your shell is reported rather than left to surprise you
+later. `--json` returns the same as a `{"model", "provider", "base_url",
+"config", "key_env", "has_key", "shadowed_by_env"}` object.
+
+Reading the other way, `aster status --json` reports the resolved provider and
+model without changing anything, `aster provider list` shows the catalog with
+the endpoint in use marked, and `aster model list` asks that endpoint what it
+serves. `aster model recommended` answers from the catalog instead, so a picker
+has something to show before the endpoint has been asked. Every surface reads
+these rather than keeping a list of its own.

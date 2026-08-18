@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The agent stops gathering instead of wandering.** The loop's runaway
+  guards all watched for repetition, which a model that varies its query never
+  trips: a turn could spend forty rounds searching without editing a thing and
+  every guard would call it progress. Rounds where nothing but a lookup ran are
+  now counted too. Ten in a row and the loop says so; ten more and the turn ends
+  by answering with what it found, which is not a failed turn and no longer
+  reads as one. Any edit or command resets the streak, so a long investigation
+  before a change is untouched. The model is also told its round budget once, at
+  the halfway mark, since it could not see the counter it was running against.
+- **Reopening a session brings back the whole thread.** A turn's reasoning is
+  recorded in the transcript rather than streamed and forgotten, and both the
+  VS Code panel and the desktop app rebuild a loaded session's blocks in the
+  order they happened: the thinking, the reply, then the steps it ran. The
+  desktop sidebar now fills itself from sessions on disk at startup, where it
+  used to open empty every launch. Sessions saved before this reload without
+  reasoning, because it was never written down.
+
+- **One place to switch provider and model.** `aster provider use <id>` points
+  Aster at an endpoint and adopts a model it serves in the same write, and
+  `aster model use <id>` changes the model alone. Both save to `aster.yaml`,
+  which every surface already resolves from, so a switch made in one is the
+  switch everywhere rather than a preference belonging to whichever app made it.
+  Both then report what the next turn actually resolves to, and say so out loud
+  when `ASTER_MODEL` or `ASTER_BASE_URL` in your shell outranks what was just
+  saved. `aster provider list` shows the catalog with the endpoint in use
+  marked, `aster model list` asks that endpoint what it serves, and `aster model
+  recommended` answers from the catalog, so a picker no longer has to ship a
+  hardcoded list that goes wrong the moment the endpoint changes. `aster models`
+  keeps working as the older spelling of `aster model list`, and listing the
+  provider catalog no longer needs a key, since the catalog ships in the binary.
+  `aster init` offers the same shortlist when picking a model, and points at
+  `aster provider use` when it finds a config it will not overwrite.
+
+- **Web search works with no API key and no server.** `web/search` falls
+  through to DuckDuckGo when nothing else is configured, so a fresh install can
+  search the web and read a page without signing up for anything. A configured
+  provider still takes over: `EXA_API_KEY` is new and leads search, joining
+  Context.dev, Firecrawl, Browserbase, and Cloudflare Browser Rendering. The
+  provider serving a tool is named in the description the model reads, and the
+  keys are documented in [docs/MCP.md](docs/MCP.md#web-tools) and
+  `.env.example`, where they were not written down at all before.
+- **Any single tool can be turned off.** `mcp.tools` filters the catalogue by
+  `server/tool` id, the same id the policy engine authorizes against. Globs
+  work, `deny` beats `allow`, and an empty `allow` means everything. The filter
+  runs after every server has listed, so it covers the in-process `web` server
+  and third-party ones alike. `aster mcp disable web/crawl` writes the rule for
+  you and `aster mcp enable web/crawl` takes it back out; without a `/` both
+  still flip a whole server, as before. `aster mcp list` reports what the filter
+  held back, so a missing tool is never a mystery. Global and project configs
+  union their lists, so a project file cannot silently undo a global `deny`.
+- **A real browser, off by default.** `aster init` scaffolds a `browser` server
+  running [browser-use](https://github.com/browser-use/browser-use) over stdio;
+  `aster mcp enable browser` turns it on. The agent can then navigate, click,
+  type, scroll, read page state, and screenshot. It needs `uv` and Python 3.11+
+  plus a one-time `uvx browser-use install`; without them the server is reported
+  and skipped like any other, and the session is unaffected. The scaffolded
+  entry disables browser-use's vendor telemetry and runs headless, and its two
+  LLM-dependent tools are denied by default, since both want a second API key
+  and one of them runs a whole agent loop inside a single tool call.
+- **A tool can return an image.** An MCP `image` content part now reaches the
+  model as an image instead of `[image content omitted]`, which is what makes a
+  browser screenshot worth taking. The bytes go through the same encoder as
+  `@path` mentions, so the 2048px and 10MB caps apply to a full-page screenshot
+  too, and a model without image input still gets the placeholder it always did.
+
 - **The first turn already knows what the repository is.** One walk at session
   start builds a short profile — the project's name, what it says it does, how
   many files it has in each language and where those packages live, the
@@ -39,6 +104,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A key named for the endpoint now wins over the shared one.** Point Aster at
+  Anthropic and `ANTHROPIC_API_KEY` is used; the same holds for `OPENAI_API_KEY`,
+  `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, and
+  `OPENROUTER_API_KEY`. `ASTER_API_KEY` is still the fallback and still works on
+  its own. The TUI and the editor panel already resolved keys this way; the
+  command line did not, so a saved provider switch could fail on the next turn
+  with a key already exported and ignored. `aster provider use` names which key
+  it would use, and says so when it falls back to the shared one, since a key
+  issued for the last endpoint is usually rejected by the next.
 - **The VS Code panel gets a command menu**, holding everything it can do:
   conversation actions, model, provider, effort, mode, the review commands,
   status, diff, memory, MCP servers, and every skill the session can see. Open
@@ -66,6 +140,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The VS Code toolbar's actions moved to the trailing edge with larger glyphs,
   and "new conversation" is a speech bubble with a plus rather than a pencil,
   which read as editing the conversation already open.
+- **The three overlapping web surfaces are one.** Aster used to ship a
+  `websearch` plugin that made it spawn a copy of itself as a subprocess for
+  tools it could call in-process, so the model saw `websearch/search` beside
+  `web/search` and `websearch/fetch_content` beside `web/extract`, one pair
+  needing an API key and the other not. DuckDuckGo is now a provider inside
+  `aster-web`, the `aster-websearch` crate and the bundled plugin are gone, and
+  the plugin's directory is removed from existing installs on the next start. A
+  package the user installed under that name is left alone. One dispatch table
+  now serves both the in-process server and `aster mcp serve web`, which
+  replaces `aster mcp serve websearch` and exposes the whole catalogue rather
+  than two tools; the old name still starts it.
+- `aster init` scaffolds a `browser` server in place of the `chrome` and
+  `playwright` stubs, which were disabled placeholders nothing ever wired up.
+  Existing configs naming either still work and are still described to the
+  model.
 
 ### Fixed
 

@@ -232,6 +232,99 @@ session is ended with a `DELETE` at shutdown rather than left dangling.
 Credentials belong in the environment or a secret store, not in `headers` in a
 file you commit.
 
+## Web tools
+
+Aster serves a `web` server in-process, so its tools are in the catalogue with
+no subprocess and nothing to install. `web/search` and `web/extract` need no API
+key: they fall through to DuckDuckGo and a plain HTTP fetch when nothing else is
+configured.
+
+| Tool | Keyless | Better with |
+| --- | --- | --- |
+| `web/search` | DuckDuckGo | `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY` |
+| `web/extract` | Jina Reader, then plain HTTP | the same keys, plus `CLOUDFLARE_BR_API_TOKEN` |
+| `web/crawl` | no | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `CLOUDFLARE_BR_API_TOKEN` |
+| `web/sitemap` | no | `CONTEXT_DEV_API_KEY` |
+| `web/screenshot` | no | `CONTEXT_DEV_API_KEY` |
+
+A configured provider takes over a tool it can serve, and the tool description
+the model reads names whichever provider will answer it. Exa leads `search`
+because that is what it is built for, with Perplexity next; the
+extraction-first providers outrank it on `extract`.
+
+The same catalogue is available to other MCP clients as `aster mcp serve web`.
+
+## The browser
+
+`aster init` scaffolds a `browser` server, disabled, running
+[browser-use](https://github.com/browser-use/browser-use) over stdio. Enabling it
+gives the agent a real Chromium to navigate, click, type, scroll, and screenshot.
+
+```sh
+aster mcp enable browser
+```
+
+It needs [uv](https://docs.astral.sh/uv) and Python 3.11+, plus a one-time
+`uvx browser-use install` to fetch Chromium. Without them the server fails to
+start, which is reported and skipped like any other broken server; the rest of
+the session is unaffected.
+
+Two of its tools are denied by default in the scaffolded config, because both
+want a second LLM API key and `retry_with_browser_use_agent` runs a whole agent
+loop inside one tool call:
+
+```yaml
+mcp:
+  tools:
+    deny:
+      - "browser/browser_extract_content"
+      - "browser/retry_with_browser_use_agent"
+```
+
+The scaffolded entry sets `ANONYMIZED_TELEMETRY=False`, since browser-use
+reports usage to its vendor otherwise, and `BROWSER_USE_HEADLESS=true`, without
+which a browser window opens on the user's screen. It browses in its own profile
+under `~/.config/browseruse`, not the Chrome the user is signed into.
+`BROWSER_USE_ALLOWED_DOMAINS` confines it to named hosts.
+
+Prefer `web/extract` for reading a page. The browser is for what a fetch cannot
+do: JavaScript-heavy pages, screenshots, and clicking through a flow.
+
+## Turning individual tools off
+
+`mcp.tools` filters the catalogue by `server/tool` id, the same id the policy
+engine authorizes against. Globs are allowed, `deny` wins over `allow`, and an
+empty `allow` means everything.
+
+```yaml
+mcp:
+  tools:
+    allow: []
+    deny:
+      - "web/crawl"
+      - "browser/*"
+```
+
+The filter runs once every server has listed, so it covers the in-process `web`
+server and third-party ones alike. `aster mcp disable web/crawl` writes the id
+into `deny` for you, `aster mcp enable web/crawl` takes it back out, and `aster
+mcp list` reports what the filter held back so a missing tool is never a
+mystery. A name without a `/` still means a whole server, as it always did.
+
+Global and project configs union their lists, so a project file that omits the
+key cannot undo a global `deny`.
+
+## Images from tool results
+
+A tool that returns an MCP `image` content part now reaches the model as an
+image. The bytes are re-encoded through the same path as `@path` mentions, so
+the 2048px long-edge and 10MB caps apply to a full-page screenshot too.
+
+The image rides a user message after the tool result rather than inside it:
+OpenAI-shaped endpoints take content parts on a user turn and a bare string on a
+tool turn. A model without image input gets `[image content omitted]` in its
+place, which the AI layer already handles for every other image.
+
 ## Operational guidance
 
 - Keep a small number of common, safety-critical native Aster tools directly
