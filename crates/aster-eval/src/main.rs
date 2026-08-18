@@ -62,7 +62,7 @@ fn main() -> Result<()> {
 /// cases through Ori against each model and prints one row per model.
 fn live(args: Vec<String>) -> Result<()> {
     let mut models: Vec<String> = Vec::new();
-    let mut repo = std::env::current_dir()?;
+    let mut repo = aster_eval::repo_root(&std::env::current_dir()?);
     let mut evals: Option<PathBuf> = None;
     let mut args = args.into_iter();
 
@@ -107,7 +107,7 @@ Runs aster against fixed cases through Ori and compares models. Needs `ori`
 (openrouter.ai/labs/ori), `bun`, and an OpenRouter credential.
 
   --models a,b   models to compare (default: the configured one)
-  --repo DIR     checkout aster runs against (default: the current directory)
+  --repo DIR     checkout aster runs against (default: the enclosing git repo)
   --evals DIR    eval workspace (default: crates/aster-eval/evals)";
 
 const HELP: &str = "\
