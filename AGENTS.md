@@ -7,6 +7,15 @@ crate is the binary; everything else is a library.
 Human-facing setup and PR etiquette live in `CONTRIBUTING.md`. This file is the
 working agreement for agents editing this repo.
 
+## Global rules
+
+- No useless comments in code.
+- Match the project's existing style and patterns before writing anything new.
+- No em dashes (—) in any writing.
+- Never add `Co-Authored-By: Claude/Cursor` trailers to commits or PRs, and
+  strip them if found.
+- Use Conventional Commits for every message.
+
 ## Rust conventions
 
 - Read the crate you are touching and follow its existing patterns before
