@@ -101,7 +101,10 @@ impl StatusWidget {
             Span::styled(format!("{spinner} "), theme::get().accent_style()),
             Span::styled(label, theme::get().dim_style()),
             Span::styled(
-                format!(" · {}s · esc to interrupt", elapsed.as_secs()),
+                format!(
+                    " · {} · esc to interrupt",
+                    crate::tui::helpers::elapsed(elapsed.as_secs())
+                ),
                 theme::get().faint_style(),
             ),
         ])

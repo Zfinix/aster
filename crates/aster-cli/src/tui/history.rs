@@ -73,12 +73,7 @@ pub(super) fn worked_summary(
     estimated: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let secs = elapsed.as_secs();
-    let time = if secs >= 60 {
-        format!("{}m {}s", secs / 60, secs % 60)
-    } else {
-        format!("{secs}s")
-    };
+    let time = super::helpers::elapsed(elapsed.as_secs());
     let approx = if estimated { "~" } else { "" };
     let label = format!(
         "Worked for {time} · ↓ {approx}{} ↑ {approx}{}",
@@ -327,6 +322,41 @@ pub(super) fn tool(label: &str, output: &str, failed: bool, width: usize) -> Vec
         lines.push(Line::from(vec![
             branch(i == 0),
             Span::styled(text.into_string(), style),
+        ]));
+    }
+    prepend_blank(hang(lines, bullet(), width))
+}
+
+/// The model's thinking. Collapsed it is one faint line naming its size, so a
+/// long deliberation costs a row of scrollback; expanded it is the whole text,
+/// dimmed to sit behind the answer rather than compete with it.
+pub(super) fn reasoning(text: &str, open: bool, width: usize) -> Vec<Line<'static>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let header = Line::from(Span::styled(
+        "Thinking".to_string(),
+        Style::default()
+            .fg(theme::get().text)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if !open {
+        let words = text.split_whitespace().count();
+        let hint = Line::from(vec![
+            branch(true),
+            Span::styled(
+                format!("{words} words · /thinking to show"),
+                theme::get().faint_style(),
+            ),
+        ]);
+        return prepend_blank(hang(vec![header, hint], bullet(), width));
+    }
+    let mut lines = vec![header];
+    for (i, body) in text.lines().enumerate() {
+        lines.push(Line::from(vec![
+            branch(i == 0),
+            Span::styled(body.to_string(), theme::get().dimmer_style()),
         ]));
     }
     prepend_blank(hang(lines, bullet(), width))

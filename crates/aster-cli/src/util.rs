@@ -23,6 +23,15 @@ pub(crate) fn human(n: u64) -> String {
     }
 }
 
+/// A running time as a reader states it: seconds under a minute, `3m 29s` past
+/// one. Four minutes of work should not read as a part number.
+pub(crate) fn elapsed(secs: u64) -> String {
+    match secs >= 60 {
+        true => format!("{}m {}s", secs / 60, secs % 60),
+        false => format!("{secs}s"),
+    }
+}
+
 fn trim_zero(v: f64, suffix: char) -> String {
     let s = format!("{v:.1}");
     let s = s.strip_suffix(".0").map(str::to_string).unwrap_or(s);

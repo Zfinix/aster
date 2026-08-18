@@ -134,11 +134,17 @@ impl Status {
 
     /// Close the status line: a timed summary on success, a mark on failure.
     fn end<T>(self, result: Result<T>, summary: impl FnOnce(&T) -> String) -> Result<T> {
-        let elapsed = self.started.elapsed().as_secs_f32();
+        let took = self.started.elapsed();
+        // Tenths below a minute, where a search's speed is the interesting part;
+        // minutes past it, so a slow run does not read as a part number.
+        let elapsed = match took.as_secs() >= 60 {
+            true => crate::util::elapsed(took.as_secs()),
+            false => format!("{:.1}s", took.as_secs_f32()),
+        };
         match (&result, self.spinner) {
-            (Ok(v), Some(s)) => s.stop(format!("{} in {elapsed:.1}s", summary(v))),
+            (Ok(v), Some(s)) => s.stop(format!("{} in {elapsed}", summary(v))),
             (Ok(v), None) if !crate::json_mode() => {
-                eprintln!("{} in {elapsed:.1}s", summary(v));
+                eprintln!("{} in {elapsed}", summary(v));
             }
             (Err(_), Some(s)) => s.error("failed"),
             _ => {}

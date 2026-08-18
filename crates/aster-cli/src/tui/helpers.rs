@@ -149,6 +149,12 @@ pub(super) fn human_count(n: usize) -> String {
     crate::util::human(n as u64)
 }
 
+/// A running time. Delegates to the shared util so the live status, the summary
+/// that replaces it, and the non-TUI commands all agree.
+pub(super) fn elapsed(secs: u64) -> String {
+    crate::util::elapsed(secs)
+}
+
 /// Names a header list spells out before the rest collapse to `+N more`.
 pub(super) const LIST_MAX: usize = 8;
 

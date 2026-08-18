@@ -148,3 +148,37 @@ fn continuation_lines_hang_under_the_bullet() {
     assert!(out[1].starts_with("▌❯ "));
     assert!(out[2].starts_with("▌  "));
 }
+
+#[test]
+fn collapsed_thinking_costs_one_row_and_names_its_size() {
+    let out = text_of(&reasoning("two words here now", false, 80));
+    let joined = out.join("\n");
+    assert!(joined.contains("Thinking"), "{out:?}");
+    assert!(joined.contains("4 words"), "{out:?}");
+    assert!(
+        !joined.contains("two words here now"),
+        "collapsed thinking must not print the body: {out:?}"
+    );
+}
+
+#[test]
+fn expanded_thinking_prints_every_line() {
+    let out = text_of(&reasoning("first line\nsecond line", true, 80));
+    let joined = out.join("\n");
+    assert!(joined.contains("first line"), "{out:?}");
+    assert!(joined.contains("second line"), "{out:?}");
+}
+
+#[test]
+fn a_turn_that_reasoned_only_under_encryption_renders_nothing() {
+    assert!(reasoning("", false, 80).is_empty());
+    assert!(reasoning("   \n  ", true, 80).is_empty());
+}
+
+#[test]
+fn a_long_run_reads_as_minutes_not_a_seconds_count() {
+    assert_eq!(crate::util::elapsed(209), "3m 29s");
+    assert_eq!(crate::util::elapsed(60), "1m 0s");
+    assert_eq!(crate::util::elapsed(59), "59s");
+    assert_eq!(crate::util::elapsed(0), "0s");
+}

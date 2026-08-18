@@ -21,7 +21,7 @@ pub struct SandboxProfile {
     /// Maximum execution time in seconds.
     pub timeout_secs: u64,
     /// Credential directories the user approved for this command. Subtracted
-    /// from the credential deny list; [`hard_denied`] paths are never listed
+    /// from the credential deny list; hard-denied paths are never listed
     /// here, so approving one is impossible rather than merely refused.
     pub allowed_credentials: Vec<PathBuf>,
 }
@@ -233,7 +233,7 @@ impl SandboxProfile {
 
 /// Credential stores no command may read, approved or not. Under bwrap these
 /// need no rule: `$HOME` is simply not bound into the namespace.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn hard_denied() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
