@@ -39,6 +39,18 @@ export interface AgentTaskState {
 export type TurnBlock =
   | { kind: "text"; id: string; text: string }
   | { kind: "tools"; id: string; calls: ToolCall[] }
+  /** The model's thinking for one round, shown where it happened. */
+  | {
+      kind: "reasoning";
+      id: string;
+      text: string;
+      /** Running/final token estimate, streamed in `reasoning_delta` events. */
+      tokens?: number;
+      /** Wall-clock time the round took, in milliseconds. */
+      durationMs?: number;
+      /** True once `reasoning_done` closed the block. */
+      done?: boolean;
+    }
   /** Live sub-agent swarm for one `agent` tool call. */
   | { kind: "agents"; id: string; callId: string; tasks: AgentTaskState[] }
   /** A user message the turn absorbed mid-run, shown where it landed. */
@@ -122,11 +134,20 @@ export interface InfoTurn {
   pending?: boolean;
 }
 
+/** A seam in the list marking a model/provider switch, so messages either side
+ *  of it read as from different models. `label` is the humanized new model. */
+export interface DividerTurn {
+  id: string;
+  role: "divider";
+  label: string;
+}
+
 export type Turn =
   | { id: string; role: "user"; text: string }
   | AssistantTurn
   | InfoTurn
-  | { id: string; role: "review"; data: ReviewData };
+  | { id: string; role: "review"; data: ReviewData }
+  | DividerTurn;
 
 export function emptyReview(): ReviewData {
   return { status: "running", phase: "Starting", findings: [], refuted: [], summary: "" };
@@ -182,8 +203,72 @@ export function appendText(turn: AssistantTurn, chunk: string, separator = ""): 
   };
 }
 
+export function appendReasoning(
+  turn: AssistantTurn,
+  text: string,
+  tokens?: number,
+  durationMs?: number,
+): AssistantTurn {
+  if (!text.trim()) return turn;
+  return {
+    ...turn,
+    blocks: [...turn.blocks, { kind: "reasoning", id: blockId(), text, tokens, durationMs, done: true }],
+  };
+}
+
+/** Append a live thinking fragment, growing the in-flight block's token count. */
+export function appendReasoningDelta(turn: AssistantTurn, chunk: string, tokens: number): AssistantTurn {
+  if (!chunk) return turn;
+  const last = turn.blocks[turn.blocks.length - 1];
+  if (last?.kind === "reasoning" && !last.done) {
+    return {
+      ...turn,
+      blocks: [...turn.blocks.slice(0, -1), { ...last, text: last.text + chunk, tokens }],
+    };
+  }
+  return {
+    ...turn,
+    blocks: [...turn.blocks, { kind: "reasoning", id: blockId(), text: chunk, tokens, done: false }],
+  };
+}
+
+/** Close the in-flight reasoning block with the final token count and duration. */
+export function finishReasoning(turn: AssistantTurn, tokens: number, durationMs: number): AssistantTurn {
+  const last = turn.blocks[turn.blocks.length - 1];
+  if (last?.kind === "reasoning") {
+    return {
+      ...turn,
+      blocks: [...turn.blocks.slice(0, -1), { ...last, tokens, durationMs, done: true }],
+    };
+  }
+  return turn;
+}
+
 export function appendInjected(turn: AssistantTurn, text: string): AssistantTurn {
   return { ...turn, blocks: [...turn.blocks, { kind: "injected", id: blockId(), text }] };
+}
+
+/**
+ * Rebuild a saved assistant turn: what it thought, what it said, then what it
+ * ran, which is the order the live events arrived in. A reopened session used
+ * to come back as one flat text block, losing every reasoning panel and tool
+ * step, so anything but a plain chat reply reloaded as a wall of prose.
+ */
+export function restoreTurn(
+  id: string,
+  content: string,
+  reasoning?: { text: string; tokens?: number; durationMs?: number },
+  calls: ToolCall[] = []
+): AssistantTurn {
+  let turn = newTurn(id);
+  if (reasoning) {
+    turn = appendReasoning(turn, reasoning.text, reasoning.tokens, reasoning.durationMs);
+  }
+  turn = appendText(turn, content);
+  for (const call of calls) {
+    turn = appendCall(turn, call);
+  }
+  return { ...turn, pending: false };
 }
 
 /** Consecutive calls join one group; a call after text opens a new one. */

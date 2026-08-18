@@ -37,7 +37,7 @@ export function ToolRun({ run }: { run: Run }) {
       {open && (
         <div className="tool-run-list">
           {run.calls.map((call) => (
-            <ToolCallRow key={call.id} call={call} />
+            <ToolCallRow key={call.id} call={call} nested />
           ))}
         </div>
       )}

@@ -4,7 +4,12 @@ import { useEffect, type RefObject } from "react";
 export function useDismiss(ref: RefObject<HTMLElement | null>, onClose: () => void): void {
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // A row that opens another popup is removed from the DOM during this
+      // mousedown, and the old popup's ref is cleared when it unmounts. The
+      // same event must not read as "outside" the new popup and close it.
+      if (!ref.current || !target.isConnected) return;
+      if (!ref.current.contains(target)) {
         onClose();
       }
     };

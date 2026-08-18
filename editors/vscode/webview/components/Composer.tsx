@@ -19,7 +19,7 @@ import { McpPicker } from "./McpPicker";
 import { ModelPicker } from "./ModelPicker";
 import { ProviderPicker } from "./ProviderPicker";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
-import { CaretUpIcon, CommandIcon, SendIcon, ShieldIcon } from "./icons";
+import { CaretUpIcon, CommandIcon, ShieldIcon } from "./icons";
 
 const MAX_ROWS = 10;
 
@@ -530,14 +530,9 @@ export function Composer({
             <CaretUpIcon open={menu === "model"} />
           </button>
 
-          {/* While busy, Stop stays reachable and Send doubles as "queue". */}
-          {busy && text.trim() && (
-            <button className="send" onClick={send} title="Queue message" aria-label="Queue message">
-              <SendIcon />
-            </button>
-          )}
           {/* One button whose glyph morphs between send and stop, so the swap
-              reads as the same control changing job rather than a re-render. */}
+              reads as the same control changing job rather than a re-render.
+              Queueing a follow-up mid-run stays on Enter. */}
           <button
             className={busy ? "send stop" : "send"}
             onClick={busy ? onCancel : send}

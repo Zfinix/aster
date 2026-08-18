@@ -24,6 +24,12 @@ export type ChatStreamEvent =
   | { type: "token"; content: string }
   /** A whole content block, sent only when the endpoint streamed no deltas. */
   | { type: "text"; content: string }
+  /** The round's thinking, absent when the model reasons under encryption. */
+  | { type: "reasoning"; content: string; tokens?: number; duration_ms?: number }
+  /** One live fragment of streamed thinking, with the running token estimate. */
+  | { type: "reasoning_delta"; content: string; tokens: number }
+  /** Thinking finished: the final token estimate and how long the round took. */
+  | { type: "reasoning_done"; tokens: number; duration_ms: number }
   | { type: "tool_call"; id: string; name: string; arguments: string }
   | { type: "tool_result"; id: string; name: string; result: string; error: boolean }
   /** Live progress for one sub-agent in an `agent` tool call. */
@@ -63,10 +69,29 @@ export interface SessionSummary {
   title: string;
 }
 
-/** One replayed message from a saved transcript. */
+/** One replayed message from a saved transcript. An assistant turn carries the
+ *  round's thinking and tool calls too, so reopening a session rebuilds the same
+ *  blocks it showed live instead of a bare wall of text. */
 export interface TranscriptTurn {
   role: "user" | "assistant";
   content: string;
+  reasoning?: TranscriptReasoning;
+  toolCalls?: TranscriptToolCall[];
+}
+
+export interface TranscriptReasoning {
+  text: string;
+  tokens?: number;
+  durationMs?: number;
+}
+
+/** A recorded call plus the result its matching `tool` event carried. */
+export interface TranscriptToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+  result?: string;
+  error?: boolean;
 }
 
 /** One skill the session can see. The panel's own actions are not sent over the

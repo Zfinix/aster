@@ -101,7 +101,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const input = JSON.stringify([finding]);
       try {
         const { stdout, code } = await runCli(
-          ["--json", "fix", "--findings-json", "-", "--apply"],
+          ["fix", "--findings-json", "-", "--apply", "--json"],
           root,
           input
         );

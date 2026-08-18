@@ -196,6 +196,52 @@ export function PlusIcon() {
   );
 }
 
+/** The plan's step marks: one ring, filled in differently per state, so a
+ *  column of them reads as one control rather than five unrelated glyphs. */
+export function CircleIcon() {
+  return (
+    <svg {...base}>
+      <circle cx="8" cy="8" r="5.5" />
+    </svg>
+  );
+}
+
+export function CircleDotIcon() {
+  return (
+    <svg {...base}>
+      <circle cx="8" cy="8" r="5.5" />
+      <circle cx="8" cy="8" r="2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function CircleCheckIcon() {
+  return (
+    <svg {...base}>
+      <circle cx="8" cy="8" r="5.5" fill="currentColor" fillOpacity="0.16" />
+      <path d="M5.5 8.2l1.8 1.8 3.2-3.8" />
+    </svg>
+  );
+}
+
+export function CircleSkipIcon() {
+  return (
+    <svg {...base}>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M6.2 6l2.2 2-2.2 2M9.9 6v4" />
+    </svg>
+  );
+}
+
+export function CircleXIcon() {
+  return (
+    <svg {...base}>
+      <circle cx="8" cy="8" r="5.5" fill="currentColor" fillOpacity="0.14" />
+      <path d="M6.2 6.2l3.6 3.6M9.8 6.2l-3.6 3.6" />
+    </svg>
+  );
+}
+
 export function UploadIcon() {
   return (
     <svg {...base}>
