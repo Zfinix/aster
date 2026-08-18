@@ -7,6 +7,7 @@ use std::path::Path;
 use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
+use aster_ai::AiClient;
 use clap::Args;
 use cliclack::{log, multiselect, outro, outro_cancel, password, select, set_theme};
 use console::Style;
@@ -212,7 +213,7 @@ impl cliclack::Theme for AsterTheme {
     }
 }
 
-pub fn run(args: InitArgs) -> Result<()> {
+pub async fn run(args: InitArgs) -> Result<()> {
     let repo_root = env::current_dir().context("resolving the current directory")?;
     let global_config = !args.local;
     let yaml_path = if global_config {
@@ -224,12 +225,13 @@ pub fn run(args: InitArgs) -> Result<()> {
     };
 
     let providers = load_providers()?;
+    let current = Current::read(&repo_root);
 
     let interactive =
         !args.yes && !crate::json_mode() && io::stdin().is_terminal() && io::stdout().is_terminal();
     if !interactive {
         let d = default_provider(&providers);
-        let note = write_yaml(&yaml_path, &d.base_url, &d.example_model, args.force)?;
+        let note = scaffold(&yaml_path, &d.base_url, &d.example_model, args.force)?;
         if crate::json_mode() {
             println!(
                 "{}",
@@ -246,14 +248,15 @@ pub fn run(args: InitArgs) -> Result<()> {
             return Ok(());
         }
         emit(note, false)?;
-        finish_plain(global_config);
+        finish_plain(global_config, &current.base_url);
         return Ok(());
     }
 
     set_theme(AsterTheme);
     print!("{}", crate::tui::mark_ansi());
+    log::info(current.summary())?;
 
-    let Some(cfg) = wizard(&providers)? else {
+    let Some(cfg) = wizard(&providers, &current).await? else {
         outro_cancel("Cancelled. Nothing was written.")?;
         return Ok(());
     };
@@ -264,17 +267,14 @@ pub fn run(args: InitArgs) -> Result<()> {
     let configured_provider = !cfg.base_url.is_empty();
     if configured_provider {
         emit(
-            write_yaml(&yaml_path, &cfg.base_url, &cfg.model, args.force)?,
+            save_provider(&yaml_path, &cfg.base_url, &cfg.model, args.force)?,
             true,
         )?;
     }
 
     let mut stored_key = false;
-    if let Some(key) = cfg.api_key.filter(|k| !k.trim().is_empty()) {
-        emit(
-            store_key(&env_path, "ASTER_API_KEY", key.trim(), gitignore)?,
-            true,
-        )?;
+    if let (Some(key), Some(var)) = (cfg.api_key.as_deref(), cfg.key_var) {
+        emit(store_key(&env_path, var, key.trim(), gitignore)?, true)?;
         stored_key = true;
     }
     if let Some(key) = cfg.context_dev_key.filter(|k| !k.trim().is_empty()) {
@@ -291,22 +291,113 @@ pub fn run(args: InitArgs) -> Result<()> {
     }
 
     let next = if !configured_provider {
-        "Nothing to set up · run `aster init` again anytime"
-    } else if !stored_key && !has_api_key() {
-        NO_KEY_HINT
+        "Nothing to set up · run `aster init` again anytime".to_string()
+    } else if !stored_key && key_status(&cfg.base_url).is_none() {
+        no_key_hint(&cfg.base_url)
     } else if global_config {
-        "You're set. cd into any repo and run: aster"
+        "You're set. cd into any repo and run: aster".to_string()
     } else {
-        "You're set. Next: aster"
+        "You're set. Next: aster".to_string()
     };
     outro(next)?;
     Ok(())
 }
 
+/// What Aster resolves to right now. The wizard opens with it and starts the
+/// cursor on it, so a second run is a change of mind rather than the whole
+/// form typed again.
+struct Current {
+    base_url: String,
+    model: String,
+    /// False when nothing has been chosen yet and the values above are only
+    /// the built-in defaults.
+    configured: bool,
+    has_context_dev: bool,
+    has_jina: bool,
+}
+
+impl Current {
+    fn read(repo_root: &Path) -> Self {
+        // A malformed config is a thing init is here to fix, not a reason to
+        // refuse to run.
+        let settings = crate::settings::Settings::load(Some(repo_root)).unwrap_or_default();
+        let configured = settings.review.base_url.is_some() || settings.review.model.is_some();
+        let (base_url, model) = crate::provider::resolve_endpoint(&settings.review, None);
+        Self {
+            base_url,
+            model,
+            configured,
+            has_context_dev: env_set("CONTEXT_DEV_API_KEY"),
+            has_jina: env_set("JINA_API_KEY"),
+        }
+    }
+
+    /// The "here is what you already have" line the wizard opens with.
+    fn summary(&self) -> String {
+        if !self.configured {
+            return "Nothing set up yet".to_string();
+        }
+        let key = match key_status(&self.base_url) {
+            Some(var) => format!("key from {var}"),
+            None => "no key yet".to_string(),
+        };
+        format!(
+            "Now: {} · {} · {key}",
+            provider_label(&self.base_url),
+            self.model
+        )
+    }
+
+    fn provider_hint(&self) -> String {
+        match self.configured {
+            true => format!("{} · {}", provider_label(&self.base_url), self.model),
+            false => "the model Aster runs on".to_string(),
+        }
+    }
+
+    /// True when `base_url` is the endpoint already in use, so its model is
+    /// worth offering as a row rather than being a leftover from another one.
+    fn serves(&self, base_url: &str) -> bool {
+        self.configured && self.base_url.trim_end_matches('/') == base_url.trim_end_matches('/')
+    }
+}
+
+fn env_set(var: &str) -> bool {
+    env::var(var).is_ok_and(|v| !v.trim().is_empty())
+}
+
+/// The env var a key for this endpoint would be read from, when one is set.
+/// Mirrors [`crate::provider::resolve_key`], so the wizard reports the key the
+/// next turn would actually use.
+fn key_status(base_url: &str) -> Option<&'static str> {
+    provider_key_vars(base_url)
+        .iter()
+        .copied()
+        .find(|var| env_set(var))
+        .or_else(|| {
+            ["ASTER_API_KEY", "OPEN_ROUTER_API_KEY"]
+                .into_iter()
+                .find(|var| env_set(var))
+        })
+}
+
+/// The var a key typed at the prompt belongs in. Endpoints with a var of their
+/// own get it, so two providers each keep a key and switching back does not ask
+/// for it again.
+fn key_var_for(base_url: &str) -> &'static str {
+    provider_key_vars(base_url)
+        .first()
+        .copied()
+        .unwrap_or("ASTER_API_KEY")
+}
+
 struct Configured {
     base_url: String,
     model: String,
+    /// A key typed at the prompt; `None` leaves whatever is already stored.
     api_key: Option<String>,
+    /// Where that key goes. `None` when the provider step was skipped.
+    key_var: Option<&'static str>,
     context_dev_key: Option<String>,
     jina_key: Option<String>,
 }
@@ -321,65 +412,71 @@ enum Setup {
 
 /// Pick what to set up first, then only prompt for what was picked.
 /// `None` when the user cancels.
-fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
+async fn wizard(providers: &[Provider], current: &Current) -> Result<Option<Configured>> {
     let Some(picked) = or_cancel(
         multiselect("What do you want to set up? (space to toggle · enter to confirm)")
             .required(false)
-            .item(Setup::Provider, "Model provider", "the model Aster runs on")
+            .initial_values(vec![Setup::Provider])
+            .item(Setup::Provider, "Model provider", current.provider_hint())
             .item(
                 Setup::ContextDev,
                 "Web crawl",
-                "scrape websites via Context.dev",
+                key_hint(current.has_context_dev, "scrape websites via Context.dev"),
             )
-            .item(Setup::Jina, "Web reading", "read web pages via Jina AI")
+            .item(
+                Setup::Jina,
+                "Web reading",
+                key_hint(current.has_jina, "read web pages via Jina AI"),
+            )
             .interact(),
     )?
     else {
         return Ok(None);
     };
 
-    if picked.is_empty() {
-        return Ok(Some(Configured {
-            base_url: String::new(),
-            model: String::new(),
-            api_key: None,
-            context_dev_key: None,
-            jina_key: None,
-        }));
-    }
-
-    let default = default_provider(providers);
+    // Only what was picked is written: leaving the provider unticked must not
+    // rewrite the endpoint already saved.
     let mut cfg = Configured {
-        base_url: default.base_url.clone(),
-        model: default.example_model.clone(),
+        base_url: String::new(),
+        model: String::new(),
         api_key: None,
+        key_var: None,
         context_dev_key: None,
         jina_key: None,
     };
+    if picked.is_empty() {
+        return Ok(Some(cfg));
+    }
 
     if picked.contains(&Setup::Provider) {
-        let Some(chosen) = provider_setup(providers)? else {
+        let Some(chosen) = provider_setup(providers, current).await? else {
             return Ok(None);
         };
-        cfg.base_url = chosen.0;
-        cfg.model = chosen.1;
-        cfg.api_key = chosen.2;
+        cfg.base_url = chosen.base_url;
+        cfg.model = chosen.model;
+        cfg.api_key = chosen.api_key;
+        cfg.key_var = Some(chosen.key_var);
     }
 
     // Escaping an optional key prompt skips that key; the answers already given
     // are kept rather than thrown away.
     if picked.contains(&Setup::ContextDev) {
         cfg.context_dev_key = or_cancel(
-            password("Context.dev API key for web crawl (enter to skip)")
-                .mask('•')
-                .interact(),
+            password(key_prompt(
+                "Context.dev API key for web crawl",
+                current.has_context_dev,
+            ))
+            .mask('•')
+            .allow_empty()
+            .interact(),
         )?;
     }
 
     if picked.contains(&Setup::Jina) {
         cfg.jina_key = or_cancel(
-            password("Jina API key for web reading (enter to skip)")
+            password(key_prompt("Jina API key for web reading", current.has_jina))
                 .mask('•')
+                .allow_empty()
                 .interact(),
         )?;
     }
@@ -387,14 +484,45 @@ fn wizard(providers: &[Provider]) -> Result<Option<Configured>> {
     Ok(Some(cfg))
 }
 
-/// Provider, base URL, model, key. `None` when the user cancels.
-fn provider_setup(providers: &[Provider]) -> Result<Option<(String, String, Option<String>)>> {
+fn key_hint(set: bool, what: &str) -> String {
+    match set {
+        true => format!("{what} · key set"),
+        false => what.to_string(),
+    }
+}
+
+fn key_prompt(what: &str, set: bool) -> String {
+    match set {
+        true => format!("{what} (set · enter to keep, or type a new one)"),
+        false => format!("{what} (enter to skip)"),
+    }
+}
+
+/// The endpoint, model, and key the user settled on.
+struct Chosen {
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+    key_var: &'static str,
+}
+
+/// Provider, base URL, key, model. The key is asked before the model so the
+/// endpoint can be asked what it serves. `None` when the user cancels.
+async fn provider_setup(providers: &[Provider], current: &Current) -> Result<Option<Chosen>> {
+    let at = providers
+        .iter()
+        .position(|p| current.serves(&p.base_url))
+        .unwrap_or(0);
     let mut menu = select::<usize>("Which model provider? (type to search)")
-        .initial_value(0)
+        .initial_value(at)
         .filter_mode()
         .max_rows(8);
     for (i, p) in providers.iter().enumerate() {
-        menu = menu.item(i, &p.name, &p.base_url);
+        let hint = match i == at && current.configured {
+            true => format!("{} · in use", p.base_url),
+            false => p.base_url.clone(),
+        };
+        menu = menu.item(i, &p.name, hint);
     }
     let Some(idx) = or_cancel(menu.interact())? else {
         return Ok(None);
@@ -410,59 +538,150 @@ fn provider_setup(providers: &[Provider]) -> Result<Option<(String, String, Opti
         else {
             return Ok(None);
         };
-        url
+        url.trim().to_string()
     } else {
         provider.base_url.clone()
     };
 
-    let Some(model) = pick_model(provider, &base_url)? else {
+    let key_var = key_var_for(&base_url);
+    let prompt = match (key_status(&base_url), provider.needs_key()) {
+        (Some(var), _) => format!("API key ({var} is set · enter to keep it)"),
+        (None, true) => format!("API key, stored as {key_var} (enter to add later)"),
+        (None, false) => "API key (usually none · enter to skip)".to_string(),
+    };
+    // Escaping the key prompt keeps the provider already chosen.
+    let api_key = or_cancel(password(prompt).mask('•').allow_empty().interact())?
+        .filter(|k| !k.trim().is_empty());
+
+    let live = api_key
+        .clone()
+        .or_else(|| crate::provider::resolve_key(&base_url).map(|(key, _)| key));
+    let Some(model) = pick_model(provider, &base_url, current, live.as_deref()).await? else {
         return Ok(None);
     };
 
-    let key_prompt = if provider.needs_key() {
-        "API key (enter to add later)"
-    } else {
-        "API key (usually none · enter to skip)"
-    };
-    // Escaping the key prompt keeps the provider and model already chosen.
-    let key = or_cancel(password(key_prompt).mask('•').interact())?;
-
-    Ok(Some((
-        base_url.trim().to_string(),
-        model.trim().to_string(),
-        key,
-    )))
+    Ok(Some(Chosen {
+        base_url,
+        model: model.trim().to_string(),
+        api_key,
+        key_var,
+    }))
 }
 
-/// The same shortlist `aster model recommended` serves, offered as a menu when
-/// the catalog has one. One entry is not a choice, so that case still types.
+/// The catalog's shortlist, the endpoint's own list, or a typed id. Both menus
+/// filter as you type, and the model in use is where the cursor starts.
 /// `None` when the user cancels.
-fn pick_model(provider: &Provider, base_url: &str) -> Result<Option<String>> {
-    let shortlist = provider_recommended(base_url);
-    if shortlist.len() < 2 {
-        return or_cancel(
-            cliclack::input("Model")
-                .default_input(&provider.example_model)
-                .interact::<String>(),
-        );
+async fn pick_model(
+    provider: &Provider,
+    base_url: &str,
+    current: &Current,
+    key: Option<&str>,
+) -> Result<Option<String>> {
+    let mut rows = provider_recommended(base_url);
+    if current.serves(base_url) && !rows.contains(&current.model) {
+        rows.insert(0, current.model.clone());
+    }
+    if rows.is_empty() && key.is_none() {
+        return type_model(provider);
     }
 
-    let other = shortlist.len();
-    let mut menu = select::<usize>("Model").initial_value(0);
-    for (i, m) in shortlist.iter().enumerate() {
-        menu = menu.item(i, m, "");
+    let search = rows.len();
+    let typed = rows.len() + 1;
+    let mut menu = select::<usize>("Model (type to search)")
+        .initial_value(0)
+        .filter_mode()
+        .max_rows(10);
+    for (i, m) in rows.iter().enumerate() {
+        let hint = match current.serves(base_url) && *m == current.model {
+            true => "in use",
+            false => "",
+        };
+        menu = menu.item(i, m, hint);
     }
-    menu = menu.item(other, "Something else", "type an id this endpoint serves");
+    if key.is_some() {
+        menu = menu.item(
+            search,
+            "Search all models",
+            "ask this endpoint what it serves",
+        );
+    }
+    menu = menu.item(typed, "Something else", "type an id this endpoint serves");
+
     let Some(idx) = or_cancel(menu.interact())? else {
         return Ok(None);
     };
-    match shortlist.get(idx) {
-        Some(model) => Ok(Some(model.clone())),
-        None => or_cancel(
-            cliclack::input("Model")
-                .default_input(&provider.example_model)
-                .interact::<String>(),
-        ),
+    if let Some(model) = rows.get(idx) {
+        return Ok(Some(model.clone()));
+    }
+    if idx == search
+        && let Some(key) = key
+    {
+        match search_models(base_url, key, current).await? {
+            Search::Picked(model) => return Ok(Some(model)),
+            Search::Cancelled => return Ok(None),
+            // The endpoint could not be asked; the id can still be typed.
+            Search::Unavailable => {}
+        }
+    }
+    type_model(provider)
+}
+
+fn type_model(provider: &Provider) -> Result<Option<String>> {
+    or_cancel(
+        cliclack::input("Model")
+            .default_input(&provider.example_model)
+            .interact::<String>(),
+    )
+}
+
+enum Search {
+    Picked(String),
+    Cancelled,
+    /// The endpoint could not be asked, which is not fatal: the shortlist and
+    /// the free-text prompt are both still there.
+    Unavailable,
+}
+
+/// Ask the endpoint for its whole catalog and filter it in place. This is the
+/// only way to reach a model that is neither in the catalog's shortlist nor
+/// already known by heart.
+async fn search_models(base_url: &str, key: &str, current: &Current) -> Result<Search> {
+    let spinner = cliclack::spinner();
+    spinner.start("Asking the endpoint what it serves…");
+    let client = AiClient::new(base_url.to_string(), key.to_string(), String::new());
+    let models = match client.fetch_models().await {
+        Ok(models) if !models.is_empty() => {
+            spinner.stop(format!("{} models", models.len()));
+            models
+        }
+        Ok(_) => {
+            spinner.error("the endpoint listed no models");
+            return Ok(Search::Unavailable);
+        }
+        Err(e) => {
+            spinner.error(format!("could not list models: {e:#}"));
+            return Ok(Search::Unavailable);
+        }
+    };
+
+    let at = models
+        .iter()
+        .position(|m| current.serves(base_url) && *m == current.model)
+        .unwrap_or(0);
+    let mut menu = select::<usize>("Model (type to search)")
+        .initial_value(at)
+        .filter_mode()
+        .max_rows(12);
+    for (i, m) in models.iter().enumerate() {
+        let hint = match i == at && current.serves(base_url) {
+            true => "in use",
+            false => "",
+        };
+        menu = menu.item(i, m, hint);
+    }
+    match or_cancel(menu.interact())? {
+        Some(idx) => Ok(Search::Picked(models[idx].clone())),
+        None => Ok(Search::Cancelled),
     }
 }
 
@@ -490,19 +709,16 @@ fn emit(note: Note, framed: bool) -> Result<()> {
     Ok(())
 }
 
-/// True when a key is already reachable, so "you're set" is not a lie.
-fn has_api_key() -> bool {
-    ["ASTER_API_KEY", "OPEN_ROUTER_API_KEY"]
-        .iter()
-        .any(|k| env::var(k).is_ok_and(|v| !v.trim().is_empty()))
+fn no_key_hint(base_url: &str) -> String {
+    format!(
+        "No API key yet. Set {} in your shell, or run `aster init` again to store one.",
+        key_var_for(base_url)
+    )
 }
 
-const NO_KEY_HINT: &str =
-    "No API key yet. Set ASTER_API_KEY in your shell, or run `aster init` again to store one.";
-
-fn finish_plain(global: bool) {
-    if !has_api_key() {
-        println!("  {DIM}{NO_KEY_HINT}{RESET}");
+fn finish_plain(global: bool, base_url: &str) {
+    if key_status(base_url).is_none() {
+        println!("  {DIM}{}{RESET}", no_key_hint(base_url));
         return;
     }
     if global {
@@ -512,34 +728,53 @@ fn finish_plain(global: bool) {
     }
 }
 
-/// Store the API key in `.env`. When `gitignore` is set, also keep the file out of git.
+/// Store the API key in `.env`, replacing any value already there: a key typed
+/// at the prompt is the one the user wants from here on. When `gitignore` is
+/// set, also keep the file out of git.
 fn store_key(env_path: &Path, var_name: &str, key: &str, gitignore: bool) -> Result<Note> {
-    if env_has_key(env_path, var_name) {
-        return Ok(Note::Info(format!(
-            "{var_name} already set in .env · leaving it"
-        )));
-    }
+    let replaced = env_has_key(env_path, var_name);
     if let Some(parent) = env_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    append_line(env_path, &format!("{var_name}={key}"))
+    set_env_key(env_path, var_name, key)
         .with_context(|| format!("writing {}", env_path.display()))?;
     if gitignore && let Some(dir) = env_path.parent() {
         ensure_gitignored(dir, ".env")?;
     }
+    let verb = if replaced { "Replaced" } else { "Stored" };
     Ok(Note::Success(format!(
-        "Stored {var_name} in {}",
+        "{verb} {var_name} in {}",
         display(env_path)
     )))
 }
 
-fn write_yaml(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
+/// Write the choice down. An existing config is edited in place, so re-running
+/// init to switch provider switches it instead of being ignored; comments and
+/// everything else in the file survive. `--force` rewrites the whole scaffold.
+fn save_provider(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
+    if !path.exists() || force {
+        return write_scaffold(path, base_url, model);
+    }
+    crate::settings::write_review(path, &[("base_url", base_url), ("model", model)])?;
+    Ok(Note::Success(format!(
+        "Updated {} · provider and model, nothing else touched",
+        display(path)
+    )))
+}
+
+/// The non-interactive path, which never overwrites: `-y` picks defaults the
+/// user was never shown, and a config already there outranks a guess.
+fn scaffold(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
     if path.exists() && !force {
         return Ok(Note::Info(format!(
-            "{} already exists · keeping it (--force rewrites it; `aster provider use` switches provider without touching the rest)",
+            "{} already exists · keeping it (--force rewrites it; `aster init` without -y switches provider in place)",
             display(path)
         )));
     }
+    write_scaffold(path, base_url, model)
+}
+
+fn write_scaffold(path: &Path, base_url: &str, model: &str) -> Result<Note> {
     let rewrite = path.exists();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -606,16 +841,34 @@ fn yaml_contents(base_url: &str, model: &str) -> String {
     )
 }
 
-/// True if `.env` already defines `key`, so we never clobber an existing secret.
+/// True if `.env` already defines `key`.
 fn env_has_key(env_path: &Path, key: &str) -> bool {
     let Ok(text) = fs::read_to_string(env_path) else {
         return false;
     };
-    text.lines().any(|l| {
-        let l = l.trim_start();
-        l.strip_prefix(key)
-            .is_some_and(|rest| rest.starts_with('='))
-    })
+    text.lines().any(|l| assigns(l, key))
+}
+
+fn assigns(line: &str, key: &str) -> bool {
+    line.trim_start()
+        .strip_prefix(key)
+        .is_some_and(|rest| rest.starts_with('='))
+}
+
+/// Set `KEY=value` in `.env`, rewriting the line in place when the key is
+/// already there so a replaced key leaves no stale duplicate behind.
+fn set_env_key(path: &Path, key: &str, value: &str) -> Result<()> {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let line = format!("{key}={value}");
+    match lines.iter().position(|l| assigns(l, key)) {
+        Some(at) => lines[at] = line,
+        None => lines.push(line),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    fs::write(path, out)?;
+    Ok(())
 }
 
 fn append_line(path: &Path, line: &str) -> Result<()> {

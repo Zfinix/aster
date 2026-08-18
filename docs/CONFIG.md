@@ -282,9 +282,18 @@ A few knobs have no `aster.yaml` key.
 ## What writes to this file
 
 `aster init` scaffolds it. In the TUI, `/model` and switching endpoints persist
-`review.model` and `review.base_url` back into whichever file is in play, the
-project's when one exists and the global one otherwise. Those edits rewrite a
-single line and leave the rest of the file, comments included, byte for byte.
+`review.model` and `review.base_url` into the **global** file, because the model
+you want to work with follows you between directories rather than belonging to
+whichever repo you were standing in. If the project file pins one of those two
+keys, it is updated as well: it outranks the global one, so leaving it alone
+would make the switch look like it did nothing in that repo. Those edits rewrite
+a single line and leave the rest of the file, comments included, byte for byte.
+
+Re-running `aster init` in a repo that already has a config edits those same two
+keys in place instead of leaving the file untouched, so it is the way to switch
+provider as well as the way to start. `--force` rewrites the whole scaffold;
+`-y` still never overwrites a config, since it picks defaults you were not
+shown.
 
 From outside the TUI, the same two keys are written by:
 
@@ -297,7 +306,8 @@ Both then print what the next turn actually resolves to, which is not always
 what was just saved: `ASTER_MODEL` and `ASTER_BASE_URL` outrank the file, so
 either one being set in your shell is reported rather than left to surprise you
 later. `--json` returns the same as a `{"model", "provider", "base_url",
-"config", "key_env", "has_key", "shadowed_by_env"}` object.
+"config", "also", "key_env", "has_key", "shadowed_by_env"}` object, where
+`also` names the project file that was moved along, or `null`.
 
 Reading the other way, `aster status --json` reports the resolved provider and
 model without changing anything, `aster provider list` shows the catalog with

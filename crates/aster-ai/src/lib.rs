@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use tokio::sync::OnceCell;
 
@@ -98,6 +99,10 @@ pub struct AiClient {
     /// Whether `model` takes image input, asked of the catalog once and only
     /// when a request actually carries one.
     images: Arc<OnceCell<bool>>,
+    /// Extra headers to attach to every chat-completions request, used for
+    /// provider app attribution (e.g. OpenRouter's `HTTP-Referer` and
+    /// `X-OpenRouter-Title`). Leave empty to send a bare request.
+    attribution_headers: Vec<(String, String)>,
 }
 
 impl AiClient {
@@ -182,6 +187,7 @@ impl AiClient {
                 .unwrap_or_default(),
             web_search: env_truthy("ASTER_WEB_SEARCH"),
             images: Arc::new(OnceCell::new()),
+            attribution_headers: Vec::new(),
         }
     }
 
@@ -195,6 +201,24 @@ impl AiClient {
     pub fn with_web_search(mut self, web_search: bool) -> Self {
         self.web_search = web_search;
         self
+    }
+
+    /// Builder form of [`AiClient::set_attribution_headers`]-friendly for a
+    /// client built from config. Headers like `HTTP-Referer` and
+    /// `X-OpenRouter-Title` attribute usage to this app on a provider's
+    /// rankings and analytics.
+    pub fn with_attribution_headers(
+        mut self,
+        headers: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.set_attribution_headers(headers);
+        self
+    }
+
+    /// Overwrite the attribution headers for later requests. Clones made before
+    /// this call keep the old ones, so set it before handing the client to a task.
+    pub fn set_attribution_headers(&mut self, headers: impl IntoIterator<Item = (String, String)>) {
+        self.attribution_headers = headers.into_iter().collect();
     }
 
     /// Change the reasoning budget for later requests. Clones made before this
@@ -739,10 +763,21 @@ impl AiClient {
         ctx: &str,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/chat/completions", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
+        let mut post = self.http.post(&url).bearer_auth(&self.api_key);
+        if !self.attribution_headers.is_empty() {
+            let mut headers = HeaderMap::new();
+            for (name, value) in &self.attribution_headers {
+                let Ok(name) = HeaderName::try_from(name) else {
+                    continue;
+                };
+                let Ok(value) = HeaderValue::from_str(value) else {
+                    continue;
+                };
+                headers.insert(name, value);
+            }
+            post = post.headers(headers);
+        }
+        let response = post
             .json(request)
             .send()
             .await

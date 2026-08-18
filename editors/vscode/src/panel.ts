@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
 import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli } from "./asterCli";
 import * as info from "./info";
@@ -242,6 +243,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
    */
   private insertPaths(uris: string[]): void {
     const root = workspaceRoot();
+    const storage = this.context.globalStorageUri.fsPath;
     const mentions = uris
       .map((raw) => {
         try {
@@ -251,10 +253,14 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         }
       })
       .filter(Boolean)
-      .map((fsPath) =>
-        root && fsPath.startsWith(`${root}/`) ? fsPath.slice(root.length + 1) : fsPath
-      )
-      .map((path) => `@${path}`);
+      .map((fsPath) => {
+        if (root && fsPath.startsWith(`${root}/`)) return fsPath.slice(root.length + 1);
+        // Pasted files written to extension storage carry a stamped absolute
+        // path; the composer only needs the basename to render a clean pill.
+        if (storage && fsPath.startsWith(`${storage}/`)) return path.basename(fsPath);
+        return fsPath;
+      })
+      .map((p) => `@${p}`);
 
     if (mentions.length > 0) {
       this.post({ type: "insertMention", text: mentions.join(" ") });

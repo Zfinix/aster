@@ -84,7 +84,7 @@ body.vscode-dark {
 .toolbar {
   display: flex;
   align-items: center;
-  padding: var(--s2) var(--s2);
+  padding: var(--s2) var(--s3);
   gap: var(--s2);
   flex: none;
 }
