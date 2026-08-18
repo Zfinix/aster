@@ -770,6 +770,13 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
                 .to_string(),
             error: event.get("error").and_then(Value::as_bool).unwrap_or(false),
         }),
+        "reasoning" => Some(TurnEvent::Reasoning(
+            event.get("content")?.as_str()?.to_string(),
+        )),
+        "reasoning_delta" => Some(TurnEvent::ReasoningDelta(
+            event.get("content")?.as_str()?.to_string(),
+        )),
+        "reasoning_done" => Some(TurnEvent::ReasoningDone),
         "notice" => Some(TurnEvent::Notice(
             event.get("message")?.as_str()?.to_string(),
         )),
@@ -897,6 +904,12 @@ enum TurnEvent {
         result: String,
         error: bool,
     },
+    /// The model's thinking for this round, when it reasoned in the clear.
+    Reasoning(String),
+    /// One live fragment of streamed thinking, buffered until `ReasoningDone`.
+    ReasoningDelta(String),
+    /// Thinking finished; render the buffered block now.
+    ReasoningDone,
     /// Web-search source citations from the OpenRouter `web` plugin.
     Citations(Vec<Citation>),
     /// Something the harness did that the user has to know about, e.g. the
@@ -1031,6 +1044,11 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
         desc: "Set the reasoning budget (off, low, medium, high), or cycle it",
     },
     CommandDesc {
+        name: "thinking",
+        takes_arg: false,
+        desc: "Toggle whether the model's thinking prints in full",
+    },
+    CommandDesc {
         name: "yolo",
         takes_arg: false,
         desc: "Toggle YOLO mode — guardrails off, red theme",
@@ -1096,6 +1114,12 @@ struct ChatApp {
     /// An `Explored` cell is open: further read-only rows hang off it instead
     /// of opening a new one.
     exploring: bool,
+    /// Whether a thinking block prints in full. Off by default: reasoning is
+    /// usually longer than the answer it produced.
+    show_thinking: bool,
+    /// Live streamed thinking, accumulated across `ReasoningDelta` events and
+    /// rendered once `ReasoningDone` closes the block.
+    reasoning_buf: String,
     running: Vec<RunningTool>,
     /// Live per-`agent`-tool-call rows, keyed by call id, fed by `agent_status`
     /// events so a finished swarm renders cleanly instead of as a JSON dump.
@@ -1179,6 +1203,8 @@ impl ChatApp {
             speaking: false,
             streamed: String::new(),
             exploring: false,
+            show_thinking: false,
+            reasoning_buf: String::new(),
             running: Vec::new(),
             agent_rows: std::collections::HashMap::new(),
             pending_blanks: 0,
@@ -1314,6 +1340,25 @@ impl ChatApp {
                         self.note(&format!("agent {agent}: failed: {why}"));
                     }
                     _ => {}
+                }
+            }
+            TurnEvent::Reasoning(text) => {
+                self.end_message();
+                self.end_explored();
+                let block = history::reasoning(&text, self.show_thinking, self.width);
+                self.emit(block);
+            }
+            TurnEvent::ReasoningDelta(text) => {
+                self.reasoning_buf.push_str(&text);
+            }
+            TurnEvent::ReasoningDone => {
+                self.end_message();
+                self.end_explored();
+                if !self.reasoning_buf.is_empty() {
+                    let block =
+                        history::reasoning(&self.reasoning_buf, self.show_thinking, self.width);
+                    self.emit(block);
+                    self.reasoning_buf.clear();
                 }
             }
             TurnEvent::Citations(sources) => {
@@ -1460,6 +1505,7 @@ impl ChatApp {
         self.thinking = true;
         self.started = Some(Instant::now());
         self.streamed.clear();
+        self.reasoning_buf.clear();
 
         let client = client.clone();
         let repo_root = repo_root.to_path_buf();
@@ -2092,6 +2138,13 @@ impl ChatApp {
                 Some(Err(e)) => self.flash = Some(e),
                 None => self.open_effort_picker(pane),
             },
+            "thinking" => {
+                self.show_thinking = !self.show_thinking;
+                self.flash = Some(match self.show_thinking {
+                    true => "thinking shown in full".into(),
+                    false => "thinking collapsed".into(),
+                });
+            }
             "yolo" => match self.mode {
                 Mode::Yolo => self.select_mode(Mode::Edit),
                 _ => self.confirm_yolo(pane),

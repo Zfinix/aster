@@ -1175,19 +1175,16 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
     if no_connect {
         return list_configured(&settings.mcp);
     }
-    if settings.mcp.servers.is_empty() {
-        if crate::json_mode() {
-            println!("{}", json!({ "ok": true, "servers": [], "tools": [] }));
-        } else {
-            println!(
-                "No MCP servers configured. Add them under `mcp.servers` in aster.yaml:\n\n\
-                 mcp:\n  servers:\n    github:\n      command: npx\n      args: [\"-y\", \"@modelcontextprotocol/server-github\"]"
-            );
-        }
-        return Ok(());
-    }
-
+    // Connecting even with nothing configured is the point: the `web` server
+    // runs in-process, so there are always tools to report.
     let (runtime, problems) = McpRuntime::connect(&settings.mcp).await;
+    if settings.mcp.servers.is_empty() && !crate::json_mode() {
+        println!(
+            "No MCP servers configured. The built-in web tools are listed below; \
+             add more under `mcp.servers` in aster.yaml:\n\n\
+             mcp:\n  servers:\n    github:\n      command: npx\n      args: [\"-y\", \"@modelcontextprotocol/server-github\"]\n"
+        );
+    }
     let tools: Vec<&McpTool> = runtime
         .as_ref()
         .map(|r| r.injector().catalog().tools().iter().collect())

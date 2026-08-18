@@ -218,6 +218,13 @@
       "name": "OpenRouter",
       "base_url": "https://openrouter.ai/api/v1",
       "example_model": "deepseek/deepseek-v4-pro",
+      "recommended": [
+        "google/gemini-3.1-flash-lite",
+        "anthropic/claude-sonnet-5",
+        "amazon/nova-lite-v1",
+        "microsoft/phi-4",
+        "qwen/qwen3-next-80b-a3b-instruct"
+      ],
       "auth": "Bearer",
       "notes": "Aggregator. Model IDs are org-prefixed."
     },

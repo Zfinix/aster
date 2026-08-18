@@ -20,6 +20,7 @@ mod picker;
 mod plugins;
 mod project;
 mod provider;
+mod redact;
 mod remote;
 mod review;
 mod sessions;
@@ -111,7 +112,12 @@ enum Command {
     Web(web::WebArgs),
     /// Inspect the MCP servers configured for this repo.
     Mcp(mcp::McpArgs),
-    /// List the model IDs the configured provider serves.
+    /// List the models the provider serves, and switch which one is used.
+    Model(models::ModelArgs),
+    /// List the endpoints Aster knows, and switch which one is used.
+    Provider(provider::ProviderArgs),
+    /// Older spelling of `aster model list`, kept for existing scripts.
+    #[command(hide = true)]
     Models(models::ModelsArgs),
     /// Drive the agent remotely from a messaging channel (Telegram).
     Remote(remote::RemoteArgs),
@@ -183,6 +189,8 @@ async fn main() -> Result<()> {
         Command::Plugins(args) => plugins::run(args, std::env::current_dir().ok().as_deref()),
         Command::Web(args) => web::run(args).await,
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
+        Command::Model(args) => models::run_model(args).await,
+        Command::Provider(args) => provider::run(args),
         Command::Models(args) => models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
     };

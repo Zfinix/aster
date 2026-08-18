@@ -6,7 +6,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::{env, fs};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use cliclack::{log, multiselect, outro, outro_cancel, password, select, set_theme};
 use console::Style;
@@ -42,6 +42,9 @@ struct Provider {
     base_url: String,
     #[serde(default)]
     example_model: String,
+    /// Vetted ids for this endpoint. Empty means `example_model` is the shortlist.
+    #[serde(default)]
+    recommended: Vec<String>,
     #[serde(default)]
     auth: String,
 }
@@ -77,22 +80,9 @@ fn load_providers() -> Result<Vec<Provider>> {
 /// Human provider name for a base URL, matched against the catalog; falls back to the host.
 pub fn provider_label(base_url: &str) -> String {
     let want = base_url.trim_end_matches('/');
-    if let Ok(providers) = load_providers() {
-        if let Some(p) = providers
-            .iter()
-            .find(|p| p.base_url.trim_end_matches('/') == want)
-        {
-            return p.name.clone();
-        }
-        let host = host_only(want);
-        if let Some(p) = providers
-            .iter()
-            .find(|p| host_only(p.base_url.trim_end_matches('/')) == host)
-        {
-            return p.name.clone();
-        }
-    }
-    host_only(want).to_string()
+    lookup(want)
+        .map(|p| p.name)
+        .unwrap_or_else(|| host_only(want).to_string())
 }
 
 /// One row for the TUI's `/provider` picker: name, endpoint, and the model to
@@ -105,6 +95,59 @@ pub fn provider_choices() -> Vec<(String, String, String)> {
         .filter(|p| !p.templated())
         .map(|p| (p.name, p.base_url, p.example_model))
         .collect()
+}
+
+/// The catalog's shortlist for `base_url`, falling back to its example model.
+/// Empty when the endpoint is unknown, which reads as "ask the endpoint".
+pub fn provider_recommended(base_url: &str) -> Vec<String> {
+    let Some(p) = lookup(base_url) else {
+        return Vec::new();
+    };
+    if !p.recommended.is_empty() {
+        return p.recommended;
+    }
+    match p.example_model.is_empty() {
+        true => Vec::new(),
+        false => vec![p.example_model],
+    }
+}
+
+/// Resolve what a user typed at `provider use` against the catalog: an id, a
+/// name, or a base URL. A URL that matches nothing is taken at face value, so
+/// self-hosted endpoints work without a catalog entry.
+pub fn find_provider(target: &str) -> Result<(String, String, String)> {
+    let want = target.trim().trim_end_matches('/');
+    let providers = load_providers()?;
+    let found = providers.into_iter().filter(|p| !p.templated()).find(|p| {
+        p.id.eq_ignore_ascii_case(want)
+            || p.name.eq_ignore_ascii_case(want)
+            || p.base_url.trim_end_matches('/').eq_ignore_ascii_case(want)
+    });
+    if let Some(p) = found {
+        return Ok((p.name, p.base_url, p.example_model));
+    }
+    if want.starts_with("http://") || want.starts_with("https://") {
+        return Ok((provider_label(want), want.to_string(), String::new()));
+    }
+    bail!("no provider {target:?} in the catalog; run `aster provider list` to see the ids")
+}
+
+/// The catalog entry for a base URL: every exact match is considered before any
+/// host match, so a shared host never shadows the endpoint actually named.
+fn lookup(base_url: &str) -> Option<Provider> {
+    let want = base_url.trim_end_matches('/');
+    let providers = load_providers().ok()?;
+    let exact = providers
+        .iter()
+        .position(|p| p.base_url.trim_end_matches('/') == want);
+    let host = host_only(want);
+    let by_host = || {
+        providers
+            .iter()
+            .position(|p| host_only(p.base_url.trim_end_matches('/')) == host)
+    };
+    let at = exact.or_else(by_host)?;
+    providers.into_iter().nth(at)
 }
 
 /// The env vars that may hold `base_url`'s own key, in the order they are
@@ -372,12 +415,7 @@ fn provider_setup(providers: &[Provider]) -> Result<Option<(String, String, Opti
         provider.base_url.clone()
     };
 
-    let Some(model) = or_cancel(
-        cliclack::input("Model")
-            .default_input(&provider.example_model)
-            .interact::<String>(),
-    )?
-    else {
+    let Some(model) = pick_model(provider, &base_url)? else {
         return Ok(None);
     };
 
@@ -394,6 +432,38 @@ fn provider_setup(providers: &[Provider]) -> Result<Option<(String, String, Opti
         model.trim().to_string(),
         key,
     )))
+}
+
+/// The same shortlist `aster model recommended` serves, offered as a menu when
+/// the catalog has one. One entry is not a choice, so that case still types.
+/// `None` when the user cancels.
+fn pick_model(provider: &Provider, base_url: &str) -> Result<Option<String>> {
+    let shortlist = provider_recommended(base_url);
+    if shortlist.len() < 2 {
+        return or_cancel(
+            cliclack::input("Model")
+                .default_input(&provider.example_model)
+                .interact::<String>(),
+        );
+    }
+
+    let other = shortlist.len();
+    let mut menu = select::<usize>("Model").initial_value(0);
+    for (i, m) in shortlist.iter().enumerate() {
+        menu = menu.item(i, m, "");
+    }
+    menu = menu.item(other, "Something else", "type an id this endpoint serves");
+    let Some(idx) = or_cancel(menu.interact())? else {
+        return Ok(None);
+    };
+    match shortlist.get(idx) {
+        Some(model) => Ok(Some(model.clone())),
+        None => or_cancel(
+            cliclack::input("Model")
+                .default_input(&provider.example_model)
+                .interact::<String>(),
+        ),
+    }
 }
 
 /// A one-line status, emitted inside the clack frame or as a plain line.
@@ -466,7 +536,7 @@ fn store_key(env_path: &Path, var_name: &str, key: &str, gitignore: bool) -> Res
 fn write_yaml(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
     if path.exists() && !force {
         return Ok(Note::Info(format!(
-            "{} already exists · keeping it (use --force to overwrite)",
+            "{} already exists · keeping it (--force rewrites it; `aster provider use` switches provider without touching the rest)",
             display(path)
         )));
     }

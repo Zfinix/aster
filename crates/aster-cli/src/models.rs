@@ -1,9 +1,10 @@
-//! `aster models` — list the model IDs the configured provider serves.
+//! `aster model` — list what the configured provider serves, and switch which
+//! one every surface uses. `aster models` is the older spelling of the list.
 
 use std::env;
 
 use anyhow::{Context, Result};
-use clap::Args;
+use clap::{Args, Subcommand};
 
 use crate::settings::Settings;
 
@@ -25,13 +26,80 @@ pub struct ModelsArgs {
     capabilities: bool,
 }
 
+#[derive(Args)]
+pub struct ModelArgs {
+    #[command(subcommand)]
+    command: ModelCmd,
+}
+
+#[derive(Subcommand)]
+enum ModelCmd {
+    /// What the configured endpoint serves.
+    List(ModelsArgs),
+    /// Switch the model, saved to aster.yaml so every surface picks it up.
+    Use(UseModelArgs),
+    /// The catalog's shortlist for the endpoint in use, for a picker to show
+    /// before the endpoint has been asked.
+    Recommended,
+}
+
+#[derive(Args)]
+pub struct UseModelArgs {
+    /// Model id, as shown by `aster model list`.
+    #[arg(value_name = "ID")]
+    id: String,
+}
+
+pub async fn run_model(args: ModelArgs) -> Result<()> {
+    match args.command {
+        ModelCmd::List(args) => run(args).await,
+        ModelCmd::Use(args) => use_model(args),
+        ModelCmd::Recommended => recommended(),
+    }
+}
+
+/// Write the choice where every surface reads it, then report what the next
+/// turn resolves to: the point is that this answer is the same everywhere.
+fn use_model(args: UseModelArgs) -> Result<()> {
+    let repo_root = env::current_dir().context("could not determine the current directory")?;
+    let path = crate::settings::persist_review(Some(&repo_root), &[("model", &args.id)])?;
+    crate::provider::report(&repo_root, &path, &["ASTER_MODEL"])
+}
+
+/// Catalog-backed, so it costs nothing and stays right when the endpoint moves.
+fn recommended() -> Result<()> {
+    let repo_root = env::current_dir().context("could not determine the current directory")?;
+    let settings = Settings::load(Some(&repo_root))?;
+    let (base_url, _) = crate::provider::resolve_endpoint(&settings.review, None);
+    let models = crate::init::provider_recommended(&base_url);
+    if crate::json_mode() {
+        println!("{}", serde_json::to_string(&models)?);
+        return Ok(());
+    }
+    for m in &models {
+        println!("{m}");
+    }
+    Ok(())
+}
+
+/// `aster provider list`, sharing this module's renderer so the two spellings
+/// cannot disagree about what the catalog holds.
+pub fn list_providers_command() -> Result<()> {
+    let repo_root = env::current_dir().context("could not determine the current directory")?;
+    let settings = Settings::load(Some(&repo_root))?;
+    let (base_url, _) = crate::provider::resolve_endpoint(&settings.review, None);
+    list_providers(&base_url)
+}
+
 pub async fn run(args: ModelsArgs) -> Result<()> {
+    // The catalog is embedded, so listing it is answered before a key is
+    // resolved: `aster init` itself needs this list to run.
+    if args.providers {
+        return list_providers_command();
+    }
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
     let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
-    if args.providers {
-        return list_providers(client.base_url());
-    }
     if args.capabilities {
         return list_capabilities(&client).await;
     }
@@ -85,6 +153,9 @@ fn list_providers(current: &str) -> Result<()> {
                 "key_env": crate::init::provider_key_vars(&base_url),
                 "base_url": base_url,
                 "example_model": example_model,
+                // The shortlist a picker can show before this endpoint has been
+                // asked what it serves, so no front-end has to hardcode one.
+                "recommended": crate::init::provider_recommended(&base_url),
                 "current": is_current,
             })
         })
