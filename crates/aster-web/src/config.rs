@@ -52,6 +52,10 @@ impl WebConfig {
         resolve_key(|name| env::var(name).ok(), &["EXA_API_KEY"])
     }
 
+    pub fn resolve_perplexity_key(&self) -> Option<String> {
+        resolve_key(|name| env::var(name).ok(), &["PERPLEXITY_API_KEY"])
+    }
+
     pub fn resolve_jina_key(&self) -> Option<String> {
         resolve_key(|name| env::var(name).ok(), &["JINA_API_KEY"])
     }

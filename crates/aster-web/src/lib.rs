@@ -15,6 +15,7 @@ mod firecrawl;
 mod html;
 mod jina;
 mod limit;
+mod perplexity;
 mod plain_http;
 mod serve;
 mod types;
@@ -48,6 +49,8 @@ pub trait WebCrawl: Send + Sync {
 pub struct WebBackend {
     /// Search-first, so it leads `search` and sits mid-table for `extract`.
     exa: Option<exa::ExaClient>,
+    /// Real-time ranked search; follows Exa for `search`.
+    perplexity: Option<perplexity::PerplexityClient>,
     context_dev: Option<context_dev::ContextDevClient>,
     firecrawl: Option<firecrawl::FirecrawlClient>,
     browserbase: Option<browserbase::BrowserbaseClient>,
@@ -66,6 +69,9 @@ impl WebBackend {
             exa: config
                 .resolve_exa_key()
                 .map(|k| exa::ExaClient::new(k, timeout_ms)),
+            perplexity: config
+                .resolve_perplexity_key()
+                .map(|k| perplexity::PerplexityClient::new(k, timeout_ms)),
             context_dev: config
                 .resolve_context_dev_key()
                 .map(|k| context_dev::ContextDevClient::new(k, timeout_ms)),
@@ -87,6 +93,7 @@ impl WebBackend {
     /// True when at least one API-backed provider is configured.
     pub fn is_api_backed(&self) -> bool {
         self.exa.is_some()
+            || self.perplexity.is_some()
             || self.context_dev.is_some()
             || self.firecrawl.is_some()
             || self.browserbase.is_some()
@@ -139,6 +146,9 @@ impl WebBackend {
         opts: &SearchOptions,
     ) -> anyhow::Result<Vec<ExtractedPage>> {
         if let Some(ref c) = self.exa {
+            return c.search(query, opts).await;
+        }
+        if let Some(ref c) = self.perplexity {
             return c.search(query, opts).await;
         }
         if let Some(ref c) = self.context_dev {
@@ -228,8 +238,12 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     let mut candidates = Vec::new();
     // Exa leads `search` because that is what it is for, and its `extract` is
     // offered further down, where the extraction-first providers rank above it.
+    // Perplexity is the next search-first provider behind Exa.
     if backend.exa.is_some() {
         candidates.push(exa::search_tool());
+    }
+    if backend.perplexity.is_some() {
+        candidates.push(perplexity::search_tool());
     }
     if backend.context_dev.is_some() {
         candidates.push(context_dev::extract_tool());
