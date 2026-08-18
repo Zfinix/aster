@@ -211,9 +211,10 @@ pub fn run_model(dir: &Path, repo: &Path, cases: &[Case], model: Option<&str>) -
         .with_context(|| format!("writing {}", file.display()))?;
 
     eprintln!(
-        "running {} case(s) against {} — ori's progress follows",
+        "running {} case(s) against {} in {} — ori's progress follows",
         cases.len(),
-        model.unwrap_or("the configured model")
+        model.unwrap_or("the configured model"),
+        repo.display()
     );
     // Ori narrates to stderr and only prints JSON at the end. Inheriting it is
     // the difference between watching the run and staring at nothing for
@@ -394,6 +395,17 @@ pub fn render_live(runs: &[ModelRun]) -> String {
         out.push_str("\nAssertion messages are in ori's output above.\n");
     }
     out
+}
+
+/// The checkout the cases are written against: the enclosing git worktree, not
+/// the current directory. The eval workspace lives inside the repo, so running
+/// from there would otherwise point aster at `crates/aster-eval/evals`, where
+/// every path a case names is genuinely absent and every case fails on content.
+pub fn repo_root(from: &Path) -> PathBuf {
+    from.ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .unwrap_or(from)
+        .to_path_buf()
 }
 
 /// `ori` from the environment, else the installer's `~/.local/bin`, which a

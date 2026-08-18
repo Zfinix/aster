@@ -165,3 +165,24 @@ fn a_failing_model_never_wins_the_sweep() {
     let out = render_live(&[broken, working]);
     assert!(out.contains("passing: working"), "{out}");
 }
+
+#[test]
+fn repo_root_climbs_out_of_the_eval_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let evals = root.join("crates/aster-eval/evals");
+    std::fs::create_dir_all(&evals).unwrap();
+
+    assert_eq!(repo_root(&evals), root);
+    assert_eq!(repo_root(root), root);
+}
+
+#[test]
+fn repo_root_falls_back_to_the_directory_given() {
+    let tmp = tempfile::tempdir().unwrap();
+    let loose = tmp.path().join("no-git-here");
+    std::fs::create_dir_all(&loose).unwrap();
+
+    assert_eq!(repo_root(&loose), loose);
+}

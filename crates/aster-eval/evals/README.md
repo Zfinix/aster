@@ -11,3 +11,6 @@ nothing here is edited by hand except `features/aster/feature.ts`.
 
 Needs `ori` (openrouter.ai/labs/ori), `bun`, and an OpenRouter credential.
 Verify the harness itself with `ori harness test --harness aster`.
+
+Both evaluation modes, their metrics, and the limits on what those numbers can
+claim are documented in [docs/EVAL.md](../../../docs/EVAL.md).
