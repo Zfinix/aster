@@ -52,6 +52,7 @@ fn empty_result_serializes() {
 #[derive(Default)]
 struct Configured {
     exa: bool,
+    perplexity: bool,
     context_dev: bool,
     firecrawl: bool,
     browserbase: bool,
@@ -64,6 +65,9 @@ fn backend(with: Configured) -> WebBackend {
         exa: with
             .exa
             .then(|| exa::ExaClient::new("exa-key".into(), timeout)),
+        perplexity: with
+            .perplexity
+            .then(|| perplexity::PerplexityClient::new("pplx-key".into(), timeout)),
         context_dev: with
             .context_dev
             .then(|| context_dev::ContextDevClient::new("ctxt-key".into(), timeout)),
@@ -97,6 +101,10 @@ fn backend_not_api_backed_without_keys() {
 #[test]
 fn any_single_provider_makes_the_backend_api_backed() {
     for with in [
+        Configured {
+            perplexity: true,
+            ..Default::default()
+        },
         Configured {
             context_dev: true,
             ..Default::default()
@@ -208,6 +216,33 @@ fn exa_alone_makes_the_backend_api_backed() {
 }
 
 #[test]
+fn perplexity_serves_search_when_exa_is_absent() {
+    let described = |with: Configured| {
+        register_tools(&backend(with))
+            .into_iter()
+            .find(|t| t.name == "search")
+            .expect("search is always offered")
+            .description
+            .clone()
+    };
+
+    let perplexity = Configured {
+        perplexity: true,
+        ..Default::default()
+    };
+    assert!(described(perplexity).contains("Perplexity"));
+
+    // Exa remains the lead search provider when both are configured.
+    let both_desc = described(Configured {
+        exa: true,
+        perplexity: true,
+        ..Default::default()
+    });
+    assert!(both_desc.contains("Exa"));
+    assert!(!both_desc.contains("Perplexity"));
+}
+
+#[test]
 fn a_keyed_provider_wins_the_search_name_from_duckduckgo() {
     let keyless = register_tools(&backend(Configured::default()));
     let described = |tools: &[McpTool]| {
@@ -288,6 +323,7 @@ async fn screenshot_without_context_dev_says_which_key_to_set() {
 fn every_tool_name_is_offered_once_with_all_providers_configured() {
     let all = backend(Configured {
         exa: true,
+        perplexity: true,
         context_dev: true,
         firecrawl: true,
         browserbase: true,
