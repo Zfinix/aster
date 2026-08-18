@@ -298,6 +298,13 @@ fn python_settings() -> McpSettings {
     settings_for(FAKE_SERVER)
 }
 
+/// Connect with no session-scoped extras, so an ambient `ASTER_MCP_EXTRA` in
+/// the environment (the telegram bridge sets one) cannot change the catalog
+/// these tests assert on.
+async fn connect(settings: &McpSettings) -> (Option<McpRuntime>, Vec<String>) {
+    McpRuntime::connect_with(settings, &BTreeMap::new()).await
+}
+
 /// Every server carries whatever web tools the environment's provider keys
 /// enable, on top of its own. Counting them here keeps the assertions honest
 /// regardless of which `WEB_*`/`*_API_KEY` vars happen to be set in a given
@@ -322,7 +329,7 @@ async fn a_server_handshakes_lists_and_answers_a_call() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&python_settings()).await;
+    let (runtime, problems) = connect(&python_settings()).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
     assert_eq!(runtime.tool_count(), 2 + web_tool_count());
@@ -349,7 +356,7 @@ async fn a_modern_server_is_driven_without_an_initialize_handshake() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(MODERN_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(MODERN_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
     assert_eq!(runtime.tool_count(), 2 + web_tool_count());
@@ -373,7 +380,7 @@ async fn an_unsupported_version_retries_modern_instead_of_falling_back() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(OLDER_MODERN_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(OLDER_MODERN_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     // The server only answers when `_meta` carries 2025-11-25, so listing
     // succeeding proves the client switched versions and stayed modern.
@@ -437,7 +444,7 @@ async fn every_page_of_a_paginated_tool_list_is_read() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(PAGINATED_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(PAGINATED_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
     assert_eq!(
@@ -453,7 +460,7 @@ async fn a_server_without_a_tools_capability_is_quiet_not_an_error() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(NO_TOOLS_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(NO_TOOLS_SERVER)).await;
     // Web tools always register, so a resources-only server still leaves a
     // runtime — it just contributes nothing under `fake/`.
     let runtime = runtime.expect("web tools keep the runtime alive");
@@ -481,7 +488,7 @@ async fn discovery_costs_one_tool_no_matter_how_many_servers_there_are() {
     if !has_python() {
         return;
     }
-    let (runtime, _) = McpRuntime::connect(&python_settings()).await;
+    let (runtime, _) = connect(&python_settings()).await;
     let injection = runtime.expect("a runtime").injection().expect("injection");
     assert_eq!(injection.bridge_tool["function"]["name"], "aster_mcp");
     // Schemas stay behind `describe`; the prompt never carries them.
@@ -499,7 +506,7 @@ async fn a_server_that_cannot_start_is_reported_and_skipped() {
             ..ServerConfig::default()
         },
     );
-    let (runtime, problems) = McpRuntime::connect(&settings).await;
+    let (runtime, problems) = connect(&settings).await;
     // Web tools always register, so the runtime survives; the broken server
     // is reported as a problem and contributes nothing under `broken/`.
     let runtime = runtime.expect("web tools keep the runtime alive");
@@ -538,7 +545,7 @@ async fn a_server_dying_for_credentials_is_reported_as_needing_auth_not_offline(
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(AUTH_FAILING_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(AUTH_FAILING_SERVER)).await;
     assert!(runtime.is_some(), "web tools keep the runtime alive");
     assert_eq!(problems.len(), 1, "{problems:?}");
     // One line, the `Error:` prefix stripped, nothing about crashes.
@@ -553,7 +560,7 @@ async fn a_server_printing_its_auth_route_gets_that_url_into_the_one_liner() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(AUTH_URL_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(AUTH_URL_SERVER)).await;
     assert!(runtime.is_some(), "web tools keep the runtime alive");
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(
@@ -579,7 +586,7 @@ async fn a_server_crashing_at_startup_is_reported_offline_with_its_stderr() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(CRASHING_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(CRASHING_SERVER)).await;
     assert!(runtime.is_some(), "web tools keep the runtime alive");
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(
@@ -625,7 +632,7 @@ async fn a_strict_legacy_server_killed_by_the_probe_is_respawned_and_works() {
     if !has_python() {
         return;
     }
-    let (runtime, problems) = McpRuntime::connect(&settings_for(STRICT_LEGACY_SERVER)).await;
+    let (runtime, problems) = connect(&settings_for(STRICT_LEGACY_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
     assert_eq!(runtime.tool_count(), 1 + web_tool_count());
@@ -940,7 +947,7 @@ async fn the_legacy_sse_binding_posts_messages_and_reads_replies_off_the_stream(
 #[tokio::test]
 async fn a_refused_remote_server_is_reported_not_fatal() {
     let settings = remote_settings("http://127.0.0.1:1/mcp", Transport::StreamableHttp);
-    let (_, problems) = McpRuntime::connect(&settings).await;
+    let (_, problems) = connect(&settings).await;
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].starts_with("remote is not reachable"),
@@ -1060,7 +1067,7 @@ async fn a_denied_tool_never_reaches_the_catalog() {
             ..ServerConfig::default()
         },
     );
-    let (runtime, _) = McpRuntime::connect(&settings).await;
+    let (runtime, _) = connect(&settings).await;
     let runtime = runtime.expect("a disabled server keeps the runtime alive");
     assert!(runtime.injector().catalog().get("web/extract").is_none());
     assert_eq!(runtime.filtered_tools(), ["web/extract"]);
@@ -1072,7 +1079,7 @@ async fn the_runtime_routes_a_web_tool_to_the_web_connection() {
     if aster_web::WebBackend::from_env(&config).is_api_backed() {
         return;
     }
-    let (runtime, _) = McpRuntime::connect(&McpSettings::default()).await;
+    let (runtime, _) = connect(&McpSettings::default()).await;
     let runtime = runtime.expect("web tools keep the runtime alive");
     let tool = runtime
         .injector()

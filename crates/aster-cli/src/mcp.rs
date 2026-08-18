@@ -796,20 +796,38 @@ impl McpRuntime {
     /// Connect every enabled server. A server that fails to start is reported
     /// and skipped, so one broken entry cannot block the session.
     pub async fn connect(settings: &McpSettings) -> (Option<Self>, Vec<String>) {
+        // Front-ends inject session-scoped servers via ASTER_MCP_EXTRA, a JSON
+        // map of server configs; the bridge uses it for its telegram tools.
+        let mut problems = Vec::new();
+        let extra = match std::env::var("ASTER_MCP_EXTRA") {
+            Ok(raw) => match serde_json::from_str::<BTreeMap<String, ServerConfig>>(&raw) {
+                Ok(extra) => extra,
+                Err(e) => {
+                    problems.push(format!("ASTER_MCP_EXTRA is not valid: {e}"));
+                    BTreeMap::new()
+                }
+            },
+            Err(_) => BTreeMap::new(),
+        };
+        let (runtime, mut extra_problems) = Self::connect_with(settings, &extra).await;
+        problems.append(&mut extra_problems);
+        (runtime, problems)
+    }
+
+    /// Connect every enabled server plus an explicit set of session-scoped
+    /// extras. Tests pass an empty map so an ambient `ASTER_MCP_EXTRA` in the
+    /// environment cannot change the catalog they assert on.
+    pub async fn connect_with(
+        settings: &McpSettings,
+        extra: &BTreeMap<String, ServerConfig>,
+    ) -> (Option<Self>, Vec<String>) {
         let mut connections = BTreeMap::new();
         let mut tools = Vec::new();
         let mut problems = Vec::new();
         let mut disabled_servers = Vec::new();
 
-        // Front-ends inject session-scoped servers via ASTER_MCP_EXTRA, a JSON
-        // map of server configs; the bridge uses it for its telegram tools.
         let mut servers = settings.servers.clone();
-        if let Ok(raw) = std::env::var("ASTER_MCP_EXTRA") {
-            match serde_json::from_str::<BTreeMap<String, ServerConfig>>(&raw) {
-                Ok(extra) => servers.extend(extra),
-                Err(e) => problems.push(format!("ASTER_MCP_EXTRA is not valid: {e}")),
-            }
-        }
+        servers.extend(extra.clone());
 
         let config = aster_web::WebConfig::from_env();
         let backend = aster_web::WebBackend::from_env(&config);
