@@ -6,11 +6,13 @@ import {
   authStatus,
   cancelChat,
   deleteSession,
+  listSessions,
   pickDiff,
   pickRepo,
   runChat,
   runReview,
   saveProvider,
+  showSession,
   startupInfo,
   type AuthStatus,
   type ChatMessage,
@@ -35,6 +37,8 @@ import {
   nextId,
   repoNameOf,
   stepLabel,
+  timeAgo,
+  turnsFromEvents,
   type Conversation,
   type ReviewData,
   type Turn,
@@ -54,6 +58,10 @@ import { Mark } from "./components/Mark";
 type View = "home" | "thread";
 
 const INSTALL_CMD = "cargo install --path crates/aster-cli";
+
+/** How many recent sessions the sidebar rebuilds at launch. Each one is its own
+ *  transcript read, so this trades a complete history for a fast start. */
+const RESTORED_SESSIONS = 20;
 
 function InstallPrompt() {
   const toast = useToast();
@@ -276,6 +284,7 @@ function App() {
       if (info.defaultRepo) {
         setOpts({ repoPath: info.defaultRepo });
         addRepo(info.defaultRepo);
+        void restoreSessions(info.defaultRepo);
       }
     });
     refreshAuth();
@@ -292,6 +301,48 @@ function App() {
         ? rs
         : [...rs, { value: path, label: repoNameOf(path) }],
     );
+
+  /** Rebuild the sidebar from sessions on disk. Without this the app opened on
+   *  "Nothing here yet" every launch, even with saved sessions, because
+   *  conversations only ever lived in memory. */
+  const restoreSessions = useCallback(async (repoPath: string) => {
+    let summaries;
+    try {
+      summaries = await listSessions(repoPath);
+    } catch {
+      return;
+    }
+    // Newest first from the CLI. Each one costs its own transcript read, so
+    // only the recent stretch is rebuilt; the rest stay reachable by id.
+    const recent = summaries.slice(0, RESTORED_SESSIONS);
+    const restored = await Promise.all(
+      recent.map(async (s): Promise<Conversation | null> => {
+        try {
+          const { events } = await showSession(s.id, repoPath);
+          const turns = turnsFromEvents(events, `${s.id}-`);
+          if (turns.length === 0) return null;
+          const created = Date.parse(s.created_at);
+          return {
+            id: s.id,
+            title: s.title,
+            repoName: repoNameOf(repoPath),
+            repoPath,
+            whenLabel: Number.isNaN(created) ? "earlier" : timeAgo(created),
+            turns,
+            // Already on disk, so a reply continues it rather than forking.
+            sessionId: s.id,
+            renamed: true,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const usable = restored.filter((c): c is Conversation => c !== null);
+    if (usable.length === 0) return;
+    // Anything started while the reads were in flight wins its id.
+    setConversations((cs) => [...cs, ...usable.filter((c) => !cs.some((x) => x.id === c.id))]);
+  }, []);
 
   const onSaveProvider = useCallback(
     async (fields: { apiKey?: string; baseUrl?: string | null; model?: string | null }) => {
@@ -356,6 +407,76 @@ function App() {
                     turns: c.turns.map((t) =>
                       t.id === turnId && t.role === "assistant"
                         ? { ...t, text: t.text + ev.content }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        case "reasoning_delta":
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? {
+                            ...t,
+                            reasoning: t.reasoning
+                              ? t.reasoningDone
+                                ? `${t.reasoning}\n\n${ev.content}`
+                                : t.reasoning + ev.content
+                              : ev.content,
+                            reasoningTokens: ev.tokens,
+                            reasoningDone: false,
+                          }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        case "reasoning_done":
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? {
+                            ...t,
+                            reasoningTokens: ev.tokens,
+                            reasoningDurationMs: ev.duration_ms,
+                            reasoningDone: true,
+                          }
+                        : t,
+                    ),
+                  },
+            ),
+          );
+          break;
+        case "reasoning":
+          setConversations((cs) =>
+            cs.map((c) =>
+              c.id !== convoId
+                ? c
+                : {
+                    ...c,
+                    turns: c.turns.map((t) =>
+                      t.id === turnId && t.role === "assistant"
+                        ? {
+                            ...t,
+                            reasoning: t.reasoning
+                              ? `${t.reasoning}\n\n${ev.content}`
+                              : ev.content,
+                            reasoningTokens: ev.tokens,
+                            reasoningDurationMs: ev.duration_ms,
+                            reasoningDone: true,
+                          }
                         : t,
                     ),
                   },

@@ -1288,6 +1288,44 @@ h1 {
 
 /* Tool-activity panel, à la Claude: a plain summary line, then one bordered
    card of step rows split by hairlines. Everything shares the turn's left edge. */
+.reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 7px;
+  font-size: 13.5px;
+  color: var(--dim);
+  transition: opacity 0.12s;
+}
+.reasoning-head:hover {
+  opacity: var(--hover-opacity);
+}
+.reasoning-caret {
+  display: inline-flex;
+  color: var(--faint);
+  flex-shrink: 0;
+}
+.reasoning-caret .chev {
+  transition: transform 0.14s ease;
+}
+.reasoning-caret[data-open="false"] .chev {
+  transform: rotate(-90deg);
+}
+.reasoning-body {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .activity {
   display: flex;
   flex-direction: column;

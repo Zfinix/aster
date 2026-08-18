@@ -4,6 +4,7 @@ import { ActivityPanel } from "./ActivityPanel";
 import { AgentPanel } from "./AgentPanel";
 import { AssistantText } from "./AssistantText";
 import { MessageActions } from "./MessageActions";
+import { ReasoningPanel } from "./ReasoningPanel";
 import { ReviewTurn } from "./ReviewTurn";
 
 export function TurnView({
@@ -38,6 +39,14 @@ export function TurnView({
     return (
       <div className="turn-wrap">
         <div className="a-turn">
+          {turn.reasoning && (
+            <ReasoningPanel
+              text={turn.reasoning}
+              tokens={turn.reasoningTokens}
+              durationMs={turn.reasoningDurationMs}
+              done={turn.reasoningDone}
+            />
+          )}
           {turn.steps && turn.steps.length > 0 && <ActivityPanel steps={turn.steps} />}
           {turn.agents && turn.agents.length > 0 && <AgentPanel agents={turn.agents} />}
           <AssistantText id={turn.id} text={turn.text} error={turn.error} />
