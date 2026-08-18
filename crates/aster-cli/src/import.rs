@@ -533,6 +533,7 @@ fn write_session(
             ts: message.ts,
             usage: None,
             annotations: Vec::new(),
+            reasoning: None,
         })?;
     }
     Ok(true)

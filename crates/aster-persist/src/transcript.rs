@@ -55,6 +55,22 @@ pub struct MessageEvent {
     /// OpenRouter `web` plugin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<Annotation>,
+    /// The round's thinking. Without it a reopened session shows the answer
+    /// with the reasoning that produced it missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningRecord>,
+}
+
+/// A round's thinking as it was shown live, kept so reopening a session
+/// rebuilds the same block instead of a bare reply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReasoningRecord {
+    pub text: String,
+    /// Estimated, not billed: the same count the live block showed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 impl MessageEvent {
@@ -67,6 +83,7 @@ impl MessageEvent {
             ts: Utc::now(),
             usage: None,
             annotations: Vec::new(),
+            reasoning: None,
         }
     }
 
@@ -107,6 +124,11 @@ impl MessageEvent {
 
     pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
         self.annotations = annotations;
+        self
+    }
+
+    pub fn with_reasoning(mut self, reasoning: Option<ReasoningRecord>) -> Self {
+        self.reasoning = reasoning;
         self
     }
 }
