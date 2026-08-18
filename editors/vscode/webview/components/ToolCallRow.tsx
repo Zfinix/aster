@@ -44,8 +44,8 @@ const OPEN_BY_DEFAULT = new Set(["run_command", "run_tests"]);
 
 /** One step, collapsed to its header until asked: eighteen reads stay a list
  *  rather than a wall. Failures open themselves, since that is the one case the
- *  reader was always going to expand. */
-export function ToolCallRow({ call }: { call: ToolCall }) {
+ *  reader was always going to expand. `nested` is a step inside a folded run. */
+export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean }) {
   const running = call.result === undefined;
   const output = displayOutput(call);
   const input = toolInput(call);
@@ -54,6 +54,12 @@ export function ToolCallRow({ call }: { call: ToolCall }) {
   const path = toolPath(call);
   const card = Boolean(output || input);
   const open = card && (expanded || call.error === true);
+
+  /** Every step in a run shares one icon and one verb, and the run's header
+   *  already wears both. What is left is the argument that tells them apart,
+   *  which takes the row's weight now that nothing leads it. */
+  const lead = nested ? undefined : verb;
+  const body = nested && !detail ? verb : detail;
 
   /** A path opens the real file; anything else opens its output as a scratch
    *  tab, which is where find, folding, and highlighting live. */
@@ -75,16 +81,18 @@ export function ToolCallRow({ call }: { call: ToolCall }) {
         aria-expanded={card ? open : undefined}
         title={card ? (open ? "Hide details" : "Show details") : undefined}
       >
-        <span className="tool-icon">
-          {call.error ? <AlertIcon /> : (ICONS[call.name] ?? <FileIcon />)}
-        </span>
-        <span className="tool-label" data-oneline={Boolean(input)} data-lead={!verb}>
-          {verb && <span className="tool-verb">{verb}</span>}
+        {!nested && (
+          <span className="tool-icon">
+            {call.error ? <AlertIcon /> : (ICONS[call.name] ?? <FileIcon />)}
+          </span>
+        )}
+        <span className="tool-label" data-oneline={Boolean(input)} data-lead={!lead}>
+          {lead && <span className="tool-verb">{lead}</span>}
           {/* A real space, not just flex gap: copied text glues the spans. */}
-          {detail && (
+          {body && (
             <span className="tool-detail" data-code={code === true}>
-              {verb ? " " : ""}
-              {detail}
+              {lead ? " " : ""}
+              {body}
             </span>
           )}
         </span>

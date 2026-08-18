@@ -42,7 +42,6 @@ export function ProviderPicker({
         >
           <span className="picker-body">
             <span className="picker-label">{provider.name}</span>
-            <span className="picker-detail">{provider.base_url}</span>
           </span>
           {provider.current && <span className="picker-check">✓</span>}
         </button>

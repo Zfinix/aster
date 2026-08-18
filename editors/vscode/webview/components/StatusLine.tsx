@@ -47,6 +47,12 @@ const WORDS = [
 
 const ROTATE_MS = 3200;
 
+/** A running time as a reader states it: seconds under a minute, `2m 14s` past
+ *  one. Four minutes of work should not read as a part number. */
+function elapsedLabel(secs: number): string {
+  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
 function anotherWord(current: string): string {
   const rest = WORDS.filter((w) => w !== current);
   return rest[Math.floor(Math.random() * rest.length)];
@@ -73,7 +79,7 @@ export function StatusLine() {
     <div className="status" role="status">
       <Mark px={1} className="mark-busy" label="Working" />
       <StatusWord word={word} />
-      {elapsed >= 3 && <span className="status-elapsed">{elapsed}s</span>}
+      {elapsed >= 3 && <span className="status-elapsed">{elapsedLabel(elapsed)}</span>}
     </div>
   );
 }

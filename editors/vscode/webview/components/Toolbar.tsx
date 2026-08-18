@@ -17,19 +17,19 @@ export function Toolbar({
       <div className="toolbar-actions">
         <button
           className="ghost icon-action"
-          onClick={onNewChat}
-          title="New conversation"
-          aria-label="New conversation"
-        >
-          <NewChatIcon />
-        </button>
-        <button
-          className="ghost icon-action"
           onClick={onHistory}
           title="Reopen a session"
           aria-label="History"
         >
           <HistoryIcon />
+        </button>
+        <button
+          className="ghost icon-action"
+          onClick={onNewChat}
+          title="New conversation"
+          aria-label="New conversation"
+        >
+          <NewChatIcon />
         </button>
       </div>
     </div>

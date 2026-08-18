@@ -231,6 +231,11 @@ describe("runLabel", () => {
     expect(runLabel("frobnicate", 4)).toBe("Frobnicate 4 steps");
   });
 
+  it("counts what a search was given rather than repeating the verb", () => {
+    expect(runLabel("search_files", 3)).toBe("Search 3 queries");
+    expect(runLabel("find_files", 2)).toBe("Find 2 patterns");
+  });
+
   it("counts bridged MCP work as tool calls", () => {
     expect(runLabel("aster_mcp", 3)).toBe("MCP 3 tool calls");
   });

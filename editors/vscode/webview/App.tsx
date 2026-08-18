@@ -17,15 +17,20 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { onHostMessage, persist, post, restore } from "./lib/host";
+import { modelShort } from "./lib/model";
 import {
   appendCall,
   appendInjected,
+  appendReasoning,
+  appendReasoningDelta,
   appendText,
   buildMessages,
   emptyReview,
+  finishReasoning,
   hydrate,
   newTurn,
   patchCall,
+  restoreTurn,
   stopUnfinished,
   upsertAgentState,
   type AssistantTurn,
@@ -104,6 +109,23 @@ export function App() {
   // start in `edit` or the approved plan is unrunnable again.
   const planApprovalRef = useRef(false);
 
+  // The model the panel last knew, kept out of state so the message handler can
+  // compare without reading a stale `init`.
+  const modelRef = useRef<string | null>(null);
+  /** Drop a divider the first time the model changes mid-conversation; a run of
+   *  switches with no message between them collapses to the last one. */
+  const markModelChange = useCallback((next: string | null) => {
+    if (modelRef.current === next) return;
+    modelRef.current = next;
+    setTurns((prev) => {
+      if (prev.length === 0) return prev;
+      const divider = { id: nextId(), role: "divider" as const, label: modelShort(next) };
+      return prev[prev.length - 1].role === "divider"
+        ? [...prev.slice(0, -1), divider]
+        : [...prev, divider];
+    });
+  }, []);
+
   // A stopped review is final: the CLI's own exit event arrives after the kill
   // and would otherwise overwrite "Stopped" with an exit-code error.
   const patchReview = (id: string, patch: (data: ReviewData) => ReviewData) =>
@@ -139,6 +161,7 @@ export function App() {
         });
         setPermissionMode(message.permissionMode);
         setEffort(message.effort);
+        modelRef.current = message.model;
         break;
 
       case "chatEvent":
@@ -213,7 +236,7 @@ export function App() {
           message.turns.map((turn) =>
             turn.role === "user"
               ? { id: nextId(), role: "user", text: turn.content }
-              : { ...appendText(newTurn(nextId()), turn.content), pending: false }
+              : restoreTurn(nextId(), turn.content, turn.reasoning, turn.toolCalls)
           )
         );
         break;
@@ -271,6 +294,7 @@ export function App() {
               }
             : prev
         );
+        markModelChange(message.model);
         setProviders((prev) =>
           prev.map((p) => ({ ...p, current: p.name === message.provider }))
         );
@@ -322,6 +346,15 @@ export function App() {
         break;
       case "text":
         patchAssistant(id, (turn) => appendText(turn, event.content, "\n\n"));
+        break;
+      case "reasoning_delta":
+        patchAssistant(id, (turn) => appendReasoningDelta(turn, event.content, event.tokens));
+        break;
+      case "reasoning_done":
+        patchAssistant(id, (turn) => finishReasoning(turn, event.tokens, event.duration_ms));
+        break;
+      case "reasoning":
+        patchAssistant(id, (turn) => appendReasoning(turn, event.content, event.tokens, event.duration_ms));
         break;
       case "tool_call":
         patchAssistant(id, (turn) =>
@@ -645,6 +678,7 @@ export function App() {
                 }
               : prev
           );
+          markModelChange(model);
           post({ type: "setModel", model });
         }}
       />

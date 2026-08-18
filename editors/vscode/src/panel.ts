@@ -532,7 +532,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         }
         try {
           const { stdout, stderr, code } = await runCli(
-            ["--json", "models"],
+            ["models", "--json"],
             root,
             undefined,
             this.env()
@@ -880,7 +880,7 @@ async function runFix(
   const input = JSON.stringify(findings);
   try {
     const { stdout, code } = await runCli(
-      ["--json", "fix", "--findings-json", "-", "--apply"],
+      ["fix", "--findings-json", "-", "--apply", "--json"],
       cwd,
       input
     );

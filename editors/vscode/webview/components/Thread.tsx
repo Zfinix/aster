@@ -8,6 +8,7 @@ import { CopyButton } from "./CopyButton";
 import { InfoCard } from "./InfoCard";
 import { Markdown } from "./Markdown";
 import { QueuedTurn } from "./QueuedTurn";
+import { ReasoningBlock } from "./ReasoningBlock";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { ReviewTurn } from "./ReviewTurn";
 import { StatusLine } from "./StatusLine";
@@ -76,12 +77,29 @@ export function Thread({
             if (turn.role === "info") {
               return <InfoCard key={turn.id} turn={turn} />;
             }
+            if (turn.role === "divider") {
+              return (
+                <div key={turn.id} className="turn-divider" role="separator">
+                  <span className="turn-divider-line" />
+                  <span className="turn-divider-label">{turn.label}</span>
+                  <span className="turn-divider-line" />
+                </div>
+              );
+            }
             return (
               <div key={turn.id} className="turn-assistant">
                 {/* Arrival order, so steps sit under the thought that led to them. */}
                 {turn.blocks.map((block) =>
                   block.kind === "tools" ? (
                     <ToolGroup key={block.id} calls={block.calls} />
+                  ) : block.kind === "reasoning" ? (
+                    <ReasoningBlock
+                      key={block.id}
+                      text={block.text}
+                      tokens={block.tokens}
+                      durationMs={block.durationMs}
+                      done={block.done}
+                    />
                   ) : block.kind === "agents" ? (
                     <AgentGroup key={block.id} tasks={block.tasks} />
                   ) : block.kind === "injected" ? (

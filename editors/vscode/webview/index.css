@@ -23,6 +23,13 @@
   --border: var(--vscode-widget-border, rgba(127, 127, 127, 0.28));
   --hover: var(--vscode-toolbar-hoverBackground);
   --list-hover: var(--vscode-list-hoverBackground);
+  /* The fill under verbatim material: code, tool output, tables. Deliberately
+     not --vscode-textCodeBlock-background: themes often make it a saturated
+     slab, which turns every block into a highlight. A wash of neutral grey over
+     the surface beneath keeps tracking the theme without the hue. */
+  --code-bg: rgba(127, 127, 127, 0.08);
+  --code-bg-soft: rgba(127, 127, 127, 0.04);
+  --code-bg-strong: rgba(127, 127, 127, 0.14);
   --surface: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   --mono: var(--vscode-editor-font-family, monospace);
   --mono-size: var(--vscode-editor-font-size, 12px);
@@ -179,7 +186,7 @@ body.vscode-dark {
 code {
   font-family: var(--mono);
   font-size: var(--mono-size);
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+  background: var(--code-bg-strong);
   padding: 1px 4px;
   border-radius: 3px;
 }
@@ -221,13 +228,13 @@ code {
 .code-block {
   margin: 0;
   padding: var(--s2);
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+  background: var(--code-bg);
   overflow-x: auto;
   cursor: pointer;
 }
 
 .code-block:hover {
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.16));
+  background: var(--code-bg-strong);
 }
 
 .code-block code {
@@ -290,19 +297,17 @@ code {
   min-height: 0;
 }
 
-/* The scroller spans the full panel so the scrollbar rides the edge; the
-   readable column is capped on the inner track instead. */
+/* The scroller spans the full panel so the scrollbar rides the edge. */
 .thread-viewport {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
 }
 
-/* The tail clears the composer so the last line never sits against it. */
+/* Fills the panel: tool cards, diffs and output get every pixel of width, while
+   the composer keeps its own column cap. */
 .thread {
   width: 100%;
-  max-width: var(--col);
-  margin: 0 auto;
   padding: var(--s5);
   display: flex;
   flex-direction: column;
@@ -332,6 +337,28 @@ code {
 /* A message the running turn absorbed, sitting where it landed in the flow. */
 .turn-user-injected {
   margin: var(--s2) 0;
+}
+
+/* A model/provider switch: a hairline either side of the new model's name, so
+   the seam is visible even when the messages around it look alike. */
+.turn-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin: var(--s2) 0;
+}
+
+.turn-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.turn-divider-label {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .turn-queued {
@@ -366,6 +393,47 @@ code {
   overflow-wrap: anywhere;
 }
 
+/* Thinking sits behind the answer: dim, collapsed, never competing with it. */
+.reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--fg-dim);
+  font: inherit;
+}
+
+.reasoning-head:hover {
+  color: var(--fg);
+}
+
+.reasoning-caret {
+  display: inline-block;
+  transition: transform 0.14s ease;
+}
+
+.reasoning-caret[data-open="false"] {
+  transform: rotate(-90deg);
+}
+
+.reasoning-body {
+  border-left: 2px solid var(--border);
+  padding-left: var(--s3);
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
 /* Revealed on hover so a settled reply stays clean text. */
 .turn-actions {
   display: flex;
@@ -394,6 +462,17 @@ code {
 
 .status .mark {
   flex: none;
+  /* The mark is 13px against the icons' 14px box; centering it in that box
+     keeps both labels on one column. */
+  margin-inline: 0.5px;
+}
+
+/* Sit on the same glyph column as the steps above: the `.tool-list` rail plus
+   the row's own padding. Scoped to the thread so an info card's status, which
+   has no steps to line up with, keeps its flush edge. */
+.turn-assistant > .status {
+  padding: 3px var(--s1);
+  margin-left: calc(3px + var(--s3));
 }
 
 /* Doubled class to outweigh `.empty .mark`'s entrance animation. */
@@ -633,11 +712,11 @@ code {
 
 .md-table th {
   font-weight: 600;
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+  background: var(--code-bg);
 }
 
 .md-table tbody tr:nth-child(even) {
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.04));
+  background: var(--code-bg-soft);
 }
 
 .md-link {
@@ -657,7 +736,7 @@ code {
   padding: var(--s2) var(--s3);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+  background: var(--code-bg);
   overflow: hidden;
 }
 
@@ -990,6 +1069,12 @@ code {
   opacity: 1;
 }
 
+/* With no run to sit on, the node marks nothing. Last, so it also wins over the
+   running and error states. */
+.tool-list > :only-child > .tool-row::before {
+  display: none;
+}
+
 /* VS Code injects `:focus { outline: 1px solid var(--vscode-focusBorder) }` into
    every webview, which leaves a loud ring on every row a mouse has touched. */
 .tool-row:focus,
@@ -1014,13 +1099,19 @@ code {
   opacity: 0.7;
 }
 
+/* Hung under the header's own text, on the run's rail rather than a second one
+   of its own: a rule beside a rule reads as two trees, and the steps inside a
+   run are one. The icon column they no longer fill is the indent. */
 .tool-run-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-left: var(--s3);
-  border-left: 1px solid var(--border);
-  padding-left: var(--s1);
+  margin-left: calc(14px + var(--s2));
+}
+
+/* Its row has no icon to clear, so the card starts where the label does. */
+.tool-run-list .tool-card {
+  margin-left: 0;
 }
 
 .tool-run[data-running="true"] .tool-verb {
@@ -1157,7 +1248,7 @@ code {
   margin: var(--s1) 0 var(--s2) calc(var(--s1) + 14px + var(--s2));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+  background: var(--code-bg);
   overflow: hidden;
 }
 
@@ -1216,9 +1307,15 @@ code {
   user-select: none;
 }
 
-/* The command reads at full strength; its output is the quieter half. */
+/* The command reads at full strength; its output is the quieter half. Stepped
+   down from the foreground rather than taken from the theme's description
+   colour, which is tinted in enough themes to leave whole dumps in one hue. */
 .tool-cell-in .tool-cell-body {
   color: var(--fg);
+}
+
+.tool-cell-out .tool-cell-body {
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
 }
 
 .tool-cell-body {
@@ -1301,7 +1398,7 @@ code {
   max-height: 220px;
   overflow: auto;
   border-radius: var(--radius);
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+  background: var(--code-bg);
 }
 
 .approval-preview code {
@@ -1414,11 +1511,16 @@ code {
 .plan {
   display: flex;
   flex-direction: column;
-  gap: var(--s1);
+  gap: var(--s2);
   padding: var(--s2) var(--s3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+/* The card carries its own frame: the rail would fence it in a second time. */
+.tool-list > .plan::before {
+  display: none;
 }
 
 .plan-head {
@@ -1436,35 +1538,44 @@ code {
 }
 
 .plan-summary {
+  margin-left: auto;
   font-size: 0.85em;
   color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.plan[data-complete="true"] .plan-summary {
+  color: var(--diff-add);
 }
 
 .plan-steps {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .plan-step {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: var(--s2);
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
+/* Centred on the first line box, so a label that wraps keeps its mark on the
+   line it starts. */
 .plan-glyph {
+  display: flex;
   flex: none;
-  width: 1.2em;
-  text-align: center;
+  align-items: center;
+  height: 1lh;
   color: var(--fg-dim);
 }
 
-.plan-step[data-status="done"] .plan-glyph {
-  color: var(--diff-add);
+.plan-step[data-status="pending"] .plan-glyph {
+  opacity: 0.6;
 }
 
-.plan-step[data-status="done"] .plan-label {
+.plan-step[data-status="pending"] .plan-label {
   color: var(--fg-dim);
 }
 
@@ -1476,13 +1587,19 @@ code {
   font-weight: 600;
 }
 
+.plan-step[data-status="done"] .plan-glyph {
+  color: var(--diff-add);
+}
+
 .plan-step[data-status="blocked"] .plan-glyph {
   color: var(--sev-high);
 }
 
+.plan-step[data-status="done"] .plan-label,
 .plan-step[data-status="skipped"] .plan-label {
   color: var(--fg-dim);
   text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
 }
 
 /* Modal to the turn: dims the thread and pins the card just above the composer. */
@@ -2577,7 +2694,7 @@ code {
   gap: 1px;
   padding: 1px;
   border-radius: var(--radius);
-  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.12));
+  background: var(--code-bg-strong);
 }
 
 .cmd-option {

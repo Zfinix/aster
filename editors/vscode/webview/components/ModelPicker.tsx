@@ -118,13 +118,13 @@ export function ModelPicker({
           <span className="picker-label">
             {custom ? `Use “${option}”` : option ? option.label : "Default"}
           </span>
-          <span className="picker-detail">
-            {custom
-              ? "An id this endpoint did not list; it is remembered once used"
-              : option
-                ? option.detail || option.id
+          {(custom || !option) && (
+            <span className="picker-detail">
+              {custom
+                ? "An id this endpoint did not list; it is remembered once used"
                 : "Whatever aster.yaml configures"}
-          </span>
+            </span>
+          )}
         </span>
         {checked && <span className="picker-check">✓</span>}
       </button>

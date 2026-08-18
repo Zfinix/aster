@@ -317,8 +317,10 @@ const RUN_NOUNS: Record<string, [string, string]> = {
   read_file: ["file", "files"],
   edit_file: ["file", "files"],
   list_files: ["directory", "directories"],
-  find_files: ["search", "searches"],
-  search_files: ["search", "searches"],
+  // Not "searches": the verb is already Find/Search, and "Search 3 searches"
+  // says one word twice. The noun names what was passed, not the act.
+  find_files: ["pattern", "patterns"],
+  search_files: ["query", "queries"],
   run_command: ["command", "commands"],
   run_tests: ["test run", "test runs"],
   read_skill: ["skill", "skills"],

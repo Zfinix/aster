@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   appendCall,
+  appendReasoning,
   appendText,
   hydrate,
   newTurn,
   patchCall,
+  restoreTurn,
   upsertAgentState,
   type AssistantTurn,
   type ToolCall,
@@ -22,6 +24,7 @@ const shape = (turn: AssistantTurn) =>
     if (block.kind === "text") return `text:${block.text}`;
     if (block.kind === "injected") return `injected:${block.text}`;
     if (block.kind === "agents") return `agents:${block.tasks.map((t) => t.agent).join(",")}`;
+    if (block.kind === "reasoning") return `reasoning:${block.text}`;
     return `tools:${block.calls.map((c) => c.id).join(",")}`;
   });
 
@@ -178,5 +181,62 @@ describe("hydrate", () => {
 
   it("handles no saved state", () => {
     expect(hydrate(undefined)).toEqual([]);
+  });
+});
+
+describe("appendReasoning", () => {
+  it("keeps thinking as its own block in arrival order", () => {
+    let turn = appendText(newTurn("t1"), "before");
+    turn = appendReasoning(turn, "weighing the options");
+    turn = appendCall(turn, call("c1"));
+    expect(shape(turn)).toEqual(["text:before", "reasoning:weighing the options", "tools:c1"]);
+  });
+
+  it("never opens a block for reasoning that is only whitespace", () => {
+    const turn = appendReasoning(newTurn("t1"), "   \n  ");
+    expect(turn.blocks).toEqual([]);
+  });
+
+  it("does not fold consecutive rounds into one block", () => {
+    let turn = appendReasoning(newTurn("t1"), "first");
+    turn = appendReasoning(turn, "second");
+    expect(shape(turn)).toEqual(["reasoning:first", "reasoning:second"]);
+  });
+});
+
+describe("restoreTurn", () => {
+  it("rebuilds thinking, reply, and steps in the order they happened", () => {
+    const turn = restoreTurn(
+      "t1",
+      "Renamed the label.",
+      { text: "checking both call sites", tokens: 40, durationMs: 1200 },
+      [call("c1"), call("c2")]
+    );
+    expect(shape(turn)).toEqual([
+      "reasoning:checking both call sites",
+      "text:Renamed the label.",
+      "tools:c1,c2",
+    ]);
+    expect(turn.pending).toBe(false);
+  });
+
+  it("keeps the token count and duration so the block is not relabelled on reload", () => {
+    const turn = restoreTurn("t1", "done", { text: "thought", tokens: 40, durationMs: 1200 });
+    const block = turn.blocks.find((b) => b.kind === "reasoning");
+    expect(block).toMatchObject({ tokens: 40, durationMs: 1200, done: true });
+  });
+
+  it("restores a round that was tool calls with no commentary", () => {
+    const turn = restoreTurn("t1", "", undefined, [call("c1")]);
+    expect(shape(turn)).toEqual(["tools:c1"]);
+  });
+
+  it("flattens the reply into text, which chat history and copy read", () => {
+    const turn = restoreTurn("t1", "Renamed the label.", { text: "thinking" }, [call("c1")]);
+    expect(turn.text).toBe("Renamed the label.");
+  });
+
+  it("leaves a turn with nothing to show empty rather than drawing a blank block", () => {
+    expect(restoreTurn("t1", "").blocks).toEqual([]);
   });
 });
