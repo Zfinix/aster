@@ -63,6 +63,7 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/context-economy/SKILL.md"),
     include_str!("../builtins/correction-protocol/SKILL.md"),
     include_str!("../builtins/security-hygiene/SKILL.md"),
+    include_str!("../builtins/web-research/SKILL.md"),
 ];
 
 /// Bundled from `optional-skills/` but not indexed: task-class packs a user opts into with
