@@ -165,3 +165,29 @@ fn web_search_absent_leaves_none() {
     let s: Settings = serde_yaml::from_str("review: {}").expect("parse");
     assert_eq!(s.review.web_search, None);
 }
+
+#[test]
+fn pins_sees_only_a_key_the_review_block_sets_itself() {
+    let sets = "review:\n  model: pinned\n  base_url: https://x/v1\n";
+    assert!(pins(sets, "model"));
+    assert!(pins(sets, "base_url"));
+    assert!(!pins(sets, "effort"));
+
+    // A key of the same name under another block is not a review override.
+    let elsewhere = "review:\n  effort: high\npermissions:\n  model: no\n";
+    assert!(!pins(elsewhere, "model"));
+    assert!(!pins("", "model"));
+}
+
+#[test]
+fn a_repo_that_pins_the_model_is_moved_along_with_the_global_choice() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("aster.yaml");
+    std::fs::write(&project, "review:\n  model: old\n  min_confidence: 0.9\n").unwrap();
+
+    write_review(&project, &[("model", "new")]).unwrap();
+    let out = std::fs::read_to_string(&project).unwrap();
+    assert!(out.contains("model: new"), "{out}");
+    // Everything the repo set for itself survives the switch.
+    assert!(out.contains("min_confidence: 0.9"), "{out}");
+}

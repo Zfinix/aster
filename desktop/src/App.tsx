@@ -342,6 +342,15 @@ function App() {
     if (usable.length === 0) return;
     // Anything started while the reads were in flight wins its id.
     setConversations((cs) => [...cs, ...usable.filter((c) => !cs.some((x) => x.id === c.id))]);
+    // Reopen the thread that was active last time this repo was open, falling
+    // back to the newest session, so a restart lands back in the conversation
+    // (and its scroll position) instead of the empty home pane.
+    const lastOpen = localStorage.getItem(`aster.lastSession.${repoPath}`);
+    const reopen =
+      usable.find((c) => c.id === lastOpen) ?? usable[0];
+    localStorage.setItem(`aster.lastSession.${repoPath}`, reopen.id);
+    setActiveId(reopen.id);
+    setView("thread");
   }, []);
 
   const onSaveProvider = useCallback(
@@ -880,6 +889,19 @@ function App() {
     );
   }, []);
 
+  /** Open a saved thread and remember it as the one to restore next launch. */
+  const onOpenSaved = useCallback(
+    (id: string) => {
+      setActiveId(id);
+      setView("thread");
+      const convo = conversations.find((c) => c.id === id);
+      if (convo?.sessionId) {
+        localStorage.setItem(`aster.lastSession.${convo.repoPath}`, id);
+      }
+    },
+    [conversations],
+  );
+
   const onRerunConvo = useCallback(
     (id: string) => {
       const c = conversations.find((x) => x.id === id);
@@ -992,10 +1014,7 @@ function App() {
           setHomeIntent("review");
           setOpts({ sourceKind: "working", sourceValue: null });
         }}
-        onOpen={(id) => {
-          setActiveId(id);
-          setView("thread");
-        }}
+        onOpen={onOpenSaved}
         onRename={onRenameConvo}
         onDelete={onDeleteConvo}
         onRerun={onRerunConvo}
@@ -1086,10 +1105,7 @@ function App() {
               composer={composer}
               intent={homeIntent}
               conversations={conversations}
-              onOpen={(id) => {
-                setActiveId(id);
-                setView("thread");
-              }}
+              onOpen={onOpenSaved}
             />
           )}
           {view === "thread" && activeConvo && (

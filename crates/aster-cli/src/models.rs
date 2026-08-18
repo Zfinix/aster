@@ -62,8 +62,8 @@ pub async fn run_model(args: ModelArgs) -> Result<()> {
 /// turn resolves to: the point is that this answer is the same everywhere.
 fn use_model(args: UseModelArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
-    let path = crate::settings::persist_review(Some(&repo_root), &[("model", &args.id)])?;
-    crate::provider::report(&repo_root, &path, &["ASTER_MODEL"])
+    let saved = crate::settings::persist_user_review(Some(&repo_root), &[("model", &args.id)])?;
+    crate::provider::report(&repo_root, &saved, &["ASTER_MODEL"])
 }
 
 /// Catalog-backed, so it costs nothing and stays right when the endpoint moves.

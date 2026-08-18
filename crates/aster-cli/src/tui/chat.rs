@@ -2014,7 +2014,8 @@ impl ChatApp {
         }
         client.model = model.clone();
         // Saved as well as applied, or the choice would silently reset next run.
-        if let Err(e) = crate::settings::persist_review(Some(&self.repo_root), &[("model", &model)])
+        if let Err(e) =
+            crate::settings::persist_user_review(Some(&self.repo_root), &[("model", &model)])
         {
             self.note(&format!("could not save the model choice: {e:#}"));
         }
@@ -2096,7 +2097,7 @@ impl ChatApp {
         // The endpoint is saved with the model: a restart pairing the new
         // model with the old provider would be worse than either alone.
         if let Err(e) =
-            crate::settings::persist_review(Some(&self.repo_root), &[("base_url", &base_url)])
+            crate::settings::persist_user_review(Some(&self.repo_root), &[("base_url", &base_url)])
         {
             self.note(&format!("could not save the provider choice: {e:#}"));
         }

@@ -1,6 +1,6 @@
 //! Review config (`aster.yaml`), loaded from the repo root or `~/.aster/`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -84,13 +84,7 @@ impl Settings {
             Some(path) if path.exists() => Some(parse(&path)?),
             _ => None,
         };
-        let project = repo_root
-            .and_then(|root| {
-                ["aster.yaml", "aster.yml", ".aster.yaml"]
-                    .iter()
-                    .map(|name| root.join(name))
-                    .find(|path| path.exists())
-            })
+        let project = project_config(repo_root)
             .map(|path| parse(&path))
             .transpose()?;
 
@@ -235,75 +229,146 @@ fn parse(path: &Path) -> Result<Settings> {
     serde_yaml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Where a setting the next start must read belongs: the repo's config when
-/// one exists, else the global one, which the caller creates.
-pub(crate) fn writable_config(repo_root: Option<&Path>) -> Result<std::path::PathBuf> {
-    let project = repo_root.and_then(|root| {
+/// The config every directory reads; the caller creates it on first write.
+pub(crate) fn user_config() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("no home directory for the global config")?
+        .join(".aster/aster.yaml"))
+}
+
+/// The repo's own config, under whichever of the three names it uses.
+fn project_config(repo_root: Option<&Path>) -> Option<PathBuf> {
+    repo_root.and_then(|root| {
         ["aster.yaml", "aster.yml", ".aster.yaml"]
             .iter()
             .map(|name| root.join(name))
             .find(|path| path.exists())
-    });
-    match project {
+    })
+}
+
+/// Where a setting the next start must read belongs: the repo's config when
+/// one exists, else the global one, which the caller creates.
+pub(crate) fn writable_config(repo_root: Option<&Path>) -> Result<PathBuf> {
+    match project_config(repo_root) {
         Some(path) => Ok(path),
-        None => Ok(dirs::home_dir()
-            .context("no home directory for the global config")?
-            .join(".aster/aster.yaml")),
+        None => user_config(),
     }
 }
 
-/// Save review settings where the next start will read them. The file is
-/// edited line by line so comments and layout survive.
-pub fn persist_review(
-    repo_root: Option<&Path>,
-    pairs: &[(&str, &str)],
-) -> Result<std::path::PathBuf> {
-    let path = writable_config(repo_root)?;
-    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+/// The files a saved choice landed in.
+pub struct Saved {
+    /// The global config, where the choice lives.
+    pub path: PathBuf,
+    /// A project config that pinned the same keys and was moved along with it.
+    pub also: Option<PathBuf>,
+}
+
+/// Save a choice that belongs to the user rather than to one repo. The model
+/// and the endpoint follow you between directories, so they go in the global
+/// config: writing them beside whichever repo you happened to be in is why a
+/// switch used to vanish on the next `cd`. A project file that pins the same
+/// key is moved along with it, since it outranks the global one and the switch
+/// would otherwise read as a no-op in that one repo.
+pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> Result<Saved> {
+    let path = user_config()?;
+    write_review(&path, pairs)?;
+
+    let Some(project) = project_config(repo_root).filter(|p| *p != path) else {
+        return Ok(Saved { path, also: None });
+    };
+    let text = std::fs::read_to_string(&project).unwrap_or_default();
+    let pinned: Vec<(&str, &str)> = pairs
+        .iter()
+        .copied()
+        .filter(|(key, _)| pins(&text, key))
+        .collect();
+    if pinned.is_empty() {
+        return Ok(Saved { path, also: None });
+    }
+    write_review(&project, &pinned)?;
+    Ok(Saved {
+        path,
+        also: Some(project),
+    })
+}
+
+/// Write `review.<key>` pairs into one file, editing it line by line so
+/// comments and layout survive.
+pub(crate) fn write_review(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
+    let mut text = std::fs::read_to_string(path).unwrap_or_default();
     for (key, value) in pairs {
         text = with_review_key(&text, key, value);
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
+    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Rewrite one `review.<key>` in place, adding the key or the whole block when
-/// missing. Everything else in the file is left byte for byte.
-fn with_review_key(text: &str, key: &str, value: &str) -> String {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+/// Where `review.<key>` sits in a config's lines.
+enum Slot {
+    /// Already set, on this line at this indent.
+    At(usize, usize),
+    /// The block exists without the key; it goes in before this line.
+    Insert(usize),
+    /// There is no `review:` block yet.
+    Missing,
+}
+
+/// True when a config sets `review.<key>` itself, and so would outrank the
+/// global one no matter what is written there.
+fn pins(text: &str, key: &str) -> bool {
+    matches!(slot(&split(text), key), Slot::At(..))
+}
+
+fn split(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
+fn slot(lines: &[String], key: &str) -> Slot {
     let Some(review) = lines
         .iter()
         .position(|l| l.trim_end() == "review:" && !l.starts_with([' ', '\t']))
     else {
-        let mut out = text.to_string();
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(&format!("review:\n  {key}: {value}\n"));
-        return out;
+        return Slot::Missing;
     };
-
-    let mut insert_at = lines.len();
-    for i in review + 1..lines.len() {
-        let line = &lines[i];
+    for (i, line) in lines.iter().enumerate().skip(review + 1) {
         if line.trim().is_empty() {
             continue;
         }
         let indent = line.len() - line.trim_start().len();
         if indent == 0 {
-            insert_at = i;
-            break;
+            return Slot::Insert(i);
         }
         if line.trim_start().starts_with(&format!("{key}:")) {
-            lines[i] = format!("{}{key}: {value}", " ".repeat(indent));
-            return rejoin(&lines, text);
+            return Slot::At(i, indent);
         }
     }
-    lines.insert(insert_at, format!("  {key}: {value}"));
-    rejoin(&lines, text)
+    Slot::Insert(lines.len())
+}
+
+/// Rewrite one `review.<key>` in place, adding the key or the whole block when
+/// missing. Everything else in the file is left byte for byte.
+fn with_review_key(text: &str, key: &str, value: &str) -> String {
+    let mut lines = split(text);
+    match slot(&lines, key) {
+        Slot::Missing => {
+            let mut out = text.to_string();
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("review:\n  {key}: {value}\n"));
+            out
+        }
+        Slot::At(i, indent) => {
+            lines[i] = format!("{}{key}: {value}", " ".repeat(indent));
+            rejoin(&lines, text)
+        }
+        Slot::Insert(at) => {
+            lines.insert(at, format!("  {key}: {value}"));
+            rejoin(&lines, text)
+        }
+    }
 }
 
 fn rejoin(lines: &[String], original: &str) -> String {

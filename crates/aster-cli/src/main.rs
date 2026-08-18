@@ -176,7 +176,7 @@ async fn main() -> Result<()> {
     let telemetry = init_tracing(tui_mode, stream_mode);
 
     let result = match command {
-        Command::Init(args) => init::run(args),
+        Command::Init(args) => init::run(args).await,
         Command::Login => auth::login().await,
         Command::Logout => config::clear_token(),
         Command::Review(args) => review::run(args).await,

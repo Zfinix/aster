@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use aster_ai::{AiClient, Effort};
 use clap::{Args, Subcommand};
 
-use crate::settings::{Review, Settings};
+use crate::settings::{Review, Saved, Settings};
 
 pub struct LlmConfig {
     pub api_key: String,
@@ -109,12 +109,41 @@ fn env_non_empty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|s| !s.trim().is_empty())
 }
 
+/// OpenRouter app attribution: `HTTP-Referer` is the unique app identifier that
+/// creates aster's page in OpenRouter rankings/analytics, and `X-OpenRouter-Title`
+/// (alias `X-Title`) sets the display name. Injected on requests routed through
+/// OpenRouter so usage is credited there instead of to whichever CLI spawned a
+/// turn. The referer must not be an openrouter.ai URL: OpenRouter drops
+/// openrouter.ai referers on API-key traffic so clients can't masquerade as its
+/// own web app.
+const ASTER_HTTP_REFERER: &str = "https://github.com/zfinix/aster";
+const ASTER_TITLE: &str = "Aster";
+
 /// Build a configured `AiClient` from already-loaded settings.
 pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Result<AiClient> {
     let llm = resolve(&settings.review, model_override)?;
-    Ok(AiClient::new(llm.base_url, llm.api_key, llm.model)
+    let client = AiClient::new(llm.base_url, llm.api_key, llm.model)
         .with_effort(llm.effort)
-        .with_web_search(llm.web_search))
+        .with_web_search(llm.web_search);
+    // Only attribute on OpenRouter-routed traffic; other providers ignore or
+    // reject unknown headers, and the referer would leak aster's origin for no
+    // gain.
+    if is_openrouter(client.base_url()) {
+        return Ok(client.with_attribution_headers([
+            ("HTTP-Referer".to_string(), ASTER_HTTP_REFERER.to_string()),
+            ("X-OpenRouter-Title".to_string(), ASTER_TITLE.to_string()),
+        ]));
+    }
+    Ok(client)
+}
+
+fn is_openrouter(base_url: &str) -> bool {
+    base_url
+        .trim_end_matches('/')
+        .split_once("//")
+        .map(|(_, host)| host)
+        .unwrap_or(base_url)
+        .contains("openrouter")
 }
 
 /// Shell env wins, then the aster.yaml value; None when neither is set.
@@ -169,17 +198,17 @@ fn use_provider(args: UseProviderArgs) -> Result<()> {
         bail!("{name} has no example model in the catalog; pass --model <ID>");
     }
 
-    let path = crate::settings::persist_review(
+    let saved = crate::settings::persist_user_review(
         Some(&repo_root),
         &[("base_url", &base_url), ("model", &model)],
     )?;
-    report(&repo_root, &path, &["ASTER_BASE_URL", "ASTER_MODEL"])
+    report(&repo_root, &saved, &["ASTER_BASE_URL", "ASTER_MODEL"])
 }
 
 /// What the next turn would run with, read back through the same resolution
 /// every command uses, plus the env vars that would override what was just
 /// written. Silence there would be the bug this command exists to fix.
-pub(crate) fn report(repo_root: &Path, path: &Path, watch: &[&str]) -> Result<()> {
+pub(crate) fn report(repo_root: &Path, saved: &Saved, watch: &[&str]) -> Result<()> {
     let settings = Settings::load(Some(repo_root))?;
     let (base_url, model) = resolve_endpoint(&settings.review, None);
     let shadowed: Vec<&str> = watch
@@ -203,7 +232,8 @@ pub(crate) fn report(repo_root: &Path, path: &Path, watch: &[&str]) -> Result<()
                 "model": model,
                 "provider": crate::init::provider_label(&base_url),
                 "base_url": base_url,
-                "config": path.display().to_string(),
+                "config": saved.path.display().to_string(),
+                "also": saved.also.as_ref().map(|p| p.display().to_string()),
                 "key_env": key_env,
                 "has_key": source.is_some(),
                 "key_source": key_source,
@@ -215,7 +245,10 @@ pub(crate) fn report(repo_root: &Path, path: &Path, watch: &[&str]) -> Result<()
 
     println!("provider {}", crate::init::provider_label(&base_url));
     println!("model    {model}");
-    println!("saved to {}", path.display());
+    println!("saved to {}", saved.path.display());
+    if let Some(also) = &saved.also {
+        println!("         {} (this repo pinned it too)", also.display());
+    }
     match source {
         None => {
             let want = match key_env.first() {
