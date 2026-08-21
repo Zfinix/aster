@@ -13,6 +13,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
  *  tab. Which one is decided by whether the editor handed us its API. */
 const api = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
 
+/** False under `aster serve`, where there is no editor to hand anything to. */
+export const inEditor = api !== undefined;
+
 export function post(message: ToHost): void {
   api ? api.postMessage(message) : browser.post(message);
 }

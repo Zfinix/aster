@@ -1,5 +1,5 @@
 import type { InfoTurn } from "../lib/thread";
-import { post } from "../lib/host";
+import { inEditor, post } from "../lib/host";
 import { ExternalIcon } from "./icons";
 import { InfoBody } from "./InfoBody";
 
@@ -8,7 +8,7 @@ export function InfoCard({ turn }: { turn: InfoTurn }) {
     <div className="info-card" data-error={turn.error === true}>
       <div className="info-head">
         <span className="info-title">{turn.title}</span>
-        {turn.body && (
+        {inEditor && turn.body && (
           <button
             className="icon-btn"
             onClick={() =>

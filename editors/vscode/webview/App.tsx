@@ -260,6 +260,15 @@ export function App() {
         setOpenMenu(true);
         break;
 
+      case "scratch":
+        setInfo({
+          id: nextId(),
+          title: message.title || "Snippet",
+          body: message.content,
+          lang: message.lang,
+        });
+        break;
+
       // The host is the source of truth for whether anything is running, so a
       // surface can never be stuck busy or wrongly re-enable its buttons.
       case "runState": {
@@ -381,7 +390,12 @@ export function App() {
         planApprovalRef.current = event.kind === "plan";
         patchAssistant(id, (turn) => ({
           ...turn,
-          approval: { preview: event.preview, scope: event.scope, kind: event.kind },
+          approval: {
+            preview: event.preview,
+            markdown: event.markdown,
+            scope: event.scope,
+            kind: event.kind,
+          },
         }));
         break;
       case "question":

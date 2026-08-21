@@ -28,7 +28,7 @@ export function post(message: ToHost): void {
       window.open(message.url, "_blank", "noopener,noreferrer");
       return;
     case "openUntitled":
-      openScratch(message.content, message.title);
+      openScratch(message.content, message.lang, message.title);
       return;
     case "attachFiles":
       void attach();
@@ -116,16 +116,13 @@ function runCommand(command: string): void {
   post({ type: "review", id, source });
 }
 
-/** A code block, opened the way a page can open one: its own tab. */
-function openScratch(content: string, title?: string): void {
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const tab = window.open(url, "_blank", "noopener,noreferrer");
-  if (tab && title) {
-    tab.addEventListener("load", () => (tab.document.title = title), { once: true });
-  }
-  // Long enough for the tab to have loaded it, short enough not to leak.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+/**
+ * A code block, opened the way a page can open one: over the thread. Its own
+ * tab would have to be a `blob:` URL, which not every browser will put in one,
+ * and the ones that refuse load it in place: the session goes with it.
+ */
+function openScratch(content: string, lang?: string, title?: string): void {
+  dispatch({ type: "scratch", content, lang, title });
 }
 
 /** The composer's `+`. A picked file arrives as bytes, like a paste, because

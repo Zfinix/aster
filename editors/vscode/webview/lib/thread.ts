@@ -88,6 +88,8 @@ export function parsePlan(args: string): PlanStep[] | null {
  *  would be remembered against; without one there is nothing to remember. */
 export interface ApprovalAsk {
   preview: string;
+  /** Plan approvals carry the plan as clean markdown for document rendering. */
+  markdown?: string | null;
   scope?: string | null;
   kind?: "plan" | "action";
 }

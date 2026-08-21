@@ -1,6 +1,6 @@
 import { useState, type ReactElement } from "react";
 import { languageFromPath } from "../lib/highlight";
-import { post } from "../lib/host";
+import { inEditor, post } from "../lib/host";
 import type { ToolCall } from "../lib/thread";
 import {
   describeTool,
@@ -105,7 +105,13 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const body = nested && !detail ? verb : detail;
 
   /** A path opens the real file; anything else opens its output as a scratch
-   *  tab, which is where find, folding, and highlighting live. */
+   *  tab, which is where find, folding, and highlighting live. A page has no
+   *  tab for that, so there the output opens over the thread. */
+  const openLabel = path
+    ? `Open ${path}`
+    : inEditor
+      ? "Open output in an editor tab"
+      : "Open the output over the thread";
   const openInEditor = () => {
     if (window.getSelection()?.isCollapsed === false) return;
     if (path) {
@@ -173,7 +179,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
                   e.preventDefault();
                   openInEditor();
                 }}
-                title={path ? `Open ${path}` : "Open output in an editor tab"}
+                title={openLabel}
               >
                 {matches ? (
                   <McpMatches matches={matches} />
@@ -184,8 +190,8 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
               <button
                 className="icon-btn tool-cell-open"
                 onClick={openInEditor}
-                title="Open in editor"
-                aria-label="Open in editor"
+                title={openLabel}
+                aria-label={openLabel}
               >
                 <ExternalIcon />
               </button>

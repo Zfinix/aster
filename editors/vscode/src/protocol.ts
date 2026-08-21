@@ -50,6 +50,8 @@ export type ChatStreamEvent =
       type: "approval_request";
       kind?: "plan" | "action";
       preview: string;
+      /** Plan approvals carry the plan as clean markdown for document rendering. */
+      markdown?: string | null;
       scope?: string | null;
     }
   /** `ask_user`: the turn blocks until a `{"choice"}` line goes back. */
@@ -314,6 +316,9 @@ export type ToWebview =
   | { type: "insertMention"; text: string }
   /** Open the command menu, from the palette or a keybinding. */
   | { type: "openCommandMenu" }
+  /** A page's answer to `openUntitled`: no editor to open a tab in, so the
+   *  snippet comes back and is shown over the thread. */
+  | { type: "scratch"; content: string; lang?: string; title?: string }
   | { type: "fileResults"; requestId: string; paths: string[] }
   | { type: "reviewStarted"; id: string; source: ReviewSource }
   | { type: "reviewEvent"; id: string; event: StreamEvent }
