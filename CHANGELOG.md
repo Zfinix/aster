@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Aster's editor commands are findable again in the command palette.** Ten of
+  them set the `Aster` prefix as a `category` rather than baking it into the
+  title, and VS Code and Cursor drop the category when they render the palette:
+  `Aster: Open` showed up as a bare `Open`, indistinguishable from every other
+  extension's. The prefix now lives in the title, matching the review commands
+  that always had it.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added
