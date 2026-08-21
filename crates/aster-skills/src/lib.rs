@@ -261,10 +261,9 @@ impl SkillSet {
             load anything that matches with `read_skill` (batch it into your \
             `explore` call; it costs no extra round). Match on meaning and tone, \
             not keywords: a task implies its workflow skills, a complaint or \
-            correction matches a correction skill, a request to be brief matches \
-            a brevity skill, whatever the exact words. When nothing matches, load \
-            nothing. Skipping a matching skill and improvising is how avoidable \
-            mistakes happen.\n",
+            correction matches a correction skill, whatever the exact words. \
+            When nothing matches, load nothing. Skipping a matching skill and \
+            improvising is how avoidable mistakes happen.\n",
         );
         for skill in &self.skills {
             out.push_str(&format!(
