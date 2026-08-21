@@ -28,31 +28,37 @@ controlled evidence, we follow it:
 
 ## Where the harness is shaky today
 
-- The TUI unconditionally auto-resumes the repo's latest session
-  (`resume_or_new`, [tui/chat.rs:327](../crates/aster-cli/src/tui/chat.rs)),
-  while headless chat is explicit and ephemeral
-  ([chat.rs:530](../crates/aster-cli/src/chat.rs)). Worse, `aster chat
-  --continue` in a terminal is silently ignored: `run()` branches to the TUI
-  before the flag is consulted (chat.rs:293).
-- Sessions accumulate forever. No retention, no pruning, and listing fully
-  parses every transcript ([sessions.rs:29](../crates/aster-cli/src/sessions.rs)).
-- Memory is global across all repos and has no size limit, so it can only rot.
-- `aster-agents` and `aster-mcp` are complete, tested, and wired to nothing.
-  The agents registry even advertises an `agent` tool that does not exist
-  ([registry.rs:61](../crates/aster-agents/src/registry.rs)).
-- There is no way for the model to ask the user a structured question, show a
-  plan, maintain a todo list, or delegate work.
-- "Always" on an edit approval promotes the whole session to `Mode::Edit`
-  ([tui/chat.rs:849](../crates/aster-cli/src/tui/chat.rs)) — a global
-  escalation from one keystroke.
+- `aster sessions list` still resumes every transcript to compute titles and
+  turn counts ([sessions.rs:145](../crates/aster-cli/src/sessions.rs)).
+  `Store::list_sessions` itself reads headers only
+  ([lib.rs:172](../crates/aster-persist/src/lib.rs)), but the SQLite index
+  from Phase 1 was never built, so listing cost still grows with history.
+- Memory is still global across all repos and has no context budget:
+  [memory.rs](../crates/aster-persist/src/memory.rs) has no per-project
+  path, so Phase 4 remains unbuilt and memory can only rot.
+- Tool dispatch is a string match in `exec_tool`
+  ([chat.rs:2679](../crates/aster-cli/src/chat.rs)) over the whole surface,
+  from `read_file` and `explore` to `run_command`, `run_tests`,
+  `open_preview`, and `agent`; not a registry. Allowlists filter which
+  definitions a sub-agent sees; nothing refuses a disallowed name at
+  dispatch itself.
+- Prompts are unversioned. Nothing records which prompt text produced a
+  transcript, so a regression cannot be pinned to a prompt change.
+- There is no deterministic replay. A transcript can be resumed and seeded as
+  history, but a recorded run cannot be re-executed step by step.
 
-Nine phases fix this. Phases 1–4 are pure persistence and UX work that can ship
-in parallel with the roadmap's sandbox workstream. Phase 5 is the roadmap's own
-tool-registry phase, referenced not redesigned. Phases 6–9 build on it.
+The phases below fix this, and status lines mark what has already shipped.
+Phases 1–4 are pure persistence and UX work that can ship in parallel with the
+roadmap's sandbox workstream. Phase 5 is the roadmap's own tool-registry
+phase, referenced not redesigned. Phases 6–10 build on it.
 
 ---
 
 ## Phase 1 — Session log plus index, retention, fork
+
+**Status.** Partly shipped: `aster sessions prune --keep/--older-than` covers
+deletion ([sessions.rs:48](../crates/aster-cli/src/sessions.rs)). The index,
+fork lineage, and `aster.yaml` retention are not built.
 
 **Gap.** JSONL transcripts are already a crash-safe write-ahead log
 ([transcript.rs](../crates/aster-persist/src/transcript.rs)), but every query
@@ -80,7 +86,11 @@ Fork adds `forked_from_id: Option<String>` to `SessionMeta` with serde
 defaults, so `TRANSCRIPT_VERSION` stays 1-compatible. `Store::fork` copies the
 `.jsonl`, mints a new ULID, and records lineage. Compaction is already
 non-destructive — the `Summary` event appended to the log is the checkpoint
-record — so nothing changes there.
+record — so nothing changes there. Compaction is not the only context
+mechanism either: within a turn a reserve-and-evict budget stubs out old tool
+results, and every eviction is recorded as a transcript event
+([budget.rs](../crates/aster-cli/src/budget.rs),
+[chat.rs:1714](../crates/aster-cli/src/chat.rs)).
 
 Retention comes from `aster.yaml`:
 
@@ -99,8 +109,14 @@ files; fork lineage is queryable.
 
 ## Phase 2 — The TUI never auto-resumes
 
+**Status.** Mostly shipped: the TUI defaults to a new session (`resume_or_new`,
+[tui/chat.rs:698](../crates/aster-cli/src/tui/chat.rs)), and `--continue`,
+`--resume <id>`, `--session`, and the bare `--resume` picker all work
+([chat.rs:830](../crates/aster-cli/src/chat.rs)). `/fork` and the
+summary-first resume gate are not built.
+
 **Gap.** Implicit infinite append into one growing file per repo, and a
-`--continue` flag the TUI ignores.
+`--continue` flag the TUI ignored.
 
 **Shape.** Default is a new session, always. `tui::run_chat` gains a
 `SessionChoice { New, Latest, Id(String) }` populated from `--continue` and a
@@ -123,12 +139,18 @@ compaction boundary.
 
 **Done when.** A fresh TUI launch creates a second session file rather than
 appending to the newest; `--continue` seeds prior history (regression test for
-the current bug); the gate test with a synthetic oversized transcript seeds
+the old bug); the gate test with a synthetic oversized transcript seeds
 summary-first.
 
 ## Phase 3 — "Always" on an edit grants a path, not a mode
 
-**Gap.** `Answer::Always` on an edit approval flips the session to
+**Status.** Shipped. `Always` on an out-of-repo write inserts a
+directory-scoped grant ([chat.rs:4115](../crates/aster-cli/src/chat.rs)); the
+TUI promotes the mode only when a decision carries no scope, which is the
+deliberate in-repo case
+([tui/chat.rs:1750](../crates/aster-cli/src/tui/chat.rs)).
+
+**Gap.** `Answer::Always` on an edit approval flipped the session to
 `Mode::Edit`. One keystroke, global blast radius.
 
 **Shape.** `edit_file` currently sends `scope: None`, which is exactly why the
@@ -188,8 +210,14 @@ of what the model asks for.
 
 ## Phase 6 — Structured questions, a visible plan, and a plan-mode handshake
 
-**Gap.** The model cannot ask the user anything except yes/no on an approval,
-plan mode is just "edits denied", and there is no visible task state.
+**Status.** Shipped. `ask_user`
+([chat.rs:2518](../crates/aster-cli/src/chat.rs)), `update_plan`
+(chat.rs:2493), and `exit_plan_mode` (chat.rs:2558) are live when an approver
+is present; `exit_plan_mode` appears only while edits are denied.
+
+**Gap.** The model could not ask the user anything except yes/no on an
+approval, plan mode was just "edits denied", and there was no visible task
+state.
 
 **Shape.** Three tools, one channel change.
 
@@ -226,9 +254,15 @@ outside `Plan`; a 1-option or 5-option call is rejected.
 
 ## Phase 7 — Skills index budget, and the MCP bridge finally wired
 
-**Gap.** The skills index grows linearly with skill count with no cap, and
+**Status.** Shipped for MCP: the runtime speaks stdio, streamable-http, and
+sse transports ([mcp.rs:928](../crates/aster-cli/src/mcp.rs)) and applies
+tool-level filters across servers (mcp.rs:885). The skills index caps each
+entry's description ([lib.rs:280](../crates/aster-skills/src/lib.rs)) rather
+than budgeting the whole index.
+
+**Gap.** The skills index grew linearly with skill count with no cap, and
 `aster-mcp` — catalog, 6% inventory budget, single bridge tool with a
-target-substitution guard — has no consumer.
+target-substitution guard — had no consumer.
 
 **Shape.** `render_index(budget_tokens)` reuses `aster_mcp::estimated_tokens`
 and the `ProgressiveConfig::inventory_budget_tokens` pattern. Over budget,
@@ -262,46 +296,56 @@ fake in-process invoker proves execute prompts and search/describe never do.
 
 ## Phase 8 — Delegation as a contract
 
-**Gap.** `aster-agents` parses `name`, `description`, `model`, `tools`,
-`max_rounds`, and `verify`, and nothing reads them.
+**Status.** Shipped as the `agent` tool
+([chat.rs:4198](../crates/aster-cli/src/chat.rs)): it takes a `tasks` array
+and fans the batch out to sub-agents in parallel, capped per turn. `aster run`
+and the verify pass are not built.
 
-**Shape.** A `run_agent` tool — `{"agent", "task", "context"?}` — where the
-delegation is a contract built entirely from fields `AgentDef` already
+**Gap.** `aster-agents` parsed `name`, `description`, `model`, `tools`,
+`max_rounds`, and `verify`, and nothing read them.
+
+**Shape.** An `agent` tool taking `{"tasks": [{"agent", "task"}]}`, where
+each delegation is a contract built entirely from fields `AgentDef` already
 parses:
 
-- **Tools:** `Allowlist::Named(def.tools.unwrap_or(DEFAULT_TOOLS))` filters
-  the Phase 5 registry at dispatch. `run_agent` is never in a subagent's
-  allowlist: depth 1, no recursion, no runaway chains.
-- **Rounds:** `def.max_rounds.unwrap_or(8)` replaces `MAX_TOOL_ROUNDS` for
-  the sub-loop, same forced finish.
-- **Model:** `def.model` through the existing per-call override
-  (`complete_tools_stream_with`).
+- **Tools:** the allowlist (`def.tools`, defaulting to `DEFAULT_TOOLS`)
+  filters the definitions the sub-loop sees
+  ([agents.rs:97](../crates/aster-cli/src/agents.rs)), and `agent` is
+  registered only when the session is not itself a sub-agent (chat.rs:1735):
+  depth 1, no recursion, no runaway chains. Refusing a disallowed name at
+  dispatch itself still waits on the Phase 5 registry.
+- **Rounds:** `def.max_rounds.unwrap_or(8)` caps the sub-loop
+  (agents.rs:111), same forced finish. The loop's no-progress guard applies
+  too: identical, all-error, and lookup-only rounds are counted and the model
+  is steered before the cap is reached
+  ([chat.rs:1509](../crates/aster-cli/src/chat.rs)).
+- **Model:** `def.model` overrides the child client's model (agents.rs:89).
 - **Context:** fresh — the agent body plus the tools prompt. No parent
   history, no memory injection. The StateAct result is the reason: a subagent
   with its own narrow context outperforms a parent context dragging
   everything.
-- **Return:** structured, fixed by the harness:
-  `{"agent", "summary", "rounds_used", "tools_denied", "usage"}`. The parent
-  transcript records only the call and this result; the subagent gets its own
-  session file with `forked_from_id` pointing at the parent — Phase 1's
-  lineage field doing double duty.
-- **Verify:** when `def.verify`, one adversarial refute pass patterned on the
-  `aster-harness` verify stage, appending a caveat rather than looping. The
-  full refute and confidence gate migrates in with the roadmap's trace work.
+- **Return:** each agent hands back a report, and the parent sees one tool
+  result carrying the capped reports (chat.rs:4228). The subagent session
+  file with `forked_from_id` pointing at the parent is not built; it waits on
+  Phase 1's lineage field.
+- **Verify:** not built. When it lands, `def.verify` runs one adversarial
+  refute pass patterned on the `aster-harness` verify stage, appending a
+  caveat rather than looping.
 
-Subagent events surface on the parent's sink as `{"type":"agent_event"}` so
-the TUI can render a nested spinner. `aster run <agent> "<task>"` is the
-headless entry, printing the structured result. The `render_index` prompt text
-is corrected to name `run_agent`.
+Subagent events surface on the parent's sink as `{"type":"agent_status"}` so
+the UIs can render live per-agent progress. `aster run <agent> "<task>"` as
+the headless entry is not built. The `render_index` prompt text names `agent`
+and matches the registered tool
+([registry.rs:59](../crates/aster-agents/src/registry.rs)).
 
 One guard, from the Phantom Guardrails result: default policy denies edits
 under `.aster/skills/`, `.aster/agents/`, and the global config directory. No
 agent rewrites its own harness inputs mid-session.
 
 **Done when.** The roadmap's own criterion — the explorer's `edit_file`
-attempt returns a dispatch refusal — plus the round cap honored, the subagent
-session file carrying lineage, and the index text matching the registered
-tool.
+attempt returns a dispatch refusal — plus the subagent session file carrying
+lineage. The round cap and the index text matching the registered tool are
+already in.
 
 ## Phase 9 — Scheduled runs
 
@@ -332,8 +376,8 @@ prompts.
 
 ## Phase 10 — Background agents
 
-**Gap.** Phase 8 delegation blocks: `run_agent` holds the parent turn open
-until the subagent finishes, and `aster run` occupies the terminal. Phase 9
+**Gap.** Phase 8 delegation blocks: `agent` holds the parent turn open
+until the batch finishes, and `aster run` would occupy the terminal. Phase 9
 covers work with nobody at the keyboard. Neither covers the case in between,
 where you want a long job started and want to keep working while it runs.
 
@@ -341,7 +385,7 @@ where you want a long job started and want to keep working while it runs.
 collected later instead of awaited. Everything about the contract is unchanged;
 only the timing and the reporting differ.
 
-- **Spawn.** `run_agent` gains `background: true` and returns a handle
+- **Spawn.** The `agent` tool gains `background: true` and returns a handle
   immediately rather than the result: `{"agent", "run_id", "status":
   "running"}`. `aster run <agent> "<task>" --detach` is the headless entry,
   printing the run id.
@@ -485,7 +529,7 @@ runs against the 19.8% same-agent baseline above.
 | 5 | Tool registry | — | is roadmap phase 1 |
 | 6 | ask_user, update_plan, plan exit | 5 | precedes sandbox prompting needs |
 | 7 | Skills budget, MCP wiring | 5 | registry gives MCP its registration path |
-| 8 | run_agent contract | 5, 1 | is roadmap phase 3 |
+| 8 | agent contract | 5, 1 | is roadmap phase 3 |
 | 9 | Scheduled runs | 8 | none |
 | 10 | Background agents | 8, 1 | needs roadmap 4 worktrees to write |
 

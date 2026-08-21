@@ -44,9 +44,11 @@ MCP tool. It sees either:
   configured context budget, or
 - a compact server inventory when that manifest would exceed the budget.
 
-The default budget is 6% of the context still available to the prompt. The host
-must calculate that value *after* reserving the system prompt, conversation,
-and desired completion budget. This makes disclosure adapt to the actual turn,
+The crate's default budget is 6% of the context still available to the prompt;
+the CLI deliberately overrides that to 1.5% (`mcp.inventory_percent` in
+`aster.yaml`), which is the number to tune in practice. The host must calculate
+the available context *after* reserving the system prompt, conversation, and
+desired completion budget. This makes disclosure adapt to the actual turn,
 rather than relying on a fixed number of tools.
 
 Full input schemas are never inserted into the system prompt. The model calls
@@ -242,8 +244,8 @@ configured.
 | Tool | Keyless | Better with |
 | --- | --- | --- |
 | `web/search` | DuckDuckGo | `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY` |
-| `web/extract` | Jina Reader, then plain HTTP | the same keys, plus `CLOUDFLARE_BR_API_TOKEN` |
-| `web/crawl` | no | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `CLOUDFLARE_BR_API_TOKEN` |
+| `web/extract` | Jina Reader, then DuckDuckGo, then plain HTTP | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY`, `EXA_API_KEY`, or Cloudflare (both `CLOUDFLARE_BR_ACCOUNT_ID` and `CLOUDFLARE_BR_API_TOKEN`) |
+| `web/crawl` | no | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, or the Cloudflare pair |
 | `web/sitemap` | no | `CONTEXT_DEV_API_KEY` |
 | `web/screenshot` | no | `CONTEXT_DEV_API_KEY` |
 
@@ -253,6 +255,20 @@ because that is what it is built for, with Perplexity next; the
 extraction-first providers outrank it on `extract`.
 
 The same catalogue is available to other MCP clients as `aster mcp serve web`.
+
+## Shortcuts
+
+Aster serves a `shortcuts` server in-process on macOS, with two tools:
+
+| Tool | What it does |
+| --- | --- |
+| `shortcuts/list` | Lists every shortcut available on this Mac |
+| `shortcuts/run` | Runs a shortcut by name and returns its stdout |
+
+`list` shells out to `/usr/bin/shortcuts`. `run` uses `/usr/bin/osascript` to
+tell the Shortcuts app to run the shortcut, giving it GUI access for dialogs
+that `shortcuts run` (headless) would block on. No configuration or API key
+needed.
 
 ## The browser
 
@@ -338,7 +354,7 @@ place, which the AI layer already handles for every other image.
   conversions, approval denials, and upstream failures. These reveal whether
   the catalogue or descriptions need improvement.
 - Evaluate retrieval recall and wrong-tool calls on Aster tasks before changing
-  the 6% threshold. Smaller budgets reduce context use but can add a search
+  the inventory budget. Smaller budgets reduce context use but can add a search
   round-trip for tools that would otherwise be obvious.
 
 ## Non-goals

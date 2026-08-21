@@ -32,7 +32,7 @@ flowchart LR
 | mode | integration | tree-sitter | notes |
 |---|---|---|---|
 | `semgrep` | subprocess (`opengrep`/`semgrep`) | none | Python tool; no Rust lib, so it must shell out. Skipped when no binary is on PATH. |
-| `ast-grep` | **in-process** (`ast-grep-core`) | 0.26 (linked) | Structural lint; rule-driven (`ASTER_ASTGREP_RULES`). No external binary. `available()` is always true. |
+| `ast-grep` | **in-process** (`ast-grep-core`) | 0.26 (linked) | Structural lint; rule-driven (`review.astgrep_rules` in `aster.yaml`, or `ASTER_ASTGREP_RULES`). No external binary. `available()` is always true. |
 
 ## The tree-sitter `links` constraint (why the workspace pins one version)
 

@@ -4,15 +4,31 @@ What Aster becomes next, and why. Each workstream states the gap, the shape of
 the fix, and what "done" looks like.
 
 Today the harness can read a repo, retrieve evidence, call a model, verify its
-own output, and gate file writes through policy. It cannot run anything, cannot
-dispatch the agents it already parses, cannot measure itself over time, and
-cannot tell you which layer failed when a run goes wrong. Those four gaps are
-the roadmap.
+own output, gate file writes through policy, run commands inside a sandbox,
+dispatch sub-agents through the `agent` tool, score its own sessions with
+`aster-eval`, and export OTLP spans. What remains is depth rather than absence:
+the sandbox has no escape-test suite, evals have no fixture suites or ablation
+runner, traces have no per-run tree or failure classes, and long-horizon tasks
+restart instead of resuming. Those gaps are the roadmap.
 
 The harness UX and semantics work — session resume and retention, memory
 scoping, structured questions, plan mode, delegation contracts, scheduled
 runs, background agents — is designed in [HARNESS.md](HARNESS.md) and slots
 around the sequencing below.
+
+## Shipped in 0.4.0
+
+- A browser UI: `aster serve` ([aster-serve](../crates/aster-serve/)).
+- The `open_preview` tool, which opens what the agent built in the user's browser.
+- Per-provider API keys, with `aster provider` and `aster model` to switch.
+- The `aster config` CLI for reading and setting configuration.
+- Keyless DuckDuckGo web search ([aster-web](../crates/aster-web/)).
+- Tool-level MCP filters (`mcp.tools`).
+- The browser-use MCP scaffold.
+- Image tool results.
+- The session-start repo profile ([project.rs](../crates/aster-cli/src/project.rs)).
+- Apple Shortcuts tools ([aster-shortcuts](../crates/aster-shortcuts/)).
+- The Telegram remote ([aster-remote](../crates/aster-remote/)).
 
 ---
 
@@ -23,23 +39,24 @@ loop. Backend detection (Seatbelt, bubblewrap, process-level fallback), profile
 compilation, secret filtering, and timeout enforcement are implemented. Remaining:
 an escape-test suite and the platform-tradeoffs writeup.
 
-**Gap.** Aster has no execution tool. The tool surface is read, list, search,
-edit, remember, recall, read_skill ([chat.rs](../crates/aster-cli/src/chat.rs)).
-The only subprocesses are `git` and `semgrep`, both spawned directly with no
-isolation. An agent that cannot run the test suite cannot verify its own fix,
-which caps every implementation workflow at "probably compiles".
+**Gap.** Execution shipped. The tool surface is fifteen or so tools, including
+`explore`, `run_command`, `run_tests`, `open_preview`, `ask_user`,
+`update_plan`, `exit_plan_mode`, and `agent`
+([chat.rs](../crates/aster-cli/src/chat.rs)), so a fix run can edit a file, run
+the tests, read the failure, and iterate. What is missing is proof: no
+escape-test suite tries to break the confinement, so "sandboxed" rests on the
+backend code rather than on tests that attack it.
 
-**Shape.** A new crate owning process execution, with platform backends behind
-one trait:
+**Shape.** The crate owns process execution, with the platform backends as an
+enum selected at spawn time rather than one file per backend
+([runner.rs](../crates/aster-sandbox/src/runner.rs)):
 
 ```text
 aster-sandbox/
-  lib.rs        Sandbox trait: spawn(Command, Limits) -> Handle
-  profile.rs    fs read/write allowlists, net policy, env allowlist, limits
-  seatbelt.rs   macOS: sandbox-exec profile generation
-  landlock.rs   Linux: Landlock LSM path rules + seccomp-bpf syscall filter
-  nsjail.rs     Linux fallback: user namespaces + cgroups v2 when LSM absent
-  passthrough.rs  explicit opt-out, never the default
+  lib.rs        crate surface: SandboxConfig, run_command
+  profile.rs    fs read/write allowlists, network policy, timeout, and the
+                Seatbelt / bwrap profile compilation
+  runner.rs     backend detection and spawn: Seatbelt, bubblewrap, process-level
 ```
 
 A `Profile` is compiled from `aster.yaml` the same way `Policy` is compiled from
@@ -75,10 +92,17 @@ number.
 
 ## 2. `aster-eval`: measurement as infrastructure
 
-**Gap.** [eval_models.rs](../crates/aster-harness/examples/eval_models.rs) is
-a good benchmark and the wrong shape. It hardcodes one fixture, one set of
-planted bugs, one axis (model choice), and prints to stdout. Nothing persists,
-so nothing regresses visibly.
+**Status.** The crate exists ([aster-eval](../crates/aster-eval/)) with its
+own binary: `lib.rs`, `live.rs`, `report.rs`, `stats.rs`, `turn.rs`. It scores
+recorded sessions and runs a fixed set of live cases. Remaining: fixture
+suites, an ablation runner, and a CI gate.
+
+**Gap.** Measurement exists but is thin. `aster-eval` reads sessions that
+already happened and `aster-eval live` runs a small fixed case set;
+[eval_models.rs](../crates/aster-harness/examples/eval_models.rs) still
+hardcodes one fixture and one axis. Nothing runs a fixture suite against a full
+configuration, and nothing sweeps one axis while holding the rest fixed, so
+quality movement is observed rather than attributed.
 
 **Shape.** Promote it to a crate with the fixture, the runner, and the scoring
 separated:
@@ -97,9 +121,11 @@ pulled from the existing `UsageSnapshot`
 - **Storage.** Results into SQLite next to the index, keyed by config hash and
 git SHA, so `aster eval compare <sha> <sha>` shows movement.
 
-**CLI.** `aster eval run --suite review --config configs/*.yaml`, and
-`aster eval ablate --vary verify_model,min_confidence` to sweep one axis while
-holding the rest fixed.
+**CLI.** Today: `aster-eval [dir] [--since DAYS] [--model NAME] [--json]
+[--baseline FILE]`, where `--json` and `--baseline` cover save-and-compare, and
+`aster-eval live [--models a,b]` for the fixed cases. Still open: a suite
+runner over fixture directories, and an ablation mode that sweeps one axis
+while holding the rest fixed.
 
 **Done when.** CI runs a small suite on every PR touching prompts or the harness
 and comments the delta in recall, cost, and p50 latency.
@@ -113,9 +139,12 @@ strong model. Numbers with the harness that produced them.
 
 ## 3. `aster-trace`: attribution across the stack
 
-**Gap.** Diagnostics are `tracing::debug!` lines. When a run produces a bad
-result there is no way to answer the only question that matters: was that the
-harness, the prompt, the model, or the provider?
+**Gap.** [aster-telemetry](../crates/aster-telemetry/) exports OTLP spans when
+an endpoint is configured, and the chat loop records structured span fields.
+What is still missing is attribution: no per-session run tree on disk, no
+failure class on each span, and no `aster trace <session>` view. A bad run
+still cannot be assigned to the harness, the prompt, the model, or the
+provider without re-running it.
 
 **Shape.** Structured spans over a run tree, emitted to a JSONL file per session
 alongside the existing transcript in [aster-persist](../crates/aster-persist/):
@@ -170,9 +199,10 @@ reusable primitive instead of one hardcoded stage.
 - **Worktree isolation.** Parallel agents that write need separate git
 worktrees, then a merge or reject step. This pairs with the sandbox: each
 worktree is a separate writable root.
-- **Context budget manager.** Replace character-count compaction with a real
-budget: reserve for system prompt, skills, memory, and tool results, evict by
-policy rather than by position, and record every eviction as a trace event.
+- **Context budget manager.** Shipped
+([budget.rs](../crates/aster-cli/src/budget.rs)): reservations off the top for
+the system prompt, skills, memory, and reply headroom, eviction by policy
+rather than by position, and every eviction recorded as an event.
 
 **Done when.** A multi-file fix task survives a process kill and resumes, and
 parallel subagents on separate worktrees produce a reviewable combined diff.
@@ -187,24 +217,26 @@ baseline on the same task.
 
 **Status.** The crate exists. `AgentDef` parsing, `AgentRegistry::discover`
 (project → user → built-in roots), and built-in explorer/reviewer/fixer agents
-are done. Dispatch (`aster run`, `run_agent` tool) is not yet wired — the
-registry renders an index that references an `agent` tool that does not exist.
+are done. The `agent` tool is wired: a parent agent fans tasks out to named
+sub-agents in parallel, and each dispatch honors the agent's `model`, `tools`
+allowlist, and `max_rounds` ([chat.rs](../crates/aster-cli/src/chat.rs),
+[agents.rs](../crates/aster-cli/src/agents.rs)). `aster run <agent>` as a shell
+entry point is still absent, and `verify` is parsed but not consumed.
 
-**Gap.** [aster-agents](../crates/aster-agents/) parses `AGENT.md`
-frontmatter, resolves project over user over builtin roots, and renders an
-index. Nothing consumes it. No other crate depends on it, so `model`, `tools`,
-`max_rounds`, and `verify` on
-[AgentDef](../crates/aster-agents/src/def.rs) are declared and never honored.
-Agents exist on disk and cannot be run.
+**Gap.** Dispatch works from inside a session and nowhere else. There is no
+`aster run <agent>` from the shell, no per-agent sandbox profile, no worktree
+isolation for concurrent writers, and no structured returns: a sub-agent hands
+back capped report text, not a typed result. `verify` on
+[AgentDef](../crates/aster-agents/src/def.rs) is declared and never honored.
 
 **Shape.**
 
-- **Dispatch.** `aster run <agent> "<task>"` and a `run_agent` tool that lets a
-parent agent delegate. Each dispatch builds a fresh context: the agent's body
-as the system prompt, its `model` override through
-`complete_tools_with`, its `max_rounds` as the loop cap.
-- **Tool scoping.** `AgentDef::tools` becomes the actual allowlist the tool
-registry filters on, so an `explorer` agent physically cannot edit. This is
+- **Dispatch.** The tool half shipped as `agent`: each dispatch builds a fresh
+context with the agent's body as the system prompt, its `model` override, and
+its `max_rounds` as the loop cap. `aster run <agent> "<task>"` from the shell
+is still open.
+- **Tool scoping.** Shipped: `AgentDef::tools` is the allowlist the child's
+tool set is filtered on, so an `explorer` agent physically cannot edit. This is
 the second half of the policy story: policy bounds the *user's* session,
 agent scoping bounds a *delegated* one.
 - **Sandbox profile per agent.** An agent that can run commands declares which
@@ -242,9 +274,10 @@ tools register through one path and appear identically in traces and evals.
 should carry a version identifier that lands in every trace and eval record.
 Prompt changes are the most common cause of quality movement and currently the
 least attributable.
-- **Headless protocol.** A stable JSON event stream on stdout so CI, the VS Code
-extension, and the desktop app consume one interface. The event shapes emitted
-in `chat.rs` are the seed; they need a documented schema and a version field.
+- **Headless protocol.** The `--stream` path emits one NDJSON event per line,
+and the VS Code extension and the desktop app consume it, so the stream exists
+in practice. It is unversioned and undocumented; it needs a schema with a
+version field before other tools can build against it.
 - **Deterministic replay.** Record provider responses per run and replay them, so
 harness changes can be tested without spending tokens and without model
 nondeterminism. This is what makes the eval suite cheap enough to run per PR.
@@ -260,15 +293,16 @@ token cost.
 | Phase | Work                             | Why first                                                      |
 | ----- | -------------------------------- | -------------------------------------------------------------- |
 | 1 | Tool registry, prompt versioning | Everything downstream registers or records through these |
-| 2 | `aster-sandbox` + `run_command` | Unblocks verification-by-execution, the largest capability gap |
-| 3 | Agent dispatch and tool scoping | Cheap once the registry exists, and it makes `aster-agents` real |
+| 2 | `aster-sandbox` + `run_command` | Shipped; the escape-test suite is what remains |
+| 3 | Agent dispatch and tool scoping | Shipped through the `agent` tool; `aster run` still open |
 | 4 | `aster-trace` | Needed to debug phases 2, 3, and 6 |
 | 5 | `aster-eval` + replay | Turns 1 to 4 into measured movement instead of vibes |
 | 6 | Task graph, delegation, worktrees | Long-horizon work, safe only once 2 to 4 exist |
-| 7 | Context budget manager | Refines phase 6 under real workloads |
+| 7 | Context budget manager | Shipped ([budget.rs](../crates/aster-cli/src/budget.rs)) |
 
-Phase 2 is the highest-value single addition: it converts Aster from an agent
-that reads code into an agent that can prove its own work.
+Phase 2 has landed: `run_command` converts Aster from an agent that reads code
+into an agent that can prove its own work. The escape-test suite is what turns
+that confinement into a claim.
 
 ## The evidence rule
 

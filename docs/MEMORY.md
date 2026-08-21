@@ -33,7 +33,7 @@ that can always be rebuilt from the files.
 
 ```mermaid
 graph TD
-    subgraph Home["~/Library/Application Support/aster/"]
+    subgraph Home["~/.local/share/aster/"]
         subgraph Sessions["sessions/&lt;project-slug&gt;/"]
             T1["&lt;ulid&gt;.jsonl<br/>append-only transcript"]
             T2["&lt;ulid&gt;.jsonl"]
@@ -58,11 +58,13 @@ memory answers "what should Aster always know about this project."
 
 ## On-disk layout
 
-Everything lives under the existing Aster home (the same directory that holds
-`aster.yaml` and `credentials.json`), resolved via `dirs::config_dir()`:
+Everything lives under the Aster data home (the same directory that holds
+`credentials.json`): `$XDG_DATA_HOME/aster`, defaulting to
+`~/.local/share/aster` on every platform. `~/.aster` is the legacy home and is
+migrated in on first use:
 
 ```
-<config>/aster/
+~/.local/share/aster/
   sessions/<project-slug>/<ulid>.jsonl   append-only transcripts, scoped per repo
   memory/ASTER.md                        project memory, always loaded
   memory/<slug>.md                        individual memory blocks with frontmatter
@@ -80,7 +82,7 @@ header; every line after it is an event. Events are internally tagged on `type`,
 so the file is self-describing.
 
 ```jsonl
-{"type":"session","id":"01J...","v":1,"created_at":"...","cwd":"/repo","repo_root":"/repo","model":"..."}
+{"type":"session","id":"01J...","v":1,"created_at":"...","cwd":"/repo","repo_root":"/repo","model":"...","aster_version":"0.4.0","title":"..."}
 {"type":"message","role":"user","content":"read main.rs","ts":"..."}
 {"type":"message","role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.rs\"}"}}],"ts":"..."}
 {"type":"message","role":"tool","tool_call_id":"call_1","content":"fn main() {}","ts":"..."}
@@ -89,11 +91,13 @@ so the file is self-describing.
 
 Event kinds (`TranscriptEvent`):
 
-| kind      | purpose                                                                 |
-|-----------|-------------------------------------------------------------------------|
-| `session` | the header: id, version, created-at, cwd, repo root, model              |
-| `message` | one turn: `user`, `assistant` (with optional `tool_calls`), or `tool`   |
-| `summary` | a compaction marker (older turns folded into a summary; see below)      |
+| kind       | purpose                                                                     |
+|------------|-----------------------------------------------------------------------------|
+| `session`  | the header: id, version, created-at, cwd, repo root, model, aster version, title |
+| `message`  | one turn: `user`, `assistant` (with optional `tool_calls`), or `tool`       |
+| `summary`  | a compaction marker (older turns folded into a summary; see below)          |
+| `eviction` | a tool result stubbed out by the context budget (see Compaction)            |
+| `title`    | the session naming itself (see below)                                       |
 
 ### Full-fidelity capture
 
@@ -125,12 +129,12 @@ sequenceDiagram
     participant TUI as chat TUI
     participant S as Store
     U->>TUI: launch `aster chat`
-    TUI->>S: latest(repo_root)
-    alt a prior session exists
+    alt launched with `--continue`
+        TUI->>S: latest(repo_root)
         S-->>TUI: transcript
         TUI->>TUI: seed history, reopen writer (append)
         TUI-->>U: "resumed N previous turn(s)"
-    else none
+    else default
         TUI->>S: new_session(repo_root)
         S-->>TUI: fresh writer (header written)
     end
@@ -141,10 +145,13 @@ sequenceDiagram
     TUI->>S: new_session (old file preserved)
 ```
 
-- **Default is resume.** On launch the chat TUI continues the repo's most recent
-  session, seeding both the visible scrollback and the model's history.
-  **Note:** this is the current behavior; [HARNESS.md](./HARNESS.md) Phase 2
-  plans to flip the default to a new session and fix `--continue`.
+- **Default is a new session.** On launch the chat TUI starts clean. `--continue`
+  reopens the repo's most recent session, seeding both the visible scrollback
+  and the model's history, and `--resume <id>` reopens a specific one.
+- **Sessions name themselves.** At the end of the first substantive turn, a
+  bounded model call produces a short title, recorded as a `title` event. Until
+  then, session lists fall back to the first user message. `aster sessions
+  rename` overwrites the title.
 - **`/clear` starts a fresh session.** It does not delete anything; the previous
   transcript stays on disk, and a new file begins.
 
@@ -219,8 +226,9 @@ graph LR
 
 The persistence handles are threaded through the turn as a `SessionCtx`: a live
 append handle for this session's transcript, plus the `Store` used to read and
-write memory. Headless turns get memory injection but no transcript writer;
-interactive turns get both.
+write memory. Headless and interactive turns both get memory injection and a
+transcript writer; a headless run ends by printing the `aster --resume <id>`
+line that reopens it.
 
 ## Compaction
 
@@ -232,13 +240,20 @@ the in-context history with the summary plus the tail. The file stays complete;
 only the window shrinks. The interactive TUI adopts the compacted history so the
 saving persists across turns instead of re-summarizing each time.
 
+A second guard runs inside a turn: a context budget takes reservations for the
+system prompt and the reply, and when the request still overflows, it stubs out
+old tool results, oldest first, keeping the recent rounds intact. Each stub is
+recorded as an `eviction` event, so the transcript shows what was dropped.
+
 ## Surfaces
 
-- **Interactive TUI** (`aster chat`): resumes the repo's latest session by default.
+- **Interactive TUI** (`aster chat`): starts a new session by default;
+  `--continue` resumes the repo's latest.
 - **Headless** (`aster chat --continue` or `--session <id>`): resumes a session
   without replaying history, and a bare prompt starts a fresh resumable session.
-- **`aster sessions [list|show <id>]`** and **`aster memory [list|add]`**: inspect
-  and edit persisted state from the terminal, with `--json` for tools.
+- **`aster sessions [list|show|delete|rename|import|prune]`** and
+  **`aster memory [list|add|remove|show]`**: inspect and edit persisted state
+  from the terminal, with `--json` for tools.
 - **Desktop app**: the same commands are exposed as Tauri calls
   (`list_sessions`, `show_session`, `memory_list`, `memory_add`), and chat turns
   receive injected memory like every other surface.
