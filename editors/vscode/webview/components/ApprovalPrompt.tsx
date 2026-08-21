@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ApprovalAsk } from "../lib/thread";
 import { languageFromPath } from "../lib/highlight";
 import { DiffView } from "./DiffView";
+import { Markdown } from "./Markdown";
 
 /** The preview opens with `edit <path>:`, which is the only clue to what
  *  language the lines below it are. */
@@ -34,6 +35,9 @@ export function ApprovalPrompt({
 }) {
   const [instead, setInstead] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const isPlan = ask.kind === "plan" && !!ask.markdown;
+  const [editingPlan, setEditingPlan] = useState(false);
+  const [planDraft, setPlanDraft] = useState(ask.markdown ?? "");
   const lines = ask.preview.split("\n");
   const lang = languageFromPath(HEADER.exec(lines[0])?.[1]);
 
@@ -67,6 +71,13 @@ export function ApprovalPrompt({
   }, [options.length, onRespond]);
 
   const redirect = () => {
+    if (isPlan && editingPlan) {
+      const draft = planDraft.trim();
+      if (!draft) return;
+      setEditingPlan(false);
+      onRedirect(`Revised plan:\n${draft}`);
+      return;
+    }
     const text = instead.trim();
     if (!text) return;
     setInstead("");
@@ -76,11 +87,38 @@ export function ApprovalPrompt({
   return (
     <div className="approval" ref={ref}>
       <div className="approval-head">{question(ask)}</div>
-      <pre className="approval-preview">
-        <DiffView lines={lines} lang={lang} />
-      </pre>
+      {isPlan ? (
+        <div className="approval-plan">
+          {editingPlan ? (
+            <textarea
+              className="approval-plan-edit"
+              rows={Math.min(16, planDraft.split("\n").length + 1)}
+              value={planDraft}
+              onChange={(e) => setPlanDraft(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  redirect();
+                }
+              }}
+            />
+          ) : (
+            <Markdown text={ask.markdown ?? ""} />
+          )}
+        </div>
+      ) : (
+        <pre className="approval-preview">
+          <DiffView lines={lines} lang={lang} />
+        </pre>
+      )}
 
       <div className="approval-options">
+        {isPlan && (
+          <button className="approval-option" onClick={() => setEditingPlan((v) => !v)}>
+            <span className="approval-key">✎</span>
+            <span className="approval-label">{editingPlan ? "Preview plan" : "Edit plan"}</span>
+          </button>
+        )}
         {options.map((option, i) => (
           <button key={option.label} className="approval-option" onClick={option.run}>
             <span className="approval-key">{i + 1}</span>
@@ -93,7 +131,7 @@ export function ApprovalPrompt({
         className="approval-instead"
         rows={1}
         value={instead}
-        placeholder="Tell Aster what to do instead"
+        placeholder={isPlan ? "Or tell Aster what to change" : "Tell Aster what to do instead"}
         onChange={(e) => setInstead(e.currentTarget.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
@@ -102,7 +140,9 @@ export function ApprovalPrompt({
           }
         }}
       />
-      <div className="approval-hint">Esc to reject</div>
+      <div className="approval-hint">
+        {isPlan && editingPlan ? "Cmd+Enter to send the revised plan" : "Esc to reject"}
+      </div>
     </div>
   );
 }

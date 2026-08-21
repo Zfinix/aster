@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { InfoCardData } from "../lib/thread";
-import { post } from "../lib/host";
+import { inEditor, post } from "../lib/host";
 import { ExternalIcon } from "./icons";
 import { InfoBody } from "./InfoBody";
 
@@ -25,7 +25,7 @@ export function InfoModal({ card, onClose }: { card: InfoCardData; onClose: () =
       <div className="info-modal" role="dialog" aria-label={card.title} data-error={card.error === true}>
         <div className="info-head">
           <span className="info-title">{card.title}</span>
-          {card.body && (
+          {inEditor && card.body && (
             <button
               className="icon-btn"
               onClick={() =>
