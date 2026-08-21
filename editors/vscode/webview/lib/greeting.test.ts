@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { itemAt, OPENERS, parts, TIPS } from "./greeting";
 
 const prose = (tip: string) => tip.replace(/[[\]]/g, "");
@@ -43,6 +43,31 @@ describe("parts", () => {
     for (const tip of TIPS) {
       expect(parts(tip).map((p) => p.text).join("")).toBe(prose(tip));
     }
+  });
+});
+
+describe("chords", () => {
+  const tipsFor = async (userAgent: string) => {
+    vi.resetModules();
+    vi.stubGlobal("navigator", { userAgent });
+    return (await import("./greeting")).TIPS.join("\n");
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("draws Mac modifiers as the glyphs printed on the keycaps", async () => {
+    const tips = await tipsFor("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)");
+    expect(tips).toContain("[⌥] [a]");
+    expect(tips).toContain("[⌘] [⌥] [k]");
+    expect(tips).toContain("[⇧] [enter]");
+    expect(tips).not.toMatch(/\[(alt|cmd|shift)\]/);
+  });
+
+  it("spells them out where the keycaps carry words", async () => {
+    const tips = await tipsFor("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    expect(tips).toContain("[alt] [a]");
+    expect(tips).toContain("[ctrl] [alt] [k]");
+    expect(tips).toContain("[shift] [enter]");
   });
 });
 

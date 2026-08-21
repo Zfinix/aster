@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extension's. The prefix now lives in the title, matching the review commands
   that always had it.
 
+- **The panel's keyboard tips read the way a Mac keyboard is labelled.** The
+  empty state spelled its chords `cmd alt k`, and `alt` is the one modifier a
+  Mac keycap does not name: that key says `option`, and the convention is the
+  glyph. The tips now draw `⌘ ⌥ ⇧` on macOS and keep `ctrl alt shift` elsewhere,
+  which is the branch the panel already made for `cmd` against `ctrl` and never
+  extended to the other two.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added
