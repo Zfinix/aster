@@ -26,11 +26,12 @@ The rule that follows, for weaker models especially: do not tell the model what
 to do next. Do the lookup and embed the result in the error. Telling costs a
 round and can be ignored; embedding costs nothing and cannot.
 
-## What our own bad sessions showed
+## What my own bad sessions showed
 
 - A deploy session hit a sandbox tempdir denial (`bun install` cannot write to
   `$TMPDIR`), then a command timeout whose partial output was discarded
-  ([chat.rs](../crates/aster-cli/src/chat.rs), `run_raw` bails on timeout).
+  ([chat.rs](../crates/aster-cli/src/chat.rs), `run_raw` then bailed on
+  timeout; P1 fixed both).
   With zero evidence the model invented "no network", skipped the typecheck it
   had promised, and reported done. Three gaps compounded: sandbox config,
   discarded timeout output, no verification doctrine.
@@ -93,17 +94,19 @@ Shipped (via `include_str!` in
 [builtins/](../crates/aster-skills/builtins/)) as two tiers, because the index
 is a standing context cost:
 
-**Core, always in the index (9):** git-workflow, gh-pr-workflow,
+**Core, always in the index (10):** git-workflow, gh-pr-workflow,
 verify-before-done, build-triage, batched-bash, cli-toolbox, context-economy,
-correction-protocol, security-hygiene. The bar: earns its place on a routine
+correction-protocol, security-hygiene, web-research. The bar: earns its place on a routine
 coding turn. An installed skill with the same name shadows its built-in.
 
-**Optional, bundled but not indexed (9):** package-managers,
+**Optional, bundled but not indexed (10):** package-managers,
 supply-chain-safety, dependency-upgrade, debug-systematically, refactor-safely,
-write-tests, background-processes, i-have-adhd, skill-creator.
+write-tests, background-processes, i-have-adhd, skill-creator, macos-harness.
 `aster skills bundled` lists them; `aster skills bundled <name>` materializes
 one into a skills root, after which discovery treats it like any installed
-skill.
+skill. On macOS, macos-harness is a platform default: session start installs it
+into the user-global root unless it is already there or the user removed it
+(a `.removed-macos-harness` marker records that).
 
 Routing is split by observability. Events the harness can detect mechanically
 (build failure, timeout) carry a pointer to the matching skill in their
@@ -139,7 +142,7 @@ leaking into commits and docs.
   block.
 - **P2, doctrine and skills — shipped**: prompt sections in
   [aster-agent.md](../crates/aster-cli/prompts/aster-agent.md) (shape of a
-  reply, verifying work, fidelity, taking a correction) plus the 18 built-in
+  reply, verifying work, fidelity, taking a correction) plus the 20 built-in
   skills in two tiers.
 - **P3, state loops**: read-before-edit and stale-file tracking, the
   verification gate with edit/verify ordering, replayable assertions, the

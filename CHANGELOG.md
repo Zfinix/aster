@@ -7,7 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-21
+
 ### Added
+
+- **Aster in your browser.** `aster serve` opens the agent at
+  `http://localhost:4187/`: the editor extension's panel, served as a page.
+  Streaming chat, approvals, questions, `@` mentions, slash commands, saved
+  sessions, review, compaction, and the model, provider, and MCP pickers all
+  work, because the page speaks the same protocol the extension's webview does
+  and every turn runs as an `aster` child in the repo the server was started
+  from. The UI ships inside the released binary, so `curl … | sh` installs it
+  with everything else; the port is guarded so no other page in the browser can
+  drive the agent, and `--host` past loopback requires the token the banner
+  prints. `--port` moves it, `--no-open` leaves the browser alone, and
+  `ASTER_UI_DIR` serves a UI build from disk while working on the page itself.
+
+- **Work you can look at, in your browser.** A turn that builds a page used to
+  end with a description of it. The agent now has `open_preview`: it points at
+  a running dev server or a file it built, and the page opens in your browser.
+  Loopback URLs and files in the repo open on their own; anything else asks
+  first, so a link off the machine is still your call. A port nothing is
+  listening on is refused rather than shown to you as a connection error, a
+  directory opens its `index.html`, and a page already opened this session
+  points back at the tab instead of stacking a second one. `ASTER_NO_BROWSER`
+  turns the launch off and leaves the URL in the reply, for SSH and containers.
+
+- **Sessions get their names back.** Naming ran as a background task the turn
+  never waited on, which works in the TUI and nowhere else: `--stream` and
+  one-shot runs are a process per turn, so the runtime was dropped and the
+  naming request killed before it left the machine. Every session started from
+  VS Code, the desktop app, or `aster -p` went unnamed, however many turns it
+  ran. The turn now waits for its own name, bounded at ten seconds so a slow
+  endpoint cannot hold a finished turn behind it, and only on the one turn per
+  session that earns the name. A miss leaves the session unnamed and the next
+  turn tries again.
+
+- **A session gets its name from the first prompt.** Naming waited for two user
+  turns, so a session that opened with the whole task still sat in the picker
+  under its raw opening line while you worked in it. An opening message that
+  already states the task now names the session at the end of that first turn.
+  Only a thin opener still waits: a bare greeting, a prod like "continue", or
+  something too short to carry a topic. Messages in languages that do not space
+  their words are measured by length rather than word count, so they name on the
+  first turn too.
+
+- **Links in a reply are clickable everywhere.** A bare URL in the VS Code
+  panel is now a link, not text you retype, and clicking one in either the
+  panel or the desktop app hands it to your browser. The desktop app used to
+  navigate itself away from the app when you clicked a link, with no way back.
+
+- **Every provider keeps its own API key.** Only seven endpoints named a key
+  variable of their own; the other thirty-one shared `ASTER_API_KEY`, so setting
+  up a second provider overwrote the first and switching back meant pasting the
+  key again. The var each endpoint reads now comes from the shipped catalog
+  alongside its base URL and models, and every provider that takes a key names
+  one: `BASETEN_API_KEY`, `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`, and so on for
+  all of them. Set two and `aster provider use` moves between them without
+  asking for either again. `ASTER_API_KEY` still works and is still the fallback
+  for self-hosted servers and endpoints off the catalog. The desktop shell reads
+  the same catalog, so a key stored on one surface is found by the other.
 
 - **The agent stops gathering instead of wandering.** The loop's runaway
   guards all watched for repetition, which a model that varies its query never
@@ -25,6 +84,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   desktop sidebar now fills itself from sessions on disk at startup, where it
   used to open empty every launch. Sessions saved before this reload without
   reasoning, because it was never written down.
+
+- **The config file is editable from the command line.** `aster config` reads
+  and writes `aster.yaml`, so a setting no longer means finding the file and
+  remembering the key's spelling. On its own it opens a form, the same one
+  `aster init` uses. Settings are grouped by what they do rather than by the
+  block they sit in, since that is the part a key name gives away least: the
+  model every surface uses sits under `review` for historical reasons, and the
+  form files it with the provider instead. Each carries a plain name, the value
+  it currently resolves to, and the key it is spelled by, so a setting found in
+  the form is one you can pass to `get` and `set`. Numbers read as quantities:
+  a timeout is `300s`, a compaction budget `192k chars`, an empty `include`
+  says "everything". Picking one prompts for a value, `-` clears it back to the
+  default, and a **Save to** row switches between the repo's config and the
+  global one without leaving the form. Piped or scripted it prints that as a table instead, and `list` asks for
+  it outright. `get` prints one value and nothing else, so it pipes. `set` and `unset` write and clear one key, `path` says
+  which files Aster reads here, and `edit` opens one in `$EDITOR` and tells you
+  whether what you saved still parses. Writes land in the repo's config when it
+  has one and the global one otherwise, with `--global` and `--local` to say
+  outright. Nothing is saved that the next run would refuse to read: the edited
+  file is parsed first, so a misspelled key or a value of the wrong type is an
+  error naming the keys that do exist, rather than a config that fails on the
+  next turn. Comments and layout survive an edit, `unset` clears the key from
+  every file that pins it, and a shell variable that outranks what was just
+  written is said out loud. `mcp.servers` and `mcp.tools` stay with `aster mcp`,
+  which is where their structure belongs.
 
 - **One place to switch provider and model.** `aster provider use <id>` points
   Aster at an endpoint and adopts a model it serves in the same write, and
@@ -102,114 +186,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prints the shorter history back, so a front-end that owns its own transcript
   can compact it the way the TUI's `/compact` does.
 
-### Changed
-
-- **A key named for the endpoint now wins over the shared one.** Point Aster at
-  Anthropic and `ANTHROPIC_API_KEY` is used; the same holds for `OPENAI_API_KEY`,
-  `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, and
-  `OPENROUTER_API_KEY`. `ASTER_API_KEY` is still the fallback and still works on
-  its own. The TUI and the editor panel already resolved keys this way; the
-  command line did not, so a saved provider switch could fail on the next turn
-  with a key already exported and ignored. `aster provider use` names which key
-  it would use, and says so when it falls back to the shared one, since a key
-  issued for the last endpoint is usually rejected by the next.
-- **The VS Code panel gets a command menu**, holding everything it can do:
-  conversation actions, model, provider, effort, mode, the review commands,
-  status, diff, memory, MCP servers, and every skill the session can see. Open
-  it from the `/` button, by pressing `/` in an empty composer, with
-  `cmd+alt+k`, or from the editor palette as **Aster: Show Command Menu**. Rows
-  show the setting's current value; effort is set inline on its row; the rest
-  either run, open a picker, or answer with a card in the thread. Commands are
-  no longer typed at the composer as `/name`, which was a terminal habit in a
-  window that can just show the list.
-- The VS Code panel lists skills again. It parsed `aster skills list --json` as
-  a flat array when the command emits scopes and plugins, so the menu had
-  silently shown only its built-ins, and plugin-contributed skills never
-  appeared at all.
-- The VS Code panel renders `explore`, `run_tests`, `update_plan`, `ask_user`,
-  and `exit_plan_mode` steps by name and icon instead of printing the raw tool
-  id.
-- The VS Code approval prompt takes numbered answers: `1` allows, `2` allows
-  and remembers when the ask carries a scope to remember it against, `3` and
-  `Esc` reject. A box under them rejects and tells the agent what to do
-  instead, in one step.
-- The VS Code composer shows how much of the history budget is left before the
-  CLI auto-compacts, as a ring that fills and warns under 25%. Clicking it
-  compacts now. It measures what the next turn would actually send, not the
-  whole thread, since older turns are dropped before they reach the CLI.
-- The VS Code toolbar's actions moved to the trailing edge with larger glyphs,
-  and "new conversation" is a speech bubble with a plus rather than a pencil,
-  which read as editing the conversation already open.
-- **The three overlapping web surfaces are one.** Aster used to ship a
-  `websearch` plugin that made it spawn a copy of itself as a subprocess for
-  tools it could call in-process, so the model saw `websearch/search` beside
-  `web/search` and `websearch/fetch_content` beside `web/extract`, one pair
-  needing an API key and the other not. DuckDuckGo is now a provider inside
-  `aster-web`, the `aster-websearch` crate and the bundled plugin are gone, and
-  the plugin's directory is removed from existing installs on the next start. A
-  package the user installed under that name is left alone. One dispatch table
-  now serves both the in-process server and `aster mcp serve web`, which
-  replaces `aster mcp serve websearch` and exposes the whole catalogue rather
-  than two tools; the old name still starts it.
-- `aster init` scaffolds a `browser` server in place of the `chrome` and
-  `playwright` stubs, which were disabled placeholders nothing ever wired up.
-  Existing configs naming either still work and are still described to the
-  model.
-
-### Fixed
-
-- **Chat turns no longer carry a forced web search.** OpenRouter's `web` plugin
-  searches on every request it rides along with and pastes the hits into the
-  prompt, and it was attached to the tool-calling requests too, so an unrelated
-  page could turn up in the `Sources` footer of a turn that never asked to
-  search. Chat now leans on the `openrouter:web_search` server tool the model
-  calls when it wants one; the plugin stays on the tool-less review stages.
-- **`review.web_search` defaults to off**, since a search the turn did not ask
-  for spends money per result and drags outside pages into the context. Set
-  `web_search: true` in `aster.yaml` or `ASTER_WEB_SEARCH=1` to get it back.
-- **`explore` runs outside-repo lookups in yolo instead of refusing them.** Yolo
-  drops the sandbox and the write gate, but the read gate still bounced any path
-  that left the repository out of the batch, so a lookup the mode had already
-  allowed came back as "call this tool on its own". It now says what a step
-  actually got wrong (no tool named, not a lookup, or bad arguments) rather than
-  blaming the path, and a step is read whether the model labels it
-  `tool`/`args`, `name`/`arguments`, or sends its arguments as a JSON string.
-- **The VS Code panel no longer dies on a streamed table.** A table row is a
-  block start, but the table branch only claims one when the separator row is
-  already there, so mid-stream — header in, `|---|` not yet — no branch
-  consumed the line and the renderer spun on it, pushing an empty paragraph per
-  pass until the webview ran out of memory. It looked like a crash on tables
-  that "went away" on reopening, because a replayed transcript arrives whole.
-- **New conversation no longer wipes the one already open.** `reveal()` created
-  a fresh editor tab every time instead of revealing the tab already there, and
-  `attach` only claimed the active surface when none was set, so the new
-  conversation went to a new tab while the "start fresh" message landed on the
-  old one. Both ended up empty. The open tab is now reused wherever a command
-  needs a surface, and a new conversation opens beside the old one, which keeps
-  its thread. In the sidebar, which is a single surface, it still starts over
-  in place.
-- **Auto-scroll stops switching itself off.** A hidden panel measures zero
-  height, which the follow logic read as "scrolled away" and left following off
-  after the panel came back. Zero-height metrics are now ignored, and sending a
-  message always returns you to the bottom wherever you had scrolled to.
-- **Approving a plan now lets the turn act on it.** `exit_plan_mode` opened the
-  edit tool but left the policy in `plan`, so every edit and command that
-  followed was refused with "permissions mode is `plan`" and the agent looped
-  against a plan it had just been told to carry out. Approval promotes the
-  policy too.
-- **Leaving plan mode sticks in VS Code.** The panel spawns one `aster chat`
-  per turn with `--permission-mode`, so a promotion inside the turn was lost at
-  the next one. `approval_request` now carries `kind` (`plan` or `action`), and
-  approving a plan moves the panel to `edit` the way the TUI already did.
-- `aster chat --permission-mode auto` no longer exits with a usage error. The
-  mode existed in `aster.yaml` and in the VS Code picker but not in the flag,
-  so choosing **Auto** in the panel killed every turn with exit code 2 until
-  another mode was picked.
-
-## [0.4.0] - 2026-08-10
-
-### Added
-
 - Sandbox credential access now asks instead of failing. A command that needs a
   credential directory the sandbox denies (`gh` and `~/.config/gh`, `aws` and
   `~/.aws`, `kubectl` and `~/.kube`, `ssh`/`git` and `~/.ssh`, `gpg` and
@@ -271,6 +247,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-server `env`).
 
 ### Changed
+
+- **`ASTER_API_KEY` is the only key that crosses endpoints.** `OPEN_ROUTER_API_KEY`
+  used to stand in as a general fallback, a leftover from when OpenRouter was the
+  only backend, so pointing Aster at another provider with no key of its own sent
+  an OpenRouter key to it and got back a bare 401 that read as "check your API
+  key" when the key was fine and simply belonged elsewhere. It is now what its
+  name says: OpenRouter's var, used for OpenRouter. Endpoints without a var of
+  their own fall back to `ASTER_API_KEY` and nothing else, and a missing key is
+  named before the request instead of after it. Nothing changes for OpenRouter
+  users, who still resolve through `OPEN_ROUTER_API_KEY`. Resolution also moved
+  into `aster_ai::keys`, so the CLI, the Telegram bridge, the eval harness, and
+  `AiClient::from_env` all read a key the same way; three of them used to ignore
+  the endpoint entirely and take whichever of the two vars was set.
+- **A key named for the endpoint now wins over the shared one.** Point Aster at
+  Anthropic and `ANTHROPIC_API_KEY` is used; the same holds for `OPENAI_API_KEY`,
+  `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, and
+  `OPENROUTER_API_KEY`. `ASTER_API_KEY` is still the fallback and still works on
+  its own. The TUI and the editor panel already resolved keys this way; the
+  command line did not, so a saved provider switch could fail on the next turn
+  with a key already exported and ignored. `aster provider use` names which key
+  it would use, and says so when it falls back to the shared one, since a key
+  issued for the last endpoint is usually rejected by the next.
+- **The VS Code panel gets a command menu**, holding everything it can do:
+  conversation actions, model, provider, effort, mode, the review commands,
+  status, diff, memory, MCP servers, and every skill the session can see. Open
+  it from the `/` button, by pressing `/` in an empty composer, with
+  `cmd+alt+k`, or from the editor palette as **Aster: Show Command Menu**. Rows
+  show the setting's current value; effort is set inline on its row; the rest
+  either run, open a picker, or answer with a card in the thread. Commands are
+  no longer typed at the composer as `/name`, which was a terminal habit in a
+  window that can just show the list.
+- The VS Code panel lists skills again. It parsed `aster skills list --json` as
+  a flat array when the command emits scopes and plugins, so the menu had
+  silently shown only its built-ins, and plugin-contributed skills never
+  appeared at all.
+- The VS Code panel renders `explore`, `run_tests`, `update_plan`, `ask_user`,
+  and `exit_plan_mode` steps by name and icon instead of printing the raw tool
+  id.
+- The VS Code approval prompt takes numbered answers: `1` allows, `2` allows
+  and remembers when the ask carries a scope to remember it against, `3` and
+  `Esc` reject. A box under them rejects and tells the agent what to do
+  instead, in one step.
+- The VS Code composer shows how much of the history budget is left before the
+  CLI auto-compacts, as a ring that fills and warns under 25%. Clicking it
+  compacts now. It measures what the next turn would actually send, not the
+  whole thread, since older turns are dropped before they reach the CLI.
+- The VS Code toolbar's actions moved to the trailing edge with larger glyphs,
+  and "new conversation" is a speech bubble with a plus rather than a pencil,
+  which read as editing the conversation already open.
+- **The three overlapping web surfaces are one.** Aster used to ship a
+  `websearch` plugin that made it spawn a copy of itself as a subprocess for
+  tools it could call in-process, so the model saw `websearch/search` beside
+  `web/search` and `websearch/fetch_content` beside `web/extract`, one pair
+  needing an API key and the other not. DuckDuckGo is now a provider inside
+  `aster-web`, the `aster-websearch` crate and the bundled plugin are gone, and
+  the plugin's directory is removed from existing installs on the next start. A
+  package the user installed under that name is left alone. One dispatch table
+  now serves both the in-process server and `aster mcp serve web`, which
+  replaces `aster mcp serve websearch` and exposes the whole catalogue rather
+  than two tools; the old name still starts it.
+- `aster init` scaffolds a `browser` server in place of the `chrome` and
+  `playwright` stubs, which were disabled placeholders nothing ever wired up.
+  Existing configs naming either still work and are still described to the
+  model.
 
 - **Permissions collapse into one rule language.** `allow`, `ask`, and `deny`
   now hold rules of the form `Edit(<glob>)`, `Read(<glob>)`, and
@@ -338,6 +378,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an explicit `allow: ["Bash(curl:*)"]`.
 
 ### Fixed
+
+- **Backgrounding a dev server no longer costs its output, or the server.**
+  A shell that started something long-running and printed before exiting hit a
+  grandchild still holding the pipes: after a five second grace the captured
+  output was thrown away and the whole process group was killed, so the command
+  came back empty and the server it had just started was gone. What the child
+  wrote is now kept, and a process deliberately left running is left running.
+  A command that hangs is still killed on the timeout, group and all. The agent
+  is also told how to start one: redirect it to a log, background it, and do
+  not follow it with a `sleep`/`tail`/`curl` poll to watch it boot.
+
+- **A `run_command` call that put the binary somewhere else lost the round.**
+  The tool takes the binary in `command` and its arguments in `args`, and a
+  model that sent the whole argv as a list in `command`, or left the binary at
+  the front of `args`, got `run_command needs a \`command\`` back and spent the
+  round on the error instead of the work. Both shapes now run. A call with
+  nothing runnable in it still fails, but the message names the shape to send
+  instead of repeating the complaint, since the bare complaint tended to get
+  the same argument-less call again.
+
+- **An MCP step is named, not recited.** A step's header took whichever string
+  argument came first when it recognised none of them, so a tool called with a
+  script or a blob of prose wore the whole thing as its name, wrapped over two
+  lines, and buried the tool that actually ran. A label the tool wrote for
+  itself now wins (`title`, `label`, `description`, `summary`), headers are held
+  to one capped line, and an argument long enough to be the call's payload is
+  left to the body, where the step's name carries the row instead.
+
+- **`aster provider use baseten` adopted a model Baseten does not serve.** The
+  catalog's example was `meta-llama/Llama-3.1-8B-Instruct`, retired since it was
+  written, so switching to Baseten without `--model` wrote a dead ID and the next
+  turn failed on the model rather than the switch. The entry now points at
+  `deepseek-ai/DeepSeek-V4-Pro` and carries a recommended list, all of it checked
+  against `GET /v1/models`. Baseten also gained `BASETEN_API_KEY`, so it no longer
+  has to borrow the shared key.
+- **Chat turns no longer carry a forced web search.** OpenRouter's `web` plugin
+  searches on every request it rides along with and pastes the hits into the
+  prompt, and it was attached to the tool-calling requests too, so an unrelated
+  page could turn up in the `Sources` footer of a turn that never asked to
+  search. Chat now leans on the `openrouter:web_search` server tool the model
+  calls when it wants one; the plugin stays on the tool-less review stages.
+- **`review.web_search` defaults to off**, since a search the turn did not ask
+  for spends money per result and drags outside pages into the context. Set
+  `web_search: true` in `aster.yaml` or `ASTER_WEB_SEARCH=1` to get it back.
+- **`explore` runs outside-repo lookups in yolo instead of refusing them.** Yolo
+  drops the sandbox and the write gate, but the read gate still bounced any path
+  that left the repository out of the batch, so a lookup the mode had already
+  allowed came back as "call this tool on its own". It now says what a step
+  actually got wrong (no tool named, not a lookup, or bad arguments) rather than
+  blaming the path, and a step is read whether the model labels it
+  `tool`/`args`, `name`/`arguments`, or sends its arguments as a JSON string.
+- **The VS Code panel no longer dies on a streamed table.** A table row is a
+  block start, but the table branch only claims one when the separator row is
+  already there, so mid-stream — header in, `|---|` not yet — no branch
+  consumed the line and the renderer spun on it, pushing an empty paragraph per
+  pass until the webview ran out of memory. It looked like a crash on tables
+  that "went away" on reopening, because a replayed transcript arrives whole.
+- **New conversation no longer wipes the one already open.** `reveal()` created
+  a fresh editor tab every time instead of revealing the tab already there, and
+  `attach` only claimed the active surface when none was set, so the new
+  conversation went to a new tab while the "start fresh" message landed on the
+  old one. Both ended up empty. The open tab is now reused wherever a command
+  needs a surface, and a new conversation opens beside the old one, which keeps
+  its thread. In the sidebar, which is a single surface, it still starts over
+  in place.
+- **Auto-scroll stops switching itself off.** A hidden panel measures zero
+  height, which the follow logic read as "scrolled away" and left following off
+  after the panel came back. Zero-height metrics are now ignored, and sending a
+  message always returns you to the bottom wherever you had scrolled to.
+- **Approving a plan now lets the turn act on it.** `exit_plan_mode` opened the
+  edit tool but left the policy in `plan`, so every edit and command that
+  followed was refused with "permissions mode is `plan`" and the agent looped
+  against a plan it had just been told to carry out. Approval promotes the
+  policy too.
+- **Leaving plan mode sticks in VS Code.** The panel spawns one `aster chat`
+  per turn with `--permission-mode`, so a promotion inside the turn was lost at
+  the next one. `approval_request` now carries `kind` (`plan` or `action`), and
+  approving a plan moves the panel to `edit` the way the TUI already did.
+- `aster chat --permission-mode auto` no longer exits with a usage error. The
+  mode existed in `aster.yaml` and in the VS Code picker but not in the flag,
+  so choosing **Auto** in the panel killed every turn with exit code 2 until
+  another mode was picked.
 
 - The `cli-toolbox` skill now tells the agent to read a tool before guessing at
   it: confirm the binary exists, run `--help` after a usage error rather than
@@ -618,5 +740,6 @@ taught workflows without touching its prompt.
 - Release workflow and `Makefile` updated for the new crates.
 
 [0.2.0]: https://github.com/Zfinix/aster/compare/v0.1.0...v0.2.0
-[0.3.0]: https://github.com/Zfinix/aster/compare/v0.2.0...v0.3.0
-[0.4.0]: https://github.com/Zfinix/aster/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/Zfinix/aster/compare/v0.2.0...cli-v0.3.0
+[0.4.0]: https://github.com/Zfinix/aster/compare/cli-v0.3.0...cli-v0.4.0
+[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.4.0...HEAD

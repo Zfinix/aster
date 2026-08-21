@@ -62,6 +62,11 @@ containing a space that names the command again is always a mistake.
 **Fix:** detect both shapes before spawning and return the corrected invocation
 as the error text, so the retry is one round instead of several.
 
+**Status:** partly shipped. A full argv sent as a list in `command`, and a
+shell line sent as `command`, are both repaired before spawning
+([chat.rs](../crates/aster-cli/src/chat.rs), `command_argv`). The two shapes
+above, where the mistake is inside `args`, still pass through unrepaired.
+
 ## 4. Models invent absolute paths instead of using the working directory
 
 ```
@@ -128,7 +133,9 @@ week describe different pools.
 
 **Fix:** an operations note rather than a code change. Pass the old directory
 explicitly when comparing against history, and prefer `--json` baselines over
-re-running against a pool whose composition shifts.
+re-running against a pool whose composition shifts. The store now migrates
+`~/.aster` into the data home on first use, so the two pools converge on
+machines that have run a current build.
 
 ## 9. Long prose arguments degenerate, and the guard is not watching them
 

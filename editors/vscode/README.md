@@ -1,6 +1,6 @@
 # Aster for VS Code and Cursor
 
-Run [Aster](https://github.com/zfinix/aster) from a chat panel in your editor's sidebar: ask questions about the code, kick off a review, and watch findings stream in. Confirmed findings also land as squiggles in the editor and entries in the Problems panel.
+Run [Aster](https://github.com/zfinix/aster) from a chat panel in your editor's sidebar: ask questions about the code, kick off a review, and watch findings stream in. Turn on `aster.publishDiagnostics` and confirmed findings also land as squiggles in the editor and entries in the Problems panel.
 
 Works in VS Code and Cursor (Cursor consumes standard VS Code extensions).
 
@@ -9,7 +9,7 @@ Works in VS Code and Cursor (Cursor consumes standard VS Code extensions).
 The extension shells out to the `aster` CLI, so it must be installed and configured:
 
 ```bash
-cargo install --path crates/aster-cli   # from the aster repo
+curl -fsSL https://withaster.dev/install | sh
 
 export ASTER_API_KEY=sk-...
 export ASTER_BASE_URL=https://openrouter.ai/api/v1
@@ -20,7 +20,7 @@ If `aster` is not on your PATH, point `aster.binaryPath` at it. The panel tells 
 
 ## The panel
 
-The chat panel lives in the **secondary sidebar** (the right-hand pane, same place as Codex and Claude Code). Open it with **Open Aster Sidebar** from the editor's `…` menu or the command palette.
+The chat panel lives in the **secondary sidebar** (the right-hand pane, same place as Codex and Claude Code). Open it with **Aster: Open** from the editor's `…` menu or the command palette, or with `cmd+shift+a` / `ctrl+shift+a`.
 
 - Type a question to run one `aster chat` turn with the repo as cwd, so the agent can read and search your code. Review turns stay in the chat context, so "why is finding 2 critical?" works.
 - Hit **Review** to review the working tree. Phases, verify progress, confirmed findings, and refuted candidates all stream into the thread; token spend and cost land at the end.
@@ -71,7 +71,14 @@ A provider picked here travels as `ASTER_BASE_URL` on the CLI runs this panel st
 
 | Command | What it does |
 | --- | --- |
-| Aster: Open Aster Sidebar | Focuses the panel. Also an editor title action, which Cursor shows in the editor's `…` overflow menu |
+| Aster: Open | Focuses the panel (`cmd+shift+a`). Also an editor title action, which Cursor shows in the editor's `…` overflow menu |
+| Aster: Open in New Tab / Primary Editor / New Window / Side Bar | The same conversation, wherever you want it |
+| Aster: New Conversation | Starts fresh beside the open one (`cmd+alt+n`) |
+| Aster: Show Command Menu | The menu above (`cmd+alt+k`) |
+| Aster: Reopen Session | Picks an earlier session to resume (`cmd+alt+r`) |
+| Aster: Insert @-Mention Reference | Sends the active selection to the composer with its line range (`alt+a`) |
+| Aster: Open Settings | The settings tab below |
+| Aster: Fix Finding | Hands one finding to the agent to fix |
 | Aster: Review Current Branch | Reviews the current branch against its base |
 | Aster: Review Git Range… | Reviews an explicit range, e.g. `main..HEAD` |
 | Aster: Review GitHub PR… | Reviews a PR by number (needs `aster login` or `GITHUB_TOKEN`) |
@@ -80,8 +87,13 @@ A provider picked here travels as `ASTER_BASE_URL` on the CLI runs this panel st
 
 ## Settings
 
+**Aster: Open Settings** opens a dedicated settings tab: every `aster.yaml` key with its current value and where it came from, editable in place, saved to the repo's config or the global one. It is the same data `aster config` shows in the terminal.
+
+The extension's own settings stay in VS Code's:
+
 - `aster.binaryPath` — path to the aster binary (default: `aster` on PATH)
 - `aster.minConfidence` — drop findings below this confidence; falls back to `aster.yaml`
+- `aster.publishDiagnostics` — also report findings in the Problems tab (off by default; findings live in the panel)
 - `aster.extraArgs` — extra args for every review, e.g. `["--no-index"]`
 
 Provider, model defaults, include/exclude globs, analyzers, and edit permissions come from your environment and `aster.yaml`, same as the CLI. The model picked in the composer is passed as `--model` for chat turns.

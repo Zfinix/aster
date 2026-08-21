@@ -32,7 +32,7 @@ crates/
   aster-models/      domain types: findings, symbols, PR shapes, Candidate/Verdict
   aster-ai/          provider-agnostic OpenAI-compatible chat client (BYO model)
   aster-index/       zero-dep code index: SQLite + FTS5 + embedded ripgrep
-  aster-analyzers/   runtime-selectable static backends: semgrep/ast-grep (CLI)
+  aster-analyzers/   runtime-selectable static backends: semgrep (CLI), ast-grep (in-process)
   symbol-extractor/  tree-sitter-tags symbol extraction (14 languages)
   aster-harness/     verification-first review capability
   aster-persist/     filesystem-first chat transcripts + memory (see MEMORY.md)
@@ -43,8 +43,14 @@ crates/
   aster-agents/      agent definitions: AGENT.md parsing, discovery, registry
   aster-tools/       tiered search/list/find/suggest (rg/fd native, hand-rolled fallback)
   aster-sandbox/     OS-native command sandbox (macOS Seatbelt, Linux bubblewrap)
-  aster-web/         search/extract/crawl over pluggable providers, keyless by default
-  aster-cli/         CLI and TUI entry points, chat loop, tool dispatch
+  aster-web/         the model-visible web tools: search/extract/crawl over
+                     pluggable providers, keyless by default (DuckDuckGo, Jina)
+  aster-serve/       `aster serve`: the browser UI, embedded and hosted
+  aster-shortcuts/   Apple Shortcuts tools (list and run, via /usr/bin/shortcuts)
+  aster-remote/      driving the agent from a messaging app (Telegram)
+  aster-telemetry/   optional OpenTelemetry export
+  aster-cli/         CLI and TUI entry points, chat loop, tool dispatch, the
+                     context budget, previews, and the serve host
   aster-eval/        grades recorded sessions and sweeps models through fixed cases
 ```
 
@@ -76,6 +82,11 @@ graph TD
     CLI --> SB[aster-sandbox]
     CLI --> WB[aster-web]
     CLI --> PL[aster-policy]
+    CLI --> SV[aster-serve]
+    CLI --> SC[aster-shortcuts]
+    CLI --> RM[aster-remote]
+    CLI --> TE[aster-telemetry]
+    CLI --> EV[aster-eval]
     H --> AI[aster-ai]
     H --> IDX[aster-index]
     H --> AN[aster-analyzers]
@@ -103,9 +114,11 @@ graph LR
 
     subgraph RUNTIME["Aster harness"]
         direction TB
+        PROF[Repo profile, built once at session start]
         CHAT[Chat and tool loop]
         POLICY[Policy-controlled tools]
         STATE[Sessions, memory, skills, agents]
+        PROF --> CHAT
         CHAT --> POLICY
         CHAT --> STATE
     end

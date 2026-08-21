@@ -7,6 +7,80 @@ no file.
 [`aster.yaml.example`](../aster.yaml.example) is a commented starting point.
 `aster init` writes a smaller version of it wired to the provider you pick.
 
+## `aster config`
+
+Everything below is settable from the command line, so the file is something you
+can keep working with rather than something you have to open.
+
+`aster config` on its own opens a form, the same one `aster init` uses. It opens
+on six groups, and each lists its settings under a plain name with what they
+currently resolve to:
+
+| Group | What is in it |
+| --- | --- |
+| Model and provider | the model, the endpoint, reasoning effort, web search |
+| Permissions | the mode and the allow/ask/deny rules |
+| Agent limits | how far one turn may go |
+| Sub-agents | the fan-out the `agent` tool is allowed |
+| Code review | the review pipeline only, not chat |
+| MCP tools | how much of the tool catalogue the model sees |
+
+The groups are what a setting **does**, which is not the block it sits in: the
+model every surface uses lives under `review` for historical reasons, so the
+form puts it with the provider and leaves the review pipeline's own knobs in
+their own group. Each row shows the key it is spelled by, so a setting found in
+the form is a setting you can pass to `get` and `set`.
+
+Picking one prompts for a value: a setting with a fixed set of values offers
+them, everything else is typed. `-` clears a setting back to its default,
+`enter` on an untouched prompt keeps what is there, and a **Save to** row
+switches between the repo's config and the global one without leaving the form.
+A bad value is rejected in the prompt, with the parser's own message, rather
+than after the fact.
+
+Piped or scripted, the same command prints that as a grouped table instead, and
+every step of the form has a flag:
+
+```bash
+aster config list                 # every key, its value, and where that came from
+aster config get review.model     # one value, and nothing else
+aster config set permissions.mode auto
+aster config set review.exclude "docs/**, web/**"    # lists take commas
+aster config unset agent.max_tool_rounds             # back to the default
+aster config path                 # which files Aster reads here
+aster config edit                 # open one in $EDITOR
+```
+
+A write goes into the repo's config when it has one, else the global one.
+`--global` and `--local` say which outright, and `--local` creates
+`aster.yaml` in the repo root when there is none.
+
+`aster config list --json` describes each key well enough to build a form over
+it: `kind` (`text`, `bool`, `number`, `list`, `choice`) with `choices` when it is
+one, `unit` for what a number counts, and `scopes` holding what each file sets on
+its own, so an editor can show a value's home and write back to the scope the
+user picked rather than to whichever file won. The VS Code extension's settings
+tab is built on exactly this.
+
+Nothing is saved that the next run would refuse to read: the edited file is
+parsed before it is written, so a misspelled key or a value of the wrong type is
+an error rather than a config you find out about on the next turn. The write
+itself rewrites a single line and leaves the rest of the file, comments
+included, byte for byte.
+
+`list` and `get` report the value the next turn resolves, not the line in the
+file, and name where it came from: a file, a shell variable, or the default. A
+shell variable that outranks what you just wrote is said out loud rather than
+left to surprise you later.
+
+`unset` clears the key from every file that sets it, since clearing one while
+the other still pins it would look like the command did nothing. `--global` and
+`--local` narrow that to one file.
+
+Two things are not settable here: `mcp.servers` and `mcp.tools` are structures
+rather than single values, and `aster mcp` owns them. API keys are never written
+to `aster.yaml` at all; see [Precedence](#precedence).
+
 ## Where the file lives
 
 Aster reads two files and layers them:
@@ -36,11 +110,20 @@ GitHub.
 A key named for the endpoint in use wins over the shared one, so switching
 provider picks up a key you already export instead of demanding you move it:
 
-1. The endpoint's own var, when it has one: `ANTHROPIC_API_KEY`,
-   `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`,
-   `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `OPEN_ROUTER_API_KEY` or
-   `OPENROUTER_API_KEY`
-2. `ASTER_API_KEY`, then `OPEN_ROUTER_API_KEY`
+1. The endpoint's own var. Every provider Aster ships with names its own, so
+   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `BASETEN_API_KEY`,
+   `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`, `ZAI_API_KEY` and the rest each hold
+   one key. `aster provider list --json` prints the var for every endpoint.
+2. `ASTER_API_KEY`
+
+Because each endpoint has its own var, a key is entered once and survives
+switching away and back. Set `OPEN_ROUTER_API_KEY` and `BASETEN_API_KEY` and
+`aster provider use` moves between the two without asking for either again.
+
+`ASTER_API_KEY` is the only var that crosses endpoints, and it exists for
+self-hosted servers and anything off the catalog. A var named for one vendor is
+never offered to another, so `OPEN_ROUTER_API_KEY` is used for OpenRouter and
+nowhere else: sending one vendor's key to another only ever produces a bare 401.
 
 `aster provider use` reports which of the two it would use, and says so when it
 falls back to the shared key: a key issued for the last endpoint is usually
@@ -86,6 +169,7 @@ Gates what the agent may write, read, and run. Applies to `aster chat
 | `deny` | list of rule | `[]` | Refused outright. |
 | `use_default_rules` | bool | `true` | Whether the built-in rules below apply at all. |
 | `additional_directories` | list of path | `[]` | Directories outside the repo the agent may read without asking. Absolute or `~`-relative. |
+| `allow_credentials` | list of `command:dir` | `[]` | Credential directories preauthorized for one command, e.g. `gh:~/.config/gh`. The sandbox denies `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, and `~/.kube` by default and prompts when a command needs one; an entry here skips the prompt for that pair only. `~/Library/Keychains` is never grantable. The two config files union their lists. |
 
 ### Rules
 
@@ -269,13 +353,23 @@ A few knobs have no `aster.yaml` key.
 
 | Env var | What it does | Default |
 | --- | --- | --- |
-| `ASTER_API_KEY` | Provider key. `OPEN_ROUTER_API_KEY` is accepted too, and a var named for the endpoint beats both; see [Precedence](#precedence). | required |
+| `ASTER_API_KEY` | Provider key, used for any endpoint without a var of its own. A var named for the endpoint beats it; see [Precedence](#precedence). | required |
 | `ASTER_MAX_TOKENS` | Cap on generated tokens; `0`, `none`, or `off` removes the cap. | `8000` |
 | `ASTER_SEED` | Fixed sampling seed; `none` or `off` disables it. | `0` |
 | `ASTER_VERIFY_CONCURRENCY` | Verify passes run at once during review. | `8` |
 | `ASTER_REPO` | Repository name recorded on a local review. | `local` |
 | `ASTER_PRICE_PROMPT_PER_M` | Prompt price per million tokens, for cost reporting. | unset |
 | `ASTER_PRICE_COMPLETION_PER_M` | Completion price per million tokens. | unset |
+| `ASTER_NO_BROWSER` | Set it and `open_preview` never launches a browser. The agent reports the URL instead, which is what you want over SSH or in a container. | unset |
+| `ASTER_TIMEOUT_SECS` | Per-request timeout for the model client. | `120` |
+| `ASTER_MAX_RETRIES` | Retries on transient model errors. | `3` |
+| `ASTER_DEADLINE_SECS` | Wall-clock cap across those retries. | `180` |
+| `ASTER_EDITOR` | Editor for `aster config edit`, before `$VISUAL` and `$EDITOR`. | unset |
+| `ASTER_UI_DIR` | Serve `aster serve`'s page from this directory instead of the embedded build, for working on the UI itself. | unset |
+| `ASTER_MCP_EXTRA` | JSON of extra MCP servers a front-end injects for one session. | unset |
+| `ASTER_NO_UPDATE_CHECK` | Set it to skip the update check. | unset |
+| `ASTER_TELEGRAM_TOKEN` | Bot token for `aster remote`. | unset |
+| `ASTER_REMOTE_USERS` | Telegram user ids allowed to drive `aster remote`. | unset |
 
 [`.env.example`](../.env.example) lists these with notes.
 
@@ -308,6 +402,10 @@ either one being set in your shell is reported rather than left to surprise you
 later. `--json` returns the same as a `{"model", "provider", "base_url",
 "config", "also", "key_env", "has_key", "shadowed_by_env"}` object, where
 `also` names the project file that was moved along, or `null`.
+
+`aster config set` writes the same two keys, but into the file it was pointed
+at rather than following the model between directories, since it is the command
+for editing one config rather than for switching what you work with.
 
 Reading the other way, `aster status --json` reports the resolved provider and
 model without changing anything, `aster provider list` shows the catalog with

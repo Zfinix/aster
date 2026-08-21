@@ -17,15 +17,16 @@ review:
   hypothesis_model: deepseek/deepseek-v4-flash   # cheap, high-recall
   verify_model: anthropic/claude-sonnet-5        # independent adversarial verify
 
-  # Drop findings below this confidence (0.0-1.0).
+  # Drop findings below this confidence (0.0-1.0). Default 0.5; this example
+  # runs a little stricter.
   min_confidence: 0.6
 
   # Cap the diff size sent to the model.
   max_diff_bytes: 200000
 
   # Static-analysis backends whose findings also flow through verification.
-  # Available: semgrep (needs `semgrep`/`opengrep` on PATH), ast-grep (needs
-  # `ast-grep`/`sg` on PATH; point ASTER_ASTGREP_RULES at a rule file).
+  # Available: semgrep (needs `semgrep`/`opengrep` on PATH), ast-grep (built
+  # in, no binary needed; point ASTER_ASTGREP_RULES at a rule file).
   analyzers: []            # e.g. [ast-grep] or [semgrep, ast-grep]
 
   # Repo-relative ast-grep rule file for the `ast-grep` backend. An unreadable

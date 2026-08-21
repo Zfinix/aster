@@ -1,8 +1,10 @@
 # aster
 
 The `aster` command-line tool is the entry point to Aster's agent harness. It
-currently provides code review, an interactive codebase agent, guided fixes,
-durable sessions and memory, and reusable skills.
+provides an interactive codebase agent, verification-first code review, guided
+fixes, durable sessions and memory, reusable skills and plugins, MCP servers,
+web tools, and a browser UI (`aster serve`). Run `aster init` once to pick a
+provider and store a key; `aster --help` lists the full command surface.
 
 ## Install
 
@@ -18,25 +20,36 @@ Aster talks to any OpenAI-compatible provider. Set a key (env or `aster login`),
 and optionally pin models:
 
 ```bash
-export ASTER_API_KEY=...                              # or OPEN_ROUTER_API_KEY
+export ASTER_API_KEY=...                              # or the endpoint's own var
 export ASTER_BASE_URL=https://openrouter.ai/api/v1    # default
 export ASTER_HYPOTHESIS_MODEL=google/gemini-3.1-flash-lite
 export ASTER_VERIFY_MODEL=anthropic/claude-sonnet-5
 ```
 
 A local `.env`, the shell env, and an `aster.yaml` (repo root, or
-`~/.config/aster/aster.yaml`) all feed config. Precedence:
+`~/.aster/aster.yaml`) all feed config. Precedence:
 CLI flags > env > `aster.yaml` > defaults. API keys never live in `aster.yaml`.
 See [aster.yaml.example](../../aster.yaml.example) for the full set of knobs
 (models, `min_confidence`, `focus_areas`, `include`/`exclude`).
 
+`aster config` edits that file from the command line, and reports where each
+value actually came from:
+
+```bash
+aster config                      # a form; piped, a table with each value's source
+aster config set permissions.mode auto
+aster config unset review.exclude
+```
+
 ## Usage
 
 ```bash
-aster chat "explain the authentication flow"  # codebase agent
-aster sessions list                            # resumable agent sessions
-aster memory list                              # durable project context
-aster skills list                              # reusable workflows
+aster                              # the chat, in this repo
+aster chat "explain the auth flow" # one answer, then exit
+aster serve                        # the same agent in your browser
+aster sessions list                # resumable agent sessions
+aster memory list                  # durable project context
+aster skills list                  # reusable workflows
 
 aster review                       # review uncommitted changes (working tree)
 aster review --tui                 # watch the review happen live
@@ -68,4 +81,4 @@ model call refutes the weak ones and gates on confidence; set
 `ASTER_VERIFY_MODEL` to make it a genuinely independent, stronger model rather
 than the hypothesis model) → **shape** (dedup and rank). See
 [docs/ALGORITHM.md](../../docs/ALGORITHM.md) for the full design and
-[docs/BENCHMARKS.md](../../docs/BENCHMARKS.md) for how the models were chosen.
+[docs/EVAL.md](../../docs/EVAL.md) for how it is measured.

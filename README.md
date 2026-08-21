@@ -29,7 +29,8 @@ Three ideas shape it:
   instead of quietly wrapping up.
 
 > **Status: early, building in the open.** Chat, review, memory, skills,
-> permissions, and MCP have landed. Expect rough edges.
+> permissions, MCP, and the browser, editor, and desktop surfaces have landed.
+> Expect rough edges.
 
 ## Install
 
@@ -82,7 +83,7 @@ it. Ask it something outside a repo and it still works, it just has less to look
 | `shift+tab` | Step to the next permission mode. |
 | `ctrl+j` | Newline without sending. |
 | `@` | Mention a file from this repo. |
-| `↑` | Step back through what you have sent. |
+| `↑` `↓` | Step through what you have sent. |
 
 Type `/` for commands:
 
@@ -96,6 +97,9 @@ Type `/` for commands:
 | `/clear` | Start fresh. |
 | `/help` | Everything above, in the terminal. |
 
+`/compact`, `/status`, `/diff`, `/mcp`, `/skills`, `/memory`, `/thinking`, and
+`/yolo` are there too; `/help` lists them all.
+
 Outside the TUI:
 
 ```bash
@@ -104,6 +108,42 @@ echo "explain this repo" | aster          # piped input is the prompt
 aster chat --continue                     # pick up the last session
 aster chat --resume                       # choose a session from a list
 ```
+
+## Where it runs
+
+The terminal is the default. The same agent, the same repo, and the same
+settings are also reachable three other ways.
+
+### In your browser
+
+```bash
+aster serve                        # opens http://localhost:4187
+aster serve --port 8080 --no-open  # somewhere else, without launching a window
+```
+
+Port 4187 is the default; when it is taken, the next free one is used and the
+printed URL says so.
+
+`aster serve` hands your browser the same panel the editor extension shows:
+streaming replies, approvals, `@` mentions, slash commands, saved sessions,
+review, and the model and permission pickers. Every turn runs as an `aster`
+process in the repo you started the server in, so the keys, the model, and the
+files are the ones the terminal would use. Nothing leaves the machine.
+
+The page is served on loopback and refuses requests from any other page open in
+your browser. `--host 0.0.0.0` reaches it from your phone or another machine on
+the network, and the URL it prints then carries a token, because anything that
+can reach the port could otherwise drive the agent.
+
+### In your editor
+
+The [VS Code extension](./editors/vscode) puts the same panel in the sidebar, an
+editor tab, or its own window, with review findings wired into the Problems pane.
+
+### As an app
+
+The [desktop app](./desktop) is a standalone window around the same CLI, for
+working without a terminal at all.
 
 ## How much it is allowed to do
 
@@ -208,15 +248,19 @@ probability, so treat the number as a ranking signal rather than odds.
 | Command | What it is for |
 | --- | --- |
 | `aster memory` | Facts Aster should keep between sessions. `add`, `list`, `show`, `remove`. |
-| `aster sessions` | Past conversations. `list`, `show`, `delete`, `prune`. |
-| `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `bundled`, `remove`. |
+| `aster sessions` | Past conversations. `list`, `show`, `rename`, `delete`, `prune`, `import`. |
+| `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `bundled`, `update`, `remove`. |
 | `aster plugins` | Agent Plugins packages of skills and MCP servers. `add`, `list`, `remove`, `validate`. |
+| `aster config` | Everything in `aster.yaml`. `list`, `get`, `set`, `unset`, `path`, `edit`. |
 | `aster provider` | The endpoint Aster talks to. `list`, `use`. |
 | `aster model` | The model it runs. `list`, `use`, `recommended`. |
-| `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`. |
-| `aster web` | Fetch a page or crawl a site as Markdown. |
+| `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`, `import`, `remove`. |
+| `aster web` | The web as Markdown. `search`, `extract`, `crawl`, `sitemap`, `screenshot`. |
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
-| `aster login` | Link GitHub, for reviewing and commenting on PRs. |
+| `aster serve` | Open the agent in your browser on this machine. |
+| `aster status` | What the next turn would run with: model, mode, limits, wiring. |
+| `aster remote` | Drive the agent from Telegram, approvals and all. |
+| `aster login` | Link GitHub, for reviewing and commenting on PRs. `aster logout` undoes it. |
 
 `--json` works everywhere, before or after the subcommand. `--effort` sets the
 reasoning budget on the commands that run a model: chat, `review`, and `fix`.
@@ -229,8 +273,8 @@ aster review --effort high
 ### Provider and model
 
 Aster talks to any OpenAI-compatible endpoint. Switching is one command, and it
-switches everywhere: the terminal, the VS Code panel, and the desktop app all
-resolve from the same `aster.yaml`.
+switches everywhere: the terminal, the browser, the VS Code panel, and the
+desktop app all resolve from the same `aster.yaml`.
 
 ```bash
 aster provider list                        # the endpoints Aster knows
@@ -250,6 +294,26 @@ Keys follow the endpoint. A var named for it wins over the shared
 `ASTER_API_KEY`, so `ANTHROPIC_API_KEY` is picked up the moment you switch to
 Anthropic. In the TUI, `/provider` and `/model` do the same thing interactively.
 
+### Settings
+
+`aster.yaml` holds everything else, and `aster config` edits it without opening
+it. On its own it opens a form listing every setting and what it currently
+resolves to; piped or scripted, it prints that as a table and every step has a
+flag.
+
+```bash
+aster config                       # the form, or the table when piped
+aster config set permissions.mode auto
+aster config set review.exclude "docs/**, web/**"
+aster config unset agent.max_tool_rounds
+```
+
+Writes land in the repo's config when it has one, else the global one;
+`--global` and `--local` say which. The file is parsed before it is saved, so a
+misspelled key is an error rather than a surprise on the next turn, and reads
+name where a value came from, since a shell variable outranks the file. Full
+reference in [docs/CONFIG.md](./docs/CONFIG.md).
+
 ### Memory
 
 ```bash
@@ -267,13 +331,17 @@ listed by title and read in full only when the agent needs them.
 Skills are folders with a `SKILL.md` telling the agent how to do something
 specific. Aster reads the titles and loads the body only when it is relevant.
 
-Nine core skills ship built in and are always available: git and GitHub
+Ten core skills ship built in and are always available: git and GitHub
 workflows, verification before reporting done, build triage, shell batching,
-CLI craft, context economy, taking corrections, and security hygiene. Nine
-more are bundled but off by default (debugging, refactoring, tests,
-dependency upgrades, supply-chain safety, background processes, and others);
-`aster skills bundled` lists them. Installing any skill with the same name
-overrides its built-in.
+CLI craft, context economy, taking corrections, security hygiene, and web
+research. Ten more are bundled but off by default (debugging, refactoring,
+tests, dependency upgrades, supply-chain safety, background processes, and
+others);
+`aster skills bundled` lists them. On macOS one bundled skill, macos-harness
+(drive apps, the browser, and the filesystem from one Python session), is
+installed into your global skills root on first run; removing it with
+`aster skills remove` keeps it removed. Installing any skill with the same
+name overrides its built-in.
 
 ```bash
 aster skills find react          # search GitHub for skills
@@ -343,6 +411,9 @@ started. Every key, its default, and how the two files merge is in
 | `ASTER_HYPOTHESIS_MODEL` | A cheap model for review's first pass | same as `ASTER_MODEL` |
 | `ASTER_MAX_TOKENS` | Cap generated tokens (`off` disables) | `8000` |
 | `ASTER_SEED` | Fixed sampling seed (`off` disables) | `0` |
+| `ASTER_COMPACT_BUDGET` | History size that triggers auto-compaction, in chars | `192000` |
+| `ASTER_WEB_SEARCH` | `1` turns review's web search back on | off |
+| `ASTER_NO_BROWSER` | Never launch a browser; report URLs instead | unset |
 
 [`.env.example`](./.env.example) lists every variable with notes.
 
@@ -377,12 +448,21 @@ crates/
   aster-persist/     sessions and project memory
   aster-skills/      on-demand instructions
   aster-agents/      specialized agent definitions
+  aster-tools/       the tools a turn can call
+  aster-sandbox/     where commands are allowed to run
   aster-policy/      read, write, and command permissions
   aster-mcp/         progressive MCP tool injection
   aster-plugins/     Agent Plugins packages: manifest, skills, MCP config
+  aster-web/         web search, fetch, and crawl
+  aster-serve/       `aster serve`: the browser UI and its host
+  aster-remote/      driving the agent from a messaging app
+  aster-eval/        the evaluation harness
+  aster-telemetry/   optional OpenTelemetry export
+  aster-shortcuts/   shared keybinding definitions
   aster-models/      shared domain types
 desktop/             the desktop app (Tauri)
-editors/vscode/      the VS Code extension
+editors/vscode/      the VS Code extension, and the panel `aster serve` hands a browser
+web/                 withaster.dev, including the install script
 docs/                config, architecture, algorithm, memory, MCP, plugins, roadmap
 ```
 
