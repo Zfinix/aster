@@ -262,16 +262,17 @@ function App() {
 
   // A turn runs as its own process with `--permission-mode`, so an approved
   // plan has to move the app's mode or the next turn relaunches in `plan` and
-  // refuses the plan it just approved.
+  // refuses the plan it just approved. Only `plan` moves: the other modes
+  // already edit, and promoting them would narrow yolo.
   const onRespondApproval = useCallback(
     (allow: boolean) => {
-      if (allow && approval?.plan) {
+      if (allow && approval?.plan && permissionMode === "plan") {
         onPermissionMode("edit");
       }
       setApproval(null);
       answerApproval(allow).catch(() => {});
     },
-    [approval, onPermissionMode],
+    [approval, permissionMode, onPermissionMode],
   );
 
   const refreshAuth = useCallback(() => {

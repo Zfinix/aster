@@ -1665,13 +1665,9 @@ impl ChatApp {
         pane.push_approval(req);
     }
 
-    /// `submit` recomputes the edit gate from `self.mode`, so approving a plan
-    /// has to move the session, not just the turn.
+    /// The plan goes to the user whatever the mode: asking to plan is a request
+    /// to be consulted, so an editable session answers it too.
     fn on_plan_approval_request(&mut self, req: ApprovalRequest, pane: &mut BottomPane<AppEvent>) {
-        if self.mode == Mode::Edit {
-            let _ = req.respond.send(Answer::Yes);
-            return;
-        }
         self.pending_plan_approval = true;
         pane.push_approval(req);
     }
@@ -1758,8 +1754,12 @@ impl ChatApp {
                 };
                 // An approved plan, or "always" on an in-repo edit, both mean
                 // "stop asking": promote the session so it outlives the turn.
-                let promotes =
-                    (plan && answer.allowed()) || (answer == Answer::Always && scope.is_none());
+                // A mode that already edits keeps what it had, since approving
+                // a plan is not a request for fewer permissions.
+                let promotes = match plan {
+                    true => answer.allowed() && !self.mode.can_edit(),
+                    false => answer == Answer::Always && scope.is_none(),
+                };
                 if promotes && !self.edits_locked {
                     self.select_mode(Mode::Edit);
                 }

@@ -175,6 +175,9 @@ pub(crate) struct SubAgentOverrides {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PlanState {
     pub steps: Vec<PlanStep>,
+    /// Set when the user approves, cleared when the steps are rewritten, so a
+    /// revised plan is presented again instead of riding the old answer.
+    pub approved: bool,
 }
 
 /// One step in an agent's execution plan.
@@ -3211,8 +3214,17 @@ fn update_plan(ctx: &SessionCtx, steps: Vec<(String, Option<&str>)>) -> Result<S
         .plan
         .lock()
         .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?;
+    if relabelled(&plan.steps, &parsed) {
+        plan.approved = false;
+    }
     plan.steps = parsed;
     Ok(format!("plan updated:\n{}", plan.render()))
+}
+
+/// Whether the steps changed by more than their statuses. Ticking a step off
+/// keeps the user's approval; a rewritten step list is a different plan.
+fn relabelled(before: &[PlanStep], after: &[PlanStep]) -> bool {
+    before.len() != after.len() || before.iter().zip(after).any(|(a, b)| a.label != b.label)
 }
 
 /// Put a question to the user and wait for the answer. Headless callers have no
@@ -3259,19 +3271,14 @@ async fn ask_user(
     }
 }
 
-/// Present the plan for approval. Approval promotes the rest of the turn to edit
-/// mode, which is what unlocks `edit_file` and unapproved commands.
+/// Present the plan for approval. The user is asked whatever mode the session
+/// is in, since asking to plan is a request to be consulted, not a mode.
 async fn exit_plan_mode(
     approver: Option<&UiSender>,
     ctx: &SessionCtx,
     allow_edits: &mut bool,
     policy: &mut Policy,
 ) -> Result<String> {
-    if *allow_edits {
-        return Err(anyhow::anyhow!(
-            "already in edit mode; the plan has already been approved"
-        ));
-    }
     let plan = ctx
         .plan
         .lock()
@@ -3282,20 +3289,38 @@ async fn exit_plan_mode(
             "build a plan with update_plan before leaving plan mode"
         ));
     }
+    if plan.approved {
+        return Err(anyhow::anyhow!(
+            "this plan is already approved; carry it out instead of presenting it again"
+        ));
+    }
 
+    let locked = !*allow_edits;
     let preview = format!("Approve this plan and start editing?\n\n{}", plan.render());
     let markdown = plan_markdown(&plan);
     if !request_plan_approval(approver, preview, Some(markdown))
         .await
         .allowed()
     {
+        // An editable session has to hold too: the user said no, so the rest of
+        // the turn stays read-only until they send a revision.
+        *allow_edits = false;
+        policy.demote(aster_policy::Mode::Plan);
         return Ok(
             "the user did not approve the plan; stay in plan mode and revise it".to_string(),
         );
     }
+    ctx.plan
+        .lock()
+        .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?
+        .approved = true;
     // The edit tool and the policy gate separately: without the promotion the
     // mode still denies every edit and command, and the turn stalls holding an
-    // approved plan it cannot act on.
+    // approved plan it cannot act on. A turn that was already editable keeps
+    // the mode it had, so approving never widens the session.
+    if !locked {
+        return Ok("plan approved; carry it out".to_string());
+    }
     *allow_edits = true;
     policy.promote(aster_policy::Mode::Edit);
     Ok("plan approved; edit mode is now active".to_string())

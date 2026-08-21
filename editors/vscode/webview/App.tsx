@@ -483,7 +483,9 @@ export function App() {
     post({ type: "approval", allow, always });
     const plan = planApprovalRef.current;
     planApprovalRef.current = false;
-    if (plan && allow) {
+    // Only `plan` is unlocked by the approval; every other mode already edits,
+    // so promoting would narrow yolo rather than free anything.
+    if (plan && allow && permissionMode === "plan") {
       choosePermissionMode("edit");
     }
   };

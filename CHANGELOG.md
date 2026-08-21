@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the branch the panel already made for `cmd` against `ctrl` and never
   extended to the other two.
 
+- **Asking for a plan gets you a plan to approve, whatever the mode.**
+  `exit_plan_mode` is offered in every mode now, but it still opened by refusing
+  unless the session sat in `plan`: from yolo, edit, or auto it answered "already
+  in edit mode; the plan has already been approved" and the plan was never put to
+  you. The TUI made it worse in `edit` by answering yes on your behalf without
+  drawing anything. The plan is now presented whatever the mode, since asking to
+  plan is a request to be consulted rather than a mode you have to be in.
+  Approving one no longer narrows the session either: yolo used to drop to
+  `edit`, red theme and all, for saying yes to a plan it wrote. Turning a plan
+  down holds the rest of the turn read-only, so a yolo turn cannot take "no" for
+  an answer and edit anyway, and a plan you already approved is carried out
+  rather than presented a second time.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added
