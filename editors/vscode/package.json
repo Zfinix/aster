@@ -2,7 +2,7 @@
   "name": "aster-vscode",
   "displayName": "Aster AI",
   "description": "AI coding agent in your editor: chat, verified code review, and one-click fixes",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "aster-dev",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -66,8 +66,7 @@
       },
       {
         "command": "aster.openPanel",
-        "title": "Open",
-        "category": "Aster",
+        "title": "Aster: Open",
         "icon": {
           "light": "media/aster.svg",
           "dark": "media/aster.svg"
@@ -75,8 +74,7 @@
       },
       {
         "command": "aster.openInNewTab",
-        "title": "Open in New Tab",
-        "category": "Aster",
+        "title": "Aster: Open in New Tab",
         "icon": {
           "light": "media/aster.svg",
           "dark": "media/aster.svg"
@@ -84,43 +82,35 @@
       },
       {
         "command": "aster.openInPrimaryEditor",
-        "title": "Open in Primary Editor",
-        "category": "Aster"
+        "title": "Aster: Open in Primary Editor"
       },
       {
         "command": "aster.openInNewWindow",
-        "title": "Open in New Window",
-        "category": "Aster"
+        "title": "Aster: Open in New Window"
       },
       {
         "command": "aster.openInSidebar",
-        "title": "Open in Side Bar",
-        "category": "Aster"
+        "title": "Aster: Open in Side Bar"
       },
       {
         "command": "aster.newConversation",
-        "title": "New Conversation",
-        "category": "Aster"
+        "title": "Aster: New Conversation"
       },
       {
         "command": "aster.commandMenu",
-        "title": "Show Command Menu",
-        "category": "Aster"
+        "title": "Aster: Show Command Menu"
       },
       {
         "command": "aster.reopenSession",
-        "title": "Reopen Session",
-        "category": "Aster"
+        "title": "Aster: Reopen Session"
       },
       {
         "command": "aster.insertMention",
-        "title": "Insert @-Mention Reference",
-        "category": "Aster"
+        "title": "Aster: Insert @-Mention Reference"
       },
       {
         "command": "aster.openSettings",
-        "title": "Open Settings",
-        "category": "Aster",
+        "title": "Aster: Open Settings",
         "icon": "$(gear)"
       }
     ],
