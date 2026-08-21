@@ -958,19 +958,145 @@ async fn rejecting_the_plan_leaves_editing_locked() {
 }
 
 #[tokio::test]
-async fn exit_plan_mode_is_refused_once_already_editing() {
+async fn an_editable_turn_still_asks_for_plan_approval() {
     let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let mut allow_edits = true;
+    let mut policy = Policy::permissive();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let req = approval(rx.recv().await.unwrap());
+        assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
+        let _ = req.respond.send(Answer::Yes);
+    });
+
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "pending")]),
+    )
+    .await;
     let out = run_tool_with(
         repo.path(),
-        &mut true,
-        &mut Policy::permissive(),
-        None,
-        &SessionCtx::default(),
+        &mut allow_edits,
+        &mut policy,
+        Some(&tx),
+        &ctx,
         "exit_plan_mode",
         json!({}),
     )
     .await;
-    assert!(out.contains("already in edit mode"), "{out}");
+
+    prompt.await.unwrap();
+    assert!(out.contains("plan approved"), "{out}");
+    assert!(allow_edits);
+    assert_eq!(
+        policy.mode(),
+        aster_policy::Mode::Edit,
+        "approving an editable turn leaves its mode alone"
+    );
+}
+
+#[tokio::test]
+async fn rejecting_the_plan_locks_an_editable_turn() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let mut allow_edits = true;
+    let mut policy = Policy::permissive();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let _ = approval(rx.recv().await.unwrap()).respond.send(Answer::No);
+    });
+
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "pending")]),
+    )
+    .await;
+    let out = run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        Some(&tx),
+        &ctx,
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+
+    prompt.await.unwrap();
+    assert!(out.contains("stay in plan mode"), "{out}");
+    assert!(!allow_edits, "a rejected plan holds the rest of the turn");
+    assert_eq!(policy.mode(), aster_policy::Mode::Plan);
+}
+
+#[tokio::test]
+async fn an_approved_plan_is_not_presented_twice() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let mut allow_edits = false;
+    let mut policy = plan_policy();
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let _ = approval(rx.recv().await.unwrap()).respond.send(Answer::Yes);
+    });
+
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "pending")]),
+    )
+    .await;
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        Some(&tx),
+        &ctx,
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+    prompt.await.unwrap();
+
+    // Ticking the step off keeps the approval; only a rewritten plan clears it.
+    run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        None,
+        &ctx,
+        "update_plan",
+        steps(&[("ship it", "done")]),
+    )
+    .await;
+    let out = run_tool_with(
+        repo.path(),
+        &mut allow_edits,
+        &mut policy,
+        None,
+        &ctx,
+        "exit_plan_mode",
+        json!({}),
+    )
+    .await;
+    assert!(out.contains("already approved"), "{out}");
 }
 
 #[tokio::test]

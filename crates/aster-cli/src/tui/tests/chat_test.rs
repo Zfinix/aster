@@ -172,6 +172,35 @@ fn an_approved_plan_promotes_the_session_not_just_the_turn() {
     assert!(app.mode.can_edit(), "the next submit() keeps edits on");
 }
 
+/// Yolo answered the plan silently before, so the user was never asked and the
+/// tool came back with nothing to show for it.
+#[test]
+fn an_editable_session_is_asked_and_keeps_its_mode() {
+    let mut app = chat_app("m1".into());
+    app.mode = Mode::Yolo;
+    app.edits_locked = false;
+    let mut client = AiClient::new("http://localhost", "k", "m1");
+    let (mut p, _rx) = pane();
+
+    let (req, _answer) = plan_request();
+    app.on_plan_approval_request(req, &mut p);
+    assert!(p.has_active_view(), "the user must see the plan");
+
+    app.on_app_event(
+        AppEvent::ApprovalDecided {
+            answer: Answer::Yes,
+            scope: None,
+        },
+        &mut client,
+    );
+
+    assert_eq!(
+        app.mode,
+        Mode::Yolo,
+        "approving a plan never narrows a mode"
+    );
+}
+
 #[test]
 fn a_rejected_plan_leaves_the_session_in_plan() {
     let mut app = chat_app("m1".into());
