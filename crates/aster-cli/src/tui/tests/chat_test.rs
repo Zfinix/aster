@@ -114,6 +114,7 @@ fn approval_auto_approves_in_edit_mode() {
     let (respond, rx) = tokio::sync::oneshot::channel();
     app.on_approval_request(
         ApprovalRequest {
+            markdown: None,
             preview: "edit a.rs".into(),
             scope: None,
             respond,
@@ -128,6 +129,7 @@ fn plan_request() -> (ApprovalRequest, tokio::sync::oneshot::Receiver<Answer>) {
     let (respond, rx) = tokio::sync::oneshot::channel();
     (
         ApprovalRequest {
+            markdown: None,
             preview: "Approve this plan and start editing?\n\n[ ] ship it".into(),
             scope: None,
             respond,
@@ -246,6 +248,7 @@ fn approval_always_promotes_the_session_to_edit() {
     let (respond, rx) = tokio::sync::oneshot::channel();
     app.on_approval_request(
         ApprovalRequest {
+            markdown: None,
             preview: "edit b.rs".into(),
             scope: None,
             respond,

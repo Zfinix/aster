@@ -9,6 +9,7 @@ fn request(preview: &str) -> (ApprovalRequest, oneshot::Receiver<Answer>) {
     let (respond, rx) = oneshot::channel();
     (
         ApprovalRequest {
+            markdown: None,
             preview: preview.into(),
             scope: None,
             respond,
