@@ -611,6 +611,9 @@ pub(crate) enum UiRequest {
 /// `None` means the front-end offers only yes or no.
 pub(crate) struct ApprovalRequest {
     pub preview: String,
+    /// The same plan as clean markdown, so rich front-ends render it as a
+    /// document instead of diffing plain rows. `None` for action approvals.
+    pub markdown: Option<String>,
     pub scope: Option<PathBuf>,
     pub respond: oneshot::Sender<Answer>,
 }
@@ -1179,6 +1182,7 @@ fn approval_request_json(kind: &str, req: &ApprovalRequest) -> Value {
         "kind": kind,
         "preview": req.preview,
         "scope": req.scope.as_ref().map(|p| p.display().to_string()),
+        "markdown": req.markdown,
     })
 }
 
@@ -2551,12 +2555,12 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             }
         }));
     }
-    if has_approver && !allow_edits {
+    if has_approver {
         tools.push(json!({
             "type": "function",
             "function": {
                 "name": "exit_plan_mode",
-                "description": "Exit plan mode and switch to edit mode. Presents the current plan for user approval; if approved, edit_file and unapproved command execution become available.",
+                "description": "Present the current plan for user approval and wait for their answer. Build the plan with update_plan first. Do not edit files or run state-changing commands until the user approves; if they reject, revise the plan and present it again.",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -2744,12 +2748,7 @@ async fn exec_tool(
             }
             Err(e) => Err(e),
         },
-        "exit_plan_mode" if !*allow_edits => {
-            exit_plan_mode(approver, ctx, allow_edits, policy).await
-        }
-        "exit_plan_mode" => Err(anyhow::anyhow!(
-            "already in edit mode; the plan has already been approved"
-        )),
+        "exit_plan_mode" => exit_plan_mode(approver, ctx, allow_edits, policy).await,
         "read_file" => match str_arg("path").context("read_file needs a `path`") {
             Ok(path) if !edits::exists_anywhere(repo_root, &path) => {
                 return ToolOutput::text(missing_path(repo_root, &path));
@@ -3268,6 +3267,11 @@ async fn exit_plan_mode(
     allow_edits: &mut bool,
     policy: &mut Policy,
 ) -> Result<String> {
+    if *allow_edits {
+        return Err(anyhow::anyhow!(
+            "already in edit mode; the plan has already been approved"
+        ));
+    }
     let plan = ctx
         .plan
         .lock()
@@ -3280,7 +3284,11 @@ async fn exit_plan_mode(
     }
 
     let preview = format!("Approve this plan and start editing?\n\n{}", plan.render());
-    if !request_plan_approval(approver, preview).await.allowed() {
+    let markdown = plan_markdown(&plan);
+    if !request_plan_approval(approver, preview, Some(markdown))
+        .await
+        .allowed()
+    {
         return Ok(
             "the user did not approve the plan; stay in plan mode and revise it".to_string(),
         );
@@ -3291,6 +3299,20 @@ async fn exit_plan_mode(
     *allow_edits = true;
     policy.promote(aster_policy::Mode::Edit);
     Ok("plan approved; edit mode is now active".to_string())
+}
+
+/// The plan as a markdown checklist, for front-ends that render approvals as
+/// documents rather than plain rows.
+fn plan_markdown(plan: &PlanState) -> String {
+    let mut out = String::from("## Plan\n");
+    for step in &plan.steps {
+        let box_ = match step.status {
+            PlanStepStatus::Done => "x",
+            _ => " ",
+        };
+        out.push_str(&format!("- [{box_}] {}\n", step.label));
+    }
+    out
 }
 
 /// The requested directory when it does not exist, so a caller can widen or
@@ -4141,18 +4163,23 @@ pub(crate) async fn request_approval(
     preview: String,
     scope: Option<PathBuf>,
 ) -> Answer {
-    ask_approval(approver, preview, scope, UiRequest::Approval).await
+    ask_approval(approver, preview, scope, None, UiRequest::Approval).await
 }
 
 /// As [`request_approval`], but tagged so the front-end promotes its own mode.
-async fn request_plan_approval(approver: Option<&UiSender>, preview: String) -> Answer {
-    ask_approval(approver, preview, None, UiRequest::PlanApproval).await
+async fn request_plan_approval(
+    approver: Option<&UiSender>,
+    preview: String,
+    markdown: Option<String>,
+) -> Answer {
+    ask_approval(approver, preview, None, markdown, UiRequest::PlanApproval).await
 }
 
 async fn ask_approval(
     approver: Option<&UiSender>,
     preview: String,
     scope: Option<PathBuf>,
+    markdown: Option<String>,
     wrap: fn(ApprovalRequest) -> UiRequest,
 ) -> Answer {
     let Some(tx) = approver else {
@@ -4161,6 +4188,7 @@ async fn ask_approval(
     let (respond, rx) = oneshot::channel();
     let request = wrap(ApprovalRequest {
         preview,
+        markdown,
         scope,
         respond,
     });

@@ -827,6 +827,14 @@ async fn approving_the_plan_unlocks_editing() {
     let prompt = tokio::spawn(async move {
         let req = approval(rx.recv().await.unwrap());
         assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
+        assert!(
+            req.markdown
+                .as_deref()
+                .unwrap_or("")
+                .contains("- [ ] ship it"),
+            "{}",
+            req.markdown.as_deref().unwrap_or("")
+        );
         let _ = req.respond.send(Answer::Yes);
     });
 
