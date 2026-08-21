@@ -1,47 +1,35 @@
-/*
- * Semantic tokens over real VS Code theme keys with fallback chains, so the
- * panel tracks the user's theme instead of approximating it.
- */
+@import "./tokens.css";
+
+/* Chat-panel geometry; the shared theme tokens live in tokens.css. */
 :root {
-  --s1: 4px;
-  --s2: 8px;
-  --s3: 12px;
-  --s4: 16px;
-  --s5: 20px;
-  --radius: 4px;
-  --radius-lg: 6px;
-  --radius-xl: 8px;
-  /* What the thread fades into above the composer. */
-  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  /* The transcript's two columns: every glyph — tool icon, status mark, error
+     badge — starts on the prose's own left edge, and every step's text sits one
+     tab in from it. Rails and nodes hang in `.thread`'s padding, left of both,
+     so grouping never costs the text an indent. */
+  --glyph: 14px;
+  --step-text: calc(var(--glyph) + var(--s2));
+  --rail-x: 10px;
+  /* The list runs under the composer rather than stopping short of it: how far
+     up from the panel's foot the gradient reaches, and how much of the list the
+     composer rides over. */
+  --fade: 104px;
+  --composer-lift: 32px;
   /* Readable column cap; narrow sidebars fall below it and are unaffected. */
   --col: 760px;
 
-  --fg: var(--vscode-foreground);
-  --fg-dim: var(--vscode-descriptionForeground);
-  /* Deliberately not --vscode-inlineChatInput-border: themes often set it to an
-     accent color, which reads as a highlight rather than a neutral edge. */
-  --border: var(--vscode-widget-border, rgba(127, 127, 127, 0.28));
-  --hover: var(--vscode-toolbar-hoverBackground);
-  --list-hover: var(--vscode-list-hoverBackground);
-  /* The fill under verbatim material: code, tool output, tables. Deliberately
-     not --vscode-textCodeBlock-background: themes often make it a saturated
-     slab, which turns every block into a highlight. A wash of neutral grey over
-     the surface beneath keeps tracking the theme without the hue. */
-  --code-bg: rgba(127, 127, 127, 0.08);
-  --code-bg-soft: rgba(127, 127, 127, 0.04);
-  --code-bg-strong: rgba(127, 127, 127, 0.14);
-  --surface: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
-  --mono: var(--vscode-editor-font-family, monospace);
-  --mono-size: var(--vscode-editor-font-size, 12px);
-
-  --sev-critical: var(--vscode-editorError-foreground, #f14c4c);
-  --sev-high: var(--vscode-editorError-foreground, #f14c4c);
-  --sev-medium: var(--vscode-editorWarning-foreground, #cca700);
-  --sev-low: var(--vscode-editorInfo-foreground, #3794ff);
-  --sev-info: var(--fg-dim);
-
-  --diff-add: var(--vscode-gitDecoration-addedResourceForeground, #4ec94e);
-  --diff-del: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+  /* One geometry for everything that opens over the panel: the command menu,
+     every picker, and the modals. Spacing that is merely similar drifts, so
+     these are the only values those surfaces are allowed to use. */
+  --pop-pad: var(--s2);
+  --pop-row-pad: 4px var(--s2);
+  /* Split, for the rows that pad an inner button instead of themselves. */
+  --pop-row-pad-x: var(--s2);
+  --pop-row-pad-y: 4px;
+  --pop-row-gap: 2px;
+  --pop-section-gap: var(--s3);
+  --pop-radius: var(--radius-lg);
+  /* The header or search strip a dialog wears above its list. */
+  --pop-head-pad: var(--s2) var(--s3);
 }
 
 * {
@@ -61,7 +49,7 @@ body {
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--fg);
-  background: transparent;
+  background: var(--bg-page);
 }
 
 /* Set below the chrome around it so the thread reads as the surface in focus
@@ -69,7 +57,7 @@ body {
    so it still tracks the theme instead of pinning one grey. Dark only: light and
    high-contrast themes are chosen for their contrast and are left alone. */
 body.vscode-dark {
-  background: color-mix(in srgb, var(--bg) 78%, #000);
+  --bg-page: color-mix(in srgb, var(--bg) 78%, #000);
 }
 
 .app {
@@ -106,9 +94,11 @@ body.vscode-dark {
   padding: 0;
 }
 
-.icon-action svg {
-  width: 17px;
-  height: 17px;
+/* Doubled class to outweigh `.ghost svg`, which these buttons also carry and
+   which is declared later. */
+.icon-action.icon-action svg {
+  width: 18px;
+  height: 18px;
 }
 
 .toolbar-title {
@@ -165,6 +155,8 @@ body.vscode-dark {
 
 .ghost svg {
   flex: none;
+  width: 16px;
+  height: 16px;
 }
 
 .link {
@@ -297,6 +289,37 @@ code {
   min-height: 0;
 }
 
+/* The last inch of the list, dissolved into the page: replies pass under the
+   composer instead of being sheared off against its edge. Opaque by the time
+   the composer starts, so nothing shows through beside the box. */
+.thread-container::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--fade);
+  pointer-events: none;
+  /* Clear for its whole first half, then smoothstep: replies hold full strength
+     until roughly a line short of the box, dissolve across that last line, and
+     are gone by the panel's foot. Flat at both ends of the curve, so neither
+     the start nor the finish leaves a line to see. */
+  background: linear-gradient(
+    to bottom,
+    transparent 50%,
+    color-mix(in srgb, var(--bg-page) 3%, transparent) 55%,
+    color-mix(in srgb, var(--bg-page) 10%, transparent) 60%,
+    color-mix(in srgb, var(--bg-page) 22%, transparent) 65%,
+    color-mix(in srgb, var(--bg-page) 35%, transparent) 70%,
+    color-mix(in srgb, var(--bg-page) 50%, transparent) 75%,
+    color-mix(in srgb, var(--bg-page) 65%, transparent) 80%,
+    color-mix(in srgb, var(--bg-page) 78%, transparent) 85%,
+    color-mix(in srgb, var(--bg-page) 90%, transparent) 90%,
+    color-mix(in srgb, var(--bg-page) 97%, transparent) 95%,
+    var(--bg-page)
+  );
+}
+
 /* The scroller spans the full panel so the scrollbar rides the edge. */
 .thread-viewport {
   flex: 1;
@@ -305,10 +328,11 @@ code {
 }
 
 /* Fills the panel: tool cards, diffs and output get every pixel of width, while
-   the composer keeps its own column cap. */
+   the composer keeps its own column cap. The foot clears the gradient, so the
+   last reply settles above it rather than inside it. */
 .thread {
   width: 100%;
-  padding: var(--s5);
+  padding: var(--s5) var(--s5) calc(var(--composer-lift) + var(--s4));
   display: flex;
   flex-direction: column;
   gap: var(--s4);
@@ -359,6 +383,19 @@ code {
   font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.turn-compaction {
+  margin: var(--s4) 0;
+}
+
+/* Dashed, so a fold in the history reads as a harder break than a model switch. */
+.turn-compaction .turn-divider-line {
+  background: repeating-linear-gradient(
+    to right,
+    var(--border) 0 3px,
+    transparent 3px 7px
+  );
 }
 
 .turn-queued {
@@ -426,19 +463,27 @@ code {
   transform: rotate(-90deg);
 }
 
+/* Rule in the gutter, like the steps' rail, so the thinking sits on the same
+   column as the reply it belongs to instead of one tab in from it. */
 .reasoning-body {
+  margin-left: calc(-1 * var(--rail-x));
   border-left: 2px solid var(--border);
-  padding-left: var(--s3);
+  padding-left: calc(var(--rail-x) - 2px);
   color: var(--fg-dim);
   white-space: pre-wrap;
   line-height: 1.6;
 }
 
-/* Revealed on hover so a settled reply stays clean text. */
+/* Revealed on hover so a settled reply stays clean text. Takes no height of its
+   own — a row nobody can see must not leave a band of dead space under every
+   reply — so the button hangs in the gap to the next turn instead. */
 .turn-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: calc(-1 * var(--s2));
+  align-items: flex-start;
+  height: 0;
+  /* Cancels `.turn-assistant`'s row gap, which is the only space left. */
+  margin-top: calc(-1 * var(--s3));
   opacity: 0;
   transition: opacity 0.12s ease;
 }
@@ -462,17 +507,17 @@ code {
 
 .status .mark {
   flex: none;
-  /* The mark is 13px against the icons' 14px box; centering it in that box
-     keeps both labels on one column. */
-  margin-inline: 0.5px;
+  /* The mark is 13px against the icons' box; centering it in that box keeps
+     both labels on one column. */
+  margin-inline: calc((var(--glyph) - 13px) / 2);
 }
 
-/* Sit on the same glyph column as the steps above: the `.tool-list` rail plus
-   the row's own padding. Scoped to the thread so an info card's status, which
-   has no steps to line up with, keeps its flush edge. */
+/* Sit on the same glyph column as the steps above, mark under icon and word
+   under verb. Scoped to the thread so an info card's status, which has no steps
+   to line up with, keeps its flush edge. */
 .turn-assistant > .status {
   padding: 3px var(--s1);
-  margin-left: calc(3px + var(--s3));
+  margin-left: calc(-1 * var(--s1));
 }
 
 /* Doubled class to outweigh `.empty .mark`'s entrance animation. */
@@ -581,9 +626,11 @@ code {
 
 /* Centres the pill without a transform of its own, which would fight the
    spring that motion drives on the button. */
+/* Above the gradient and clear of the composer that rides over it. */
 .scroll-pill-slot {
   position: absolute;
-  bottom: var(--s3);
+  z-index: 1;
+  bottom: calc(var(--composer-lift) + var(--s2));
   left: 0;
   right: 0;
   display: flex;
@@ -622,12 +669,44 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
-.turn-error {
-  padding: var(--s2);
-  border-radius: var(--radius);
-  background: var(--vscode-inputValidation-errorBackground, transparent);
-  color: var(--vscode-errorForeground);
+.error-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid color-mix(in srgb, var(--sev-critical) 35%, var(--border));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--sev-critical) 6%, transparent);
   overflow-wrap: anywhere;
+}
+
+.error-box-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.error-box-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--sev-critical);
+}
+
+.error-box-icon svg {
+  width: var(--glyph);
+  height: var(--glyph);
+}
+
+.error-box-label {
+  font-weight: 600;
+  color: var(--sev-critical);
+}
+
+.error-box-detail {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg);
+  line-height: 1.45;
 }
 
 .turn-stopped {
@@ -836,16 +915,16 @@ code {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-left: 3px;
-  padding-left: var(--s3);
+  /* Cancels the row's own padding, so the icons land on the prose column. */
+  margin-left: calc(-1 * var(--s1));
 }
 
 /* One `agent` tool call's swarm: a summary head over per-agent rows. */
 .agent-group {
   display: flex;
   flex-direction: column;
-  margin-left: 3px;
-  padding-left: var(--s3);
+  margin-left: calc(-1 * var(--rail-x));
+  padding-left: calc(var(--rail-x) - 2px - var(--s1));
   border-left: 2px solid var(--border);
 }
 
@@ -892,12 +971,14 @@ code {
   opacity: 0.7;
 }
 
+/* One level in: the rows take the head's text column as their own glyph
+   column, and the hairline sits in the gap the head's label left free. */
 .agent-card {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-left: var(--s1);
-  padding: var(--s1) 0 var(--s1) var(--s3);
+  margin-left: calc(var(--step-text) - var(--s2) - 1px);
+  padding: var(--s1) 0 var(--s1) var(--s2);
   border-left: 1px solid var(--border);
 }
 
@@ -928,8 +1009,12 @@ code {
   background: var(--list-hover);
 }
 
+/* A box, not a bare character: "✓" and "◌" are different widths and the names
+   beside them would not line up. */
 .agent-row-glyph {
   flex: none;
+  width: var(--glyph);
+  text-align: center;
 }
 
 .agent-row[data-running="true"] .agent-row-glyph {
@@ -960,7 +1045,7 @@ code {
 }
 
 .agent-report {
-  padding: var(--s2) var(--s1) var(--s3) calc(var(--s1) + 14px);
+  padding: var(--s2) var(--s1) var(--s3) calc(var(--s1) + var(--step-text));
   color: var(--fg-dim);
 }
 
@@ -1002,7 +1087,7 @@ code {
 .tool-list > *::before {
   content: "";
   position: absolute;
-  left: -14px;
+  left: calc(var(--s1) - var(--rail-x));
   top: 0;
   bottom: -1px;
   width: 2px;
@@ -1048,7 +1133,7 @@ code {
 .tool-list > * > .tool-row::before {
   content: "";
   position: absolute;
-  left: -16px;
+  left: calc(var(--s1) - var(--rail-x) - 2px);
   top: calc(3px + 0.5lh);
   width: 6px;
   height: 6px;
@@ -1106,7 +1191,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-left: calc(14px + var(--s2));
+  margin-left: var(--step-text);
 }
 
 /* Its row has no icon to clear, so the card starts where the label does. */
@@ -1138,11 +1223,16 @@ code {
   color: var(--sev-critical);
 }
 
-/* Nudged to sit on the first line's baseline when the label wraps. */
+/* Nudged to sit on the first line's baseline when the label wraps. A fixed box
+   rather than the glyph's own width, so every verb starts on one column. The
+   nudge is 1px, not 2: the glyph fills more of its box than it used to, so it
+   already reaches closer to the cap line on its own. */
 .tool-icon {
   display: flex;
   flex: none;
-  padding-top: 2px;
+  justify-content: center;
+  width: var(--glyph);
+  padding-top: 1px;
   color: var(--fg-dim);
 }
 
@@ -1245,7 +1335,7 @@ code {
 .tool-card {
   display: flex;
   flex-direction: column;
-  margin: var(--s1) 0 var(--s2) calc(var(--s1) + 14px + var(--s2));
+  margin: var(--s1) 0 var(--s2) calc(var(--s1) + var(--step-text));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--code-bg);
@@ -1338,6 +1428,48 @@ code {
   font: inherit;
   color: inherit;
   background: none;
+}
+
+/* A tool search returns JSON the model reads. The reader wants the tools it
+   found, so each one gets a chip: server dimmed, tool name carrying the weight,
+   full description on hover. */
+.mcp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1px var(--s1);
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  white-space: nowrap;
+}
+
+.mcp-chip-server {
+  color: var(--fg-dim);
+}
+
+/* The slash is drawn rather than typed, so copying a chip yields the tool id
+   with its separator intact. */
+.mcp-chip-server::after {
+  content: "/";
+  opacity: 0.55;
+}
+
+.mcp-chip-name {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tool-output code {
@@ -1518,7 +1650,12 @@ code {
   border-radius: var(--radius);
 }
 
-/* The card carries its own frame: the rail would fence it in a second time. */
+/* The card carries its own frame: the rail would fence it in a second time,
+   and with no row padding to cancel it sits flush on the prose column. */
+.tool-list > .plan {
+  margin-left: var(--s1);
+}
+
 .tool-list > .plan::before {
   display: none;
 }
@@ -1842,6 +1979,35 @@ code {
   color: var(--fg-dim);
 }
 
+.review-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.review-files-label {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
+.review-files-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.review-files-list li {
+  display: inline;
+}
+
+.review-files-list .link {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
 .review-actions {
   display: flex;
   gap: var(--s2);
@@ -1850,15 +2016,16 @@ code {
 .finding-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
+/* One finding, on the same rail-and-disclosure pattern as an agent row. */
 .finding {
-  border-radius: var(--radius);
-}
-
-.finding[data-open="true"] {
-  background: var(--list-hover);
+  display: flex;
+  flex-direction: column;
+  margin-left: calc(-1 * var(--rail-x));
+  padding-left: calc(var(--rail-x) - 2px - var(--s1));
+  border-left: 2px solid var(--border);
 }
 
 .finding[data-severity="critical"],
@@ -1875,29 +2042,42 @@ code {
   --sev: var(--sev-info);
 }
 
-.finding-row {
+.finding-head {
   display: flex;
   align-items: center;
   gap: var(--s1);
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: none;
-  padding: var(--s1) var(--s2);
-  cursor: pointer;
   min-width: 0;
 }
 
-.finding-row:hover {
+.finding-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-dim);
+  padding: 3px var(--s1);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.finding-toggle:hover {
   background: var(--list-hover);
 }
 
-.finding-caret {
-  display: flex;
+/* A box, not a bare character: the severity dot is a fixed-width glyph column
+   so titles line up, the same way agent rows align their status marks. */
+.finding-glyph {
   flex: none;
-  color: var(--fg-dim);
+  width: var(--glyph);
+  height: 8px;
+  border-radius: 2px;
+  background: var(--sev, var(--fg-dim));
+  opacity: 0.9;
 }
 
 .finding-title {
@@ -1905,72 +2085,29 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--fg);
 }
 
 .finding[data-open="true"] .finding-title {
   white-space: normal;
 }
 
-.finding-sev {
-  flex: none;
-  color: var(--sev, var(--fg-dim));
-  font-size: 0.85em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.finding-detail {
-  padding: 0 var(--s2) var(--s2) calc(var(--s2) + 18px);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-}
-
-.finding-desc,
-.finding-fix {
-  margin: 0;
-  line-height: 1.5;
-}
-
-.finding-fix {
-  color: var(--fg-dim);
-}
-
-.finding-fix-label {
-  display: inline-block;
-  margin-right: var(--s1);
-  color: var(--vscode-gitDecoration-addedResourceForeground, var(--fg-dim));
-}
-
-.finding-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--s2);
-  min-width: 0;
-}
-
 .finding-loc {
-  font: inherit;
+  flex: none;
   font-family: var(--mono);
   font-size: var(--mono-size);
-  color: var(--vscode-textLink-foreground);
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-  overflow-wrap: anywhere;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
 }
 
-.finding-loc:hover {
-  text-decoration: underline;
-}
-
-.finding-tags {
+.finding-caret {
+  display: flex;
   flex: none;
   color: var(--fg-dim);
-  font-size: 0.85em;
+  opacity: 0.7;
 }
 
 .finding-fix-btn {
@@ -1997,10 +2134,87 @@ code {
   cursor: default;
 }
 
+.finding-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin-left: calc(var(--step-text) - var(--s2) - 1px);
+  padding: var(--s1) 0 var(--s2) var(--s2);
+  border-left: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+
+.finding-fix {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.finding-fix-label {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--fg-dim));
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.finding-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.finding-tags {
+  flex: none;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
+.finding-open {
+  flex: none;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--vscode-textLink-foreground);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.finding-open:hover {
+  text-decoration: underline;
+}
+
 .finding-fix-reason {
   margin: 0;
   color: var(--fg-dim);
   font-size: 0.85em;
+}
+
+/* Severity breakdown beside the verdict. */
+.review-sev-breakdown {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  flex-wrap: wrap;
+}
+
+.review-sev {
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.review-sev[data-severity="critical"],
+.review-sev[data-severity="high"] {
+  color: var(--sev-critical);
+}
+.review-sev[data-severity="medium"] {
+  color: var(--sev-medium);
+}
+.review-sev[data-severity="low"] {
+  color: var(--sev-low);
 }
 
 .spinner-icon {
@@ -2127,15 +2341,67 @@ code {
   color: var(--fg-dim);
 }
 
+/* Sits at the foot of the empty panel, just above the composer, so a tip reads
+   as a footnote to the opener rather than a second heading. */
+/* One line, always: a tip is a glance, and two lines of it start to read as
+   instructions. Every tip is written short enough to fit a narrow panel. */
+.empty-tip {
+  /* The column centres its items, so without a width of its own a long tip
+     would size to its text and hang past the panel instead of ellipsising. */
+  width: 100%;
+  margin: var(--s3) 0 0;
+  font-size: 0.92em;
+  /* Room for the chips, which stand taller than the prose around them. */
+  line-height: 1.8;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: tipIn 0.45s ease both;
+}
+
+/* A key to press or a name to type, boxed the way a keycap reads. */
+.tip-chip {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+@keyframes tipIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-tip {
+    animation: none;
+  }
+}
+
 /* Composer */
 
 /* In an editor tab the panel is as wide as the group, so the column is capped
    and centred rather than stretched edge to edge. */
+/* Rides up over the list it is reading, which fades out beneath it. Paints
+   above the thread on DOM order alone: a z-index here would box the popups and
+   the scrim into a stacking context of their own. */
 .composer-wrap {
   position: relative;
   width: 100%;
   max-width: var(--col);
-  margin: 0 auto;
+  margin: calc(-1 * var(--composer-lift)) auto 0;
   padding: var(--s2) var(--s3) var(--s3);
 }
 
@@ -2298,7 +2564,8 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 210px;
-  padding: var(--s1);
+  gap: var(--pop-row-gap);
+  padding: var(--pop-pad);
   border: 1px solid var(--vscode-menu-border, var(--border));
   border-radius: var(--radius-lg);
   background: var(--vscode-menu-background, var(--surface));
@@ -2312,20 +2579,20 @@ code {
   align-items: center;
   gap: var(--s2);
   width: 100%;
-  padding: var(--s1) var(--s2);
+  padding: var(--pop-row-pad);
   font: inherit;
   text-align: left;
   white-space: nowrap;
   color: inherit;
   background: none;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--pop-radius);
   cursor: pointer;
 }
 
 .add-row:hover {
-  background: var(--vscode-menu-selectionBackground);
-  color: var(--vscode-menu-selectionForeground);
+  background: var(--vscode-menu-selectionBackground, var(--list-hover));
+  color: var(--vscode-menu-selectionForeground, var(--fg));
 }
 
 .model-btn {
@@ -2417,7 +2684,7 @@ code {
 /* Approval picker */
 
 /* Popups grow out of the composer they belong to, so they rise from its edge
-   rather than appearing whole. */
+   rather than appearing whole, and stand off it rather than sitting on it. */
 @keyframes popupIn {
   from {
     opacity: 0;
@@ -2434,14 +2701,17 @@ code {
 
 .picker {
   position: absolute;
-  bottom: calc(100% - var(--s2));
+  display: flex;
+  flex-direction: column;
+  gap: var(--pop-row-gap);
+  bottom: 100%;
   left: var(--s3);
   right: var(--s3);
   z-index: 10;
   animation: popupIn 0.12s ease-out;
   max-height: 320px;
   overflow-y: auto;
-  padding: var(--s1);
+  padding: var(--pop-pad);
   border: 1px solid var(--vscode-menu-border, var(--border));
   border-radius: var(--radius-lg);
   background: var(--vscode-menu-background, var(--surface));
@@ -2450,7 +2720,7 @@ code {
 }
 
 .picker-head {
-  padding: var(--s1) var(--s2);
+  padding: var(--pop-head-pad);
   color: var(--fg-dim);
   font-size: 0.9em;
 }
@@ -2465,8 +2735,8 @@ code {
   color: inherit;
   background: none;
   border: none;
-  border-radius: var(--radius);
-  padding: var(--s1) var(--s2);
+  border-radius: var(--pop-radius);
+  padding: var(--pop-row-pad);
   cursor: pointer;
 }
 
@@ -2478,8 +2748,8 @@ code {
 
 .picker-row:hover,
 .picker-row[data-active="true"] {
-  background: var(--vscode-menu-selectionBackground);
-  color: var(--vscode-menu-selectionForeground);
+  background: var(--vscode-menu-selectionBackground, var(--list-hover));
+  color: var(--vscode-menu-selectionForeground, var(--fg));
 }
 
 /* Autocomplete reuses the picker shell, but reads as a file tree: one line per
@@ -2488,15 +2758,12 @@ code {
 .picker[role="listbox"] {
   max-height: 280px;
   overflow-y: auto;
-  padding: var(--s2);
   border-radius: var(--radius-xl);
 }
 
 .picker[role="listbox"] .picker-row {
   align-items: center;
   gap: var(--s3);
-  padding: var(--s2);
-  border-radius: var(--radius-lg);
   color: var(--fg-dim);
 }
 
@@ -2554,6 +2821,52 @@ code {
   flex: none;
 }
 
+/* Modes carry two lines each, so the glyph centres on the pair rather than
+   riding the label, and a description is allowed to wrap rather than being cut
+   at the panel's edge. */
+.picker-modes .picker-row {
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* Two lines want air between them; without it a row's description reads as the
+   next row's overline. */
+.picker-modes .picker-body {
+  gap: 2px;
+}
+
+.picker-modes .picker-row > svg {
+  margin-top: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.picker-modes .picker-detail {
+  white-space: normal;
+  overflow: visible;
+}
+
+/* The one mode that removes every guardrail says so in the colour the rest of
+   the panel uses for warnings, on the whole row rather than the glyph alone:
+   a warning you have to infer from an icon is not a warning. */
+.picker-modes .picker-row[data-danger="true"],
+.picker-modes .picker-row[data-danger="true"] .picker-detail {
+  color: var(--sev-medium);
+}
+
+.picker-modes .picker-row[data-danger="true"] > svg {
+  opacity: 1;
+}
+
+.picker-modes .picker-row[data-danger="true"]:hover {
+  color: var(--sev-medium);
+  background: color-mix(in srgb, var(--sev-medium) 16%, transparent);
+}
+
+.picker-modes .picker-row[data-danger="true"]:hover .picker-detail {
+  color: var(--sev-medium);
+}
+
 /* The on/off box in the MCP panel, sized to the label it sits beside. */
 .picker-mark {
   flex: none;
@@ -2562,7 +2875,7 @@ code {
 }
 
 .picker-empty {
-  padding: var(--s1) var(--s2) var(--s2);
+  padding: var(--pop-row-pad);
   color: var(--fg-dim);
   font-size: 0.9em;
   line-height: 1.5;
@@ -2573,7 +2886,7 @@ code {
   margin-top: var(--s1);
   padding-top: var(--s2);
   border-top: 1px solid var(--border);
-  border-radius: 0 0 var(--radius) var(--radius);
+  border-radius: var(--pop-radius);
   color: var(--fg-dim);
 }
 
@@ -2582,14 +2895,14 @@ code {
    value and, for a setting, the control that changes it. */
 .cmd {
   position: absolute;
-  bottom: calc(100% - var(--s2));
+  bottom: 100%;
   left: var(--s3);
   right: var(--s3);
   z-index: 10;
   display: flex;
   flex-direction: column;
   animation: popupIn 0.12s ease-out;
-  max-height: min(60vh, 460px);
+  max-height: min(45vh, 320px);
   border: 1px solid var(--vscode-menu-border, var(--border));
   border-radius: var(--radius-lg);
   background: var(--vscode-menu-background, var(--surface));
@@ -2600,7 +2913,7 @@ code {
 
 .cmd-filter {
   flex: none;
-  padding: var(--s2) var(--s3);
+  padding: var(--pop-head-pad);
   font: inherit;
   color: inherit;
   background: none;
@@ -2611,21 +2924,19 @@ code {
 
 .cmd-list {
   overflow-y: auto;
-  padding: var(--s1);
+  padding: var(--pop-pad);
 }
 
+/* Whitespace, not a rule: a divider under every group turns a short menu into
+   a stack of boxes. */
 .cmd-section + .cmd-section {
-  margin-top: var(--s2);
-  padding-top: var(--s2);
-  border-top: 1px solid var(--border);
+  margin-top: var(--pop-section-gap);
 }
 
 .cmd-section-title {
-  padding: var(--s1) var(--s2);
+  padding: var(--s1) var(--s2) 2px;
   color: var(--fg-dim);
   font-size: 0.85em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .cmd-row {
@@ -2638,32 +2949,52 @@ code {
   color: inherit;
   background: none;
   border: none;
-  border-radius: var(--radius);
-  padding: var(--s1) var(--s2);
+  border-radius: var(--pop-radius);
+  padding: var(--pop-row-pad);
   cursor: pointer;
 }
 
-.cmd-row[data-active="true"] {
-  background: var(--vscode-menu-selectionBackground);
-  color: var(--vscode-menu-selectionForeground);
+/* Held even when a row has no glyph, so every label starts on one column. */
+.cmd-icon {
+  display: flex;
+  flex: none;
+  width: 17px;
+  color: var(--fg-dim);
 }
 
+.cmd-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.cmd-row[data-active="true"] .cmd-icon {
+  color: inherit;
+}
+
+.cmd-row[data-active="true"] {
+  background: var(--vscode-menu-selectionBackground, var(--list-hover));
+  color: var(--vscode-menu-selectionForeground, var(--fg));
+}
+
+/* Name and gloss on one line: the gloss is an aside, and stacking it doubles
+   the height of every row for something read second. */
 .cmd-body {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: baseline;
+  gap: var(--s2);
   min-width: 0;
 }
 
 .cmd-label {
+  flex: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .cmd-detail {
+  min-width: 0;
   color: var(--fg-dim);
-  font-size: 0.9em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2694,7 +3025,7 @@ code {
   gap: 1px;
   padding: 1px;
   border-radius: var(--radius);
-  background: var(--code-bg-strong);
+  background: var(--code-bg);
 }
 
 .cmd-option {
@@ -2708,9 +3039,11 @@ code {
   cursor: pointer;
 }
 
+/* Reads as the current setting, not as the menu's call to action: a filled
+   accent here outshouts every row around it. */
 .cmd-option[data-selected="true"] {
-  color: var(--vscode-button-foreground, var(--fg));
-  background: var(--vscode-button-background, rgba(127, 127, 127, 0.4));
+  color: var(--fg);
+  background: var(--code-bg-strong);
 }
 
 .cmd-note,
@@ -2723,12 +3056,12 @@ code {
 .picker-input {
   width: 100%;
   margin-top: var(--s1);
-  padding: var(--s1) var(--s2);
+  padding: var(--pop-row-pad);
   font: inherit;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-focusBorder, var(--border));
-  border-radius: var(--radius);
+  border-radius: var(--pop-radius);
 }
 
 .out-line {
@@ -2765,7 +3098,8 @@ body.vscode-high-contrast-light .sh {
 
 /* History panel */
 
-.history-overlay {
+.history-overlay,
+.info-overlay {
   position: absolute;
   inset: 0;
   z-index: 50;
@@ -2774,6 +3108,45 @@ body.vscode-high-contrast-light .sh {
   justify-content: center;
   padding: 10vh var(--s2) var(--s2);
   background: rgba(0, 0, 0, 0.4);
+}
+
+/* Centred, not dropped from the top like the palette: this one is read, not
+   typed into. */
+.info-overlay {
+  align-items: center;
+  padding: var(--s4) var(--s3);
+}
+
+/* A question about the session, answered over it: the thread stays where it
+   was, and closing the modal leaves no record of the detour. */
+.info-modal {
+  width: min(560px, 100%);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--vscode-editorWidget-background, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
+}
+
+.info-modal[data-error="true"] {
+  border-color: var(--sev-critical);
+}
+
+.info-modal > .info-head {
+  padding: var(--pop-head-pad);
+}
+
+/* The scroller, so a long `git diff` moves inside the frame rather than
+   growing it past the panel. */
+.info-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: 0 var(--s3) var(--s3);
+  overflow-y: auto;
 }
 
 .history-panel {
@@ -2788,11 +3161,22 @@ body.vscode-high-contrast-light .sh {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
 }
 
+/* One line a row, so the eye runs down titles instead of stepping over a
+   second line of metadata under each one. The turn count and model live in the
+   row's tooltip, which is where detail belongs once the list has to be
+   scannable. */
+.history-search svg,
+.history-row-actions .icon-btn svg,
+.info-modal .info-head .icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .history-search {
   display: flex;
   align-items: center;
-  gap: var(--s1);
-  padding: var(--s2);
+  gap: var(--s2);
+  padding: var(--pop-head-pad);
   border-bottom: 1px solid var(--border);
   color: var(--fg-dim);
 }
@@ -2811,17 +3195,13 @@ body.vscode-high-contrast-light .sh {
   color: var(--fg-dim);
 }
 
-.history-count {
-  flex-shrink: 0;
-  font-size: 0.75em;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-dim);
-}
-
 .history-list {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--pop-row-gap);
   overflow-y: auto;
-  padding: var(--s1);
+  padding: var(--pop-pad);
 }
 
 .history-empty {
@@ -2831,89 +3211,93 @@ body.vscode-high-contrast-light .sh {
   text-align: center;
 }
 
-.history-group-label {
-  padding: var(--s2) var(--s2) 4px;
-  font-size: 0.72em;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-}
-
 .history-row {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: var(--s2);
   width: 100%;
-  padding: 6px var(--s2);
+  padding: 0 var(--pop-row-pad-x, var(--s2));
+  border-radius: var(--pop-radius);
+}
+
+/* The row's own hit area is the title: everything up to the trailing column,
+   so a click anywhere along the name opens the session. */
+.history-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  padding: var(--pop-row-pad-y) 0;
+  font: inherit;
+  color: inherit;
   background: none;
   border: none;
-  border-left: 2px solid transparent;
-  border-radius: var(--radius);
   cursor: pointer;
   text-align: left;
 }
 
-/* The cursor is the only highlight, so keyboard and pointer never disagree
-   about which row Enter would open. */
+/* The session already open, named the way the toolbar names it. */
+.history-row[data-active="true"] {
+  background: var(--list-hover);
+}
+
+.history-row[data-active="true"] .history-row-title {
+  font-weight: 600;
+}
+
+/* The cursor is the only other highlight, so keyboard and pointer never
+   disagree about which row Enter would open. */
 .history-row[data-cursor="true"] {
   background: var(--hover);
-}
-
-.history-row[data-active="true"] {
-  border-left-color: var(--vscode-textLink-foreground, var(--fg));
-}
-
-.history-row-main {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s1);
 }
 
 .history-row-title {
   flex: 1;
   min-width: 0;
   color: var(--fg);
-  font-size: 0.9em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .history-row-when {
-  flex-shrink: 0;
-  font-size: 0.75em;
+  flex: none;
+  font-size: 0.8em;
   font-variant-numeric: tabular-nums;
   color: var(--fg-dim);
 }
 
-.history-row-meta {
-  color: var(--fg-dim);
-  font-size: 0.75em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Rename and delete take the age's place rather than sitting beside it: the
+   trailing column stays one column wide, so no row moves on hover. */
+.history-row-actions {
+  display: none;
+  flex: none;
+  gap: 2px;
 }
 
-.history-dot {
-  margin: 0 4px;
-  opacity: 0.6;
-}
-
-.history-foot {
+.history-row:hover .history-row-actions,
+.history-row:focus-within .history-row-actions {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px var(--s2);
-  border-top: 1px solid var(--border);
-  font-size: 0.72em;
-  color: var(--fg-dim);
 }
 
-.history-foot kbd {
-  padding: 1px 4px;
-  font: inherit;
-  color: var(--fg-dim);
-  background: var(--hover);
-  border-radius: 3px;
+.history-row:hover .history-row-when,
+.history-row:focus-within .history-row-when {
+  display: none;
 }
+
+.history-delete:hover {
+  color: var(--sev-critical);
+}
+
+.history-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 5px 0;
+  padding: 0 var(--s1);
+  font: inherit;
+  color: var(--fg);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: var(--radius);
+  outline: none;
+}
+

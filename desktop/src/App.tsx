@@ -331,7 +331,8 @@ function App() {
             turns,
             // Already on disk, so a reply continues it rather than forking.
             sessionId: s.id,
-            renamed: true,
+            // Untitled sessions must stay open to the live `title` event.
+            renamed: !!s.title,
           };
         } catch {
           return null;

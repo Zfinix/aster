@@ -249,6 +249,18 @@ impl WebConnection {
     }
 }
 
+/// A wrapper for shortcuts tools, acting as an MCP server.
+struct ShortcutsConnection {
+    backend: aster_shortcuts::ShortcutsBackend,
+}
+
+impl ShortcutsConnection {
+    async fn call(&self, tool: &str, arguments: &Value) -> Result<Value> {
+        let name = tool.strip_prefix("shortcuts/").unwrap_or(tool);
+        self.backend.call(name, arguments).await
+    }
+}
+
 /// One JSON-RPC failure, kept structured so the probe can tell an
 /// `UnsupportedProtocolVersionError` (modern server) from anything else
 /// (legacy server).
@@ -777,6 +789,7 @@ pub struct McpRuntime {
     injector: Arc<Injector>,
     connections: Arc<Mutex<BTreeMap<String, Connection>>>,
     web_connection: Option<Arc<WebConnection>>,
+    shortcuts_connection: Option<Arc<ShortcutsConnection>>,
     disabled_servers: Vec<DisabledServer>,
     /// Tools `mcp.tools` held back, kept so `aster mcp list` can say a tool is
     /// off rather than let it silently vanish from the catalog.
@@ -833,6 +846,12 @@ impl McpRuntime {
         let backend = aster_web::WebBackend::from_env(&config);
         tools.extend(aster_web::register_tools(&backend));
         let web_connection = Some(Arc::new(WebConnection { backend }));
+
+        let shortcuts_backend = aster_shortcuts::ShortcutsBackend::new();
+        tools.extend(aster_shortcuts::register_tools());
+        let shortcuts_connection = Some(Arc::new(ShortcutsConnection {
+            backend: shortcuts_backend,
+        }));
 
         // Servers start concurrently: each costs a process spawn and a probe,
         // and serially that is the whole session's startup budget.
@@ -899,6 +918,7 @@ impl McpRuntime {
             injector: Arc::new(injector),
             connections: Arc::new(Mutex::new(connections)),
             web_connection,
+            shortcuts_connection,
             disabled_servers,
             filtered_tools,
         };
@@ -990,6 +1010,12 @@ impl McpRuntime {
                 return web.call(&tool.id(), arguments).await;
             }
             bail!("web tools are not configured");
+        }
+        if tool.server == "shortcuts" {
+            if let Some(sc) = &self.shortcuts_connection {
+                return sc.call(&tool.id(), arguments).await;
+            }
+            bail!("shortcuts tools are not configured");
         }
         let mut connections = self.connections.lock().await;
         let connection = connections

@@ -14,6 +14,7 @@ import type {
 import { Composer } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { InfoModal } from "./components/InfoModal";
 import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { onHostMessage, persist, post, restore } from "./lib/host";
@@ -27,6 +28,7 @@ import {
   buildMessages,
   emptyReview,
   finishReasoning,
+  parseDiffFiles,
   hydrate,
   newTurn,
   patchCall,
@@ -34,6 +36,7 @@ import {
   stopUnfinished,
   upsertAgentState,
   type AssistantTurn,
+  type InfoCardData,
   type ReviewData,
   type Turn,
 } from "./lib/thread";
@@ -56,6 +59,7 @@ interface Init {
   model: string | null;
   models: string[];
   recommended: string[];
+  recent: string[];
   contextBudget: number;
   binaryOk: boolean;
   skills: SkillCommand[];
@@ -76,6 +80,7 @@ export function App() {
   /** Saved sessions for the history overlay. */
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [info, setInfo] = useState<InfoCardData | null>(null);
   /** Backing data for the `/mcp` and `/provider` pickers; each refreshes itself
    *  when it opens, since both read config that changes outside this panel. */
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
@@ -97,7 +102,12 @@ export function App() {
     counter = Math.max(counter, saved?.turns.length ?? 0);
   }, []);
 
+  // Read by the message handler, which is mounted once and cannot close over
+  // the current turns.
+  const turnsRef = useRef<Turn[]>(turns);
+
   useEffect(() => {
+    turnsRef.current = turns;
     persist({ turns, session });
   }, [turns, session]);
 
@@ -155,6 +165,7 @@ export function App() {
           model: message.model,
           models: message.models,
           recommended: message.recommended,
+          recent: message.recent,
           contextBudget: message.contextBudget,
           binaryOk: message.binaryOk,
           skills: message.skills,
@@ -302,39 +313,37 @@ export function App() {
 
       case "infoCard": {
         const { type: _type, id, ...card } = message;
-        setTurns((prev) =>
-          prev.map((turn) => {
-            if (turn.role !== "info" || turn.id !== id) return turn;
-            // The CLI has no view of a conversation it is not running, so the
-            // session's own rows are filled in here.
-            const rows = card.rows && turn.title === "Status"
-              ? [...card.rows, ...sessionRows(prev)]
+        setInfo((open) => {
+          if (!open || open.id !== id) return open;
+          // The CLI has no view of a conversation it is not running, so the
+          // session's own rows are filled in here.
+          const rows =
+            card.rows && open.title === "Status"
+              ? [...card.rows, ...sessionRows(turnsRef.current)]
               : card.rows;
-            return { ...turn, ...card, rows, pending: false };
-          })
-        );
+          return { ...open, ...card, rows, pending: false };
+        });
         break;
       }
-      // The shorter history replaces the thread outright: the summary comes
-      // back as the assistant message it will be sent as, so the next turn
-      // carries it the way the CLI's own auto-compaction would.
+      // The thread is left alone: the placeholder becomes a seam, everything
+      // above it stays readable, and from here on the folded history is what
+      // the next turn sends in its place.
       case "compacted":
-        setQueued([]);
-        setTurns([
-          ...message.messages.map((turn) =>
-            turn.role === "user"
-              ? ({ id: nextId(), role: "user", text: turn.content } as Turn)
-              : ({ ...appendText(newTurn(nextId()), turn.content), pending: false } as Turn)
-          ),
-          {
-            id: message.id,
-            role: "info",
-            title: "Compacted",
-            note: `Folded ${message.folded} earlier ${
-              message.folded === 1 ? "message" : "messages"
-            } into the summary above.`,
-          },
-        ]);
+        activeRef.current = null;
+        setBusy(false);
+        setTurns((prev) =>
+          prev.map((turn) =>
+            turn.id === message.id
+              ? {
+                  id: message.id,
+                  role: "compaction",
+                  summary: message.summary,
+                  folded: message.folded,
+                  messages: message.messages.map(({ role, content }) => ({ role, content })),
+                }
+              : turn
+          )
+        );
         break;
     }
   }, []);
@@ -523,11 +532,11 @@ export function App() {
     post({ type: "review", id, source });
   };
 
-  /** A locally-answered command opens its card straight away, so the thread
-   *  shows the ask before the host gets back with the answer. */
+  /** A locally-answered command opens its modal straight away, so the ask is
+   *  on screen before the host gets back with the answer. */
   const askInfo = (topic: "status" | "memory" | "diff") => {
     const id = nextId();
-    setTurns((prev) => [...prev, { id, role: "info", title: infoTitle(topic), pending: true }]);
+    setInfo({ id, title: infoTitle(topic), pending: true });
     post({ type: "info", id, topic });
   };
 
@@ -541,9 +550,13 @@ export function App() {
       case "diff":
         askInfo(name);
         break;
+      // Loading like any other turn: the placeholder is a pending assistant
+      // turn, so a failure lands on it as an error the same way too.
       case "compact": {
         const id = nextId();
-        setTurns((prev) => [...prev, { id, role: "info", title: "Compacting", pending: true }]);
+        setTurns((prev) => [...prev, newTurn(id)]);
+        setBusy(true);
+        activeRef.current = id;
         post({ type: "compact", id, messages: buildMessages(turns, Infinity) });
         break;
       }
@@ -634,6 +647,7 @@ export function App() {
         model={init?.model ?? null}
         models={init?.models ?? []}
         recommended={init?.recommended ?? []}
+        recent={init?.recent ?? []}
         modelsLoading={modelsLoading}
         modelsError={modelsError}
         onRefreshModels={refreshModels}
@@ -675,6 +689,11 @@ export function App() {
                     model && !prev.models.includes(model)
                       ? [...prev.models, model]
                       : prev.models,
+                  // The host persists this too; kept live here so the picker's
+                  // Recent section moves without a reload.
+                  recent: model
+                    ? [model, ...prev.recent.filter((m) => m !== model)].slice(0, 5)
+                    : prev.recent,
                 }
               : prev
           );
@@ -682,11 +701,15 @@ export function App() {
           post({ type: "setModel", model });
         }}
       />
+      {info && <InfoModal card={info} onClose={() => setInfo(null)} />}
+
       {showHistory && (
         <HistoryPanel
           sessions={sessions}
           activeId={session}
           onPick={(id) => post({ type: "loadSession", id })}
+          onRename={(id, title) => post({ type: "renameSession", id, title })}
+          onDelete={(id) => post({ type: "deleteSession", id })}
           onClose={() => setShowHistory(false)}
         />
       )}
@@ -740,6 +763,8 @@ function applyReviewEvent(data: ReviewData, event: ReviewEvent): ReviewData {
       };
     case "verifying":
       return { ...data, phase: `Verifying ${event.index}/${event.total} · ${event.title}` };
+    case "diff":
+      return { ...data, files: parseDiffFiles(event.content) };
     case "finding": {
       const { type: _type, ...finding } = event;
       return { ...data, findings: [...data.findings, finding] };

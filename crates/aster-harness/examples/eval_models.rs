@@ -2,8 +2,8 @@
 //!
 //! Pulls OpenRouter's live catalog, keeps the cheap text models, runs the real
 //! hypothesis prompt on a diff with several planted bugs, and ranks by how many
-//! it catches (then speed, then price). This is the Rust reproduction of the
-//! numbers in docs/BENCHMARKS.md.
+//! it catches (then speed, then price). This is how the default
+//! hypothesis model was chosen; docs/EVAL.md covers measurement.
 //!
 //! Usage:
 //!   ASTER_API_KEY=... cargo run -p aster-harness --example eval_models
@@ -180,11 +180,10 @@ struct Score {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
-    let key = std::env::var("ASTER_API_KEY")
-        .or_else(|_| std::env::var("OPEN_ROUTER_API_KEY"))
-        .context("set ASTER_API_KEY (or OPEN_ROUTER_API_KEY)")?;
-    let base = std::env::var("ASTER_BASE_URL")
-        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
+    let base =
+        std::env::var("ASTER_BASE_URL").unwrap_or_else(|_| aster_ai::DEFAULT_BASE_URL.to_string());
+    let (key, _) = aster_ai::keys::resolve_key(&base)
+        .with_context(|| format!("set {}", aster_ai::keys::key_vars(&base).join(" or ")))?;
     let price_cap: f64 = env_or("EVAL_PRICE_CAP", 1e-6);
     let max_models: usize = env_or("EVAL_MAX_MODELS", 120);
     let concurrency: usize = env_or("EVAL_CONCURRENCY", 16);

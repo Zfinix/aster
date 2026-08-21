@@ -315,6 +315,12 @@ fn web_tool_count() -> usize {
     aster_web::register_tools(&backend).len()
 }
 
+/// The runtime registers the Shortcuts catalog the same way; see
+/// [`web_tool_count`] for why it is counted instead of hardcoded.
+fn shortcuts_tool_count() -> usize {
+    aster_shortcuts::register_tools().len()
+}
+
 fn has_python() -> bool {
     std::process::Command::new("python3")
         .arg("--version")
@@ -332,9 +338,12 @@ async fn a_server_handshakes_lists_and_answers_a_call() {
     let (runtime, problems) = connect(&python_settings()).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 2 + web_tool_count());
+    assert_eq!(
+        runtime.tool_count(),
+        2 + web_tool_count() + shortcuts_tool_count()
+    );
     let mut server_names = runtime.server_names();
-    server_names.retain(|name| name != "web");
+    server_names.retain(|name| name != "web" && name != "shortcuts");
     assert_eq!(server_names, vec!["fake".to_string()]);
 
     let tool = runtime
@@ -359,7 +368,10 @@ async fn a_modern_server_is_driven_without_an_initialize_handshake() {
     let (runtime, problems) = connect(&settings_for(MODERN_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 2 + web_tool_count());
+    assert_eq!(
+        runtime.tool_count(),
+        2 + web_tool_count() + shortcuts_tool_count()
+    );
 
     let tool = runtime
         .injector()
@@ -386,7 +398,7 @@ async fn an_unsupported_version_retries_modern_instead_of_falling_back() {
     // succeeding proves the client switched versions and stayed modern.
     assert_eq!(
         runtime.expect("a runtime").tool_count(),
-        1 + web_tool_count()
+        1 + web_tool_count() + shortcuts_tool_count()
     );
 }
 
@@ -449,7 +461,7 @@ async fn every_page_of_a_paginated_tool_list_is_read() {
     let runtime = runtime.expect("a runtime");
     assert_eq!(
         runtime.tool_count(),
-        3 + web_tool_count(),
+        3 + web_tool_count() + shortcuts_tool_count(),
         "pagination stopped early"
     );
     assert!(runtime.injector().catalog().get("fake/three").is_some());
@@ -635,7 +647,10 @@ async fn a_strict_legacy_server_killed_by_the_probe_is_respawned_and_works() {
     let (runtime, problems) = connect(&settings_for(STRICT_LEGACY_SERVER)).await;
     assert!(problems.is_empty(), "{problems:?}");
     let runtime = runtime.expect("a runtime");
-    assert_eq!(runtime.tool_count(), 1 + web_tool_count());
+    assert_eq!(
+        runtime.tool_count(),
+        1 + web_tool_count() + shortcuts_tool_count()
+    );
     runtime.shutdown().await;
 }
 

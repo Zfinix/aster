@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use crate::provider::env_or;
 use crate::term::{BOLD, CYAN, DIM, GREEN, ORANGE, RESET};
 use crate::util::{human, usage_json};
-use crate::{config, git, github};
+use crate::{credentials, git, github};
 
 #[derive(Args)]
 pub struct ReviewArgs {
@@ -183,7 +183,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
     if args.comment {
         let (owner, repo, pr) = pr_target.expect("--comment requires --pr");
-        let token = config::resolve_github_token(args.token.as_deref())
+        let token = credentials::resolve_github_token(args.token.as_deref())
             .context("no GitHub token; run `aster login` or set GITHUB_TOKEN")?;
         if !confirm_post(&findings, &owner, &repo, pr, args.yes)? {
             println!("Nothing posted.");
@@ -487,7 +487,7 @@ async fn resolve_diff(args: &ReviewArgs) -> Result<(String, Option<PrTarget>)> {
             }
             None => git::origin_repo().context("could not detect repo; pass --repo owner/repo")?,
         };
-        let token = config::resolve_github_token(args.token.as_deref())
+        let token = credentials::resolve_github_token(args.token.as_deref())
             .context("no GitHub token; run `aster login` or set GITHUB_TOKEN")?;
         let diff = github::fetch_pr_diff(&owner, &repo, pr, &token).await?;
         return Ok((diff, Some((owner, repo, pr))));

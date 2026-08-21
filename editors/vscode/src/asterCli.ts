@@ -17,7 +17,7 @@ export function cliConfig(): CliConfig {
 }
 
 export function missingBinaryMessage(binary: string): string {
-  return `aster binary not found at "${binary}". Install it with \`cargo install --path crates/aster-cli\` or set aster.binaryPath.`;
+  return `aster binary not found at "${binary}". Install it with \`curl -fsSL https://withaster.dev/install | sh\` or set aster.binaryPath.`;
 }
 
 /** True when the configured binary can be executed. */

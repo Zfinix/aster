@@ -67,16 +67,16 @@ describe("rank", () => {
     ]);
   });
 
-  it("cuts a section to its limit and says what it left out", () => {
-    expect(rank(sections, "")[2].note).toBe("1 more; type to filter");
+  it("cuts a section to its limit", () => {
+    expect(rank(sections, "")[2].items).toHaveLength(1);
   });
 
   it("searches past the limit, so a name always reaches its row", () => {
     expect(labels(rank(sections, "write-like"))).toEqual(["/write-like-chizi"]);
   });
 
-  it("drops the truncation note once a query is on", () => {
-    expect(rank(sections, "write")[0].note).toBeUndefined();
+  it("lifts the limit once a query is on", () => {
+    expect(rank(sections, "write")[0].items).toHaveLength(2);
   });
 
   it("matches labels regardless of case", () => {

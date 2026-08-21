@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
@@ -57,6 +57,10 @@ pub(crate) struct SessionCtx {
     /// modification time. A repeat read of an unchanged range is answered with
     /// a pointer instead of a second full copy in the history.
     pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
+    /// URLs already opened in the browser this session, so a second
+    /// `open_preview` for the same page points at the tab instead of stacking
+    /// another one on top of it.
+    pub previews: Arc<Mutex<HashSet<String>>>,
     /// Lookups already answered this turn, keyed by tool and arguments. A
     /// repeat is answered with a pointer instead of a second copy in the
     /// history. Anything that can change the tree clears it.
@@ -265,6 +269,14 @@ impl SessionCtx {
             .is_some_and(|w| w.title().is_some())
     }
 
+    /// The name this session carries, if one was generated or set already.
+    fn current_title(&self) -> Option<String> {
+        self.recorder
+            .as_ref()
+            .and_then(|r| r.lock().ok())
+            .and_then(|w| w.title().map(str::to_string))
+    }
+
     fn record_title(&self, title: &str) {
         let Some(recorder) = &self.recorder else {
             return;
@@ -289,14 +301,15 @@ impl SessionCtx {
     }
 }
 
-/// Discover skills from the project (`.aster/skills`) and user-global
-/// (`<config>/aster/skills`) roots, project taking precedence on name collision.
-/// Installed plugins contribute theirs next, and built-ins last, so a skills
-/// root shadows a plugin and a plugin shadows a built-in.
+/// Skills from `.aster/skills`, then `<config>/aster/skills`, then plugins, then
+/// built-ins: a skills root shadows a plugin and a plugin shadows a built-in.
 pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
     let mut roots = vec![repo_root.join(".aster").join("skills")];
     match crate::persist::home() {
-        Ok(home) => roots.push(home.join("skills")),
+        Ok(home) => {
+            aster_skills::install_defaults(&home.join("skills"));
+            roots.push(home.join("skills"));
+        }
         Err(e) => tracing::debug!("no global skills root: {e:#}"),
     }
     let (plugins, problems) = crate::plugins::installed(Some(repo_root));
@@ -308,10 +321,9 @@ pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
     )
 }
 
-/// A message opening with `/skill-name` says which skill to apply, the way a
-/// command reads. The model is told about skills by name, not by slash, so the
-/// ask is spelled out here rather than sent as a slash it has to guess at.
-/// Anything else, a path included, is left exactly as typed.
+/// A message opening with `/skill-name` says which skill to apply. The model is
+/// told about skills by name, so the ask is spelled out rather than sent as a
+/// slash it has to guess at. Anything else is left exactly as typed.
 pub(crate) fn expand_skill(text: &str, skills: &aster_skills::SkillSet) -> String {
     let Some(rest) = text.strip_prefix('/') else {
         return text.to_string();
@@ -328,10 +340,9 @@ pub(crate) fn expand_skill(text: &str, skills: &aster_skills::SkillSet) -> Strin
     }
 }
 
-/// Session-start snapshot: what the repository is, then platform, date, git
-/// state, and which package manager each lockfile pins. Taken once, so the
-/// model starts a turn knowing what a round of discovery commands would have
-/// told it.
+/// Session-start snapshot: the repository, platform, date, git state, and which
+/// package manager each lockfile pins. Taken once, so the model starts a turn
+/// knowing what a round of discovery commands would have told it.
 pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
     let mut note = crate::project::snapshot(repo_root)
         .map(|project| format!("{project}\n"))
@@ -654,6 +665,12 @@ const MAX_LIST_ENTRIES: usize = 200;
 const MAX_FIND_HITS: usize = 100;
 /// Nearby paths offered when a guessed path does not exist.
 const MAX_PATH_SUGGESTIONS: usize = 8;
+/// Naming the shape back is what gets the retry right; the bare complaint got
+/// the same argument-less call again.
+const MISSING_COMMAND: &str = "run_command needs a `command`: the binary to \
+    run, with its arguments in `args`. To run a shell line, pass \
+    command:`bash` with args [\"-lc\", \"<the line>\"]. Send the call again \
+    with `command` set";
 /// Maximum seconds a command may run before it is killed. Builds and test
 /// suites live here, so it is minutes; `agent.command_timeout_secs` overrides.
 const DEFAULT_COMMAND_TIMEOUT_SECS: usize = 300;
@@ -970,14 +987,19 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .await?
         .0
     };
-    name_session(&client, &ctx, &titling).await;
+    let mut naming = name_session(&client, &ctx, &titling, None);
 
     if crate::json_mode() {
+        // The caller has no transcript to re-read, so the name must land first.
+        if let Some(naming) = naming.take() {
+            let _ = tokio::time::timeout(TITLE_TIMEOUT, naming).await;
+        }
         let u = client.usage_snapshot();
         let out = json!({
             "reply": reply,
             "edits": edited,
             "usage": usage_json(&u),
+            "title": ctx.current_title(),
         });
         println!("{out}");
     } else {
@@ -991,6 +1013,9 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         {
             eprintln!("Resume this session with: aster --resume {}", writer.id());
         }
+    }
+    if let Some(naming) = naming {
+        let _ = tokio::time::timeout(TITLE_TIMEOUT, naming).await;
     }
     Ok(())
 }
@@ -1029,6 +1054,7 @@ fn prepare_turn(
         // drop the sandbox too, otherwise commands still fail on writes.
         yolo,
         reads: Default::default(),
+        previews: Default::default(),
         lookups: Default::default(),
         injected: Default::default(),
         agents,
@@ -1074,10 +1100,9 @@ fn estimate_reasoning_tokens(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
 }
 
-/// The turn's thinking, for the hosts that render it as a collapsed block.
-/// Sealed blocks carry no readable text, so a model that only reasons under
-/// encryption emits nothing rather than an empty panel. This whole-blob form is
-/// the fallback for endpoints that answered without streaming reasoning deltas.
+/// The turn's thinking, as a collapsed block. Sealed blocks carry no readable
+/// text, so a model reasoning under encryption emits nothing rather than an
+/// empty panel. The fallback for endpoints that did not stream deltas.
 fn emit_reasoning(details: &[ReasoningDetail], duration_ms: u64, emit: &impl Fn(Value)) {
     let text = reasoning_text(details);
     if !text.is_empty() {
@@ -1248,10 +1273,12 @@ async fn run_stream(
     )
     .await;
 
-    if result.is_ok()
-        && let Some(title) = name_session(&client, &ctx, &history).await
-    {
-        emit_line(&json!({ "type": "title", "title": title }));
+    // Await before `done`: a title past `done` reads as a turn that never finished.
+    if let Some(naming) = match result.is_ok() {
+        true => name_session(&client, &ctx, &history, Some(Arc::new(sink))),
+        false => None,
+    } {
+        let _ = tokio::time::timeout(TITLE_TIMEOUT, naming).await;
     }
 
     let u = client.usage_snapshot();
@@ -1267,10 +1294,9 @@ async fn run_stream(
     Ok(())
 }
 
-/// Spell out every `/skill-name` the conversation opens a question with, so a
-/// front-end can show the command the user typed and still have the model told
-/// what it meant. Every turn, not just the newest: a replayed history would
-/// otherwise carry a bare slash the model was never taught to read.
+/// Spell out every `/skill-name` in the conversation, so a front-end shows the
+/// command the user typed and the model is still told what it meant. Every turn:
+/// a replayed history would otherwise carry a slash it cannot read.
 fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
     let asks = |m: &ChatMessage| m.role == "user" && m.content.text().starts_with('/');
     if !turns.iter().any(asks) {
@@ -1282,11 +1308,9 @@ fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
     }
 }
 
-/// Attach the images the newest question mentions.
-///
-/// Only that turn: a front-end replays the whole conversation each turn, and
-/// re-encoding every image it ever carried would grow the request without
-/// telling the model anything it was not already told.
+/// Attach the images the newest question mentions. Only that turn: re-encoding
+/// every image a replayed conversation carried would grow the request without
+/// telling the model anything new.
 fn attach_images(turns: &mut [ChatMessage], repo_root: &Path) {
     if let Some(last) = turns.last_mut().filter(|m| m.role == "user") {
         last.content = crate::images::attach(&last.content.text(), repo_root);
@@ -1446,9 +1470,14 @@ pub(crate) async fn agent_turn_streaming(
         Some(&events),
     )
     .await?;
-    if let Some(title) = name_session(&client, &ctx, &history).await {
-        events(json!({ "type": "title", "title": title }));
-    }
+    // Detached on purpose: the TUI outlives the turn, so the title can land
+    // whenever it lands rather than holding the composer.
+    drop(name_session(
+        &client,
+        &ctx,
+        &history,
+        Some(Arc::new(events)),
+    ));
     Ok((reply, edited, compacted))
 }
 
@@ -1615,9 +1644,7 @@ async fn agent_loop(
     };
     // Harness-to-model steering. It rides a user turn because a mid-conversation
     // system message is not portable across providers, but it is recorded as
-    // `system` and never emitted: the user did not say it, so showing it as
-    // though they had would be a lie about who is talking, and replaying it into
-    // a later turn would re-nag the model about a turn that already ended.
+    // `system` and never emitted: the user did not say it.
     let steer = |wire: &mut Vec<Value>, content: String| {
         ctx.record(MessageEvent::system(content.clone()));
         wire.push(json!({ "role": "user", "content": content }));
@@ -1705,7 +1732,6 @@ async fn agent_loop(
                     .unwrap_or(false)
             });
         }
-        // Main session: push the agent tool when the registry is non-empty.
         if ctx.sub_agent.is_none() && !ctx.agents.is_empty() {
             tools.push(agent_tool_schema());
         }
@@ -2050,26 +2076,92 @@ not what the assistant did, and be concrete about the subject (\"Fix sandbox \
 seccomp filter\", not \"Debugging a bug\"). Keep the user's own nouns for \
 files, tools, and features.";
 
-/// User turns a session needs before it earns a name. Two is enough for the
-/// topic to be clear while the session is still worth finding later.
+/// User turns a session needs before it earns a name, when its opening message
+/// was too thin to name it from on its own.
 const TITLE_AFTER_TURNS: usize = 2;
+
+/// An opening message this substantial is already the topic. Either measure
+/// passes: the character count is what carries languages that do not space
+/// their words, where the word count is always one.
+const OPENER_WORDS: usize = 3;
+const OPENER_CHARS: usize = 12;
+
+/// Openers carrying no topic: a greeting, or a prod to keep going. A session
+/// that starts with one waits for the turn that says what it is about.
+const EMPTY_OPENERS: &[&str] = &[
+    "hi",
+    "hey",
+    "hello",
+    "yo",
+    "sup",
+    "help",
+    "continue",
+    "go",
+    "go on",
+    "ok",
+    "okay",
+    "k",
+    "thanks",
+    "ty",
+    "test",
+    "testing",
+    "ping",
+    "hi there",
+    "hello there",
+    "what's up",
+    "whats up",
+];
+
+/// True when the opening message says enough to name the session from it alone.
+/// Waiting for a second turn would leave the session unnamed while it is used.
+fn opener_names_session(first: &str) -> bool {
+    let text = first.trim();
+    let bare = text.trim_end_matches(['.', '!', '?', ' ']).to_lowercase();
+    if EMPTY_OPENERS.contains(&bare.as_str()) {
+        return false;
+    }
+    text.split_whitespace().count() >= OPENER_WORDS || text.chars().count() >= OPENER_CHARS
+}
+
+/// User turns this history needs before it earns a name.
+fn turns_before_naming(history: &[ChatMessage]) -> usize {
+    let opener = history
+        .iter()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.text());
+    match opener {
+        Some(first) if opener_names_session(&first) => 1,
+        _ => TITLE_AFTER_TURNS,
+    }
+}
+
+/// Longest a turn waits on its own naming call. The client's own timeout is
+/// minutes, which is far too long to hold a finished turn behind. A miss just
+/// leaves the session unnamed, and the next turn tries again.
+const TITLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Longest title kept; anything past this is the model ignoring the prompt.
 const TITLE_MAX_CHARS: usize = 60;
 
-/// Name the session once it has enough shape to be worth naming. Best-effort:
-/// a failure here must never cost the user their turn, so errors are logged and
-/// the session keeps its opening message as its name.
-async fn name_session(
+/// Name the session once it has shape: after the first turn when the opening
+/// message carries the topic, after the second otherwise. Best-effort, so a
+/// failure leaves the session named after its opening message.
+///
+/// Runs in the background, since titling is a second round-trip: the reply and
+/// `done` go out first. A caller whose process exits at the end of the turn MUST
+/// await the handle, or the runtime drop kills the request mid-flight.
+fn name_session(
     client: &AiClient,
     ctx: &SessionCtx,
     history: &[ChatMessage],
-) -> Option<String> {
+    sink: Option<Arc<ChatEventSink>>,
+) -> Option<tokio::task::JoinHandle<()>> {
     if ctx.sub_agent.is_some() {
         return None;
     }
     let turns = history.iter().filter(|m| m.role == "user").count();
-    if turns < TITLE_AFTER_TURNS {
+    let needed = turns_before_naming(history);
+    if turns < needed {
         return None;
     }
     // A recorded session names itself once and the transcript remembers it. An
@@ -2079,7 +2171,7 @@ async fn name_session(
         if ctx.is_titled() {
             return None;
         }
-    } else if turns != TITLE_AFTER_TURNS {
+    } else if turns != needed {
         return None;
     }
 
@@ -2093,16 +2185,24 @@ async fn name_session(
             content: title_context(history).into(),
         },
     ];
-    let reply = match client.complete_messages(&messages, 0.2).await {
-        Ok(reply) => reply,
-        Err(e) => {
-            tracing::debug!("could not name the session: {e:#}");
-            return None;
+    let client = client.clone();
+    let ctx = ctx.clone();
+    Some(tokio::spawn(async move {
+        let reply = match client.complete_messages(&messages, 0.2).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                tracing::debug!("could not name the session: {e:#}");
+                return;
+            }
+        };
+        let Some(title) = clean_title(&reply) else {
+            return;
+        };
+        ctx.record_title(&title);
+        if let Some(sink) = sink {
+            sink(json!({ "type": "title", "title": title }));
         }
-    };
-    let title = clean_title(&reply)?;
-    ctx.record_title(&title);
-    Some(title)
+    }))
 }
 
 /// The exchange the titler sees: user turns in full, assistant turns clipped,
@@ -2154,9 +2254,10 @@ async fn compact_if_needed(
     Ok((compacted.clone(), Some(compacted)))
 }
 
-/// True once history has grown past the tail that compaction keeps.
+/// True once there is a head to fold: the tail is kept verbatim, so a history
+/// no longer than it has nothing to summarize.
 pub(crate) fn can_compact(history: &[ChatMessage]) -> bool {
-    history.len() > COMPACT_KEEP_TAIL + 2
+    history.len() > COMPACT_KEEP_TAIL && history.iter().any(|m| !m.content.is_empty())
 }
 
 /// Fold everything but the last few turns into a summary, unconditionally.
@@ -2472,6 +2573,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The binary to run, e.g. `rg`, `cargo`, `npm`" },
+                    "description": { "type": "string", "description": "What this command does, in five to ten words, active voice, no trailing period, e.g. `Rebuild the webview bundle`. Shown to the user in place of the command line, so do not open with `Run`/`Ran`." },
                     "args": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -2480,7 +2582,22 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                     "turbo": { "type": "boolean", "description": "Run without network access. Use when the user asks for turbo mode or wants to work offline." },
                     "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode." }
                 },
-                "required": ["command"]
+                "required": ["command", "description"]
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "open_preview",
+            "description": "Open a page in the user's browser so they can see what you built, instead of only describing it. Call it once, at the end of a turn that produced something visual: a page, a component, a report, a diagram, a rendered document. `target` is either the URL of a server that is already running (`http://localhost:5173/pricing`) or a path to a file in the repo (`dist/index.html`, `docs/report.pdf`); a directory opens its index.html. A loopback URL nothing is listening on is refused, so start the dev server before you call this. Anything that is not loopback or a repo file asks the user first. Do not call it for a code-only change, and do not call it twice for the same page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "URL of a running server, or a repo-relative path to the file to open" },
+                    "description": { "type": "string", "description": "What the user is about to look at, in five to ten words, e.g. `The rebuilt pricing page` " }
+                },
+                "required": ["target"]
             }
         }
     }));
@@ -2704,16 +2821,8 @@ async fn exec_tool(
                 Some(path) => format!("{done}\n\n{path} sets the rules for this directory. Read it if you have not, and revisit this edit if it conflicts."),
                 None => done,
             }),
-        "run_command" => match str_arg("command").context("run_command needs a `command`") {
-            Ok(cmd) => {
-                let cmd_args: Vec<String> = args["args"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .map(|v| v.as_str().unwrap_or("").to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+        "run_command" => match command_argv(&args).context(MISSING_COMMAND) {
+            Ok((cmd, cmd_args)) => {
                 let env = ExecEnv {
                     repo_root,
                     policy,
@@ -2723,6 +2832,19 @@ async fn exec_tool(
                     yolo: ctx.yolo,
                 };
                 run_command_tool(&env, &cmd, &cmd_args, run_opts(&args, ctx)).await
+            }
+            Err(e) => Err(e),
+        },
+        "open_preview" => match str_arg("target").context("open_preview needs a `target`") {
+            Ok(target) => {
+                crate::preview::open_preview(
+                    repo_root,
+                    approver,
+                    ctx,
+                    &target,
+                    str_arg("description").as_deref(),
+                )
+                .await
             }
             Err(e) => Err(e),
         },
@@ -2784,10 +2906,9 @@ const PARALLEL_READ_TOOLS: [&str; 6] = [
 /// already dedupes it per range, against the file's mtime.
 const DEDUPED_LOOKUPS: [&str; 4] = ["list_files", "search_files", "find_files", "explore"];
 
-/// True once this exact lookup has been answered in this turn. Recording and
-/// testing are one step so two identical calls in the same batch cannot both
-/// miss. Anything outside [`DEDUPED_LOOKUPS`] is never a repeat and clears the
-/// cache instead: a command or an edit can change what a lookup would return.
+/// True once this exact lookup has been answered this turn. Recording and testing
+/// are one step so two identical calls in a batch cannot both miss. Anything
+/// outside [`DEDUPED_LOOKUPS`] clears the cache instead of deduping.
 fn is_repeat_lookup(ctx: &SessionCtx, name: &str, arguments: &str) -> bool {
     let Ok(mut lookups) = ctx.lookups.lock() else {
         return false;
@@ -3262,6 +3383,45 @@ async fn mcp_bridge(
     Ok(crate::mcp::render_result(&result))
 }
 
+/// The binary and its arguments, recovered from the shapes models send when
+/// `command` is not a plain string: the whole argv as a list, or the binary
+/// left in `args`. A shell line in `command` runs through `bash -lc`, and a
+/// leading flag is treated as a shell flag for the same reason.
+fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
+    let tail = string_list(&args["args"]);
+    match args["command"].as_str().filter(|s| !s.trim().is_empty()) {
+        Some(binary) => {
+            let looks_like_shell_line = tail.is_empty()
+                && binary
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, '|' | ';' | '>' | '<' | '&' | '`'));
+            match looks_like_shell_line {
+                true => Some(("bash".into(), vec!["-lc".into(), binary.to_string()])),
+                false => Some((binary.to_string(), tail)),
+            }
+        }
+        None => {
+            let mut argv = string_list(&args["command"]).into_iter().chain(tail);
+            let binary = argv.find(|a| !a.trim().is_empty())?;
+            match binary.starts_with('-') {
+                true => Some(("bash".into(), std::iter::once(binary).chain(argv).collect())),
+                false => Some((binary, argv.collect())),
+            }
+        }
+    }
+}
+
+fn string_list(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The sandbox switches as the model passed them, with the session's yolo state
 /// and configured timeout folded in.
 fn run_opts(args: &Value, ctx: &SessionCtx) -> RunOpts {
@@ -3318,13 +3478,9 @@ async fn authorize_exec(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Res
     authorize_credentials(env, binary, args).await
 }
 
-/// A tool that keeps its credentials outside the repository is asked about
-/// rather than refused. The sandbox denies those directories by default, which
-/// used to fail the command outright: `gh` could not read `~/.config/gh`, so
-/// every GitHub operation died even though a core skill prescribes `gh`.
-///
-/// An approval covers one command and one directory, so approving `gh` never
-/// lets the next `cat` read the token.
+/// A tool keeping its credentials outside the repository is asked about rather
+/// than refused, since the sandbox denies those directories by default. An
+/// approval covers one command and one directory, so `gh` never widens `cat`.
 async fn authorize_credentials(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Result<()> {
     if env.yolo {
         return Ok(());
@@ -3630,10 +3786,9 @@ pub(crate) fn configured_write_grants(repo_root: &Path) -> Grants {
     )
 }
 
-/// Seed the session's credential grants from `permissions.allow_credentials`
-/// (written `<command>:<dir>`) and the persisted store, whose entries are
-/// `<command>\t<dir>`. A malformed entry is dropped rather than failing the
-/// run: a typo in aster.yaml should not stop the agent from starting.
+/// Seed credential grants from `permissions.allow_credentials` (`<command>:<dir>`)
+/// and the persisted store (`<command>\t<dir>`). A malformed entry is dropped, so
+/// a typo in aster.yaml cannot stop the agent from starting.
 pub(crate) fn configured_credentials(
     permissions: &aster_policy::PermissionsConfig,
     repo_root: &Path,
@@ -3981,7 +4136,7 @@ async fn approve_outside_write(
 
 /// Ask the front-end to approve a pending action. Headless callers have no
 /// approver, so every request is a `No`.
-async fn request_approval(
+pub(crate) async fn request_approval(
     approver: Option<&UiSender>,
     preview: String,
     scope: Option<PathBuf>,

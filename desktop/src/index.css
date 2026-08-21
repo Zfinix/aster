@@ -1013,6 +1013,51 @@ h1 {
   min-height: 80px;
   font-size: 15.5px;
 }
+/* Sits under the composer, so a tip reads as a footnote to the opener rather
+   than a second heading. */
+/* One line, always: a tip is a glance, and two lines of it start to read as
+   instructions. Every tip is written short enough to fit beside the composer. */
+.hero-tip {
+  width: 100%;
+  max-width: 720px;
+  margin-top: 14px;
+  padding: 0 12px;
+  font-size: 13px;
+  /* Room for the chips, which stand taller than the prose around them. */
+  line-height: 1.8;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: tipIn 0.45s ease both;
+}
+/* A key to press or a control to go and find, boxed the way a keycap reads. */
+.tip-chip {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--raise-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+@keyframes tipIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-tip {
+    animation: none;
+  }
+}
 .home-work {
   width: 100%;
   max-width: 720px;

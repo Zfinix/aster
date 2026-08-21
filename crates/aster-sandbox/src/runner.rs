@@ -1,5 +1,6 @@
 //! Command execution inside the sandbox.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -150,8 +151,9 @@ pub async fn run_command(
     let pid = child.id();
     // Readers run as tasks so partial output survives a timeout; killing the
     // process group closes the pipes and lets them finish.
-    let stdout_task = tokio::spawn(read_capped(child.stdout.take()));
-    let stderr_task = tokio::spawn(read_capped(child.stderr.take()));
+    let (out_buf, err_buf) = (captured(), captured());
+    let stdout_task = tokio::spawn(read_capped(child.stdout.take(), out_buf.clone()));
+    let stderr_task = tokio::spawn(read_capped(child.stderr.take(), err_buf.clone()));
 
     let timed_out = tokio::time::timeout(timeout, child.wait()).await;
     if timed_out.is_err() {
@@ -160,15 +162,13 @@ pub async fn run_command(
         kill_process_group(pid);
     }
     // Bounded join: a grandchild that inherited the pipes can keep them open
-    // after the child exits, so never wait on the readers indefinitely.
+    // after the child exits, so never wait on the readers indefinitely. What
+    // the child wrote before that is already captured, and the grandchild is
+    // left alone: a command that backgrounds a server meant it to outlive the
+    // call, and dropping the read end would take the server down with it.
     let readers = async { tokio::join!(stdout_task, stderr_task) };
-    let (stdout, stderr) = match tokio::time::timeout(READER_GRACE, readers).await {
-        Ok((stdout, stderr)) => (stdout.unwrap_or_default(), stderr.unwrap_or_default()),
-        Err(_) => {
-            kill_process_group(pid);
-            (String::new(), String::new())
-        }
-    };
+    let _ = tokio::time::timeout(READER_GRACE, readers).await;
+    let (stdout, stderr) = (snapshot(&out_buf), snapshot(&err_buf));
 
     let Ok(status) = timed_out else {
         return Ok(CommandOutput {
@@ -195,35 +195,47 @@ const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 /// killed, in case a leftover grandchild still holds the pipes open.
 const READER_GRACE: Duration = Duration::from_secs(5);
 
+/// A stream's captured bytes, shared so a read still in progress can be
+/// snapshotted: a grandchild holding the pipe must not cost the output the
+/// child already wrote.
+type Captured = Arc<Mutex<(Vec<u8>, bool)>>;
+
+fn captured() -> Captured {
+    Arc::new(Mutex::new((Vec::new(), false)))
+}
+
+/// The bytes read so far, as the caller renders them.
+fn snapshot(captured: &Captured) -> String {
+    let (buf, truncated) = &*captured.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = String::from_utf8_lossy(buf).into_owned();
+    if *truncated {
+        out.push_str("\n[output truncated]");
+    }
+    out
+}
+
 /// Read a stream to the end, keeping at most [`MAX_CAPTURE_BYTES`] and
 /// draining the rest so the child never blocks on a full pipe.
-async fn read_capped<R>(reader: Option<R>) -> String
+async fn read_capped<R>(reader: Option<R>, into: Captured)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let Some(mut reader) = reader else {
-        return String::new();
+        return;
     };
-    let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
-    let mut truncated = false;
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) => break,
-            Ok(n) if buf.len() < MAX_CAPTURE_BYTES => {
-                let take = n.min(MAX_CAPTURE_BYTES - buf.len());
+            Ok(n) => {
+                let (buf, truncated) = &mut *into.lock().unwrap_or_else(|e| e.into_inner());
+                let take = n.min(MAX_CAPTURE_BYTES.saturating_sub(buf.len()));
                 buf.extend_from_slice(&chunk[..take]);
-                truncated = take < n;
+                *truncated |= take < n;
             }
-            Ok(_) => truncated = true,
             Err(_) => break,
         }
     }
-    let mut out = String::from_utf8_lossy(&buf).into_owned();
-    if truncated {
-        out.push_str("\n[output truncated]");
-    }
-    out
 }
 
 /// SIGKILL the child's whole process group: `kill_on_drop` only reaches the

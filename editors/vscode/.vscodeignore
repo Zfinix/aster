@@ -7,3 +7,7 @@ vite.config.ts
 out/**/*.map
 bun.lock
 .gitignore
+scripts/**
+out/devhost/**
+out/icons.html
+vite.web.config.ts

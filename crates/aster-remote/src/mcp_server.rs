@@ -6,11 +6,13 @@ use std::env;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use ulid::Ulid;
 
 use crate::telegram::{Api, REACTIONS};
 
 const PROTOCOL_VERSION: &str = "2026-07-28";
 const LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
+const MAX_SCRATCH_STEM: usize = 48;
 
 /// Serve MCP over stdio until the host closes stdin.
 pub async fn run_mcp_telegram() -> Result<()> {
@@ -115,11 +117,11 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "send_code_page",
-            "description": "Publish code or a long report as a telegra.ph page and send its link; it opens inside Telegram with proper monospace formatting. Use this instead of pasting more than ~40 lines of code into the chat. Pages are unlisted but publicly reachable, so never publish secrets, keys, or proprietary code the user has not asked to share.",
+            "description": "Send code or a long report to the chat as a private attachment (a .txt document), instead of pasting more than ~40 lines into the chat. It stays private to this chat and can be deleted; it is never published anywhere public. The rendered file keeps the title as its filename.",
             "inputSchema": { "type": "object", "required": ["title", "code"], "properties": {
-                "title": { "type": "string", "description": "Page title, e.g. the file path" },
-                "code": { "type": "string", "description": "The code or preformatted text to publish" },
-                "note": { "type": "string", "description": "Optional one-line message sent with the link" },
+                "title": { "type": "string", "description": "Filename for the attachment, e.g. the file path" },
+                "code": { "type": "string", "description": "The code or preformatted text to send" },
+                "note": { "type": "string", "description": "Optional one-line caption above the document" },
             }},
         },
         {
@@ -203,18 +205,13 @@ async fn dispatch(
         "send_code_page" => {
             let title = text("title").context("title is required")?;
             let code = text("code").context("code is required")?;
-            let url = publish_telegraph_page(&title, &code).await?;
-            let message = match text("note") {
-                Some(note) => format!("{note}\n{url}"),
-                None => url.clone(),
-            };
-            let sent = api
-                .call(
-                    "sendMessage",
-                    json!({ "chat_id": chat_id, "text": message }),
-                )
-                .await?;
-            json!({ "ok": true, "url": url, "message_id": sent.get("message_id") })
+            let path = write_scratch_document(&title, &code).await?;
+            let result = api
+                .send_document_file(chat_id, &path, text("note").as_deref())
+                .await;
+            let _ = tokio::fs::remove_file(&path).await;
+            let sent = result?;
+            json!({ "ok": true, "message_id": sent.get("message_id") })
         }
         "send_poll" => {
             let question = text("question").context("question is required")?;
@@ -243,45 +240,21 @@ async fn dispatch(
     Ok(result.to_string())
 }
 
-/// Publish preformatted text on telegra.ph and return the page URL.
-/// Anonymous account per call; pages are unlisted but public.
-pub(crate) async fn publish_telegraph_page(title: &str, code: &str) -> Result<String> {
-    let http = reqwest::Client::new();
-    let account: Value = http
-        .post("https://api.telegra.ph/createAccount")
-        .json(&json!({ "short_name": "aster" }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let token = account
-        .get("result")
-        .and_then(|r| r.get("access_token"))
-        .and_then(Value::as_str)
-        .context("telegra.ph did not return an access token")?;
-
-    let content = json!([{ "tag": "pre", "children": [code] }]);
-    let page: Value = http
-        .post("https://api.telegra.ph/createPage")
-        .json(&json!({
-            "access_token": token,
-            "title": title,
-            "content": content.to_string(),
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    if !page.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        let error = page
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        anyhow::bail!("telegra.ph createPage failed: {error}");
+/// Write `code` to a throwaway `.txt` file in the system temp dir and return its
+/// path, sanitized from `title` so the chat attachment gets a readable name.
+/// The file is deleted right after it uploads, leaving no public trace.
+pub(crate) async fn write_scratch_document(title: &str, code: &str) -> Result<String> {
+    let mut stem = String::with_capacity(title.len());
+    for ch in title.chars().take(MAX_SCRATCH_STEM) {
+        if ch.is_ascii_alphanumeric() {
+            stem.push(ch.to_ascii_lowercase());
+        } else if !stem.ends_with('-') {
+            stem.push('-');
+        }
     }
-    page.get("result")
-        .and_then(|r| r.get("url"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .context("telegra.ph returned no page url")
+    let stem = stem.trim_matches('-');
+    let stem = if stem.is_empty() { "document" } else { stem };
+    let path = std::env::temp_dir().join(format!("{stem}-{}.txt", Ulid::new()));
+    tokio::fs::write(&path, code).await?;
+    Ok(path.display().to_string())
 }

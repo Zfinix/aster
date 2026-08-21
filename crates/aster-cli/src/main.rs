@@ -5,6 +5,7 @@ mod auth;
 mod budget;
 mod chat;
 mod config;
+mod credentials;
 mod edits;
 mod fix;
 mod git;
@@ -18,11 +19,13 @@ mod models;
 mod persist;
 mod picker;
 mod plugins;
+mod preview;
 mod project;
 mod provider;
 mod redact;
 mod remote;
 mod review;
+mod serve;
 mod sessions;
 mod settings;
 mod skills;
@@ -104,6 +107,8 @@ enum Command {
     Memory(sessions::MemoryArgs),
     /// Show what the next turn would run with: provider, model, limits, wiring.
     Status,
+    /// Configure Aster: a form in a terminal, get/set/unset in a script.
+    Config(config::ConfigArgs),
     /// Install, list, and remove agent skills.
     Skills(skills::SkillsArgs),
     /// Install, list, and validate Agent Plugins packages.
@@ -121,6 +126,8 @@ enum Command {
     Models(models::ModelsArgs),
     /// Drive the agent remotely from a messaging channel (Telegram).
     Remote(remote::RemoteArgs),
+    /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
+    Serve(serve::ServeArgs),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -178,13 +185,14 @@ async fn main() -> Result<()> {
     let result = match command {
         Command::Init(args) => init::run(args).await,
         Command::Login => auth::login().await,
-        Command::Logout => config::clear_token(),
+        Command::Logout => credentials::clear_token(),
         Command::Review(args) => review::run(args).await,
         Command::Chat(args) => chat::run(args).await,
         Command::Fix(args) => fix::run(args).await,
         Command::Sessions(args) => sessions::run_sessions(args).await,
         Command::Memory(args) => sessions::run_memory(args),
         Command::Status => status::run(),
+        Command::Config(args) => config::run(args),
         Command::Skills(args) => skills::run(args).await,
         Command::Plugins(args) => plugins::run(args, std::env::current_dir().ok().as_deref()),
         Command::Web(args) => web::run(args).await,
@@ -193,6 +201,7 @@ async fn main() -> Result<()> {
         Command::Provider(args) => provider::run(args),
         Command::Models(args) => models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
+        Command::Serve(args) => serve::run(args).await,
     };
 
     // Batched spans are still in memory at this point, including the ones a

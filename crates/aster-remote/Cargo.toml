@@ -12,4 +12,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-std"] }
 tracing = { workspace = true }
+ulid = { workspace = true }
+aster-ai = { path = "../aster-ai" }
 aster-skills = { path = "../aster-skills" }

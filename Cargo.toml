@@ -18,6 +18,8 @@ members = [
     "crates/aster-tools",
     "crates/aster-sandbox",
     "crates/aster-web",
+    "crates/aster-shortcuts",
+    "crates/aster-serve",
     "crates/aster-remote",
     "crates/aster-cli",
 ]

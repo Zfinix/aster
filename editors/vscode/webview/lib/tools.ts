@@ -75,8 +75,35 @@ export function humanize(name: string): string {
   return full.length <= LABEL_MAX ? full : label;
 }
 
-/** Keys worth putting in a header, most identifying first. */
-const SALIENT = ["query", "url", "path", "command", "name", "id", "prompt", "message", "text"];
+/** Keys worth putting in a header, most identifying first. A label the tool
+ *  wrote for itself leads: it is the only argument meant to be read. */
+const SALIENT = [
+  "title",
+  "label",
+  "description",
+  "summary",
+  "query",
+  "url",
+  "path",
+  "command",
+  "name",
+  "id",
+  "prompt",
+  "message",
+  "text",
+];
+
+/** Past this an argument has stopped naming the call and started reciting it. */
+const DETAIL_MAX = 72;
+
+/** An unnamed argument this long is the call's payload, not a name for it. */
+const PAYLOAD_MIN = 200;
+
+/** One line, capped. A header that wraps is no longer a header. */
+function asLabel(value: string): string {
+  const line = value.split("\n", 1)[0].replace(/\s+/g, " ").trim();
+  return line.length <= DETAIL_MAX ? line : `${line.slice(0, DETAIL_MAX - 1).trimEnd()}…`;
+}
 
 /** The one argument that says what an MCP call was about. */
 function salientArg(values: Record<string, unknown>): string | undefined {
@@ -86,9 +113,40 @@ function salientArg(values: Record<string, unknown>): string | undefined {
   };
   for (const key of SALIENT) {
     const found = strings(key);
-    if (found) return found;
+    if (found) return asLabel(found);
   }
-  return Object.keys(values).map(strings).find(Boolean);
+  // Nothing named itself, so what is left has to earn the header. A script or a
+  // paragraph is not a name for what ran, and smeared across the row it buries
+  // the tool that did run; the humanized tool name reads better than either. An
+  // unbroken value is still likely an identifier, so only a payload is refused.
+  const spare = Object.keys(values).map(strings).find(Boolean);
+  if (!spare || spare.includes("\n") || spare.length > PAYLOAD_MIN) return undefined;
+  return asLabel(spare);
+}
+
+/** One hit from an `aster_mcp` search, which the model reads as JSON and the
+ *  reader is better served seeing as a list of tools it found. */
+export type McpMatch = { id: string; server: string; name: string; description: string };
+
+/** The matches a `search` call returned, or undefined when this is not a search
+ *  or the payload is not the shape we expect. */
+export function mcpMatches(call: ToolCall): McpMatch[] | undefined {
+  if (call.name !== "aster_mcp" || args(call).action !== "search" || call.error) return undefined;
+  const raw = call.result?.trim();
+  if (!raw || !raw.startsWith("{")) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  const list = (parsed as { matches?: unknown }).matches;
+  if (!Array.isArray(list)) return undefined;
+  const matches = list.filter(
+    (m): m is McpMatch =>
+      typeof m === "object" && m !== null && typeof (m as McpMatch).id === "string"
+  );
+  return matches.length ? matches : undefined;
 }
 
 /** The MCP tool an `execute` call names, e.g. `websearch/search`. */
@@ -162,7 +220,12 @@ export function describeTool(call: ToolCall): ToolDescription {
       // The model's own summary stands alone: the terminal icon already says a
       // command ran, and "Ran Rebuild the bundle" doubles the verb.
       const summary = arg(call, "description");
-      if (summary) return { detail: summary };
+      if (summary) {
+        // Strip a leading "Ran "/"Run "/"Running " the model often includes,
+        // since the terminal icon already conveys the verb.
+        const stripped = summary.replace(/^(?:Ran|Run|Running)\s+/i, "");
+        return { detail: stripped };
+      }
       return {
         verb: call.result === undefined ? "Run" : "Ran",
         detail: commandLine(call),
@@ -193,6 +256,8 @@ export function describeTool(call: ToolCall): ToolDescription {
       return { verb: "Search", detail: arg(call, "query") };
     case "edit_file":
       return { verb: "Edit", detail: arg(call, "path"), code: true };
+    case "open_preview":
+      return { verb: "Opened", detail: arg(call, "target"), code: true };
     case "remember":
       return { verb: "Remember", detail: arg(call, "fact") };
     case "recall":
@@ -260,6 +325,11 @@ export function resultHint(call: ToolCall): string | undefined {
   const trimmed = displayOutput(call) ?? "";
   if (!trimmed) return "empty";
   if (trimmed === "no matches") return "no matches";
+
+  // A search's payload is JSON, so its line count says nothing. Count what it
+  // actually found.
+  const found = mcpMatches(call);
+  if (found) return `${found.length} ${found.length === 1 ? "tool" : "tools"}`;
 
   const lines = trimmed.split("\n").length;
   switch (call.name) {

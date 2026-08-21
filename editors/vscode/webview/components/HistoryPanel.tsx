@@ -1,35 +1,51 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionSummary } from "../../src/protocol";
-import { SearchIcon } from "./icons";
-import { groupSessions, relativeTime } from "../lib/history";
+import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
+import { filterSessions, relativeTime } from "../lib/history";
 
 /**
  * Session history, as a command-palette popup: type to filter, arrows to move,
- * Enter to open. Rows group under when they happened, so the list reads as a
- * timeline rather than an undifferentiated stack.
+ * Enter to open. One line a session, because a list you scan for a title reads
+ * faster without a second line of metadata under every row. Rename and delete
+ * live on the row and appear on hover, so the list stays a list until you want
+ * to change something in it.
  */
 export function HistoryPanel({
   sessions,
   activeId,
   onPick,
+  onRename,
+  onDelete,
   onClose,
 }: {
   sessions: SessionSummary[];
   activeId: string | null;
   onPick: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
+  /** The row being renamed, if any: its id and the name typed so far. */
+  const [editing, setEditing] = useState<{ id: string; title: string }>();
   const listRef = useRef<HTMLDivElement>(null);
 
-  const groups = useMemo(() => groupSessions(sessions, query), [sessions, query]);
-  const flat = useMemo(() => groups.flatMap((g) => g.sessions), [groups]);
+  const rows = useMemo(() => filterSessions(sessions, query), [sessions, query]);
 
   // A shorter result set must never leave the cursor pointing past the end.
   useEffect(() => setCursor(0), [query]);
 
+  const commit = () => {
+    if (editing && editing.title.trim()) {
+      onRename(editing.id, editing.title.trim());
+    }
+    setEditing(undefined);
+  };
+
   useEffect(() => {
+    // While a name is being typed, the list's own keys belong to the input.
+    if (editing) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onClose();
@@ -38,21 +54,21 @@ export function HistoryPanel({
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         setCursor((c) => {
-          if (flat.length === 0) return 0;
+          if (rows.length === 0) return 0;
           const next = e.key === "ArrowDown" ? c + 1 : c - 1;
-          return (next + flat.length) % flat.length;
+          return (next + rows.length) % rows.length;
         });
         return;
       }
-      if (e.key === "Enter" && flat[cursor]) {
+      if (e.key === "Enter" && rows[cursor]) {
         e.preventDefault();
-        onPick(flat[cursor].id);
+        onPick(rows[cursor].id);
         onClose();
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, onPick, flat, cursor]);
+  }, [onClose, onPick, rows, cursor, editing]);
 
   useEffect(() => {
     listRef.current
@@ -60,7 +76,6 @@ export function HistoryPanel({
       ?.scrollIntoView({ block: "nearest" });
   }, [cursor]);
 
-  let index = -1;
   return (
     <div
       className="history-overlay"
@@ -70,71 +85,92 @@ export function HistoryPanel({
         <div className="history-search">
           <SearchIcon />
           <input
-            placeholder="Search sessions"
+            placeholder="Search sessions…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             autoFocus
             spellCheck={false}
             aria-label="Search sessions"
           />
-          {sessions.length > 0 && (
-            <span className="history-count">
-              {flat.length}/{sessions.length}
-            </span>
-          )}
         </div>
 
         <div className="history-list" ref={listRef} role="listbox">
-          {flat.length === 0 ? (
+          {rows.length === 0 ? (
             <div className="history-empty">
               {sessions.length === 0
                 ? "No saved sessions in this repo yet."
                 : `Nothing matches "${query}".`}
             </div>
           ) : (
-            groups.map((group) => (
-              <div className="history-group" key={group.label}>
-                <div className="history-group-label">{group.label}</div>
-                {group.sessions.map((s) => {
-                  index += 1;
-                  const at = index;
-                  return (
+            rows.map((s, at) => (
+              <div
+                key={s.id}
+                className="history-row"
+                role="option"
+                aria-selected={s.id === activeId}
+                data-cursor={at === cursor}
+                data-active={s.id === activeId}
+                data-editing={editing?.id === s.id}
+                onMouseMove={() => setCursor(at)}
+              >
+                {editing?.id === s.id ? (
+                  <input
+                    className="history-rename"
+                    value={editing.title}
+                    autoFocus
+                    spellCheck={false}
+                    aria-label="Session name"
+                    onChange={(e) => setEditing({ id: s.id, title: e.target.value })}
+                    onBlur={commit}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commit();
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setEditing(undefined);
+                      }
+                    }}
+                  />
+                ) : (
+                  <>
                     <button
-                      key={s.id}
-                      className="history-row"
-                      role="option"
-                      aria-selected={s.id === activeId}
-                      data-cursor={at === cursor}
-                      data-active={s.id === activeId}
-                      onMouseMove={() => setCursor(at)}
+                      className="history-open"
+                      // What the row no longer spends a second line on.
+                      title={`${s.turns} turn${s.turns === 1 ? "" : "s"}${s.model ? ` · ${s.model}` : ""}`}
                       onClick={() => {
                         onPick(s.id);
                         onClose();
                       }}
                     >
-                      <span className="history-row-main">
-                        <span className="history-row-title">
-                          {s.title || "Untitled session"}
-                        </span>
-                        <span className="history-row-when">
-                          {relativeTime(s.created_at)}
-                        </span>
-                      </span>
-                      <span className="history-row-meta">
-                        {s.turns} turn{s.turns === 1 ? "" : "s"}
-                        {s.model ? <span className="history-dot">·</span> : null}
-                        {s.model}
-                      </span>
+                      <span className="history-row-title">{s.title || "Untitled session"}</span>
                     </button>
-                  );
-                })}
+                    <span className="history-row-when">{relativeTime(s.created_at)}</span>
+                    <span className="history-row-actions">
+                      <button
+                        className="icon-btn"
+                        title="Rename"
+                        aria-label="Rename session"
+                        onClick={() => setEditing({ id: s.id, title: s.title })}
+                      >
+                        <PencilIcon />
+                      </button>
+                      <button
+                        className="icon-btn history-delete"
+                        title="Delete"
+                        aria-label="Delete session"
+                        onClick={() => onDelete(s.id)}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </span>
+                  </>
+                )}
               </div>
             ))
           )}
-        </div>
-
-        <div className="history-foot">
-          <kbd>↑↓</kbd> navigate <kbd>↵</kbd> open <kbd>esc</kbd> close
         </div>
       </div>
     </div>

@@ -2,10 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useDismiss } from "../lib/dismiss";
 import { modelShort } from "../lib/model";
 
-/** Unfiltered, an endpoint like OpenRouter lists hundreds; the search box is
- *  right there, and the note says how many are behind it. */
-const SHOWN = 20;
-
 interface Row {
   id: string;
   label: string;
@@ -13,15 +9,17 @@ interface Row {
 }
 
 /**
- * Model picker: the endpoint's own catalog, searchable, with the vetted models
- * first and a checkmark on the active one. The catalog is re-read each time
- * this opens, so a provider switch or a newly released model shows up without
- * anyone having to know its id.
+ * Model picker: the vetted coding models, with the endpoint's whole catalog one
+ * search away. Listing hundreds of models nobody would pick is not a menu, so
+ * the rest of the catalog appears only once there is something to match on. The
+ * catalog is re-read each time this opens, so a provider switch or a newly
+ * released model shows up without anyone having to know its id.
  */
 export function ModelPicker({
   model,
   models,
   recommended,
+  recent,
   loading,
   error,
   onSelect,
@@ -31,6 +29,7 @@ export function ModelPicker({
   model: string | null;
   models: string[];
   recommended: string[];
+  recent: string[];
   loading: boolean;
   error?: string;
   onSelect: (model: string) => void;
@@ -50,25 +49,41 @@ export function ModelPicker({
 
   useEffect(() => setActive(0), [query]);
 
-  const { top, rest, hidden } = useMemo(() => {
-    const q = query.trim().toLowerCase();
+  const typed = query.trim();
+
+  const { top, rest, recents } = useMemo(() => {
+    const q = typed.toLowerCase();
     // The label is humanized, so the exact id is what the second line is for.
-    const rows = models.map((id) => ({ id, label: modelShort(id), detail: id }));
+    const toRow = (id: string) => ({ id, label: modelShort(id), detail: id });
     // Matching the id as well as the readable name means "sonnet", "anthropic",
     // and "claude-sonnet-5" all land on the same row.
-    const hits = q
-      ? rows.filter((r) => r.id.toLowerCase().includes(q) || r.label.toLowerCase().includes(q))
-      : rows;
+    const matches = (r: Row) =>
+      !q || r.id.toLowerCase().includes(q) || r.label.toLowerCase().includes(q);
 
-    const isTop = (r: Row) => recommended.includes(r.id);
-    const top = hits.filter(isTop);
-    const all = hits.filter((r) => !isTop(r));
-    return { top, rest: q ? all : all.slice(0, SHOWN), hidden: q ? 0 : Math.max(0, all.length - SHOWN) };
-  }, [models, recommended, query]);
+    // Ordered by the vetted list, not by however the endpoint returned its
+    // catalog, so the strongest coding model stays the first thing offered.
+    const top = recommended.filter((id) => models.includes(id)).map(toRow).filter(matches);
+    // Picked before, minus what Recommended already shows, so no id appears twice.
+    const recents = recent
+      .filter((id) => models.includes(id) && !recommended.includes(id))
+      .map(toRow)
+      .filter(matches);
+    // Idle, the catalog is only the menu when nothing vetted survived it, which
+    // is what a switch to an endpoint with its own ids leaves behind.
+    const rest = q
+      ? models
+          .filter((id) => !recommended.includes(id) && !recent.includes(id))
+          .map(toRow)
+          .filter(matches)
+      : top.length || recents.length
+        ? []
+        : models.map(toRow);
+    return { top, rest, recents };
+  }, [models, recommended, recent, typed]);
 
-  // `Default` is a row like any other, so arrow keys reach it.
-  const flat: (Row | null)[] = [null, ...top, ...rest];
-  const typed = query.trim();
+  // `Default` is a row like any other, so arrow keys reach it — but it answers
+  // no search, so a query drops it and Enter lands on the first real match.
+  const flat: (Row | null)[] = typed ? [...recents, ...top, ...rest] : [null, ...recents, ...top, ...rest];
   const exact = models.some((m) => m.toLowerCase() === typed.toLowerCase());
   const custom = typed && !exact ? typed : null;
   const options = custom ? [...flat, custom] : flat;
@@ -146,28 +161,30 @@ export function ModelPicker({
       <div className="cmd-list" role="listbox">
         {error && <div className="cmd-note">{error}</div>}
 
-        <div className="cmd-section">{row(null, "default")}</div>
+        {!typed && <div className="cmd-section">{row(null, "default")}</div>}
+
+        {recents.length > 0 && (
+          <div className="cmd-section">
+            <div className="cmd-section-title">Recent</div>
+            {recents.map((r) => row(r, `recent:${r.id}`))}
+          </div>
+        )}
 
         {top.length > 0 && (
           <div className="cmd-section">
-            <div className="cmd-section-title">Recommended</div>
+            <div className="cmd-section-title">{typed ? "Recommended" : "Best for coding"}</div>
             {top.map((r) => row(r, r.id))}
           </div>
         )}
 
         {rest.length > 0 && (
           <div className="cmd-section">
-            <div className="cmd-section-title">{query ? "Matches" : "Available"}</div>
+            <div className="cmd-section-title">{typed ? "Matches" : "Available"}</div>
             {rest.map((r) => row(r, r.id))}
-            {hidden > 0 && <div className="cmd-note">{hidden} more; type to search</div>}
           </div>
         )}
 
         {custom && <div className="cmd-section">{row(custom, "custom")}</div>}
-
-        {options.length === 1 && !loading && (
-          <div className="cmd-empty">No model matches. Type a full id to use it anyway.</div>
-        )}
       </div>
     </div>
   );

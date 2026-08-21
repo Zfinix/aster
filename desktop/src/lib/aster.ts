@@ -25,6 +25,10 @@ export function listRepoFiles(repoPath: string): Promise<string[]> {
   return invoke<string[]>("list_repo_files", { repoPath });
 }
 
+export function openExternal(url: string): Promise<void> {
+  return invoke<void>("open_external", { url });
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;

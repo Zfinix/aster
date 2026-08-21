@@ -5,6 +5,7 @@ import { useStickToBottom } from "../lib/useStickToBottom";
 import { NewItemsPill } from "../interior/new-items-pill";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { CopyButton } from "./CopyButton";
+import { ErrorBox } from "./ErrorBox";
 import { InfoCard } from "./InfoCard";
 import { Markdown } from "./Markdown";
 import { QueuedTurn } from "./QueuedTurn";
@@ -86,6 +87,19 @@ export function Thread({
                 </div>
               );
             }
+            // Where the history the model sees restarts. What is above stays
+            // readable, so the break has to be legible as one.
+            if (turn.role === "compaction") {
+              return (
+                <div key={turn.id} className="turn-divider turn-compaction" role="separator">
+                  <span className="turn-divider-line" />
+                  <span className="turn-divider-label">
+                    Compacted {turn.folded} {turn.folded === 1 ? "message" : "messages"}
+                  </span>
+                  <span className="turn-divider-line" />
+                </div>
+              );
+            }
             return (
               <div key={turn.id} className="turn-assistant">
                 {/* Arrival order, so steps sit under the thought that led to them. */}
@@ -125,17 +139,11 @@ export function Thread({
                   <QuestionPrompt question={turn.question} onAnswer={onAnswer} />
                 )}
 
-                {turn.errorMsg && <div className="turn-error">{turn.errorMsg}</div>}
+                {turn.errorMsg && <ErrorBox message={turn.errorMsg} />}
 
                 {/* Stays up for the whole turn, including the gap between the last
                     tool result and the reply, which otherwise reads as a hang. */}
                 {turn.pending && !turn.approval && !turn.question && <StatusLine />}
-
-                {!turn.pending && turn.text && (
-                  <div className="turn-actions">
-                    <CopyButton text={turn.text} label="Copy reply" />
-                  </div>
-                )}
 
                 {turn.stopped && <div className="turn-stopped">Stopped</div>}
 
@@ -151,6 +159,14 @@ export function Thread({
                         {path}
                       </button>
                     ))}
+                  </div>
+                )}
+
+                {/* Last, so the zero-height row hangs in the gap below the turn
+                    rather than over whatever else trails it. */}
+                {!turn.pending && turn.text && (
+                  <div className="turn-actions">
+                    <CopyButton text={turn.text} label="Copy reply" />
                   </div>
                 )}
               </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useDismiss } from "../lib/dismiss";
 
 /** One choice in an inline segmented control, e.g. an effort level. */
@@ -15,6 +15,9 @@ export type MenuItem =
       label: string;
       detail?: string;
       hint?: string;
+      /** Drawn in the row's leading column; every row keeps the column whether
+       *  or not it fills it, so labels stay on one line down the list. */
+      icon?: ReactNode;
       /** The `/name` this row completes to when the query was typed into the
        *  composer. Rows without one always run rather than complete. */
       slash?: string;
@@ -33,6 +36,7 @@ export type MenuItem =
       label: string;
       value: string;
       options: MenuOption[];
+      icon?: ReactNode;
       onSelect: (value: string) => void;
     };
 
@@ -41,8 +45,6 @@ export interface MenuSection {
   items: MenuItem[];
   /** Rows to show before anything is typed; a query searches all of them. */
   limit?: number;
-  /** Set by `rank` when the section was cut to its limit. */
-  note?: string;
 }
 
 const KEYS = ["Escape", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter", "Tab"];
@@ -169,6 +171,7 @@ export function CommandMenu({
                   data-active={at === active}
                   onMouseEnter={() => setActive(at)}
                 >
+                  <span className="cmd-icon">{item.icon}</span>
                   <span className="cmd-label">{item.label}</span>
                   <span className="cmd-options">
                     {item.options.map((option) => (
@@ -202,6 +205,7 @@ export function CommandMenu({
                     onRun(item, false);
                   }}
                 >
+                  <span className="cmd-icon">{item.icon}</span>
                   <span className="cmd-body">
                     <span className="cmd-label">{item.label}</span>
                     {item.detail && <span className="cmd-detail">{item.detail}</span>}
@@ -210,7 +214,6 @@ export function CommandMenu({
                 </div>
               );
             })}
-            {section.note && <div className="cmd-note">{section.note}</div>}
           </div>
         ))}
       </div>
@@ -244,15 +247,12 @@ export function rank(sections: MenuSection[], query: string): MenuSection[] {
     .map(({ title, items }) => ({ title, items }));
 }
 
-/** Unfiltered, a long section would bury every other one; the note says so. */
+/** Unfiltered, a long section would bury every other one. The filter box says
+ *  what to do about it, so the cut needs no caption of its own. */
 function capped(section: MenuSection): MenuSection {
   const limit = section.limit;
   if (!limit || section.items.length <= limit) return section;
-  return {
-    ...section,
-    items: section.items.slice(0, limit),
-    note: `${section.items.length - limit} more; type to filter`,
-  };
+  return { ...section, items: section.items.slice(0, limit) };
 }
 
 function score(item: MenuItem, title: string | undefined, q: string): number | null {

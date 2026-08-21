@@ -11,7 +11,7 @@ review:
 permissions:
   mode: manual
 ";
-    let out = with_review_key(yaml, "model", "new-model");
+    let out = with_key(yaml, "review", "model", "new-model");
     assert!(out.contains("  model: new-model"), "{out}");
     assert!(!out.contains("old-model"), "{out}");
     assert!(out.contains("# reviewed by the team"), "{out}");
@@ -21,7 +21,7 @@ permissions:
 #[test]
 fn review_key_is_added_inside_an_existing_block() {
     let yaml = "review:\n  base_url: https://x.test/v1\npermissions:\n  mode: manual\n";
-    let out = with_review_key(yaml, "model", "m1");
+    let out = with_key(yaml, "review", "model", "m1");
     let review = out.find("review:").unwrap();
     let perms = out.find("permissions:").unwrap();
     let model = out.find("  model: m1").unwrap();
@@ -30,8 +30,11 @@ fn review_key_is_added_inside_an_existing_block() {
 
 #[test]
 fn review_block_is_created_when_the_file_lacks_one() {
-    assert_eq!(with_review_key("", "model", "m1"), "review:\n  model: m1\n");
-    let out = with_review_key("permissions:\n  mode: edit\n", "model", "m1");
+    assert_eq!(
+        with_key("", "review", "model", "m1"),
+        "review:\n  model: m1\n"
+    );
+    let out = with_key("permissions:\n  mode: edit\n", "review", "model", "m1");
     assert!(out.ends_with("review:\n  model: m1\n"), "{out}");
     assert!(out.starts_with("permissions:"), "{out}");
 }
@@ -169,14 +172,14 @@ fn web_search_absent_leaves_none() {
 #[test]
 fn pins_sees_only_a_key_the_review_block_sets_itself() {
     let sets = "review:\n  model: pinned\n  base_url: https://x/v1\n";
-    assert!(pins(sets, "model"));
-    assert!(pins(sets, "base_url"));
-    assert!(!pins(sets, "effort"));
+    assert!(pins(sets, "review", "model"));
+    assert!(pins(sets, "review", "base_url"));
+    assert!(!pins(sets, "review", "effort"));
 
     // A key of the same name under another block is not a review override.
     let elsewhere = "review:\n  effort: high\npermissions:\n  model: no\n";
-    assert!(!pins(elsewhere, "model"));
-    assert!(!pins("", "model"));
+    assert!(!pins(elsewhere, "review", "model"));
+    assert!(!pins("", "review", "model"));
 }
 
 #[test]

@@ -7,6 +7,8 @@ export interface ToolCall {
   arguments: string;
   result?: string;
   error?: boolean;
+  /** The turn was cancelled before this call finished, so it never will. */
+  stopped?: boolean;
 }
 
 export interface ReviewData {
@@ -17,6 +19,8 @@ export interface ReviewData {
   summary: string;
   usage?: UsageSummary;
   errorMsg?: string;
+  /** Files touched by the diff under review, parsed from the `diff` event. */
+  files: string[];
 }
 
 /** One sub-agent inside an `agent` tool call, fed by `agent_status` events. */
@@ -117,14 +121,9 @@ export interface AssistantTurn {
   usage?: UsageSummary;
 }
 
-/**
- * A local answer that never went to the model: `/status`, `/memory`, `/diff`,
- * and what a compaction folded away. It sits in the thread where it was asked
- * for, and stays out of the history the next turn sends.
- */
-export interface InfoTurn {
+/** A local answer that never went to the model: `/status`, `/memory`, `/diff`. */
+export interface InfoCardData {
   id: string;
-  role: "info";
   title: string;
   rows?: InfoRow[];
   body?: string;
@@ -132,6 +131,12 @@ export interface InfoTurn {
   note?: string;
   error?: boolean;
   pending?: boolean;
+}
+
+/** The kind that belongs in the transcript, because it records something that
+ *  happened to the conversation rather than answering a question about it. */
+export interface InfoTurn extends InfoCardData {
+  role: "info";
 }
 
 /** A seam in the list marking a model/provider switch, so messages either side
@@ -142,15 +147,40 @@ export interface DividerTurn {
   label: string;
 }
 
+/** The seam a compaction leaves. Everything above it stays on screen and stops
+ *  being sent; `messages` is the folded history that goes in its place. */
+export interface CompactionTurn {
+  id: string;
+  role: "compaction";
+  summary: string;
+  folded: number;
+  messages: ChatMessage[];
+}
+
 export type Turn =
   | { id: string; role: "user"; text: string }
   | AssistantTurn
   | InfoTurn
   | { id: string; role: "review"; data: ReviewData }
-  | DividerTurn;
+  | DividerTurn
+  | CompactionTurn;
 
 export function emptyReview(): ReviewData {
-  return { status: "running", phase: "Starting", findings: [], refuted: [], summary: "" };
+  return { status: "running", phase: "Starting", findings: [], refuted: [], summary: "", files: [] };
+}
+
+/** File paths from a unified git diff, from `diff --git a/X b/Y` headers. The
+ *  `b/` side names the file as it exists after the change, which is the path a
+ *  finding's `file_path` points at. */
+export function parseDiffFiles(diff: string): string[] {
+  const files = new Set<string>();
+  for (const line of diff.split("\n")) {
+    const m = /^diff --git a\/(.*?) b\/(.*)$/.exec(line);
+    if (!m) continue;
+    const b = m[2];
+    files.add(b === "/dev/null" ? m[1] : b);
+  }
+  return [...files];
 }
 
 let blocks = 0;
@@ -335,6 +365,18 @@ export function stopUnfinished(turns: Turn[]): Turn[] {
         approval: undefined,
         question: undefined,
         stopped: true,
+        // A cancelled turn leaves its in-flight tool calls without a result, so
+        // they would keep spinning as "running…" forever. Mark them stopped.
+        blocks: turn.blocks.map((block) =>
+          block.kind === "tools"
+            ? {
+                ...block,
+                calls: block.calls.map((call) =>
+                  call.result === undefined ? { ...call, stopped: true } : call
+                ),
+              }
+            : block
+        ),
       };
     }
     if (turn.role === "review" && turn.data.status === "running") {
@@ -352,13 +394,17 @@ export function stopUnfinished(turns: Turn[]): Turn[] {
 const HISTORY_LIMIT = 12;
 
 /**
- * The chat history sent to `aster chat`. Review turns are flattened into an
- * assistant message describing their findings, so follow-up questions like
- * "why is finding 2 critical?" have the findings in context.
+ * The chat history sent to `aster chat`, from the last compaction onwards.
+ * Review turns are flattened into an assistant message describing their
+ * findings, so "why is finding 2 critical?" has the findings in context.
  */
 export function buildMessages(turns: Turn[], limit = HISTORY_LIMIT): ChatMessage[] {
+  // A seam replaces everything above it: the summary plus the tail the CLI kept
+  // verbatim. Those go in ahead of the limit, never sliced off by it.
+  const seam = turns.reduce((at, turn, i) => (turn.role === "compaction" ? i : at), -1);
+  const folded = seam === -1 ? [] : (turns[seam] as CompactionTurn).messages;
   const messages: ChatMessage[] = [];
-  for (const turn of turns) {
+  for (const turn of turns.slice(seam + 1)) {
     if (turn.role === "user") {
       messages.push({ role: "user", content: turn.text });
     } else if (turn.role === "assistant" && turn.text && !turn.pending && !turn.error) {
@@ -373,7 +419,7 @@ export function buildMessages(turns: Turn[], limit = HISTORY_LIMIT): ChatMessage
       messages.push({ role: "assistant", content: reviewContext(turn.data) });
     }
   }
-  return limit === Infinity ? messages : messages.slice(-limit);
+  return [...folded, ...(limit === Infinity ? messages : messages.slice(-limit))];
 }
 
 function reviewContext(data: ReviewData): string {

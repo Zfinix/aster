@@ -138,6 +138,90 @@ export interface InfoRow {
   value: string;
 }
 
+/** Mirrors `config::Kind`; decides which control a settings row wears. */
+export type ConfigKind = "text" | "bool" | "number" | "list" | "choice";
+
+/** Mirrors `config::Unit`, for suffixing a number with what it counts. */
+export type ConfigUnit = "none" | "seconds" | "chars" | "bytes" | "tokens" | "percent";
+
+/** Which file a write lands in, spelled as the CLI's own flags. */
+export type ConfigScope = "global" | "local";
+
+export type ConfigValue = string | number | boolean | string[] | null;
+
+/** One row of `aster config list --json`. */
+export interface ConfigKey {
+  key: string;
+  label: string;
+  group: string;
+  kind: ConfigKind;
+  /** The options a `choice` key accepts; empty for every other kind. */
+  choices: string[];
+  unit: ConfigUnit;
+  /** What the next turn resolves to, null when nothing sets it. */
+  value: ConfigValue;
+  /** The resolved value already rendered, units and all. */
+  display: string;
+  default: string;
+  /** `env ASTER_MODEL`, a config file's path, or `default`. */
+  source: string;
+  /** The variable outranking a file that also sets this key. */
+  shadowed: string | null;
+  /** What each file sets on its own, so a row can edit one scope at a time. */
+  scopes: Record<ConfigScope, ConfigValue>;
+  env: string[];
+  help: string;
+}
+
+/** Which config files this directory reads, from `aster config path --json`. */
+export interface ConfigPaths {
+  global: string;
+  global_exists: boolean;
+  project: string | null;
+  project_exists: boolean;
+  /** Where a workspace write would go when the repo has no config yet. */
+  project_default: string;
+}
+
+/** The extension's own settings, which live in VS Code rather than aster.yaml. */
+export interface EditorSettings {
+  binaryPath: string;
+  minConfidence: number | null;
+  publishDiagnostics: boolean;
+  extraArgs: string[];
+}
+
+export interface SettingsSnapshot {
+  keys: ConfigKey[];
+  paths: ConfigPaths | null;
+  editor: EditorSettings;
+  servers: McpServer[];
+  /** The endpoint's catalog, so a model key offers a list instead of a blank
+   *  box. Still free text: ids are open-ended and a catalog can fail to load. */
+  models: string[];
+  providers: Provider[];
+  workspaceRoot: string | null;
+  binaryOk: boolean;
+  /** Why the config could not be read, when that is the whole story. */
+  error?: string;
+}
+
+/** Messages the settings webview sends to the extension host. */
+export type SettingsToHost =
+  | { type: "ready" }
+  | { type: "setKey"; key: string; value: Exclude<ConfigValue, null>; scope: ConfigScope }
+  | { type: "unsetKey"; key: string; scope: ConfigScope }
+  | { type: "setEditor"; key: keyof EditorSettings; value: ConfigValue }
+  | { type: "toggleMcp"; name: string; disabled: boolean }
+  | { type: "openConfigFile"; scope: ConfigScope }
+  | { type: "reload" };
+
+/** Messages the extension host sends to the settings webview. */
+export type SettingsToWebview =
+  | { type: "settings"; snapshot: SettingsSnapshot }
+  /** A write failed; `key` anchors the message to the row that caused it. */
+  | { type: "settingsError"; key?: string; message: string };
+
 /** Messages the webview sends to the extension host. */
 export type ToHost =
   | { type: "ready" }
@@ -161,6 +245,9 @@ export type ToHost =
   | { type: "cancelReview" }
   | { type: "openFinding"; finding: Finding }
   | { type: "openFile"; path: string }
+  /** Follow a link the agent printed: a preview URL, a doc, a rendered file.
+   *  Goes through the host so remote workspaces forward the port. */
+  | { type: "openExternal"; url: string }
   /** Open a code block's contents as a scratch editor tab. */
   /** `title` names the scratch tab; keep it short, it is the whole label. */
   | { type: "openUntitled"; content: string; lang?: string; title?: string }
@@ -175,6 +262,9 @@ export type ToHost =
   | { type: "fixAllFindings"; findings: Finding[] }
   | { type: "listSessions" }
   | { type: "loadSession"; id: string }
+  | { type: "deleteSession"; id: string }
+  /** Rename a saved session; the name is appended to its transcript. */
+  | { type: "renameSession"; id: string; title: string }
   | { type: "fetchModels" }
   /** `/status`, `/memory`, `/diff`: each answers with one `info` card. */
   | { type: "info"; id: string; topic: "status" | "memory" | "diff" }
@@ -203,6 +293,8 @@ export type ToWebview =
       models: string[];
       /** The vetted subset, shown first; see `MODELS` in panel.ts. */
       recommended: string[];
+      /** Ids picked before, most recent first. */
+      recent: string[];
       /** History size (chars) the CLI auto-compacts above; 0 when unknown. */
       contextBudget: number;
       permissionMode: PermissionMode;

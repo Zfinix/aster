@@ -30,9 +30,6 @@ export function ReasoningBlock({
   return (
     <div className="reasoning">
       <button className="reasoning-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span className="reasoning-caret" data-open={open}>
-          ▾
-        </span>
         {label}
       </button>
       {open && <div className="reasoning-body">{body}</div>}

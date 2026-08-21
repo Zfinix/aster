@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { FindingDiagnostics } from "./diagnostics";
 import { FindingsTreeProvider, openFinding } from "./findingsTree";
 import { AsterPanel } from "./panel";
+import { SettingsPanel } from "./settingsPanel";
 import { runCli } from "./asterCli";
 import { registerOutputProvider } from "./outputProvider";
 import { Finding } from "./types";
@@ -27,6 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const diagnostics = new FindingDiagnostics();
   const tree = new FindingsTreeProvider();
   const panel = new AsterPanel(context, diagnostics, tree, output);
+  const settings = new SettingsPanel(context);
 
   registerOutputProvider(context);
 
@@ -58,6 +60,15 @@ export function activate(context: vscode.ExtensionContext): void {
       panel.openInEditor(vscode.ViewColumn.One)
     ),
     vscode.commands.registerCommand("aster.openInNewWindow", () => panel.openInNewWindow()),
+    vscode.commands.registerCommand("aster.openSettings", () => settings.open()),
+    // `aster.binaryPath` decides whether the panel believes the CLI exists, so
+    // pointing it somewhere new has to re-run that check rather than wait for a
+    // reload; the settings tab re-reads for the same reason.
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("aster")) return;
+      panel.configChanged();
+      settings.refresh();
+    }),
     vscode.commands.registerCommand("aster.newConversation", () => panel.newConversation()),
     vscode.commands.registerCommand("aster.commandMenu", () => panel.showCommandMenu()),
     vscode.commands.registerCommand("aster.reopenSession", () => panel.reopenSession()),

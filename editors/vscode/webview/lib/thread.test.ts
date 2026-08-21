@@ -3,10 +3,12 @@ import {
   appendCall,
   appendReasoning,
   appendText,
+  buildMessages,
   hydrate,
   newTurn,
   patchCall,
   restoreTurn,
+  stopUnfinished,
   upsertAgentState,
   type AssistantTurn,
   type ToolCall,
@@ -95,6 +97,31 @@ describe("patchCall", () => {
   it("is a no-op for an unknown id", () => {
     const turn = appendCall(newTurn("t1"), call("c1"));
     expect(patchCall(turn, "nope", { result: "x" })).toEqual(turn);
+  });
+});
+
+describe("stopUnfinished", () => {
+  it("marks an in-flight tool call stopped so it stops spinning", () => {
+    let turn = appendCall(newTurn("t1"), call("c1"));
+    turn = appendCall(turn, call("c2"));
+    turn = patchCall(turn, "c1", { result: "done" });
+
+    const stopped = stopUnfinished([turn])[0] as AssistantTurn;
+    const block = stopped.blocks[0];
+    if (block.kind !== "tools") throw new Error("expected a tool group");
+    expect(block.calls[0].stopped).toBeUndefined();
+    expect(block.calls[1].stopped).toBe(true);
+  });
+
+  it("leaves a finished turn's calls alone", () => {
+    let turn = appendCall(newTurn("t1"), call("c1"));
+    turn = patchCall(turn, "c1", { result: "done" });
+    turn = { ...turn, pending: false };
+
+    const stopped = stopUnfinished([turn])[0] as AssistantTurn;
+    const block = stopped.blocks[0];
+    if (block.kind !== "tools") throw new Error("expected a tool group");
+    expect(block.calls[0].stopped).toBeUndefined();
   });
 });
 
@@ -238,5 +265,51 @@ describe("restoreTurn", () => {
 
   it("leaves a turn with nothing to show empty rather than drawing a blank block", () => {
     expect(restoreTurn("t1", "").blocks).toEqual([]);
+  });
+});
+
+describe("buildMessages across a compaction", () => {
+  const said = (id: string, text: string): Turn => ({
+    ...appendText(newTurn(id), text),
+    pending: false,
+  });
+  const asked = (id: string, text: string): Turn => ({ id, role: "user", text });
+  const seam: Turn = {
+    id: "s1",
+    role: "compaction",
+    summary: "we renamed the label",
+    folded: 4,
+    messages: [
+      { role: "assistant", content: "Summary of earlier conversation:\nwe renamed the label" },
+      { role: "user", content: "kept verbatim" },
+    ],
+  };
+
+  it("sends the folded history in place of everything above the seam", () => {
+    expect(
+      buildMessages([asked("u1", "dropped"), said("a1", "dropped too"), seam, asked("u2", "next")])
+    ).toEqual([...seam.messages, { role: "user", content: "next" }]);
+  });
+
+  it("keeps the folded history whole when the limit trims the turns after it", () => {
+    const after = Array.from({ length: 20 }, (_, i) => asked(`u${i}`, `m${i}`));
+    const messages = buildMessages([asked("u0", "dropped"), seam, ...after], 3);
+    expect(messages.slice(0, seam.messages.length)).toEqual(seam.messages);
+    expect(messages.slice(seam.messages.length)).toHaveLength(3);
+  });
+
+  it("folds from the newest seam, so a second compaction supersedes the first", () => {
+    const later: Turn = { ...seam, id: "s2", messages: [{ role: "assistant", content: "later" }] };
+    expect(buildMessages([seam, asked("u1", "middle"), later, asked("u2", "after")])).toEqual([
+      { role: "assistant", content: "later" },
+      { role: "user", content: "after" },
+    ]);
+  });
+
+  it("is unchanged when nothing has been compacted", () => {
+    expect(buildMessages([asked("u1", "hi"), said("a1", "hello")])).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+    ]);
   });
 });

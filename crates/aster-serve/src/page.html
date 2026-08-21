@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aster</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+        --bg: #0a0a0a;
+        --fg: #ededed;
+        --dim: #8f8f8f;
+        --line: #232323;
+        --surface: #111111;
+        --accent: #f79b4d;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #fbfbfa;
+          --fg: #1b1b1b;
+          --dim: #6b6b6b;
+          --line: #e4e4e1;
+          --surface: #ffffff;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      main { width: 100%; max-width: 30rem; }
+      .mark { width: 26px; height: 26px; display: block; margin-bottom: 20px; }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      p { margin: 0; color: var(--dim); }
+      ol {
+        margin: 24px 0 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+      li {
+        counter-increment: step;
+        padding: 10px 0;
+      }
+      li::before {
+        content: counter(step);
+        display: inline-block;
+        width: 18px;
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .what { font-size: 14px; }
+      code {
+        display: block;
+        margin: 8px 0 0 18px;
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--fg);
+        font-family: var(--mono);
+        font-size: 12.5px;
+        overflow-x: auto;
+        white-space: pre;
+      }
+      .note {
+        margin-top: 22px;
+        font-size: 13px;
+      }
+      .note code { display: inline; margin: 0; padding: 1px 5px; font-size: 12px; }
+      b { color: var(--accent); font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 13" shape-rendering="crispEdges" class="mark" role="img" aria-label="Aster"><rect x="6" y="0" width="1" height="1" fill="#ef5a6f"/><rect x="6" y="1" width="1" height="1" fill="#ef5a6f"/><rect x="2" y="2" width="1" height="1" fill="#f0664f"/><rect x="6" y="2" width="1" height="1" fill="#f0664f"/><rect x="10" y="2" width="1" height="1" fill="#f0664f"/><rect x="3" y="3" width="1" height="1" fill="#f2764f"/><rect x="6" y="3" width="1" height="1" fill="#f2764f"/><rect x="9" y="3" width="1" height="1" fill="#f2764f"/><rect x="4" y="4" width="1" height="1" fill="#f4864e"/><rect x="6" y="4" width="1" height="1" fill="#f4864e"/><rect x="8" y="4" width="1" height="1" fill="#f4864e"/><rect x="5" y="5" width="1" height="1" fill="#f79b4d"/><rect x="6" y="5" width="1" height="1" fill="#f79b4d"/><rect x="7" y="5" width="1" height="1" fill="#f79b4d"/><rect x="0" y="6" width="1" height="1" fill="#f79b4d"/><rect x="1" y="6" width="1" height="1" fill="#f79b4d"/><rect x="2" y="6" width="1" height="1" fill="#f79b4d"/><rect x="3" y="6" width="1" height="1" fill="#f79b4d"/><rect x="4" y="6" width="1" height="1" fill="#f79b4d"/><rect x="5" y="6" width="1" height="1" fill="#f79b4d"/><rect x="6" y="6" width="1" height="1" fill="#f79b4d"/><rect x="7" y="6" width="1" height="1" fill="#f79b4d"/><rect x="8" y="6" width="1" height="1" fill="#f79b4d"/><rect x="9" y="6" width="1" height="1" fill="#f79b4d"/><rect x="10" y="6" width="1" height="1" fill="#f79b4d"/><rect x="11" y="6" width="1" height="1" fill="#f79b4d"/><rect x="12" y="6" width="1" height="1" fill="#f79b4d"/><rect x="5" y="7" width="1" height="1" fill="#f6a854"/><rect x="6" y="7" width="1" height="1" fill="#f6a854"/><rect x="7" y="7" width="1" height="1" fill="#f6a854"/><rect x="4" y="8" width="1" height="1" fill="#f7b458"/><rect x="6" y="8" width="1" height="1" fill="#f7b458"/><rect x="8" y="8" width="1" height="1" fill="#f7b458"/><rect x="3" y="9" width="1" height="1" fill="#f7c15c"/><rect x="6" y="9" width="1" height="1" fill="#f7c15c"/><rect x="9" y="9" width="1" height="1" fill="#f7c15c"/><rect x="2" y="10" width="1" height="1" fill="#f7c15c"/><rect x="6" y="10" width="1" height="1" fill="#f7c15c"/><rect x="10" y="10" width="1" height="1" fill="#f7c15c"/><rect x="6" y="11" width="1" height="1" fill="#f8cb66"/><rect x="6" y="12" width="1" height="1" fill="#f8cb66"/></svg>
+      <!-- BODY -->
+    </main>
+  </body>
+</html>

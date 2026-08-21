@@ -37,6 +37,29 @@ describe("describeTool", () => {
     expect(describeTool(run)).toEqual({ detail: "Rebuild the webview bundle" });
   });
 
+  it("strips a leading Ran/Run/Running from the model's summary", () => {
+    const ran = call("run_command", {
+      command: "make",
+      args: ["check"],
+      description: "Ran make check 2>&1",
+    });
+    expect(describeTool(ran)).toEqual({ detail: "make check 2>&1" });
+
+    const run = call("run_command", {
+      command: "cargo",
+      args: ["build"],
+      description: "Run cargo build",
+    });
+    expect(describeTool(run)).toEqual({ detail: "cargo build" });
+
+    const running = call("run_command", {
+      command: "bun",
+      args: ["test"],
+      description: "Running bun test",
+    });
+    expect(describeTool(running)).toEqual({ detail: "bun test" });
+  });
+
   it("falls back to the command line when no summary came with the call", () => {
     const run = call("run_command", { command: "bun", args: ["run", "build"] });
     expect(describeTool(run).verb).toBe("Run");
@@ -305,6 +328,54 @@ describe("describeTool on the MCP bridge", () => {
       detail: "linear/save_issue",
       code: true,
     });
+  });
+
+  it("prefers the label a tool wrote for itself over its payload", () => {
+    const run = call("aster_mcp", {
+      action: "execute",
+      name: "aside/repl",
+      arguments: {
+        code: "const p = await openTab('http://localhost:8642/index.html');\nawait p.locator('.cell').nth(0).click();",
+        title: "screenshot browser tab",
+      },
+    });
+    expect(describeTool(run)).toEqual({
+      verb: "Aside Repl",
+      detail: "screenshot browser tab",
+    });
+  });
+
+  // A script in the header buries the tool that ran it, and wraps the row.
+  it("does not let an unnamed script become the header", () => {
+    const run = call("aster_mcp", {
+      action: "execute",
+      name: "aside/repl",
+      arguments: {
+        code: "const p = await openTab('http://localhost:8642/index.html');\nawait p.locator('.cell').nth(0).click();\nconst shot = await p.screenshot();",
+      },
+    });
+    expect(describeTool(run)).toEqual({ verb: "Aside Repl", detail: undefined });
+  });
+
+  it("still names a call whose only argument is a long identifier", () => {
+    const run = call("aster_mcp", {
+      action: "execute",
+      name: "railway/deploy",
+      arguments: { serviceRef: `api-${"production-".repeat(6)}eu-west` },
+    });
+    expect(describeTool(run).detail).toMatch(/^api-production-/);
+  });
+
+  it("keeps a named argument to one capped line", () => {
+    const run = call("aster_mcp", {
+      action: "execute",
+      name: "websearch/search",
+      arguments: { query: `${"agent client protocol ".repeat(8)}\nsecond line` },
+    });
+    const { detail } = describeTool(run);
+    expect(detail).not.toContain("\n");
+    expect(detail!.length).toBeLessThanOrEqual(72);
+    expect(detail!.endsWith("\u2026")).toBe(true);
   });
 
   it("stays readable while the arguments are still streaming", () => {

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { McpServer } from "../../src/protocol";
 import { useDismiss } from "../lib/dismiss";
 import { post } from "../lib/host";
+import { redactSecrets } from "../lib/redact";
 
 /**
  * The `/mcp` control panel: every configured server with its state, where
@@ -28,7 +29,7 @@ export function McpPicker({
 
   return (
     <div className="picker" ref={ref} role="dialog" aria-label="MCP servers">
-      <div className="picker-head">MCP servers — click to toggle</div>
+      <div className="picker-head">MCP servers</div>
       {servers.length === 0 && (
         <div className="picker-empty">
           No servers configured. Add them to .mcp.json or `mcp:` in aster.yaml, or run `aster mcp
@@ -56,6 +57,7 @@ export function McpPicker({
 }
 
 function describe(server: McpServer): string {
-  if (server.url) return server.url;
-  return [server.command, ...server.args].join(" ").trim() || (server.transport ?? "unconfigured");
+  if (server.url) return redactSecrets(server.url);
+  const command = [server.command, ...server.args].join(" ").trim();
+  return command ? redactSecrets(command) : (server.transport ?? "unconfigured");
 }

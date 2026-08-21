@@ -4,7 +4,8 @@
 //!   cargo run -p aster-harness --example run_review -- <diff-file | ->
 //!
 //! Config via env (any OpenAI-compatible provider):
-//!   ASTER_API_KEY          required (falls back to OPEN_ROUTER_API_KEY)
+//!   ASTER_API_KEY          required, unless the endpoint's own var is set
+//!                          (ANTHROPIC_API_KEY, OPENAI_API_KEY, and so on)
 //!   ASTER_BASE_URL         default https://openrouter.ai/api/v1
 //!   ASTER_MODEL            default openai/gpt-4o-mini (used when a stage
 //!                          override below is unset)

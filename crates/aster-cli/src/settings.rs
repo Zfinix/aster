@@ -237,7 +237,7 @@ pub(crate) fn user_config() -> Result<PathBuf> {
 }
 
 /// The repo's own config, under whichever of the three names it uses.
-fn project_config(repo_root: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn project_config(repo_root: Option<&Path>) -> Option<PathBuf> {
     repo_root.and_then(|root| {
         ["aster.yaml", "aster.yml", ".aster.yaml"]
             .iter()
@@ -280,7 +280,7 @@ pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> 
     let pinned: Vec<(&str, &str)> = pairs
         .iter()
         .copied()
-        .filter(|(key, _)| pins(&text, key))
+        .filter(|(key, _)| pins(&text, "review", key))
         .collect();
     if pinned.is_empty() {
         return Ok(Saved { path, also: None });
@@ -297,78 +297,139 @@ pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> 
 pub(crate) fn write_review(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
     let mut text = std::fs::read_to_string(path).unwrap_or_default();
     for (key, value) in pairs {
-        text = with_review_key(&text, key, value);
+        text = with_key(&text, "review", key, value);
     }
+    save(path, text)
+}
+
+pub(crate) fn save(path: &Path, text: String) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Where `review.<key>` sits in a config's lines.
+/// Where `<section>.<key>` sits in a config's lines.
 enum Slot {
     /// Already set, on this line at this indent.
     At(usize, usize),
-    /// The block exists without the key; it goes in before this line.
-    Insert(usize),
-    /// There is no `review:` block yet.
+    /// The block exists without the key; it goes in at this line and indent.
+    Insert(usize, usize),
+    /// There is no `<section>:` block yet.
     Missing,
 }
 
-/// True when a config sets `review.<key>` itself, and so would outrank the
+/// True when a config sets `<section>.<key>` itself, and so would outrank the
 /// global one no matter what is written there.
-fn pins(text: &str, key: &str) -> bool {
-    matches!(slot(&split(text), key), Slot::At(..))
+pub(crate) fn pins(text: &str, section: &str, key: &str) -> bool {
+    matches!(slot(&split(text), section, key), Slot::At(..))
 }
 
 fn split(text: &str) -> Vec<String> {
     text.lines().map(str::to_string).collect()
 }
 
-fn slot(lines: &[String], key: &str) -> Slot {
-    let Some(review) = lines
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+fn slot(lines: &[String], section: &str, key: &str) -> Slot {
+    let header = format!("{section}:");
+    let Some(start) = lines
         .iter()
-        .position(|l| l.trim_end() == "review:" && !l.starts_with([' ', '\t']))
+        .position(|l| l.trim_end() == header && !l.starts_with([' ', '\t']))
     else {
         return Slot::Missing;
     };
-    for (i, line) in lines.iter().enumerate().skip(review + 1) {
+    let mut level = None;
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
         if line.trim().is_empty() {
             continue;
         }
-        let indent = line.len() - line.trim_start().len();
+        let indent = indent_of(line);
         if indent == 0 {
-            return Slot::Insert(i);
+            return Slot::Insert(i, level.unwrap_or(2));
         }
-        if line.trim_start().starts_with(&format!("{key}:")) {
+        // Depth comes from the first child rather than being assumed, so a
+        // four-space file keeps its shape.
+        let level = *level.get_or_insert(indent);
+        if indent == level && line.trim_start().starts_with(&format!("{key}:")) {
             return Slot::At(i, indent);
         }
     }
-    Slot::Insert(lines.len())
+    Slot::Insert(lines.len(), level.unwrap_or(2))
 }
 
-/// Rewrite one `review.<key>` in place, adding the key or the whole block when
-/// missing. Everything else in the file is left byte for byte.
-fn with_review_key(text: &str, key: &str, value: &str) -> String {
+/// One past the last line of the value at `start`: a nested list or block
+/// scalar runs on past the key's own line. Trailing blanks stay put.
+fn value_end(lines: &[String], start: usize) -> usize {
+    let indent = indent_of(&lines[start]);
+    let mut end = start + 1;
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let this = indent_of(line);
+        // A list may be written at the key's own indent, so `- ` items belong
+        // to it as much as anything indented deeper does.
+        if this < indent || (this == indent && !line.trim_start().starts_with("- ")) {
+            break;
+        }
+        end = i + 1;
+    }
+    end
+}
+
+/// Rewrite one `<section>.<key>` in place, adding the key or the whole block
+/// when missing. Everything else in the file is left byte for byte.
+pub(crate) fn with_key(text: &str, section: &str, key: &str, value: &str) -> String {
     let mut lines = split(text);
-    match slot(&lines, key) {
+    match slot(&lines, section, key) {
         Slot::Missing => {
             let mut out = text.to_string();
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
             }
-            out.push_str(&format!("review:\n  {key}: {value}\n"));
+            out.push_str(&format!("{section}:\n  {key}: {value}\n"));
             out
         }
         Slot::At(i, indent) => {
-            lines[i] = format!("{}{key}: {value}", " ".repeat(indent));
+            let end = value_end(&lines, i);
+            let line = format!("{}{key}: {value}", " ".repeat(indent));
+            lines.splice(i..end, [line]);
             rejoin(&lines, text)
         }
-        Slot::Insert(at) => {
-            lines.insert(at, format!("  {key}: {value}"));
+        Slot::Insert(at, indent) => {
+            lines.insert(at, format!("{}{key}: {value}", " ".repeat(indent)));
             rejoin(&lines, text)
         }
     }
+}
+
+/// Take `<section>.<key>` back out, and the now-empty section header with it,
+/// since a header with no keys under it parses as null rather than as absent.
+/// `None` when the file did not set the key.
+pub(crate) fn without_key(text: &str, section: &str, key: &str) -> Option<String> {
+    let mut lines = split(text);
+    let Slot::At(i, _) = slot(&lines, section, key) else {
+        return None;
+    };
+    lines.drain(i..value_end(&lines, i));
+
+    let header = format!("{section}:");
+    let at = lines
+        .iter()
+        .position(|l| l.trim_end() == header && !l.starts_with([' ', '\t']));
+    if let Some(at) = at
+        && lines
+            .iter()
+            .skip(at + 1)
+            .find(|l| !l.trim().is_empty())
+            .is_none_or(|l| indent_of(l) == 0)
+    {
+        lines.remove(at);
+    }
+    Some(rejoin(&lines, text))
 }
 
 fn rejoin(lines: &[String], original: &str) -> String {
