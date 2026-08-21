@@ -79,6 +79,7 @@ const OPTIONAL_SKILLS: &[&str] = &[
     include_str!("../optional-skills/background-processes/SKILL.md"),
     include_str!("../optional-skills/i-have-adhd/SKILL.md"),
     include_str!("../optional-skills/skill-creator/SKILL.md"),
+    include_str!("../optional-skills/macos-harness/SKILL.md"),
 ];
 
 /// The bundled optional skills, parsed. Not part of any default index.
@@ -87,6 +88,46 @@ pub fn optional_skills() -> Vec<Skill> {
         .iter()
         .filter_map(|raw| builtin_skill(raw).ok())
         .collect()
+}
+
+/// Bundled optional skills materialized into the user-global root on first run.
+/// Platform-gated: a skill that cannot work on this OS is never defaulted here.
+fn default_skill_names() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["macos-harness"]
+    } else {
+        &[]
+    }
+}
+
+/// Materialize every platform-default skill into `dest_root` unless the skill is
+/// already installed or the user removed it earlier (a `.removed-<name>` marker
+/// in the root records that). A failure is logged, never fatal.
+pub fn install_defaults(dest_root: &Path) {
+    for name in default_skill_names() {
+        if dest_root.join(format!(".removed-{name}")).exists() {
+            continue;
+        }
+        if let Err(e) = install_bundled(name, dest_root, false) {
+            tracing::debug!(skill = name, "default skill not installed: {e:#}");
+        }
+    }
+}
+
+/// Record that the user removed a platform-default skill, so a later session
+/// does not reinstall it. Returns `false` when `name` is not a default.
+pub fn mark_default_removed(dest_root: &Path, name: &str) -> bool {
+    if !default_skill_names().contains(&name) {
+        return false;
+    }
+    let marker = dest_root.join(format!(".removed-{name}"));
+    match fs::write(&marker, "") {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("could not record removal of {name}: {e:#}");
+            false
+        }
+    }
 }
 
 /// Materialize a bundled optional skill into `dest_root/<name>/SKILL.md`.

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := check
 .PHONY: fmt fmt-check lint test check desktop-check pre-push hooks \
-	review review-tui review-stream chat chat-print fix init desktop \
+	review review-tui review-stream chat chat-print fix init desktop web serve \
 	release install bump
 
 # Extra flags for the run targets, e.g. `make review ARGS="--pr 42"`.
@@ -69,6 +69,16 @@ init:
 # Run the Tauri desktop app in dev (builds the CLI sidecar first).
 desktop:
 	cd desktop && bun run dev
+
+# Build the browser UI into crates/aster-serve/ui, where the CLI embeds it.
+# Needed once before `make release`/`make install` for `aster serve` to have a
+# page to hand a browser.
+web:
+	cd editors/vscode && bun install --silent && bun run build:web
+
+# Serve that UI from this repo on http://localhost:4187.
+serve: web
+	cargo run -p aster-cli -- serve $(ARGS)
 
 # ---- Build / install ----
 release:

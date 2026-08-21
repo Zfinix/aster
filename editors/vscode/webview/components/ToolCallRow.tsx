@@ -2,21 +2,43 @@ import { useState, type ReactElement } from "react";
 import { languageFromPath } from "../lib/highlight";
 import { post } from "../lib/host";
 import type { ToolCall } from "../lib/thread";
-import { describeTool, displayOutput, outputTitle, resultHint, toolInput, toolPath } from "../lib/tools";
+import {
+  describeTool,
+  displayOutput,
+  mcpMatches,
+  mcpTarget,
+  outputTitle,
+  resultHint,
+  toolInput,
+  toolPath,
+} from "../lib/tools";
 import { Disclosure } from "../interior/disclosure";
 import { Code } from "./Code";
 import { CopyButton } from "./CopyButton";
+import { McpMatches } from "./McpMatches";
 import { ToolOutput } from "./ToolOutput";
 import {
+  AgentIcon,
   AlertIcon,
   BookIcon,
   BrainIcon,
+  CheckAllIcon,
   ChevronIcon,
+  CloudIcon,
+  CompassIcon,
   ExternalIcon,
   FileIcon,
+  FileSearchIcon,
+  FlaskIcon,
   FolderIcon,
-  LayersIcon,
+  GlobeIcon,
+  ImageIcon,
+  HistoryIcon,
+  ListOrderedIcon,
+  NetworkIcon,
   PencilIcon,
+  PlugIcon,
+  QuestionIcon,
   SearchIcon,
   TerminalIcon,
 } from "./icons";
@@ -24,19 +46,39 @@ import {
 const ICONS: Record<string, ReactElement> = {
   read_file: <FileIcon />,
   list_files: <FolderIcon />,
-  find_files: <FolderIcon />,
+  find_files: <FileSearchIcon />,
   search_files: <SearchIcon />,
   edit_file: <PencilIcon />,
   run_command: <TerminalIcon />,
-  run_tests: <TerminalIcon />,
-  explore: <LayersIcon />,
+  run_tests: <FlaskIcon />,
+  explore: <CompassIcon />,
   remember: <BrainIcon />,
-  recall: <BrainIcon />,
+  recall: <HistoryIcon />,
   read_skill: <BookIcon />,
-  ask_user: <BrainIcon />,
-  exit_plan_mode: <BookIcon />,
-  aster_mcp: <LayersIcon />,
+  update_plan: <ListOrderedIcon />,
+  ask_user: <QuestionIcon />,
+  exit_plan_mode: <CheckAllIcon />,
+  agent: <AgentIcon />,
+  aster_mcp: <PlugIcon />,
 };
+
+/** A web call is a web call whichever server served it, so it wears the globe
+ *  rather than the generic MCP plug. */
+const MCP_ICONS: Record<string, ReactElement> = {
+  screenshot: <ImageIcon />,
+  sitemap: <NetworkIcon />,
+  fetch_content: <CloudIcon />,
+  extract: <CloudIcon />,
+};
+
+function toolIcon(name: string, target: string | undefined): ReactElement {
+  if (target) {
+    const [server, action = ""] = target.split("/");
+    if (MCP_ICONS[action]) return MCP_ICONS[action];
+    if (/^web/.test(server)) return <GlobeIcon />;
+  }
+  return ICONS[name] ?? <FileIcon />;
+}
 
 /** Commands show their output without being asked: what ran and what came back
  *  is the transcript's story. */
@@ -46,11 +88,12 @@ const OPEN_BY_DEFAULT = new Set(["run_command", "run_tests"]);
  *  rather than a wall. Failures open themselves, since that is the one case the
  *  reader was always going to expand. `nested` is a step inside a folded run. */
 export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean }) {
-  const running = call.result === undefined;
+  const running = call.result === undefined && !call.stopped;
   const output = displayOutput(call);
   const input = toolInput(call);
   const [expanded, setExpanded] = useState(OPEN_BY_DEFAULT.has(call.name));
   const { verb, detail, code } = describeTool(call);
+  const matches = mcpMatches(call);
   const path = toolPath(call);
   const card = Boolean(output || input);
   const open = card && (expanded || call.error === true);
@@ -83,7 +126,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
       >
         {!nested && (
           <span className="tool-icon">
-            {call.error ? <AlertIcon /> : (ICONS[call.name] ?? <FileIcon />)}
+            {call.error ? <AlertIcon /> : toolIcon(call.name, mcpTarget(call))}
           </span>
         )}
         <span className="tool-label" data-oneline={Boolean(input)} data-lead={!lead}>
@@ -132,7 +175,11 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
                 }}
                 title={path ? `Open ${path}` : "Open output in an editor tab"}
               >
-                <ToolOutput output={output} lang={languageFromPath(path)} />
+                {matches ? (
+                  <McpMatches matches={matches} />
+                ) : (
+                  <ToolOutput output={output} lang={languageFromPath(path)} />
+                )}
               </span>
               <button
                 className="icon-btn tool-cell-open"

@@ -5,8 +5,9 @@ import { onHostMessage, post } from "../lib/host";
 import { Disclosure } from "../interior/disclosure";
 import { LoadingButton, type LoadingStatus } from "../interior/loading-button";
 import { TaskSteps, type TaskStep } from "../interior/task-steps";
-import { FindingCard } from "./FindingCard";
 import { ChevronIcon } from "./icons";
+import { ErrorBox } from "./ErrorBox";
+import { FindingCard } from "./FindingCard";
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
 
@@ -53,7 +54,7 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
   }, [data.phase]);
 
   if (data.status === "error") {
-    return <div className="turn-error">{data.errorMsg}</div>;
+    return <ErrorBox message={data.errorMsg} />;
   }
 
   const findings = [...data.findings].sort(
@@ -88,11 +89,47 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
                   ? "No findings survived verification"
                   : `${findings.length} finding${findings.length === 1 ? "" : "s"}`}
             </span>
+            {!stopped && findings.length > 0 && (
+              <span className="review-sev-breakdown">
+                {SEVERITY_ORDER.filter(
+                  (s) => s !== "info" && findings.some((f) => f.severity === s)
+                )
+                  .map((s) => {
+                    const n = findings.filter((f) => f.severity === s).length;
+                    return (
+                      <span key={s} className="review-sev" data-severity={s}>
+                        {n} {s}
+                      </span>
+                    );
+                  })}
+              </span>
+            )}
           </div>
         </>
       )}
 
       {data.summary && <p className="review-summary">{data.summary}</p>}
+
+      {data.files.length > 0 && !running && (
+        <div className="review-files">
+          <span className="review-files-label">
+            {data.files.length} file{data.files.length === 1 ? "" : "s"} analyzed
+          </span>
+          <ul className="review-files-list">
+            {data.files.map((file) => (
+              <li key={file}>
+                <button
+                  className="link"
+                  onClick={() => post({ type: "openFile", path: file })}
+                  title="Open file"
+                >
+                  {file}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {findings.length > 0 && !running && (
         <div className="review-actions">

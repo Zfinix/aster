@@ -58,6 +58,32 @@ fn install_bundled_materializes_a_discoverable_skill() {
 }
 
 #[test]
+fn defaults_install_once_and_respect_removal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    install_defaults(root);
+    if cfg!(target_os = "macos") {
+        assert!(root.join("macos-harness").join(SKILL_FILE).is_file());
+    } else {
+        assert!(!root.join("macos-harness").exists());
+    }
+    // A second run is a no-op: already installed.
+    install_defaults(root);
+    if cfg!(target_os = "macos") {
+        assert!(remove_skill(root, "macos-harness").unwrap());
+        assert!(mark_default_removed(root, "macos-harness"));
+        assert!(!root.join("macos-harness").exists());
+        assert!(root.join(".removed-macos-harness").is_file());
+        install_defaults(root);
+        assert!(
+            !root.join("macos-harness").exists(),
+            "reinstalled after removal"
+        );
+    }
+    assert!(!mark_default_removed(root, "git-workflow"));
+}
+
+#[test]
 fn install_bundled_rejects_unknown_names() {
     let tmp = tempfile::tempdir().unwrap();
     let err = install_bundled("no-such-skill", tmp.path(), false).unwrap_err();

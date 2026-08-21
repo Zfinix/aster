@@ -4,6 +4,12 @@ import { money } from "../lib/review-format";
 import { Composer, type ComposerBinding } from "../components/Composer";
 import { ReviewBadge } from "../components/ReviewBadge";
 import { Mark } from "../components/Mark";
+import { Tip } from "../components/Tip";
+import { CHAT_OPENERS, REVIEW_OPENERS, TIPS, useRotation } from "../lib/greeting";
+
+/** Long enough that a tip is never gone before it has been read, short enough
+ *  that a window left on the home screen shows more than one. */
+const TIP_MS = 11000;
 
 export function HomeView({
   composer,
@@ -16,11 +22,19 @@ export function HomeView({
   onOpen: (id: string) => void;
   intent?: "review" | "chat";
 }) {
+  const opener = useRotation(intent === "review" ? REVIEW_OPENERS : CHAT_OPENERS);
+  const tip = useRotation(TIPS, TIP_MS);
+
   return (
     <div className="hero">
       <Mark px={3.2} interactive />
-      <h1>{intent === "review" ? "What should we review next?" : "What are we building?"}</h1>
+      <h1>{opener}</h1>
       <Composer variant="home" {...composer} />
+      {/* Remounting on the text replays the fade, so a new tip arrives rather
+          than swapping in place. */}
+      <p className="hero-tip" key={tip}>
+        <Tip text={tip} />
+      </p>
 
       {conversations.length > 0 && (
         <div className="home-work">

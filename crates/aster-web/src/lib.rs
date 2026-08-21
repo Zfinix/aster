@@ -136,7 +136,7 @@ impl WebBackend {
             return c.crawl(url, opts).await;
         }
         anyhow::bail!(
-            "crawl requires a configured provider (set CONTEXT_DEV_API_KEY, FIRECRAWL_API_KEY, or CLOUDFLARE_BR_API_TOKEN)"
+            "crawl requires a configured provider (set CONTEXT_DEV_API_KEY, FIRECRAWL_API_KEY, or both CLOUDFLARE_BR_ACCOUNT_ID and CLOUDFLARE_BR_API_TOKEN)"
         )
     }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::config;
+use crate::credentials;
 
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -24,7 +24,7 @@ struct TokenResponse {
 }
 
 pub async fn login() -> Result<()> {
-    if config::APP_CLIENT_ID.starts_with("REPLACE_WITH") {
+    if credentials::APP_CLIENT_ID.starts_with("REPLACE_WITH") {
         bail!(
             "This build has no GitHub App client id wired in yet.\n\
              Use a token instead for now: `export GITHUB_TOKEN=…` or `aster review --pr N --token …`."
@@ -36,7 +36,7 @@ pub async fn login() -> Result<()> {
     let device: DeviceCode = http
         .post(DEVICE_CODE_URL)
         .header("Accept", "application/json")
-        .form(&[("client_id", config::APP_CLIENT_ID), ("scope", SCOPE)])
+        .form(&[("client_id", credentials::APP_CLIENT_ID), ("scope", SCOPE)])
         .send()
         .await
         .context("requesting device code")?
@@ -60,7 +60,7 @@ pub async fn login() -> Result<()> {
     let _ = open::that(&device.verification_uri);
 
     let token = poll_for_token(&http, &device).await?;
-    config::store_token(&token)?;
+    credentials::store_token(&token)?;
 
     if json {
         println!(
@@ -68,14 +68,14 @@ pub async fn login() -> Result<()> {
             serde_json::json!({
                 "ok": true,
                 "linked": true,
-                "install_url": config::APP_INSTALL_URL,
+                "install_url": credentials::APP_INSTALL_URL,
             })
         );
     } else {
         println!("\n✓ Linked. Credentials stored.");
         println!(
             "If you haven't yet, install the Aster app on your repos:\n  {}",
-            config::APP_INSTALL_URL
+            credentials::APP_INSTALL_URL
         );
     }
     Ok(())
@@ -90,7 +90,7 @@ async fn poll_for_token(http: &reqwest::Client, device: &DeviceCode) -> Result<S
             .post(ACCESS_TOKEN_URL)
             .header("Accept", "application/json")
             .form(&[
-                ("client_id", config::APP_CLIENT_ID),
+                ("client_id", credentials::APP_CLIENT_ID),
                 ("device_code", device.device_code.as_str()),
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ])

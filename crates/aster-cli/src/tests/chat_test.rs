@@ -278,6 +278,83 @@ fn an_escaped_quote_does_not_end_the_string_early() {
     );
 }
 
+// A model that omits `command` used to lose the whole round to an error. The
+// argv it did send is enough to run, so it runs.
+#[test]
+fn a_command_sent_as_a_list_is_split_into_binary_and_args() {
+    let args = json!({ "command": ["bash", "-lc", "echo hi"] });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "bash".to_string(),
+            vec!["-lc".to_string(), "echo hi".to_string()]
+        ))
+    );
+}
+
+#[test]
+fn a_binary_left_in_args_becomes_the_command() {
+    let args = json!({ "args": ["npm", "run", "dev"] });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "npm".to_string(),
+            vec!["run".to_string(), "dev".to_string()]
+        ))
+    );
+}
+
+// A leading flag is not a binary, so it is treated as a flag for a shell and
+// the rest of the argv becomes the line that shell runs.
+#[test]
+fn a_leading_flag_runs_through_a_shell() {
+    assert_eq!(
+        command_argv(&json!({ "args": ["-lc", "npm run dev"] })),
+        Some((
+            "bash".to_string(),
+            vec!["-lc".to_string(), "npm run dev".to_string()]
+        ))
+    );
+}
+
+// A whole shell line left in `command` runs instead of erroring.
+#[test]
+fn a_shell_line_in_command_runs_through_bash() {
+    assert_eq!(
+        command_argv(&json!({ "command": "tail -n 50 SKILL.md | wc -l" })),
+        Some((
+            "bash".to_string(),
+            vec!["-lc".to_string(), "tail -n 50 SKILL.md | wc -l".to_string()]
+        ))
+    );
+}
+
+#[test]
+fn a_blank_command_falls_through_to_the_args() {
+    let args = json!({ "command": "  ", "args": ["cargo", "test"] });
+    assert_eq!(
+        command_argv(&args),
+        Some(("cargo".to_string(), vec!["test".to_string()]))
+    );
+}
+
+#[test]
+fn a_well_formed_call_is_left_alone() {
+    let args = json!({ "command": "cargo", "args": ["test", ""] });
+    assert_eq!(
+        command_argv(&args),
+        Some(("cargo".to_string(), vec!["test".to_string(), String::new()]))
+    );
+}
+
+#[test]
+fn an_unrecoverable_call_is_told_which_shape_to_send() {
+    assert!(
+        MISSING_COMMAND.contains("command:`bash` with args"),
+        "{MISSING_COMMAND}"
+    );
+}
+
 #[test]
 fn read_window_caps_an_open_ended_read_and_says_where_to_resume() {
     let dir = tempfile::tempdir().unwrap();
@@ -1603,6 +1680,54 @@ fn the_titler_sees_the_user_turns_in_full_and_clips_the_assistant() {
     assert!(ctx.contains("[truncated]"));
 }
 
+fn user(text: &str) -> ChatMessage {
+    ChatMessage {
+        role: "user".into(),
+        content: text.into(),
+    }
+}
+
+// A first prompt that already states the task is the whole topic. Waiting for
+// a second turn left the session showing its opening line in the picker while
+// the user was still working in it.
+#[test]
+fn an_opening_message_that_states_the_task_names_the_session_on_turn_one() {
+    for opener in [
+        "fix the sandbox seccomp filter",
+        "add dark mode",
+        "why is aster chat dropping the last token of every reply?",
+        "使用者會話標題應該在第一次提問後就生成",
+    ] {
+        assert_eq!(turns_before_naming(&[user(opener)]), 1, "{opener}");
+    }
+}
+
+#[test]
+fn a_thin_opener_still_waits_for_the_turn_that_says_what_it_is_about() {
+    for opener in ["hi", "Hey!", "help", "continue", "ok", "fix it", "why?", ""] {
+        assert_eq!(turns_before_naming(&[user(opener)]), 2, "{opener:?}");
+    }
+}
+
+// The greeting list matches a bare opener, not a prefix: a message that starts
+// with "hi there" and then says what it wants is still nameable.
+#[test]
+fn a_greeting_followed_by_the_actual_task_names_the_session() {
+    assert_eq!(
+        turns_before_naming(&[user("hi there, can you fix the seccomp filter")]),
+        1
+    );
+}
+
+#[test]
+fn a_history_with_no_user_turn_is_not_named_yet() {
+    let history = vec![ChatMessage {
+        role: "assistant".into(),
+        content: "hello".into(),
+    }];
+    assert_eq!(turns_before_naming(&history), 2);
+}
+
 #[test]
 fn environment_note_lists_task_runners_and_scripts() {
     let dir = tempfile::tempdir().unwrap();
@@ -1693,4 +1818,63 @@ fn a_path_is_not_a_skill() {
         expand_skill("/Users/chizi/write-tests", &skills),
         "/Users/chizi/write-tests"
     );
+}
+
+fn msgs(n: usize) -> Vec<ChatMessage> {
+    (0..n)
+        .map(|i| ChatMessage {
+            role: if i % 2 == 0 {
+                "user".into()
+            } else {
+                "assistant".into()
+            },
+            content: format!("m{i}").into(),
+        })
+        .collect()
+}
+
+#[test]
+fn a_history_no_longer_than_the_kept_tail_has_nothing_to_fold() {
+    assert!(!can_compact(&msgs(COMPACT_KEEP_TAIL)));
+}
+
+#[test]
+fn a_history_past_the_kept_tail_can_be_folded() {
+    assert!(can_compact(&msgs(COMPACT_KEEP_TAIL + 1)));
+}
+
+#[test]
+fn an_empty_history_cannot_be_folded() {
+    assert!(!can_compact(&[]));
+}
+
+// The TUI, the VS Code panel, and the desktop app all render this arg in place
+// of the command line. It went unasked for, so all three fell back forever.
+#[test]
+fn run_command_asks_for_the_description_every_surface_renders() {
+    let tools = tool_defs(true, true);
+    let run = tools
+        .iter()
+        .find(|t| t["function"]["name"] == "run_command")
+        .expect("run_command is defined");
+    let params = &run["function"]["parameters"];
+    assert!(
+        params["properties"]["description"].is_object(),
+        "{params:#}"
+    );
+    assert_eq!(params["required"], json!(["command", "description"]));
+}
+
+// A preview the user cannot get back to is a preview they lose the moment the
+// tab closes, so every surface needs the target to put in the reply.
+#[test]
+fn open_preview_is_offered_and_asks_for_a_target() {
+    let tools = tool_defs(true, true);
+    let preview = tools
+        .iter()
+        .find(|t| t["function"]["name"] == "open_preview")
+        .expect("open_preview is defined");
+    let params = &preview["function"]["parameters"];
+    assert!(params["properties"]["target"].is_object(), "{params:#}");
+    assert_eq!(params["required"], json!(["target"]));
 }

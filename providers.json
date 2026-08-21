@@ -7,6 +7,9 @@
       "name": "OpenAI",
       "base_url": "https://api.openai.com/v1",
       "example_model": "gpt-5.5",
+      "key_env": [
+        "OPENAI_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -14,6 +17,9 @@
       "name": "Azure OpenAI",
       "base_url": "https://{resource}.openai.azure.com/openai/v1",
       "example_model": "{your-deployment-name}",
+      "key_env": [
+        "AZURE_OPENAI_API_KEY"
+      ],
       "auth": "api-key header or Entra ID"
     },
     {
@@ -21,6 +27,9 @@
       "name": "Anthropic (OpenAI compat layer)",
       "base_url": "https://api.anthropic.com/v1",
       "example_model": "claude-opus-5",
+      "key_env": [
+        "ANTHROPIC_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "Compat shim only. Native Messages API is the full surface."
     },
@@ -29,6 +38,10 @@
       "name": "Google Gemini",
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
       "example_model": "gemini-3.1-pro",
+      "key_env": [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -36,6 +49,9 @@
       "name": "xAI",
       "base_url": "https://api.x.ai/v1",
       "example_model": "grok-4",
+      "key_env": [
+        "XAI_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -43,6 +59,9 @@
       "name": "Mistral AI",
       "base_url": "https://api.mistral.ai/v1",
       "example_model": "mistral-medium-2505",
+      "key_env": [
+        "MISTRAL_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -50,6 +69,9 @@
       "name": "DeepSeek",
       "base_url": "https://api.deepseek.com/v1",
       "example_model": "deepseek-v4-pro",
+      "key_env": [
+        "DEEPSEEK_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "deepseek-chat and deepseek-reasoner retired 2026-07-24. Also speaks Anthropic wire format."
     },
@@ -58,6 +80,9 @@
       "name": "Moonshot AI (Kimi)",
       "base_url": "https://api.moonshot.ai/v1",
       "example_model": "kimi-k3",
+      "key_env": [
+        "MOONSHOT_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "Sampling params pinned (temp 1.0, top_p 0.95). Omit them, do not override."
     },
@@ -66,6 +91,10 @@
       "name": "Z.ai (GLM)",
       "base_url": "https://api.z.ai/api/paas/v4",
       "example_model": "glm-5.2",
+      "key_env": [
+        "ZAI_API_KEY",
+        "ZHIPUAI_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "1M context via glm-5.2[1m] suffix. Anthropic surface at https://api.z.ai/api/anthropic"
     },
@@ -74,6 +103,9 @@
       "name": "Alibaba DashScope (Qwen)",
       "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       "example_model": "qwen3.7-plus",
+      "key_env": [
+        "DASHSCOPE_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "tools cannot combine with stream=true. Region-specific hosts."
     },
@@ -82,6 +114,9 @@
       "name": "MiniMax",
       "base_url": "https://api.minimax.io/v1",
       "example_model": "MiniMax-M2.7",
+      "key_env": [
+        "MINIMAX_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "Verify base URL against MiniMax platform docs."
     },
@@ -90,6 +125,9 @@
       "name": "Perplexity",
       "base_url": "https://api.perplexity.ai",
       "example_model": "sonar-pro",
+      "key_env": [
+        "PERPLEXITY_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "Search-augmented. Returns citations outside the OpenAI schema."
     },
@@ -98,6 +136,9 @@
       "name": "Cohere",
       "base_url": "https://api.cohere.ai/compatibility/v1",
       "example_model": "command-a-03-2025",
+      "key_env": [
+        "COHERE_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -105,6 +146,9 @@
       "name": "Groq",
       "base_url": "https://api.groq.com/openai/v1",
       "example_model": "llama-3.3-70b-versatile",
+      "key_env": [
+        "GROQ_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -112,6 +156,9 @@
       "name": "Together AI",
       "base_url": "https://api.together.xyz/v1",
       "example_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      "key_env": [
+        "TOGETHER_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -119,6 +166,9 @@
       "name": "Fireworks AI",
       "base_url": "https://api.fireworks.ai/inference/v1",
       "example_model": "accounts/fireworks/models/llama-v3p1-70b-instruct",
+      "key_env": [
+        "FIREWORKS_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -126,6 +176,9 @@
       "name": "Cerebras",
       "base_url": "https://api.cerebras.ai/v1",
       "example_model": "llama-3.3-70b",
+      "key_env": [
+        "CEREBRAS_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -133,6 +186,9 @@
       "name": "DeepInfra",
       "base_url": "https://api.deepinfra.com/v1/openai",
       "example_model": "meta-llama/Llama-3.3-70B-Instruct",
+      "key_env": [
+        "DEEPINFRA_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -140,6 +196,9 @@
       "name": "Hyperbolic",
       "base_url": "https://api.hyperbolic.xyz/v1",
       "example_model": "meta-llama/Llama-3.3-70B-Instruct",
+      "key_env": [
+        "HYPERBOLIC_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -147,6 +206,9 @@
       "name": "Nebius AI Studio",
       "base_url": "https://api.studio.nebius.com/v1",
       "example_model": "meta-llama/Llama-3.3-70B-Instruct",
+      "key_env": [
+        "NEBIUS_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -154,6 +216,9 @@
       "name": "SambaNova",
       "base_url": "https://api.sambanova.ai/v1",
       "example_model": "Meta-Llama-3.3-70B-Instruct",
+      "key_env": [
+        "SAMBANOVA_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -161,20 +226,37 @@
       "name": "Novita AI",
       "base_url": "https://api.novita.ai/v3/openai",
       "example_model": "meta-llama/llama-3.3-70b-instruct",
+      "key_env": [
+        "NOVITA_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
       "id": "baseten",
       "name": "Baseten",
       "base_url": "https://inference.baseten.co/v1",
-      "example_model": "meta-llama/Llama-3.1-8B-Instruct",
-      "auth": "Bearer"
+      "example_model": "deepseek-ai/DeepSeek-V4-Pro",
+      "recommended": [
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "moonshotai/Kimi-K2.7-Code",
+        "zai-org/GLM-5.2",
+        "openai/gpt-oss-120b"
+      ],
+      "key_env": [
+        "BASETEN_API_KEY"
+      ],
+      "auth": "Bearer",
+      "notes": "Serves a curated set; GET /v1/models is the whole catalog."
     },
     {
       "id": "lambda",
       "name": "Lambda Inference",
       "base_url": "https://api.lambda.ai/v1",
       "example_model": "llama3.3-70b-instruct-fp8",
+      "key_env": [
+        "LAMBDA_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -182,6 +264,9 @@
       "name": "NVIDIA NIM",
       "base_url": "https://integrate.api.nvidia.com/v1",
       "example_model": "meta/llama-3.3-70b-instruct",
+      "key_env": [
+        "NVIDIA_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -189,6 +274,10 @@
       "name": "Cloudflare Workers AI",
       "base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
       "example_model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "key_env": [
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -196,6 +285,10 @@
       "name": "GitHub Models",
       "base_url": "https://models.github.ai/inference",
       "example_model": "openai/gpt-4o",
+      "key_env": [
+        "GITHUB_MODELS_TOKEN",
+        "GITHUB_TOKEN"
+      ],
       "auth": "Bearer (GitHub PAT)"
     },
     {
@@ -203,6 +296,9 @@
       "name": "AWS Bedrock (OpenAI compat endpoint)",
       "base_url": "https://bedrock-runtime.{region}.amazonaws.com/openai/v1",
       "example_model": "openai.gpt-oss-120b-1:0",
+      "key_env": [
+        "AWS_BEARER_TOKEN_BEDROCK"
+      ],
       "auth": "Bearer (Bedrock API key) or SigV4"
     },
     {
@@ -210,6 +306,9 @@
       "name": "Cencori",
       "base_url": "https://api.cencori.com/v1",
       "example_model": "gpt-4o",
+      "key_env": [
+        "CENCORI_API_KEY"
+      ],
       "auth": "Bearer (csk_ project key)",
       "notes": "AI gateway with security, moderation, and cost tracking. Native surface at https://cencori.com/api/ai/chat uses a CENCORI_API_KEY header and adds content, toolCalls, and cost_usd fields. Uses camelCase maxTokens and toolChoice."
     },
@@ -225,6 +324,10 @@
         "microsoft/phi-4",
         "qwen/qwen3-next-80b-a3b-instruct"
       ],
+      "key_env": [
+        "OPEN_ROUTER_API_KEY",
+        "OPENROUTER_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "Aggregator. Model IDs are org-prefixed."
     },
@@ -233,6 +336,10 @@
       "name": "Vercel AI Gateway",
       "base_url": "https://ai-gateway.vercel.sh/v1",
       "example_model": "openai/gpt-5.5",
+      "key_env": [
+        "AI_GATEWAY_API_KEY",
+        "VERCEL_API_KEY"
+      ],
       "auth": "Bearer",
       "notes": "40+ providers, retries and fallbacks, no token markup."
     },
@@ -241,6 +348,10 @@
       "name": "Hugging Face Router",
       "base_url": "https://router.huggingface.co/v1",
       "example_model": "meta-llama/Llama-3.3-70B-Instruct",
+      "key_env": [
+        "HF_TOKEN",
+        "HUGGINGFACE_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -248,6 +359,9 @@
       "name": "LiteLLM Proxy (self-hosted)",
       "base_url": "http://localhost:4000/v1",
       "example_model": "my-model",
+      "key_env": [
+        "LITELLM_API_KEY"
+      ],
       "auth": "Bearer (virtual key)"
     },
     {
@@ -255,6 +369,9 @@
       "name": "v0 by Vercel",
       "base_url": "https://api.v0.dev/v1",
       "example_model": "v0-1.5-md",
+      "key_env": [
+        "V0_API_KEY"
+      ],
       "auth": "Bearer"
     },
     {
@@ -276,6 +393,9 @@
       "name": "vLLM (self-hosted)",
       "base_url": "http://localhost:8000/v1",
       "example_model": "meta-llama/Llama-3.3-70B-Instruct",
+      "key_env": [
+        "VLLM_API_KEY"
+      ],
       "auth": "optional Bearer"
     },
     {

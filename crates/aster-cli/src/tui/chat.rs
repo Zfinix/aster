@@ -780,6 +780,10 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
         "notice" => Some(TurnEvent::Notice(
             event.get("message")?.as_str()?.to_string(),
         )),
+        "title" => Some(TurnEvent::Notice(format!(
+            "session named: {}",
+            event.get("title")?.as_str()?
+        ))),
         "agent_status" => Some(TurnEvent::AgentStatus {
             call_id: event.get("call_id")?.as_str()?.to_string(),
             agent: event.get("agent")?.as_str()?.to_string(),
@@ -834,6 +838,10 @@ fn step_label(name: &str, args: &str) -> String {
         "edit_file" => match s("path") {
             "" => "Edited file".to_string(),
             path => format!("Edited {path}"),
+        },
+        "open_preview" => match s("description") {
+            "" => format!("Opened {}", s("target")),
+            what => what.to_string(),
         },
         "remember" => "Saved to memory".to_string(),
         "recall" => format!("Recalled {}", s("name")),
@@ -1529,6 +1537,7 @@ impl ChatApp {
             environment: crate::chat::environment_note(&repo_root),
             yolo: self.mode == Mode::Yolo,
             reads: Default::default(),
+            previews: Default::default(),
             lookups: Default::default(),
             injected: Default::default(),
             agents: self.agents.clone(),

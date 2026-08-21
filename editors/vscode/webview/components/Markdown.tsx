@@ -1,5 +1,6 @@
 import type { ReactElement, ReactNode } from "react";
 import { CodeBlock } from "./CodeBlock";
+import { Link } from "./Link";
 
 /**
  * Markdown rendering for assistant replies. Deliberately hand-rolled rather
@@ -180,14 +181,15 @@ function splitRow(line: string): string[] {
 }
 
 /**
- * Splits on ``code``, `code`, **bold**, *italic*, and [text](url) runs.
+ * Splits on ``code``, `code`, **bold**, *italic*, [text](url), and bare URLs.
  * Double backticks come first: matching the inner pair of a ``…`` span would
- * leave stray backticks beside the styled chip.
+ * leave stray backticks beside the styled chip. A bare URL comes last, so a
+ * URL already inside a markdown link is not matched twice.
  */
 function inline(text: string): ReactNode[] {
   const parts: ReactNode[] = [];
   const pattern =
-    /``([^`]+)``|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\n]+)\*|\[([^\]]+)\]\(([^)\s]+)\)/g;
+    /``([^`]+)``|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\n]+)\*|\[([^\]]+)\]\(([^)\s]+)\)|((?:https?|file):\/\/[^\s<>"'`]+)/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -203,12 +205,22 @@ function inline(text: string): ReactNode[] {
       parts.push(<strong key={key++}>{inline(match[3])}</strong>);
     } else if (match[4] !== undefined) {
       parts.push(<em key={key++}>{inline(match[4])}</em>);
-    } else {
+    } else if (match[5] !== undefined) {
       parts.push(
-        <a key={key++} className="md-link" href={match[6]}>
+        <Link key={key++} url={match[6]}>
           {match[5]}
-        </a>
+        </Link>
       );
+    } else {
+      // Trailing punctuation reads as the sentence's, not the URL's.
+      const url = match[7].replace(/[.,;:!?)\]]+$/, "");
+      parts.push(
+        <Link key={key++} url={url}>
+          {url}
+        </Link>
+      );
+      cursor = match.index + url.length;
+      continue;
     }
     cursor = match.index + match[0].length;
   }

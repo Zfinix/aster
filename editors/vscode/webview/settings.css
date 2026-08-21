@@ -1,0 +1,647 @@
+@import "./tokens.css";
+
+/* The settings tab is an editor, not a sidebar: it gets the editor's own
+   background and a fixed rail beside a column that stops at a readable width.
+   The edges and muted text are mixed off the foreground rather than taken from
+   a theme key, so they stay hairline-faint on any theme instead of tracking a
+   border colour some themes set to an accent. */
+:root {
+  --set-rail: 210px;
+  --set-col: 740px;
+  --set-bg: var(--vscode-editor-background);
+  --set-row-min: 4rem;
+  --set-radius-row: 10px;
+  --set-nav-row: 30px;
+  --set-fg-2: var(--vscode-descriptionForeground);
+  --set-edge: rgba(127, 127, 127, 0.12);
+  --set-edge-strong: rgba(127, 127, 127, 0.24);
+}
+
+@supports (color: color-mix(in oklab, red, red)) {
+  :root {
+    --set-fg-2: color-mix(in srgb, var(--vscode-foreground) 65%, transparent);
+    --set-edge: color-mix(in oklab, var(--vscode-foreground) 5%, transparent);
+    --set-edge-strong: color-mix(in oklab, var(--vscode-foreground) 12%, transparent);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--set-bg);
+  color: var(--fg);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+#root {
+  height: 100%;
+}
+
+.set-shell {
+  display: grid;
+  grid-template-columns: var(--set-rail) minmax(0, 1fr);
+  height: 100%;
+}
+
+.set-shell.loading,
+.set-shell.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+}
+
+.set-nav {
+  border-right: 1px solid var(--set-edge);
+  padding: var(--s5) var(--s3);
+  overflow-y: auto;
+}
+
+.set-nav-brand {
+  display: block;
+  padding: 0 var(--s2) var(--s4);
+  font-size: 1.05em;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.set-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.set-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  width: 100%;
+  min-height: var(--set-nav-row);
+  padding: 6px var(--s2);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.set-nav-item:hover {
+  background: var(--list-hover);
+}
+
+.set-nav-item.on {
+  background: var(--vscode-list-activeSelectionBackground, var(--code-bg-strong));
+  color: var(--vscode-list-activeSelectionForeground, var(--fg));
+}
+
+/* How many keys this scope sets, so a section carrying overrides is findable
+   without opening all seven. */
+.set-nav-count {
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--code-bg-strong);
+  color: var(--fg-dim);
+  font-size: 0.8em;
+  line-height: 17px;
+  text-align: center;
+}
+
+.set-nav-item.on .set-nav-count {
+  background: var(--code-bg);
+  color: inherit;
+}
+
+.set-main {
+  overflow-y: auto;
+  padding: var(--s5) var(--s5) 64px;
+}
+
+.set-head,
+.set-banner,
+.set-note,
+.set-card,
+.set-group-title,
+.set-main > p {
+  max-width: var(--set-col);
+}
+
+.set-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s4);
+  margin-bottom: var(--s5);
+}
+
+.set-head > div {
+  min-width: 0;
+}
+
+.set-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.set-blurb {
+  margin: var(--s1) 0 0;
+  color: var(--set-fg-2);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.set-note {
+  margin: 0 0 var(--s3);
+  color: var(--fg-dim);
+}
+
+.set-banner {
+  margin: 0 0 var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg-soft);
+}
+
+.set-banner.error {
+  border-color: var(--sev-high);
+  color: var(--sev-high);
+}
+
+.set-scope {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s1);
+  max-width: 46%;
+}
+
+/* A repo path can be longer than the page is wide; it truncates from the left
+   so the file name, which is the part that identifies it, always survives. */
+.set-path {
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+
+.set-path:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.set-path-note {
+  margin-left: var(--s2);
+  opacity: 0.75;
+  font-family: var(--vscode-font-family);
+  font-style: italic;
+}
+
+.set-group-title {
+  margin: var(--s5) 0 var(--s2);
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.set-card {
+  border: 1px solid var(--set-edge);
+  border-radius: var(--set-radius-row);
+  background: var(--code-bg-soft);
+  overflow: hidden;
+}
+
+/* A floor rather than a fixed height: a row with a long help line grows, and a
+   bare toggle row still holds the same rhythm as the ones around it. */
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+  min-height: var(--set-row-min);
+  padding: var(--s2) var(--s4);
+}
+
+.set-row + .set-row {
+  border-top: 1px solid var(--set-edge);
+}
+
+.set-row-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.set-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.set-row-label {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+/* Only meaningful where a value exists to clear, so it appears with the row's
+   `set` state rather than sitting greyed out on every row. */
+.set-reset {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.set-row:hover .set-reset,
+.set-reset:focus-visible {
+  opacity: 1;
+}
+
+.set-reset:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.set-row-help {
+  margin: 2px 0 0;
+  color: var(--set-fg-2);
+  font-size: 12px;
+  line-height: 16px;
+  text-wrap: balance;
+}
+
+.set-row-key {
+  margin: var(--s1) 0 0;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.set-row-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: var(--s1) 0 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.set-row-note.warn {
+  color: var(--sev-medium);
+}
+
+.set-row-note.error {
+  color: var(--sev-high);
+}
+
+.set-row-note svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.set-row-control {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 200px;
+  max-width: 280px;
+}
+
+/* A list grows down the card rather than sideways, so it takes the wider half
+   and lets its chips wrap. */
+.set-row:has(.set-chips) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s2);
+}
+
+.set-row:has(.set-chips) .set-row-control {
+  width: 100%;
+  max-width: none;
+  justify-content: flex-start;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.set-input {
+  width: 100%;
+  padding: 4px var(--s2);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: var(--radius);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground, var(--fg));
+  font: inherit;
+}
+
+.set-input.mono {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
+.set-input:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.set-number {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.set-number .set-input {
+  width: 90px;
+  text-align: right;
+}
+
+.set-unit {
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.set-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.set-select select {
+  appearance: none;
+  width: 100%;
+  padding: 4px 26px 4px var(--s2);
+  border: 1px solid var(--vscode-dropdown-border, var(--border));
+  border-radius: var(--radius);
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground, var(--fg));
+  font: inherit;
+  cursor: pointer;
+}
+
+.set-select svg {
+  position: absolute;
+  right: var(--s2);
+  color: var(--fg-dim);
+  pointer-events: none;
+}
+
+.set-segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg);
+}
+
+.set-segment {
+  padding: 3px var(--s3);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.set-segment:hover:not(.on):not(:disabled) {
+  color: var(--fg);
+}
+
+.set-segment.on {
+  background: var(--vscode-button-secondaryBackground, var(--code-bg-strong));
+  color: var(--fg);
+}
+
+.set-segment:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.set-toggle {
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg-strong);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.set-toggle[aria-checked="true"] {
+  background: var(--vscode-button-background, var(--vscode-focusBorder));
+  border-color: transparent;
+}
+
+.set-toggle-knob {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--vscode-foreground);
+  transition: transform 120ms ease;
+}
+
+.set-toggle[aria-checked="true"] .set-toggle-knob {
+  background: var(--vscode-button-foreground, #fff);
+  transform: translateX(14px);
+}
+
+.set-chips {
+  width: 100%;
+}
+
+.set-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin: 0 0 var(--s2);
+  padding: 0;
+  list-style: none;
+}
+
+.set-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 2px var(--s1) 2px var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  font-size: var(--mono-size);
+}
+
+.set-chip-x {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.set-chip-x:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.set-empty {
+  max-width: 460px;
+  text-align: center;
+}
+
+.set-code {
+  margin: var(--s3) 0;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg);
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  overflow-x: auto;
+  text-align: left;
+}
+
+.set-retry {
+  margin-top: var(--s2);
+  padding: 4px var(--s4);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The rail costs more than it earns once the tab is this narrow. */
+@media (max-width: 620px) {
+  .set-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .set-nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .set-nav ul {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .set-row {
+    flex-direction: column;
+    gap: var(--s2);
+  }
+
+  .set-row-control {
+    width: 100%;
+    max-width: none;
+    justify-content: flex-start;
+  }
+}
+
+.set-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--s3);
+  padding: 3px var(--s2);
+  border: 1px solid var(--set-edge-strong);
+  border-radius: var(--radius-lg);
+  background: var(--vscode-input-background);
+  color: var(--set-fg-2);
+}
+
+.set-search:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.set-search svg {
+  flex: none;
+}
+
+.set-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--vscode-input-foreground, var(--fg));
+  font: inherit;
+  outline: none;
+}
+
+/* The platform's own clear affordance would sit beside the one below it. */
+.set-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.set-search-clear {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--set-fg-2);
+  cursor: pointer;
+}
+
+.set-search-clear:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.set-combo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.set-combo input {
+  padding-right: 24px;
+}
+
+.set-combo svg {
+  position: absolute;
+  right: var(--s2);
+  color: var(--fg-dim);
+  pointer-events: none;
+}

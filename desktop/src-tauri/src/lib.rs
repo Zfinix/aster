@@ -480,14 +480,91 @@ async fn memory_add(text: String, title: Option<String>) -> Result<serde_json::V
     run_aster_json(&refs, None, None, Vec::new()).await
 }
 
+/// The shared catalog, the same file `aster_ai::keys` reads. Parsed here rather
+/// than imported because the desktop shell is a standalone workspace, kept that
+/// way so it never perturbs the library crates or their lockfile.
+const PROVIDERS_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.json"));
+
+#[derive(serde::Deserialize)]
+struct KeyCatalog {
+    providers: Vec<KeyCatalogEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct KeyCatalogEntry {
+    base_url: String,
+    #[serde(default)]
+    key_env: Vec<String>,
+}
+
+fn host_only(url: &str) -> &str {
+    url.split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+}
+
+/// Mirrors `aster_ai::keys::provider_key_vars`, off the same catalog, so an
+/// endpoint's key lives in the same var whichever surface stored it.
+fn provider_key_vars(base_url: &str) -> &'static [&'static str] {
+    static TABLE: std::sync::OnceLock<Vec<(Vec<String>, &'static [&'static str])>> =
+        std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let Ok(catalog) = serde_json::from_str::<KeyCatalog>(PROVIDERS_JSON) else {
+            return Vec::new();
+        };
+        catalog
+            .providers
+            .into_iter()
+            .filter(|entry| !entry.key_env.is_empty())
+            .filter_map(|entry| {
+                let vars: &'static [&'static str] = Box::leak(
+                    entry
+                        .key_env
+                        .into_iter()
+                        .map(|var| &*Box::leak(var.into_boxed_str()))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+                let host = host_only(entry.base_url.trim_end_matches('/'));
+                let segments: Vec<String> = host
+                    .split(|c| c == '{' || c == '}')
+                    .enumerate()
+                    .filter(|(i, part)| i % 2 == 0 && !part.is_empty())
+                    .map(|(_, part)| part.to_string())
+                    .collect();
+                (!segments.is_empty()).then_some((segments, vars))
+            })
+            .collect()
+    });
+    let host = host_only(base_url.trim_end_matches('/'));
+    // An exact host wins, so the plainer of two overlapping hosts cannot
+    // swallow the more specific one.
+    table
+        .iter()
+        .find(|(segments, _)| segments.len() == 1 && segments[0] == host)
+        .or_else(|| {
+            table
+                .iter()
+                .find(|(segments, _)| segments.iter().all(|s| host.contains(s.as_str())))
+        })
+        .map(|(_, vars)| *vars)
+        .unwrap_or(&[])
+}
+
 #[tauri::command]
 fn auth_status() -> AuthStatus {
     let p = load_provider();
-    let env_key = std::env::var("ASTER_API_KEY")
-        .or_else(|_| std::env::var("OPEN_ROUTER_API_KEY"))
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .is_some();
+    // A key named for another vendor is not a key for this endpoint, so only
+    // this endpoint's var and the shared one count as configured.
+    let env_key = provider_key_vars(p.base_url.as_deref().unwrap_or_default())
+        .iter()
+        .copied()
+        .chain(["ASTER_API_KEY"])
+        .any(|var| std::env::var(var).is_ok_and(|v| !v.trim().is_empty()));
     AuthStatus {
         has_key: env_key || p.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()),
         base_url: p.base_url,
@@ -589,6 +666,20 @@ fn strip_ansi(input: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// Follow a link the agent printed. Opening it in the OS browser rather than
+/// the webview: a plain anchor would navigate the app itself away, and there
+/// is no way back. Pages only, so a crafted link cannot launch a handler.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let scheme = url
+        .split_once(':')
+        .map(|(head, _)| head.to_ascii_lowercase());
+    if !matches!(scheme.as_deref(), Some("http" | "https" | "file")) {
+        return Err(format!("refusing to open {url}"));
+    }
+    open::that_detached(&url).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -793,7 +884,8 @@ pub fn run() {
             delete_session,
             memory_list,
             memory_add,
-            list_repo_files
+            list_repo_files,
+            open_external
         ])
         .run(tauri::generate_context!())
         .expect("error while running aster desktop");

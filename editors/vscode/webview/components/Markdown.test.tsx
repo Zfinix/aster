@@ -43,3 +43,33 @@ describe("Markdown tables", () => {
     expect(out).toContain("<th>Command</th>");
   });
 });
+
+describe("Markdown links", () => {
+  it("makes a bare URL clickable", () => {
+    const out = html("Opened http://localhost:5173/pricing in your browser.");
+    expect(out).toContain('href="http://localhost:5173/pricing"');
+    expect(out).toContain("md-link");
+  });
+
+  it("leaves the sentence's punctuation out of the URL", () => {
+    const out = html("It is at http://localhost:5173.");
+    expect(out).toContain('href="http://localhost:5173"');
+    expect(out).toContain(".</p>");
+  });
+
+  it("links a file URL, which is what a built page usually is", () => {
+    const out = html("file:///tmp/site/index.html");
+    expect(out).toContain('href="file:///tmp/site/index.html"');
+  });
+
+  it("does not link a URL twice when it is already a markdown link", () => {
+    const out = html("[the page](http://localhost:5173)");
+    expect(out.match(/<a /g)).toHaveLength(1);
+    expect(out).toContain(">the page</a>");
+  });
+
+  it("leaves a URL inside a code span alone", () => {
+    const out = html("Run `curl http://localhost:5173`");
+    expect(out).not.toContain("<a ");
+  });
+});

@@ -35,6 +35,8 @@ enum SessionsCmd {
     Show { id: String },
     /// Delete a saved session by id.
     Delete { id: String },
+    /// Give a saved session a new name.
+    Rename { id: String, title: String },
     /// Copy this repo's conversations from another coding tool (Claude Code, Codex, Cursor, opencode, Hermes).
     Import {
         /// Which tool to read; omitted, all three are tried.
@@ -191,12 +193,22 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
                 } else {
                     0
                 };
-                let room = terminal_width().saturating_sub(id_width + project_width + 16 + 10 + 8);
+                // Titles vary, so the column is sized to the widest row but
+                // capped so the id and age still fit on a narrow terminal.
+                let title_width = rows
+                    .iter()
+                    .map(|(_, _, t)| one_line(t).chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .min(40);
+                let room = terminal_width()
+                    .saturating_sub(id_width + project_width + title_width + 6 + 10 + 8);
+                let title_width = title_width.min(room.max(8));
                 for (meta, turns, title) in rows {
-                    let when = meta.created_at.format("%Y-%m-%d %H:%M");
+                    let when = time_ago(&meta.created_at);
                     let title = match one_line(&title) {
                         text if text.is_empty() => "(empty)".into(),
-                        text => truncate(&text, room.max(20)),
+                        text => truncate(&text, title_width),
                     };
                     let turns = format!("{turns} {}", if turns == 1 { "turn" } else { "turns" });
                     let project = if args.all {
@@ -205,8 +217,10 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
                         String::new()
                     };
                     println!(
-                        "{:<id_width$}  {project}{when}  {turns:>8}  {title}",
+                        "{project}{:<title_width$}  {:<id_width$}  {when:>6}  {turns}",
+                        title,
                         meta.id,
+                        title_width = title_width,
                         id_width = id_width
                     );
                 }
@@ -269,6 +283,21 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
                 println!("{}", json!({ "ok": true, "id": id }));
             } else {
                 println!("deleted session {id}");
+            }
+        }
+        SessionsCmd::Rename { id, title } => {
+            let title = title.trim();
+            if title.is_empty() {
+                anyhow::bail!("a session name cannot be empty");
+            }
+            let owner = owner_of(&store, &repo_root, &id)?;
+            // Appended, not rewritten: the name is an event like any other, so
+            // the transcript still reads as what happened in order.
+            store.resume_writer(&owner, &id)?.set_title(title)?;
+            if crate::json_mode() {
+                println!("{}", json!({ "ok": true, "id": id, "title": title }));
+            } else {
+                println!("renamed session {id} to {title:?}");
             }
         }
     }
@@ -455,6 +484,31 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Compact relative age: "now", "16m", "5h", "3d", "6w", "2y".
+fn time_ago(created: &chrono::DateTime<chrono::Utc>) -> String {
+    let secs = (chrono::Utc::now() - *created).num_seconds().max(0);
+    if secs < 60 {
+        return "now".into();
+    }
+    let m = secs / 60;
+    if m < 60 {
+        return format!("{m}m");
+    }
+    let h = m / 60;
+    if h < 24 {
+        return format!("{h}h");
+    }
+    let d = h / 24;
+    if d < 30 {
+        return format!("{d}d");
+    }
+    let w = d / 7;
+    if w < 52 {
+        return format!("{w}w");
+    }
+    format!("{}y", w / 52)
 }
 
 /// Flatten a title to one line. A preview holding a newline otherwise wraps and

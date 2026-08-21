@@ -25,3 +25,4 @@ _archive/
 
 # Node
 node_modules/
+.playwright-mcp/

@@ -56,6 +56,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # The browser UI `aster serve` hands out is embedded at compile time, so
+      # it is built before the binary that carries it. A committed bundle keeps
+      # `cargo install` working; this makes the release match the source.
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build the browser UI
+        working-directory: editors/vscode
+        run: |
+          bun install --frozen-lockfile
+          bun run build:web
+
       - name: Build
         run: cargo build --release --locked -p aster-cli --bin aster --target ${{ matrix.target }}
 

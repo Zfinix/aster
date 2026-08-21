@@ -1,4 +1,5 @@
 import type { ToHost, ToWebview } from "../../src/protocol";
+import * as browser from "./browser";
 
 interface VsCodeApi {
   postMessage(message: ToHost): void;
@@ -8,14 +9,19 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
-const api = acquireVsCodeApi();
+/** The same UI runs in an editor panel and, under `aster serve`, in a browser
+ *  tab. Which one is decided by whether the editor handed us its API. */
+const api = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
 
 export function post(message: ToHost): void {
-  api.postMessage(message);
+  api ? api.postMessage(message) : browser.post(message);
 }
 
 /** Subscribe to host messages. Returns an unsubscribe. */
 export function onHostMessage(handler: (message: ToWebview) => void): () => void {
+  if (!api) {
+    return browser.subscribe(handler);
+  }
   const listener = (event: MessageEvent<ToWebview>) => handler(event.data);
   window.addEventListener("message", listener);
   return () => window.removeEventListener("message", listener);
@@ -26,9 +32,9 @@ export function onHostMessage(handler: (message: ToWebview) => void): () => void
  * still there when the panel comes back.
  */
 export function persist(state: unknown): void {
-  api.setState(state);
+  api ? api.setState(state) : browser.persist(state);
 }
 
 export function restore<T>(): T | undefined {
-  return api.getState() as T | undefined;
+  return api ? (api.getState() as T | undefined) : browser.restore<T>();
 }

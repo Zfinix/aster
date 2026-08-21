@@ -134,6 +134,7 @@ async fn run_agent(
         environment: deps.environment.clone(),
         yolo: false,
         reads: Default::default(),
+        previews: Default::default(),
         lookups: Default::default(),
         injected: Default::default(),
         agents: deps.session_registry.clone(),

@@ -1,10 +1,11 @@
 {
   "name": "aster-vscode",
-  "displayName": "Aster",
-  "description": "AI code review harness — verified, actionable findings in your editor",
-  "version": "0.4.0",
+  "displayName": "Aster AI",
+  "description": "AI coding agent in your editor: chat, verified code review, and one-click fixes",
+  "version": "0.4.1",
   "publisher": "aster-dev",
   "license": "Apache-2.0",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/zfinix/aster",
@@ -65,7 +66,7 @@
       },
       {
         "command": "aster.openPanel",
-        "title": "Aster: Open",
+        "title": "Open",
         "category": "Aster",
         "icon": {
           "light": "media/aster.svg",
@@ -115,6 +116,12 @@
         "command": "aster.insertMention",
         "title": "Insert @-Mention Reference",
         "category": "Aster"
+      },
+      {
+        "command": "aster.openSettings",
+        "title": "Open Settings",
+        "category": "Aster",
+        "icon": "$(gear)"
       }
     ],
     "keybindings": [
@@ -209,6 +216,11 @@
           "command": "aster.clearFindings",
           "when": "view == asterFindings",
           "group": "navigation@2"
+        },
+        {
+          "command": "aster.openSettings",
+          "when": "view == asterChat || view == asterChatPrimary",
+          "group": "navigation@3"
         }
       ],
       "editor/title": [
@@ -281,11 +293,17 @@
   "scripts": {
     "build": "bun run build:host && bun run build:webview",
     "build:host": "tsc -p ./",
-    "build:webview": "tsc -p tsconfig.webview.json && vite build",
+    "build:webview": "tsc -p tsconfig.webview.json && vite build && vite build --mode settings",
+    "build:web": "vite build --config vite.web.config.ts",
     "watch": "tsc -watch -p ./",
     "package": "bun run build && vsce package --no-dependencies",
+    "publish:vsce": "vsce publish --no-dependencies",
+    "publish:ovsx": "ovsx publish --no-dependencies",
+    "publish": "bun run publish:vsce && bun run publish:ovsx",
     "vscode:prepublish": "bun run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "icons": "node scripts/icon-gallery.mjs",
+    "dev:web": "bun run build:webview && tsc -p ./ && node out/devhost/main.js"
   },
   "devDependencies": {
     "@shikijs/core": "^4.3.1",
@@ -298,6 +316,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "@vscode/vsce": "^3.0.0",
     "motion": "^12.43.0",
+    "ovsx": "^1.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "shiki": "^4.3.1",

@@ -1,0 +1,138 @@
+/*
+ * The panel's styles are written against VS Code's theme keys, which a browser
+ * has none of. Under `aster serve` this fills them in with Aster's own palette,
+ * so the same stylesheet renders the same UI in a tab.
+ */
+:root {
+  --vscode-font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --vscode-editor-font-size: 12.5px;
+
+  --vscode-foreground: #ededed;
+  --vscode-descriptionForeground: #8f8f8f;
+  --vscode-editor-background: #0a0a0a;
+  --vscode-sideBar-background: #0a0a0a;
+  --vscode-editorGroupHeader-tabsBackground: #0f0f0f;
+  --vscode-editorWidget-background: #141414;
+  --vscode-widget-border: #1f1f1f;
+  --vscode-focusBorder: #f2764f;
+  --vscode-inlineChatInput-border: #232323;
+
+  --vscode-input-background: #111111;
+  --vscode-input-foreground: #ededed;
+  --vscode-input-placeholderForeground: #6b6b6b;
+
+  --vscode-button-background: #ededed;
+  --vscode-button-foreground: #0a0a0a;
+  --vscode-button-hoverBackground: #ffffff;
+
+  --vscode-menu-background: #141414;
+  --vscode-menu-foreground: #ededed;
+  --vscode-menu-border: #232323;
+  --vscode-menu-selectionBackground: rgba(255, 255, 255, 0.08);
+  --vscode-menu-selectionForeground: #ededed;
+
+  --vscode-badge-background: rgba(255, 255, 255, 0.1);
+  --vscode-badge-foreground: #ededed;
+  --vscode-chat-slashCommandBackground: rgba(242, 118, 79, 0.16);
+  --vscode-chat-slashCommandForeground: #f2764f;
+
+  --vscode-list-hoverBackground: rgba(255, 255, 255, 0.06);
+  --vscode-list-dropBackground: rgba(242, 118, 79, 0.12);
+  --vscode-toolbar-hoverBackground: rgba(255, 255, 255, 0.08);
+  --vscode-editor-selectionBackground: rgba(242, 118, 79, 0.22);
+  --vscode-textCodeBlock-background: rgba(127, 127, 127, 0.08);
+
+  --vscode-textLink-foreground: #f2764f;
+  --vscode-textLink-activeForeground: #f79b4d;
+  --vscode-progressBar-background: #f2764f;
+
+  --vscode-errorForeground: #f85149;
+  --vscode-editorError-foreground: #f85149;
+  --vscode-editorWarning-foreground: #f7c15c;
+  --vscode-editorInfo-foreground: #7d9bf0;
+  --vscode-gitDecoration-addedResourceForeground: #3fb950;
+  --vscode-gitDecoration-deletedResourceForeground: #f85149;
+  --vscode-diffEditor-insertedTextBackground: rgba(63, 185, 80, 0.16);
+  --vscode-diffEditor-removedTextBackground: rgba(248, 81, 73, 0.16);
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --vscode-foreground: #1b1b1b;
+    --vscode-descriptionForeground: #6e6e6e;
+    --vscode-editor-background: #fefefe;
+    --vscode-sideBar-background: #fefefe;
+    --vscode-editorGroupHeader-tabsBackground: #f7f7f6;
+    --vscode-editorWidget-background: #ffffff;
+    --vscode-widget-border: #e6e6e4;
+    --vscode-inlineChatInput-border: #e0e0dd;
+
+    --vscode-input-background: #ffffff;
+    --vscode-input-foreground: #1b1b1b;
+    --vscode-input-placeholderForeground: #9a9a97;
+
+    --vscode-button-background: #1b1b1b;
+    --vscode-button-foreground: #fefefe;
+    --vscode-button-hoverBackground: #000000;
+
+    --vscode-menu-background: #ffffff;
+    --vscode-menu-foreground: #1b1b1b;
+    --vscode-menu-border: #e6e6e4;
+    --vscode-menu-selectionBackground: rgba(0, 0, 0, 0.06);
+    --vscode-menu-selectionForeground: #1b1b1b;
+
+    --vscode-badge-background: rgba(0, 0, 0, 0.07);
+    --vscode-badge-foreground: #1b1b1b;
+    --vscode-list-hoverBackground: rgba(0, 0, 0, 0.045);
+    --vscode-toolbar-hoverBackground: rgba(0, 0, 0, 0.06);
+
+    color-scheme: light;
+  }
+}
+
+/* The panel is a pane in a window that already has a background; a tab is the
+   window, so the page paints it. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--vscode-editor-background);
+}
+
+#root {
+  height: 100%;
+}
+
+/* The panel's spacing was set for a crowded editor sidebar. A page has room,
+   so rows, menus, and pickers breathe a little more. Doubled :root outranks
+   the panel's own tokens regardless of bundle order. */
+:root:root {
+  --pop-pad: 10px;
+  --pop-row-pad: 6px 10px;
+  --pop-row-pad-x: 10px;
+  --pop-row-pad-y: 6px;
+  --pop-row-gap: 3px;
+  --pop-section-gap: 14px;
+  --pop-head-pad: 10px 12px;
+}
+
+/* Edit and auto mode ride a blue accent in the browser: the composer wears its
+   mode all session, and permanent red reads as an error. Red stays yolo's.
+   `:root` prefix outranks the panel's own rules regardless of bundle order. */
+:root .composer[data-permission-mode="auto"],
+:root .composer[data-permission-mode="edit"] {
+  --ring: #7d9bf0;
+  --send: #7d9bf0;
+}
+
+@media (prefers-color-scheme: light) {
+  :root .composer[data-permission-mode="auto"],
+  :root .composer[data-permission-mode="edit"] {
+    --ring: #4f6ee6;
+    --send: #4f6ee6;
+  }
+}

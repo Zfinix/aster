@@ -2,7 +2,7 @@
 //! message, and relays approval prompts as inline keyboards. Tool calls stream
 //! into a live-edited activity message so the chat mirrors the CLI.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,6 +25,9 @@ const ACTIVITY_WINDOW: usize = 6;
 
 /// Minimum gap between edits of the activity message (Telegram rate limit).
 const ACTIVITY_EDIT_GAP: Duration = Duration::from_millis(1500);
+
+/// How many busy-turn messages a chat may queue before new ones are refused.
+const MAX_QUEUED: usize = 10;
 
 /// Reply-keyboard row that answers an agent question with "no answer".
 const SKIP_LABEL: &str = "Skip";
@@ -60,9 +63,13 @@ When you want to send a gif (e.g. via the giphy tools), put its URL on a line \
 by itself and it will render as a playing animation. \
 The `telegram` MCP server gives you chat tools: react (emoji-react to the \
 user's message; use sparingly), send_gif, send_photo, send_document (share a \
-repo file), send_poll, and send_code_page (publish long code or reports as an \
-in-app page instead of flooding the chat). Prefer them over describing what \
-you would send.";
+repo file), send_poll, and send_code_page (send long code or reports as a \
+private, deletable chat attachment instead of flooding the chat). Prefer them \
+over describing what you would send. \
+Hard rule: any code, file contents, or report longer than 40 lines must go \
+through send_code_page and be sent as a private attachment in this chat, never \
+published to a public page and never pasted into the chat. \
+Under 40 lines, paste inline.";
 
 /// A prompt waiting for the user. Approvals resolve via inline buttons;
 /// questions resolve via the next text message (reply-keyboard tap or typed).
@@ -80,6 +87,9 @@ struct ChatState {
     history: Vec<WireMessage>,
     pending: Option<Pending>,
     running: Option<AbortHandle>,
+    /// User messages sent while a turn was busy, run in order when it finishes.
+    /// Each holds the sender's message id so the turn can reference it over MCP.
+    queued: VecDeque<(i64, String)>,
     /// Per-chat overrides set with /mode, /model, and /effort.
     mode: Option<String>,
     model: Option<String>,
@@ -201,10 +211,8 @@ async fn model_catalog() -> Result<&'static Vec<String>> {
     if let Some(models) = MODEL_CACHE.get() {
         return Ok(models);
     }
-    let base = env::var("ASTER_BASE_URL").unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
-    let key = env::var("ASTER_API_KEY")
-        .or_else(|_| env::var("OPEN_ROUTER_API_KEY"))
-        .ok();
+    let base = env::var("ASTER_BASE_URL").unwrap_or_else(|_| aster_ai::DEFAULT_BASE_URL.into());
+    let key = aster_ai::keys::resolve_key(&base).map(|(key, _)| key);
     let mut request = reqwest::Client::new()
         .get(format!("{}/models", base.trim_end_matches('/')))
         .timeout(Duration::from_secs(15));
@@ -346,7 +354,7 @@ async fn handle_message(
         let _ = respond.send(answer);
         return;
     }
-    start_turn(api, cfg, chats, chat_id, message_id, trimmed).await;
+    start_turn(api, cfg, chats, chat_id, message_id, trimmed);
 }
 
 /// One /command, mirroring the TUI's command set where it makes sense remotely.
@@ -366,20 +374,30 @@ async fn handle_command(
         "new" | "clear" => {
             {
                 let mut chats = chats.lock().expect("chats lock");
-                chats.entry(chat_id).or_default().history.clear();
+                let state = chats.entry(chat_id).or_default();
+                state.history.clear();
+                state.queued.clear();
             }
             api.send_text(chat_id, "Started a fresh conversation.")
                 .await;
         }
         "stop" => {
-            let running = {
+            let (running, queued) = {
                 let mut chats = chats.lock().expect("chats lock");
-                chats.entry(chat_id).or_default().running.take()
+                let state = chats.entry(chat_id).or_default();
+                let queued = state.queued.len();
+                state.queued.clear();
+                (state.running.take(), queued)
             };
             match running {
                 Some(handle) => {
                     handle.abort();
-                    api.send_text(chat_id, "Stopped the current turn.").await;
+                    let text = if queued > 0 {
+                        format!("Stopped the current turn and dropped {queued} queued message(s).")
+                    } else {
+                        "Stopped the current turn.".to_string()
+                    };
+                    api.send_text(chat_id, &text).await;
                 }
                 None => api.send_text(chat_id, "Nothing is running.").await,
             }
@@ -432,6 +450,38 @@ async fn handle_command(
             );
             api.send_text(chat_id, &text).await;
         }
+        "queue" | "queued" => {
+            let (busy, items) = chat_state(chats, chat_id, |state| {
+                (state.running.is_some(), state.queued.clone())
+            });
+            if items.is_empty() {
+                api.send_text(
+                    chat_id,
+                    if busy {
+                        "Nothing queued; the current turn is running."
+                    } else {
+                        "Nothing queued and nothing is running."
+                    },
+                )
+                .await;
+            } else {
+                let count = items.len();
+                let status = if busy {
+                    format!("<b>{count} queued</b> · a turn is running")
+                } else {
+                    format!("<b>{count} queued</b>, next up")
+                };
+                let mut lines = vec![status, String::new()];
+                for (n, (_, text)) in items.iter().enumerate() {
+                    lines.push(format!(
+                        "<b>{}.</b> <code>{}</code>",
+                        n + 1,
+                        markdown::escape(&console_text(text, 160))
+                    ));
+                }
+                api.send_html_or_plain(chat_id, &lines.join("\n")).await;
+            }
+        }
         "diff" => {
             let output = tokio::process::Command::new("git")
                 .args(["-C", &cfg.repo_root.display().to_string(), "diff", "--stat"])
@@ -454,7 +504,7 @@ async fn handle_command(
             // Installed skills are commands too: /rust_review -> that skill.
             if let Some(skill) = skills.get(other) {
                 let prompt = skill_prompt(skill, arg);
-                start_turn(api, cfg, chats, chat_id, message_id, &prompt).await;
+                start_turn(api, cfg, chats, chat_id, message_id, &prompt);
             } else {
                 api.send_text(chat_id, "Unknown command; /help lists what I know.")
                     .await;
@@ -820,7 +870,11 @@ fn get_override<T>(chats: &Chats, chat_id: i64, read: impl FnOnce(&ChatState) ->
 }
 
 /// Kick off one agent turn for this chat unless one is already running.
-async fn start_turn(
+///
+/// A plain `fn`, not `async`: it only locks state, spawns the turn's driving
+/// task, and returns. That keeps its callers free of a non-`Send` future when
+/// they run inside `tokio::spawn`.
+fn start_turn(
     api: &Api,
     cfg: &Arc<TelegramConfig>,
     chats: &Chats,
@@ -842,11 +896,27 @@ async fn start_turn(
         }
     });
     let Some((history, mode, model, effort)) = prepared else {
-        api.send_text(
-            chat_id,
-            "Still working on the previous message; /stop cancels it.",
-        )
-        .await;
+        // A turn is already going; queue rather than dropping the message. The
+        // queue drains in order at the end of each successful turn.
+        let (accepted, depth) = chat_state(chats, chat_id, |state| {
+            if state.queued.len() >= MAX_QUEUED {
+                (false, state.queued.len())
+            } else {
+                state.queued.push_back((message_id, prompt.to_string()));
+                (true, state.queued.len())
+            }
+        });
+        let text = if accepted && depth == 1 {
+            "Working on your previous message; this one is queued and will run next.".to_string()
+        } else if accepted {
+            format!("Queued as number {depth}; I'll run it after the current ones.")
+        } else {
+            format!("The queue is full (max {MAX_QUEUED}); /stop the current turn first.")
+        };
+        // Fire the notice from its own task so start_turn never awaits; the
+        // notice is fire-and-forget and the turn body below spawns its own task.
+        let api = api.clone();
+        tokio::spawn(async move { api.send_text(chat_id, &text).await });
         return;
     };
 
@@ -886,13 +956,15 @@ async fn start_turn(
         let mut chats = chats.lock().expect("chats lock");
         chats.entry(chat_id).or_default().running = Some(turn_task.abort_handle());
     }
+    eprintln!("[{chat_id}] user: {}", console_text(prompt, 200));
 
     let api = api.clone();
     let chats = chats.clone();
     let repo_root = cfg.repo_root.clone();
+    let cfg = cfg.clone();
     tokio::spawn(async move {
         let result = drive_turn(&api, &chats, chat_id, events_rx, turn_task).await;
-        finish_turn(&api, &chats, chat_id, Some(&repo_root), result).await;
+        finish_turn(&api, &cfg, &chats, chat_id, Some(&repo_root), result).await;
     });
 }
 
@@ -941,10 +1013,15 @@ async fn drive_turn(
                 }
                 activity.push(id, tool_line(&name, &arguments));
                 activity.flush(false).await;
+                eprintln!("[{chat_id}] → {}", console_tool(&name, &arguments));
             }
             TurnEvent::ToolResult { id, error } => {
                 activity.complete(&id, error);
                 activity.flush(false).await;
+                eprintln!(
+                    "[{chat_id}]   {}",
+                    if error { "✗ tool failed" } else { "✓ ok" }
+                );
             }
             TurnEvent::ApprovalRequest {
                 preview,
@@ -966,6 +1043,10 @@ async fn drive_turn(
                     {"text": "Deny", "callback_data": "a:deny"},
                 ]]);
                 api.send_keyboard(chat_id, &text, keyboard).await;
+                eprintln!(
+                    "[{chat_id}] ⏸ approval needed: {}",
+                    console_text(&subject, 120)
+                );
                 set_pending(chats, chat_id, Pending::Approval { subject, respond });
             }
             TurnEvent::Question {
@@ -975,6 +1056,7 @@ async fn drive_turn(
                 respond,
             } => {
                 activity.flush(true).await;
+                eprintln!("[{chat_id}] ? {}", console_text(&question, 120));
                 let text = format!(
                     "<b>{}</b>\n{}",
                     markdown::escape(&header),
@@ -1004,12 +1086,20 @@ async fn drive_turn(
         .unwrap_or_else(|e| Err(anyhow!("turn cancelled: {e}")));
     typing.abort();
     activity.finish(result.is_ok()).await;
+    match &result {
+        Ok(outcome) => eprintln!(
+            "[{chat_id}] ✔ done: {}",
+            console_text(outcome.reply.trim(), 200)
+        ),
+        Err(e) => eprintln!("[{chat_id}] ✗ turn failed: {e:#}"),
+    }
     result
 }
 
 /// Record the outcome and report it back to the chat.
 async fn finish_turn(
     api: &Api,
+    cfg: &Arc<TelegramConfig>,
     chats: &Chats,
     chat_id: i64,
     repo_root: Option<&std::path::Path>,
@@ -1027,6 +1117,7 @@ async fn finish_turn(
         }
         result
     };
+    let ok = result.is_ok();
     match result {
         Ok(outcome) => {
             let (text, gifs) = extract_gifs(&outcome.reply);
@@ -1042,6 +1133,46 @@ async fn finish_turn(
         }
         Err(e) => {
             api.send_text(chat_id, &format!("Turn failed: {e:#}")).await;
+        }
+    }
+    // This turn is done and running is cleared, so start the next queued
+    // message. Only successful turns drain: a failed turn leaves the queue
+    // sitting for /stop or /new to clear.
+    if ok {
+        drain_queued(api, cfg, chats, chat_id).await;
+    }
+}
+
+/// Run the next busy-turn message, one per successful completion. A turn
+/// started here clears `running`, so this only ever runs one at a time.
+async fn drain_queued(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
+    loop {
+        let next = {
+            let mut chats = chats.lock().expect("chats lock");
+            let state = chats.entry(chat_id).or_default();
+            if state.running.is_some() {
+                None
+            } else {
+                state
+                    .queued
+                    .pop_front()
+                    .map(|item| (item, state.queued.len()))
+            }
+        };
+        match next {
+            Some(((message_id, prompt), remaining)) => {
+                api.send_text(
+                    chat_id,
+                    &format!(
+                        "▶ Running your queued message ({} left): {}",
+                        remaining,
+                        console_text(&prompt, 200)
+                    ),
+                )
+                .await;
+                start_turn(api, cfg, chats, chat_id, message_id, &prompt);
+            }
+            None => break,
         }
     }
 }
@@ -1144,7 +1275,7 @@ async fn handle_callback(
         api.settle_callback_message(callback, &format!("▶️ {}", skill.name))
             .await;
         let prompt = skill_prompt(skill, "");
-        start_turn(api, cfg, chats, chat_id, 0, &prompt).await;
+        start_turn(api, cfg, chats, chat_id, 0, &prompt);
         return;
     }
     if let Some(rest) = data.strip_prefix("Mp:") {
@@ -1389,15 +1520,20 @@ async fn send_edit_diff(
         return;
     }
     api.send_html_or_plain(chat_id, &header).await;
-    match crate::mcp_server::publish_telegraph_page("Changes", &diff).await {
-        Ok(url) => api.send_text(chat_id, &url).await,
-        Err(_) => {
-            let text = format!(
-                "<pre>{}</pre>",
-                markdown::escape(&truncate(&diff, DIFF_INLINE_LIMIT))
-            );
-            api.send_html_or_plain(chat_id, &text).await;
-        }
+    let send_attachment = async {
+        let path = crate::mcp_server::write_scratch_document("Changes", &diff).await?;
+        let sent = api
+            .send_document_file(chat_id, &path, Some("Changes"))
+            .await;
+        let _ = tokio::fs::remove_file(&path).await;
+        sent
+    };
+    if send_attachment.await.is_err() {
+        let text = format!(
+            "<pre>{}</pre>",
+            markdown::escape(&truncate(&diff, DIFF_INLINE_LIMIT))
+        );
+        api.send_html_or_plain(chat_id, &text).await;
     }
 }
 
@@ -1492,6 +1628,7 @@ fn tool_line(name: &str, arguments: &str) -> String {
             step("🖥", "Run", &cmd)
         }
         "run_tests" => "🧪 <b>Running tests</b>".into(),
+        "open_preview" => step("🌐", "Opened", &field(&["target"])),
         // MCP calls arrive through the bridge tool, so the real tool is an id
         // in the arguments; label it like a first-class tool.
         "aster_mcp" => {
@@ -1689,6 +1826,36 @@ fn truncate(text: &str, limit: usize) -> String {
     format!("{}…", &text[..cut])
 }
 
+/// Collapse whitespace and cap a prompt so it prints on one console line.
+fn console_text(text: &str, limit: usize) -> String {
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate(&flattened, limit)
+}
+
+/// One plain console line for a tool call: name and the interesting argument.
+fn console_tool(name: &str, arguments: &str) -> String {
+    let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let field = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| args.get(k).and_then(Value::as_str))
+            .unwrap_or("")
+            .to_string()
+    };
+    let target = match name {
+        "read_file" | "list_files" | "edit_file" | "find_files" => field(&["path"]),
+        "search_files" => field(&["query", "pattern", "regex"]),
+        "run_command" => field(&["description", "command"]),
+        "update_plan" | "ask_user" | "remember" => field(&["label", "question", "title"]),
+        _ => String::new(),
+    };
+    let target = truncate(&target, 120);
+    if target.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}: {target}")
+    }
+}
+
 fn callback_message_ids(callback: &Value) -> Option<(i64, i64)> {
     let message = callback.get("message")?;
     let chat_id = message.get("chat")?.get("id")?.as_i64()?;
@@ -1720,6 +1887,7 @@ fn help(cfg: &TelegramConfig) -> String {
          /model — switch the model for this chat\n\
          /effort — reasoning budget (off, low, medium, high)\n\
          /status — session, mode, model, and history\n\
+         /queued — list messages waiting while I'm busy\n\
          /diff — uncommitted changes in the repo\n\
          /commit — draft a commit message and commit\n\
          /help — this message\n\n\

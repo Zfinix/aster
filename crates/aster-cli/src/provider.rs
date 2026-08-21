@@ -6,7 +6,8 @@ use std::env;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use aster_ai::{AiClient, Effort};
+use aster_ai::keys::{self, env_non_empty};
+use aster_ai::{AiClient, DEFAULT_BASE_URL, Effort};
 use clap::{Args, Subcommand};
 
 use crate::settings::{Review, Saved, Settings};
@@ -19,29 +20,9 @@ pub struct LlmConfig {
     pub web_search: bool,
 }
 
-const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MODEL: &str = "openai/gpt-4o-mini";
 
-/// Where the key for an endpoint came from, so a caller can say which one it
-/// would use before spending a turn finding out.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum KeySource {
-    /// A var named for this endpoint, e.g. `ANTHROPIC_API_KEY`.
-    Provider,
-    /// The shared `ASTER_API_KEY` / `OPEN_ROUTER_API_KEY`.
-    Shared,
-}
-
-/// The key for `base_url`: the endpoint's own var first, then the shared one.
-/// The specific var wins so a saved provider switch picks up a key that is
-/// already exported, which is what the TUI and the editor panel both do.
-pub fn resolve_key(base_url: &str) -> Option<(String, KeySource)> {
-    if let Some(key) = crate::init::provider_key(base_url) {
-        return Some((key, KeySource::Provider));
-    }
-    let shared = env_non_empty("ASTER_API_KEY").or_else(|| env_non_empty("OPEN_ROUTER_API_KEY"))?;
-    Some((shared, KeySource::Shared))
-}
+pub use aster_ai::keys::{KeySource, resolve_key};
 
 /// Endpoint and model alone, on the same precedence as [`resolve`] but without
 /// needing a key, so a saved choice can be read back before one is set.
@@ -59,12 +40,10 @@ pub fn resolve_endpoint(review: &Review, model_flag: Option<&str>) -> (String, S
 pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
     let (base_url, model) = resolve_endpoint(review, model_flag);
     let Some((api_key, _)) = resolve_key(&base_url) else {
-        let mut want = Vec::from(crate::init::provider_key_vars(&base_url));
-        want.push("ASTER_API_KEY");
         bail!(
             "no API key found for {}. Run `aster init` to set one up globally, or set {} in your shell environment",
             crate::init::provider_label(&base_url),
-            want.join(" or ")
+            keys::key_vars(&base_url).join(" or ")
         );
     };
     Ok(LlmConfig {
@@ -103,10 +82,6 @@ fn resolve_web_search(review: &Review) -> bool {
     env_or("ASTER_WEB_SEARCH", None)
         .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
         .unwrap_or(review.web_search.unwrap_or(false))
-}
-
-fn env_non_empty(key: &str) -> Option<String> {
-    env::var(key).ok().filter(|s| !s.trim().is_empty())
 }
 
 /// OpenRouter app attribution: `HTTP-Referer` is the unique app identifier that
@@ -251,18 +226,18 @@ pub(crate) fn report(repo_root: &Path, saved: &Saved, watch: &[&str]) -> Result<
     }
     match source {
         None => {
-            let want = match key_env.first() {
-                Some(var) => format!("{var} or ASTER_API_KEY"),
-                None => "ASTER_API_KEY".to_string(),
-            };
-            eprintln!("note: no key for this endpoint; set {want}, or run `aster init`");
+            eprintln!(
+                "note: no key for this endpoint; set {}, or run `aster init`",
+                keys::key_vars(&base_url).join(" or ")
+            );
         }
         // A key meant for the last endpoint is usually rejected by this one, so
         // the fallback is worth naming before the next turn fails on it.
         Some(KeySource::Shared) if !key_env.is_empty() => {
             eprintln!(
-                "note: no {} set; using ASTER_API_KEY for this endpoint",
-                key_env.join(" or ")
+                "note: no {} set; using {} for this endpoint",
+                key_env.join(" or "),
+                keys::SHARED_KEY_VAR
             );
         }
         Some(_) => {}

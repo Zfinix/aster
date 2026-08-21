@@ -8,6 +8,7 @@ use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
 use aster_ai::AiClient;
+use aster_ai::keys;
 use clap::Args;
 use cliclack::{log, multiselect, outro, outro_cancel, password, select, set_theme};
 use console::Style;
@@ -151,29 +152,7 @@ fn lookup(base_url: &str) -> Option<Provider> {
     providers.into_iter().nth(at)
 }
 
-/// The env vars that may hold `base_url`'s own key, in the order they are
-/// tried. Empty when the endpoint uses the shared `ASTER_API_KEY`.
-pub fn provider_key_vars(base_url: &str) -> &'static [&'static str] {
-    match host_only(base_url.trim_end_matches('/')) {
-        h if h.contains("openrouter") => &["OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"],
-        h if h.contains("anthropic") => &["ANTHROPIC_API_KEY"],
-        h if h.contains("openai") => &["OPENAI_API_KEY"],
-        h if h.contains("groq") => &["GROQ_API_KEY"],
-        h if h.contains("mistral") => &["MISTRAL_API_KEY"],
-        h if h.contains("deepseek") => &["DEEPSEEK_API_KEY"],
-        h if h.contains("googleapis") => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        _ => &[],
-    }
-}
-
-/// The env var holding the key for `base_url`, when it is not the shared one.
-/// Lets a mid-session provider switch pick up a key that is already exported.
-pub fn provider_key(base_url: &str) -> Option<String> {
-    provider_key_vars(base_url)
-        .iter()
-        .filter_map(|v| env::var(v).ok())
-        .find(|v| !v.trim().is_empty())
-}
+pub use aster_ai::keys::{provider_key, provider_key_vars};
 
 fn host_only(url: &str) -> &str {
     url.split_once("://")
@@ -193,7 +172,7 @@ fn default_provider(providers: &[Provider]) -> &Provider {
 }
 
 /// The clack theme, recolored to the Aster orange.
-struct AsterTheme;
+pub(crate) struct AsterTheme;
 
 impl cliclack::Theme for AsterTheme {
     fn bar_color(&self, state: &cliclack::ThemeState) -> Style {
@@ -367,18 +346,12 @@ fn env_set(var: &str) -> bool {
 }
 
 /// The env var a key for this endpoint would be read from, when one is set.
-/// Mirrors [`crate::provider::resolve_key`], so the wizard reports the key the
-/// next turn would actually use.
+/// Walks the same order as [`crate::provider::resolve_key`], so the wizard
+/// reports the key the next turn would actually use.
 fn key_status(base_url: &str) -> Option<&'static str> {
-    provider_key_vars(base_url)
-        .iter()
-        .copied()
+    keys::key_vars(base_url)
+        .into_iter()
         .find(|var| env_set(var))
-        .or_else(|| {
-            ["ASTER_API_KEY", "OPEN_ROUTER_API_KEY"]
-                .into_iter()
-                .find(|var| env_set(var))
-        })
 }
 
 /// The var a key typed at the prompt belongs in. Endpoints with a var of their
@@ -388,7 +361,7 @@ fn key_var_for(base_url: &str) -> &'static str {
     provider_key_vars(base_url)
         .first()
         .copied()
-        .unwrap_or("ASTER_API_KEY")
+        .unwrap_or(keys::SHARED_KEY_VAR)
 }
 
 struct Configured {

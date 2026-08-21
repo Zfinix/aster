@@ -4,7 +4,8 @@ import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli } from "./aste
 import * as info from "./info";
 import { ChatRunner } from "./chatRunner";
 import { IGNORED, searchFiles, skillCommands } from "./commands";
-import { listSessions, loadSession } from "./sessions";
+import { MODELS, RECOMMENDED } from "./models";
+import { deleteSession, listSessions, loadSession, renameSession } from "./sessions";
 import { FindingDiagnostics } from "./diagnostics";
 import { FindingsTreeProvider, openFinding } from "./findingsTree";
 import { OutputContentProvider } from "./outputProvider";
@@ -23,18 +24,9 @@ import { ReviewRunner } from "./reviewRunner";
 const PERMISSION_KEY = "aster.permissionMode";
 const MODEL_KEY = "aster.model";
 const CUSTOM_MODELS_KEY = "aster.customModels";
+const RECENT_MODELS_KEY = "aster.recentModels";
 const EFFORT_KEY = "aster.effort";
 const PROVIDER_KEY = "aster.provider";
-
-/** The 7/7-recall models from docs/BENCHMARKS.md, best first; same set the
-    desktop app offers. */
-const MODELS = [
-  "google/gemini-3.1-flash-lite",
-  "anthropic/claude-sonnet-5",
-  "amazon/nova-lite-v1",
-  "microsoft/phi-4",
-  "qwen/qwen3-next-80b-a3b-instruct",
-];
 
 export class AsterPanel implements vscode.WebviewViewProvider {
   /** Secondary sidebar (right) on hosts that support it. */
@@ -194,6 +186,14 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.broadcastRunState();
   }
 
+  /** Stop whatever turn is in flight on a surface, chat and review alike. */
+  private cancelRuns(webview: vscode.Webview | undefined): void {
+    if (!webview) return;
+    this.chatRunners.get(webview)?.cancel();
+    this.reviewRunners.get(webview)?.cancel();
+    this.broadcastRunState();
+  }
+
   /**
    * Start a fresh conversation without disturbing one already open. The sidebar
    * is a single surface, so it starts over in place; editor tabs are not, so a
@@ -207,6 +207,15 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       return;
     }
     this.openInEditor(vscode.ViewColumn.Active);
+  }
+
+  /** Re-send `init` to every open surface. `aster.binaryPath` is read once per
+   *  init, so a corrected path has to reach the panel here rather than leaving
+   *  it insisting the CLI is missing until the window reloads. */
+  configChanged(): void {
+    for (const surface of this.surfaces) {
+      void this.sendInit(surface);
+    }
   }
 
   /** Everything the panel can do, from the editor's own palette or a chord. */
@@ -339,6 +348,9 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       return;
     }
     this.reveal();
+    // Reopening a session abandons whatever turn is in flight on the active
+    // surface; stop it so the loaded session starts clean.
+    this.cancelRuns(this.active);
     this.post({ type: "sessionLoaded", id: picked.id, turns: await loadSession(root, picked.id) });
   }
 
@@ -381,6 +393,11 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   /** Ids the user typed by hand, kept alongside the vetted list. */
   private customModels(): string[] {
     return this.context.globalState.get<string[]>(CUSTOM_MODELS_KEY) ?? [];
+  }
+
+  /** Ids picked before, most recent first, capped so the picker stays short. */
+  private recentModels(): string[] {
+    return this.context.globalState.get<string[]>(RECENT_MODELS_KEY) ?? [];
   }
 
   /** Unset until the user picks a level, so `aster.yaml` keeps deciding. */
@@ -433,6 +450,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case "openExternal": {
+        await vscode.env.openExternal(vscode.Uri.parse(message.url));
+        break;
+      }
       case "openUntitled": {
         const lang = languageId(message.lang);
         const uri = OutputContentProvider.provideUri(message.content, message.title);
@@ -454,6 +475,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         const custom = this.customModels();
         if (message.model && !MODELS.includes(message.model) && !custom.includes(message.model)) {
           await this.context.globalState.update(CUSTOM_MODELS_KEY, [...custom, message.model]);
+        }
+        if (message.model) {
+          const recent = this.recentModels().filter((m) => m !== message.model);
+          await this.context.globalState.update(RECENT_MODELS_KEY, [message.model, ...recent].slice(0, 5));
         }
         break;
       }
@@ -563,6 +588,9 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         const root = workspaceRoot();
         if (!root) break;
         try {
+          // Switching sessions abandons the turn in flight on the active
+          // surface; stop it so the loaded session starts clean.
+          this.cancelRuns(this.active);
           this.post({
             type: "sessionLoaded",
             id: message.id,
@@ -573,6 +601,24 @@ export class AsterPanel implements vscode.WebviewViewProvider {
             `Aster: ${err instanceof Error ? err.message : String(err)}`
           );
         }
+        break;
+      }
+      // Both answer with the fresh list, so the panel never has to guess what
+      // the store now holds.
+      case "deleteSession":
+      case "renameSession": {
+        const root = workspaceRoot();
+        if (!root) break;
+        try {
+          if (message.type === "deleteSession") {
+            await deleteSession(root, message.id);
+          } else {
+            await renameSession(root, message.id, message.title);
+          }
+        } catch (err) {
+          void vscode.window.showErrorMessage(`Aster: ${describe(err)}`);
+        }
+        this.post({ type: "sessions", sessions: await listSessions(root) });
         break;
       }
       case "fixFinding": {
@@ -674,8 +720,8 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     });
   }
 
-  /** Fold the panel's transcript into a summary; the webview adopts what comes
-   *  back in place of its own turns. */
+  /** Fold the panel's transcript into a summary; the webview keeps its turns on
+   *  screen and sends what comes back in their place from here on. */
   private async runCompact(id: string, messages: ChatMessage[]): Promise<void> {
     const root = workspaceRoot();
     if (!root) return;
@@ -683,21 +729,22 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       const result = await info.compact(root, messages, this.model(), this.env());
       this.post({ type: "compacted", id, ...result });
     } catch (err) {
-      this.post({ type: "infoCard", id, title: "Compact", note: describe(err), error: true });
+      this.post({ type: "chatError", id, message: describe(err) });
     }
   }
 
-  private async sendInit(): Promise<void> {
+  private async sendInit(target?: vscode.Webview): Promise<void> {
     const root = workspaceRoot();
     const model = this.model();
-    this.post({
+    this.postTo(target, {
       type: "init",
       workspaceRoot: root ?? null,
       repoName: repoName(root),
       branch: root ? await currentBranch(root) : null,
       model,
       models: [...MODELS, ...this.customModels().filter((m) => !MODELS.includes(m))],
-      recommended: [...MODELS],
+      recommended: [...RECOMMENDED],
+      recent: this.recentModels(),
       contextBudget: root ? await info.contextBudget(root, this.env()) : 0,
       permissionMode: this.permissionMode(),
       effort: this.effort(),

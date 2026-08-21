@@ -15,6 +15,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use tokio::sync::OnceCell;
 
+pub mod keys;
+
 pub mod retry;
 use retry::RetryWithBackoff;
 
@@ -39,6 +41,9 @@ use models::{
     ChatRequest, ChatResponse, ChatStreamChunk, Reasoning, StreamOptions, ToolChatRequest,
     ToolChatResponse, Usage,
 };
+
+/// Endpoint used when `ASTER_BASE_URL` is unset.
+pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -121,14 +126,14 @@ impl AiClient {
         )
     }
 
-    /// Build from env: `ASTER_API_KEY` (required), `ASTER_BASE_URL`, `ASTER_MODEL`,
-    /// `ASTER_TIMEOUT_SECS`, `ASTER_MAX_RETRIES`.
+    /// Build from env: a key for the endpoint (see [`keys::resolve_key`]),
+    /// `ASTER_BASE_URL`, `ASTER_MODEL`, `ASTER_TIMEOUT_SECS`, `ASTER_MAX_RETRIES`.
     pub fn from_env() -> Result<Self> {
-        let api_key = env::var("ASTER_API_KEY")
-            .or_else(|_| env::var("OPEN_ROUTER_API_KEY"))
-            .context("set ASTER_API_KEY (or OPEN_ROUTER_API_KEY)")?;
-        let base_url = env::var("ASTER_BASE_URL")
-            .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
+        let base_url = env::var("ASTER_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+        // Resolved against the endpoint, not blindly: a key issued for the last
+        // provider is rejected by the next one as an unexplained 401.
+        let (api_key, _) = keys::resolve_key(&base_url)
+            .with_context(|| format!("set {}", keys::key_vars(&base_url).join(" or ")))?;
         let model = env::var("ASTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
         let timeout_secs = env_u64("ASTER_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS);
         let max_retries = env_u64("ASTER_MAX_RETRIES", DEFAULT_MAX_RETRIES as u64) as u32;

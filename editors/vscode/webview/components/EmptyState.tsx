@@ -1,6 +1,12 @@
 import { Mark } from "./Mark";
+import { Tip } from "./Tip";
+import { OPENERS, TIPS, useRotation } from "../lib/greeting";
 
-const INSTALL_CMD = "cargo install --path crates/aster-cli";
+const INSTALL_CMD = "curl -fsSL https://withaster.dev/install | sh";
+
+/** Long enough that a tip is never gone before it has been read, short enough
+ *  that a panel left open shows more than one. */
+const TIP_MS = 11000;
 
 export function EmptyState({
   repoName,
@@ -11,6 +17,9 @@ export function EmptyState({
   branch: string | null;
   binaryOk: boolean;
 }) {
+  const opener = useRotation(OPENERS);
+  const tip = useRotation(TIPS, TIP_MS);
+
   if (!binaryOk) {
     return (
       <div className="empty">
@@ -32,7 +41,7 @@ export function EmptyState({
   return (
     <div className="empty">
       <Mark px={2.6} interactive />
-      <h1 className="empty-title">What should we review next?</h1>
+      <h1 className="empty-title">{opener}</h1>
       {repoName ? (
         <p className="empty-body">
           {repoName}
@@ -41,6 +50,11 @@ export function EmptyState({
       ) : (
         <p className="empty-body">Open a folder to get started.</p>
       )}
+      {/* Remounting on the text replays the fade, so a new tip arrives rather
+          than swapping in place. */}
+      <p className="empty-tip" key={tip}>
+        <Tip text={tip} />
+      </p>
     </div>
   );
 }

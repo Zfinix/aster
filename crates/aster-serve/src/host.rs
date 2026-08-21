@@ -1,0 +1,477 @@
+//! The host side of the editor panel's protocol, in a browser. Every message
+//! the webview would send an extension arrives here as one POST, and every
+//! answer goes back to the tab over the event stream.
+
+use std::convert::Infallible;
+use std::sync::Arc;
+
+use axum::Json;
+use axum::extract::State;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use serde_json::{Value, json};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
+
+use crate::state::AppState;
+use crate::{files, info, run, sessions};
+
+pub async fn message(
+    State(state): State<Arc<AppState>>,
+    Json(message): Json<Value>,
+) -> Json<Value> {
+    match handle(&state, &message).await {
+        Ok(()) => Json(json!({ "ok": true })),
+        // The browser fires and forgets, so anything it needs to see has
+        // already gone out over the stream; this is for the network tab.
+        Err(error) => Json(json!({ "ok": false, "error": error })),
+    }
+}
+
+/// The live feed. One connection carries every message the host sends, so a
+/// reloaded tab is caught up by asking for `ready` again.
+pub async fn events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // A tab that falls far enough behind to lag the channel has dropped lines
+    // either way; skipping them beats tearing the stream down.
+    let stream = BroadcastStream::new(state.events.subscribe())
+        .filter_map(|message| message.ok().map(|data| Ok(Event::default().data(data))));
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
+    let id = || message["id"].as_str().unwrap_or_default().to_string();
+    match message["type"].as_str().unwrap_or_default() {
+        "ready" => {
+            state.post(init(state).await);
+            state.post_run_state().await;
+        }
+        "chat" => {
+            if let Err(error) = run::chat(state, id(), message).await {
+                state.post(json!({ "type": "chatError", "id": id(), "message": error }));
+            }
+            state.post_run_state().await;
+        }
+        "review" => {
+            if let Err(error) = run::review(state, id(), &message["source"]).await {
+                state.post(json!({ "type": "reviewError", "id": id(), "message": error }));
+            }
+            state.post_run_state().await;
+        }
+        // Cancel both: whichever is idle is a no-op, and this removes any
+        // dependence on the browser guessing which kind of run is in flight.
+        "cancelChat" | "cancelReview" => {
+            run::cancel(&mut *state.chat.lock().await).await;
+            run::cancel(&mut *state.review.lock().await).await;
+            state.post_run_state().await;
+        }
+        "approval" => {
+            let mut line = json!({ "allow": message["allow"].as_bool().unwrap_or(false) });
+            if message["always"].as_bool() == Some(true) {
+                line["always"] = json!(true);
+            }
+            state.answer(line).await?;
+        }
+        "answer" => state.answer(json!({ "choice": message["choice"] })).await?,
+        "inject" => state.answer(json!({ "message": message["text"] })).await?,
+        "setPermissionMode" => {
+            let mut settings = state.settings.lock().await;
+            if let Some(mode) = message["mode"].as_str() {
+                settings.permission_mode = mode.to_string();
+                settings.save();
+            }
+        }
+        "setEffort" => {
+            let mut settings = state.settings.lock().await;
+            settings.effort = message["effort"].as_str().map(str::to_owned);
+            settings.save();
+        }
+        "setModel" => {
+            if let Some(model) = message["model"].as_str().filter(|m| !m.is_empty()) {
+                let vetted = recommended(state).await;
+                let vetted: Vec<&str> = vetted.iter().map(String::as_str).collect();
+                let mut settings = state.settings.lock().await;
+                settings.remember_model(model, &vetted);
+                settings.save();
+            }
+        }
+        "searchFiles" => {
+            let paths = files::search(&state.cli.root, message["query"].as_str().unwrap_or(""));
+            state.post(json!({
+                "type": "fileResults",
+                "requestId": message["requestId"],
+                "paths": paths,
+            }));
+        }
+        "listSessions" => {
+            state.post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
+        }
+        "loadSession" => {
+            // Switching sessions abandons the turn in flight; stop it so the
+            // loaded session starts clean.
+            run::cancel(&mut *state.chat.lock().await).await;
+            let turns =
+                sessions::load(&state.cli, message["id"].as_str().unwrap_or_default()).await?;
+            state.post(json!({ "type": "sessionLoaded", "id": id(), "turns": turns }));
+        }
+        // Both answer with the fresh list, so the browser never has to guess
+        // what the store now holds.
+        "deleteSession" | "renameSession" => {
+            let session = message["id"].as_str().unwrap_or_default();
+            let outcome = match message["type"].as_str() {
+                Some("deleteSession") => sessions::delete(&state.cli, session).await,
+                _ => {
+                    sessions::rename(
+                        &state.cli,
+                        session,
+                        message["title"].as_str().unwrap_or_default(),
+                    )
+                    .await
+                }
+            };
+            state.post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
+            outcome?;
+        }
+        "fetchModels" => state.post(models(state).await),
+        "info" => state.post(card(state, &id(), message["topic"].as_str().unwrap_or("")).await),
+        "listMcp" => {
+            state.post(
+                json!({ "type": "mcpServers", "servers": info::mcp_servers(&state.cli).await }),
+            );
+        }
+        "toggleMcp" => {
+            let outcome = info::toggle_mcp(
+                &state.cli,
+                message["name"].as_str().unwrap_or_default(),
+                message["disabled"].as_bool().unwrap_or(false),
+            )
+            .await;
+            // Re-read rather than assume: the toggle writes a config file, and
+            // what landed there is what the next turn will start.
+            state.post(
+                json!({ "type": "mcpServers", "servers": info::mcp_servers(&state.cli).await }),
+            );
+            outcome?;
+        }
+        "listProviders" => {
+            let provider = state.settings.lock().await.provider.clone();
+            state.post(json!({
+                "type": "providers",
+                "providers": info::providers(&state.cli, provider.as_ref()).await,
+            }));
+        }
+        "setProvider" => switch_provider(state, message).await?,
+        "compact" => {
+            let (model, provider) = {
+                let settings = state.settings.lock().await;
+                (settings.model.clone(), settings.provider.clone())
+            };
+            match info::compact(
+                &state.cli,
+                &message["messages"],
+                model.as_deref(),
+                provider.as_ref(),
+            )
+            .await
+            {
+                Ok(result) => state.post(json!({
+                    "type": "compacted",
+                    "id": id(),
+                    "summary": result["summary"],
+                    "folded": result["folded"],
+                    "messages": result["messages"],
+                })),
+                Err(error) => {
+                    state.post(json!({ "type": "chatError", "id": id(), "message": error }))
+                }
+            }
+        }
+        "fixFinding" => {
+            let finding = message["finding"].clone();
+            let results = fix(state, &json!([finding.clone()])).await;
+            if let Some(result) = results.first() {
+                state.post(json!({
+                    "type": "fixResult",
+                    "finding": finding,
+                    "status": result["status"],
+                    "reason": result["reason"],
+                    "patch": result["patch"],
+                }));
+            }
+        }
+        "fixAllFindings" => {
+            let findings = message["findings"].clone();
+            let results = fix(state, &findings).await;
+            let paired: Vec<Value> = findings
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .enumerate()
+                .map(|(index, finding)| {
+                    let result = results.get(index).cloned().unwrap_or_default();
+                    json!({
+                        "finding": finding,
+                        "status": result["status"],
+                        "reason": result["reason"],
+                    })
+                })
+                .collect();
+            state.post(json!({ "type": "fixAllResult", "results": paired }));
+        }
+        // A drag carries paths; the clipboard rarely does, so a paste arrives
+        // as bytes and a name for this side to place.
+        "dropFiles" => mention_paths(state, &message["uris"]),
+        "pasteFiles" => stage_files(state, &message["files"]),
+        // No editor to reveal a file in, so it opens the way double-clicking it
+        // would. Scoped to the repo: a link in a reply does not get to open
+        // whatever it names.
+        "openFile" => open_in_repo(state, message["path"].as_str().unwrap_or_default()),
+        "openFinding" => open_in_repo(
+            state,
+            message["finding"]["file_path"].as_str().unwrap_or_default(),
+        ),
+        // The page answers `openExternal`, `openUntitled` and `runCommand`
+        // itself, since all three are things a browser already does.
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Everything the page needs before its first turn.
+async fn init(state: &Arc<AppState>) -> Value {
+    let root = state.cli.root.clone();
+    let settings = state.settings.lock().await.clone();
+    let recommended = recommended(state).await;
+    // The vetted shortlist, plus anything typed by hand; `fetchModels` fills in
+    // the endpoint's own catalog when the picker asks.
+    let mut models = recommended.clone();
+    for model in settings
+        .custom_models
+        .iter()
+        .chain(settings.recent_models.iter())
+        .chain(settings.model.iter())
+    {
+        if !models.contains(model) {
+            models.push(model.clone());
+        }
+    }
+    json!({
+        "type": "init",
+        "workspaceRoot": root.display().to_string(),
+        "repoName": root.file_name().map(|name| name.to_string_lossy().into_owned()),
+        "branch": info::branch(&root).await,
+        "model": settings.model,
+        "models": models,
+        "recommended": recommended,
+        "recent": settings.recent_models,
+        "contextBudget": info::context_budget(&state.cli, settings.provider.as_ref()).await,
+        "permissionMode": settings.permission_mode,
+        "effort": settings.effort,
+        // The server is the binary, so there is nothing to go missing.
+        "binaryOk": true,
+        "skills": info::skills(&state.cli).await,
+    })
+}
+
+/// The endpoint's shortlist from the shipped catalog, so the browser's picker
+/// and the CLI's cannot disagree about what is recommended.
+async fn recommended(state: &Arc<AppState>) -> Vec<String> {
+    let provider = state.settings.lock().await.provider.clone();
+    state
+        .cli
+        .json(&["model", "recommended"], provider.as_ref())
+        .await
+        .ok()
+        .and_then(|models| serde_json::from_value(models).ok())
+        .unwrap_or_default()
+}
+
+/// Not every endpoint implements `/models`, so the failure is reported rather
+/// than swallowed: the picker says so and offers to take an id.
+async fn models(state: &Arc<AppState>) -> Value {
+    let provider = state.settings.lock().await.provider.clone();
+    let out = state
+        .cli
+        .run(&["models", "--json"], None, provider.as_ref())
+        .await;
+    let Ok(out) = out else {
+        return json!({ "type": "modelsLoaded", "models": [], "error": "could not run aster" });
+    };
+    match serde_json::from_str::<Value>(out.stdout.trim()) {
+        Ok(Value::Array(models)) if out.code == 0 => {
+            json!({ "type": "modelsLoaded", "models": models })
+        }
+        parsed => {
+            let error = parsed
+                .ok()
+                .and_then(|parsed| parsed["error"].as_str().map(str::to_owned))
+                .filter(|error| !error.is_empty())
+                .unwrap_or_else(|| match out.stderr.trim().is_empty() {
+                    true => "This endpoint did not list its models.".to_string(),
+                    false => out.stderr.trim().to_string(),
+                });
+            json!({ "type": "modelsLoaded", "models": [], "error": error })
+        }
+    }
+}
+
+/// `/status`, `/memory` and `/diff`, each answered as one card in the thread.
+async fn card(state: &Arc<AppState>, id: &str, topic: &str) -> Value {
+    let provider = state.settings.lock().await.provider.clone();
+    let answer = match topic {
+        "status" => info::status(&state.cli, provider.as_ref())
+            .await
+            .map(|rows| json!({ "title": "Status", "rows": rows })),
+        "memory" => info::memory_rows(&state.cli).await.map(|rows| {
+            let empty = rows.as_array().is_none_or(Vec::is_empty);
+            json!({
+                "title": "Memory",
+                "rows": rows,
+                "note": empty.then_some("Nothing remembered yet."),
+            })
+        }),
+        _ => info::working_diff(&state.cli.root).await.map(|diff| {
+            let diff = diff.trim().to_string();
+            let empty = diff.is_empty();
+            json!({
+                "title": "Uncommitted changes",
+                "body": (!empty).then_some(diff),
+                "lang": "diff",
+                "note": empty.then_some("No uncommitted changes."),
+            })
+        }),
+    };
+    match answer {
+        Ok(mut card) => {
+            card["type"] = json!("infoCard");
+            card["id"] = json!(id);
+            card
+        }
+        Err(error) => json!({
+            "type": "infoCard", "id": id, "title": topic, "note": error, "error": true,
+        }),
+    }
+}
+
+/// Repoint the endpoint for this server's runs, then adopt one of its models.
+async fn switch_provider(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
+    let base_url = message["baseUrl"].as_str().unwrap_or_default().to_string();
+    let model = message["model"].as_str().unwrap_or_default().to_string();
+    let current = state.settings.lock().await.provider.clone();
+    let catalog = info::providers(&state.cli, current.as_ref()).await;
+    let chosen = catalog
+        .as_array()
+        .and_then(|catalog| catalog.iter().find(|p| p["base_url"] == json!(base_url)))
+        .cloned();
+
+    let override_ = crate::settings::ProviderOverride {
+        base_url: base_url.clone(),
+        key_env: chosen
+            .as_ref()
+            .and_then(|p| serde_json::from_value(p["key_env"].clone()).ok())
+            .unwrap_or_default(),
+    };
+    let models = info::models_for(&state.cli, &model, Some(&override_)).await;
+    let name = chosen
+        .as_ref()
+        .and_then(|p| p["name"].as_str())
+        .unwrap_or(&base_url)
+        .to_string();
+
+    let mut settings = state.settings.lock().await;
+    settings.provider = Some(override_);
+    settings.model = Some(model.clone());
+    settings.save();
+    drop(settings);
+
+    state.post(json!({
+        "type": "providerChanged", "provider": name, "model": model, "models": models,
+    }));
+    Ok(())
+}
+
+/// Patch findings in the working tree. A run that fails answers per finding, so
+/// every card in the UI resolves rather than hanging.
+async fn fix(state: &Arc<AppState>, findings: &Value) -> Vec<Value> {
+    let failed = |reason: String| -> Vec<Value> {
+        findings
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .map(|_| json!({ "status": "error", "reason": reason }))
+            .collect()
+    };
+    let out = state
+        .cli
+        .run(
+            &["fix", "--findings-json", "-", "--apply", "--json"],
+            Some(&findings.to_string()),
+            None,
+        )
+        .await;
+    match out {
+        Err(error) => failed(error),
+        Ok(out) if out.code != 0 => failed(format!("aster fix exited with code {}", out.code)),
+        Ok(out) => serde_json::from_str::<Vec<Value>>(out.stdout.trim())
+            .unwrap_or_else(|_| failed("unexpected output from aster fix".into())),
+    }
+}
+
+/// Mention what was dropped, relative to the repo when it lives there.
+fn mention_paths(state: &Arc<AppState>, uris: &Value) {
+    let mentions: Vec<String> = uris
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|uri| files::mention(&state.cli.root, uri))
+        .map(|path| format!("@{path}"))
+        .collect();
+    if !mentions.is_empty() {
+        state.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+    }
+}
+
+/// Hand a repo file to whatever this machine opens it with.
+fn open_in_repo(state: &Arc<AppState>, path: &str) {
+    let target = state.cli.root.join(path);
+    let Ok(target) = target.canonicalize() else {
+        return;
+    };
+    if !target.starts_with(&state.cli.root) {
+        tracing::warn!("refusing to open {} outside the repo", target.display());
+        return;
+    }
+    if let Err(e) = open::that_detached(&target) {
+        tracing::warn!("could not open {}: {e}", target.display());
+    }
+}
+
+/// Put dropped or pasted files where the agent can read them, then mention them
+/// in the composer the way the extension does.
+fn stage_files(state: &Arc<AppState>, files: &Value) {
+    let mut mentions = Vec::new();
+    for file in files.as_array().unwrap_or(&Vec::new()) {
+        let Some(name) = file["name"].as_str() else {
+            continue;
+        };
+        let size = file["size"].as_u64().unwrap_or(0);
+        let data = file["data"].as_str().and_then(decode).unwrap_or_default();
+        match files::stage(&state.cli.root, name, size, &data) {
+            Ok(path) => mentions.push(format!("@{path}")),
+            Err(error) => tracing::warn!("{error}"),
+        }
+    }
+    if !mentions.is_empty() {
+        state.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+    }
+}
+
+fn decode(data: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(data).ok()
+}
+
+#[cfg(test)]
+#[path = "tests/host_test.rs"]
+mod tests;

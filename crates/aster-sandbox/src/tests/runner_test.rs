@@ -335,3 +335,33 @@ async fn approving_one_directory_leaves_the_rest_denied() {
         .unwrap();
     assert!(!out.success(), "~/.ssh should still be denied");
 }
+
+/// A shell that backgrounds a server and prints before exiting used to lose
+/// both: the grandchild held the pipes past the grace, and the output was
+/// dropped and the process group killed five seconds later.
+#[tokio::test]
+async fn a_backgrounded_job_keeps_its_output_and_its_process() {
+    if !can_run_sandboxed().await {
+        return;
+    }
+    let out = run_command(
+        &config(),
+        "bash",
+        &["-lc".into(), "sleep 300 & echo started $!".into()],
+    )
+    .await
+    .unwrap();
+    assert!(out.success(), "stderr={}", out.stderr);
+    assert!(out.stdout.contains("started"), "stdout={:?}", out.stdout);
+
+    let pid = out.stdout.split_whitespace().last().unwrap().to_string();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid])
+        .status();
+    assert!(alive, "the backgrounded process was killed with the call");
+}

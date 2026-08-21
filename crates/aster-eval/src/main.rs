@@ -1,5 +1,5 @@
 //! `aster-eval [sessions-dir] [--since DAYS] [--model NAME] [--json]
-//! [--baseline FILE]`. Defaults to every session under `~/.aster/sessions`.
+//! [--baseline FILE]`. Defaults to every session under `~/.local/share/aster/sessions`.
 
 use std::path::PathBuf;
 

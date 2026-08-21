@@ -134,6 +134,8 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return s(args.description) || `Ran ${s(args.command) || "a command"}`;
     case "edit_file":
       return `Edited ${s(args.path) || "file"}`;
+    case "open_preview":
+      return s(args.description) || `Opened ${s(args.target)}`;
     case "remember":
       return "Saved to memory";
     case "recall":

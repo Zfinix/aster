@@ -1,19 +1,33 @@
 import { useRef, type ReactNode } from "react";
 import { useDismiss } from "../lib/dismiss";
 import type { PermissionMode } from "../../src/protocol";
-import { AlertIcon, BookIcon, PencilIcon, ReviewIcon, ShieldIcon, TerminalIcon } from "./icons";
+import {
+  ListOrderedIcon,
+  PencilIcon,
+  ReviewIcon,
+  ShieldCheckIcon,
+  ShieldIcon,
+  WarningIcon,
+} from "./icons";
 
 /**
  * Aster's `permissions.mode` values, passed straight through as
  * `--permission-mode`. Review is folded in as a mode entry so the picker is
  * the single place to choose what the next action does.
  */
-const MODES: { mode: PermissionMode; label: string; detail: string; icon: ReactNode }[] = [
+const MODES: {
+  mode: PermissionMode;
+  label: string;
+  detail: string;
+  icon: ReactNode;
+  /** Worth the colour: this one hands over the machine. */
+  danger?: boolean;
+}[] = [
   {
     mode: "plan",
     label: "Plan",
     detail: "Explore the code and present a plan before editing",
-    icon: <BookIcon />,
+    icon: <ListOrderedIcon />,
   },
   {
     mode: "manual",
@@ -25,7 +39,7 @@ const MODES: { mode: PermissionMode; label: string; detail: string; icon: ReactN
     mode: "auto",
     label: "Auto",
     detail: "Apply what passes the safety check, pause for anything risky",
-    icon: <TerminalIcon />,
+    icon: <ShieldCheckIcon />,
   },
   {
     mode: "edit",
@@ -36,8 +50,9 @@ const MODES: { mode: PermissionMode; label: string; detail: string; icon: ReactN
   {
     mode: "yolo",
     label: "Yolo",
-    detail: "No guardrails, unrestricted",
-    icon: <AlertIcon />,
+    detail: "Unrestricted access to the internet and every file on this machine",
+    icon: <WarningIcon />,
+    danger: true,
   },
 ];
 
@@ -56,13 +71,14 @@ export function ApprovalPicker({
   useDismiss(ref, onClose);
 
   return (
-    <div className="picker" ref={ref} role="dialog" aria-label="Mode">
-      <div className="picker-head">What should Aster do?</div>
+    <div className="picker picker-modes" ref={ref} role="dialog" aria-label="Mode">
+      <div className="picker-head">How should Aster&apos;s actions be approved?</div>
       {MODES.map((m) => (
         <button
           key={m.mode}
           className="picker-row"
           data-selected={m.mode === mode}
+          data-danger={m.danger}
           onClick={() => {
             onSelect(m.mode);
             onClose();
@@ -95,4 +111,10 @@ export function ApprovalPicker({
 
 export function permissionLabel(mode: PermissionMode): string {
   return MODES.find((m) => m.mode === mode)?.label ?? mode;
+}
+
+/** The composer's mode button wears the mode it is in, so yolo does not look
+ *  like every other setting. */
+export function permissionIcon(mode: PermissionMode): ReactNode {
+  return MODES.find((m) => m.mode === mode)?.icon ?? <ShieldIcon />;
 }

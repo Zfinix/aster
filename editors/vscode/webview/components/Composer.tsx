@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type {
   Effort,
   McpServer,
@@ -11,7 +11,7 @@ import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trig
 import { post } from "../lib/host";
 import { modelShort } from "../lib/model";
 import { AddMenu } from "./AddMenu";
-import { ApprovalPicker, permissionLabel } from "./ApprovalPicker";
+import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicker";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
@@ -19,7 +19,27 @@ import { McpPicker } from "./McpPicker";
 import { ModelPicker } from "./ModelPicker";
 import { ProviderPicker } from "./ProviderPicker";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
-import { CaretUpIcon, CommandIcon, ShieldIcon } from "./icons";
+import {
+  ActivityIcon,
+  AtIcon,
+  BookIcon,
+  BrainIcon,
+  CaretUpIcon,
+  CloudIcon,
+  CommandIcon,
+  CubeIcon,
+  DiffIcon,
+  GaugeIcon,
+  GitCommitIcon,
+  GitPullRequestIcon,
+  HistoryIcon,
+  MinimizeIcon,
+  NewChatIcon,
+  PlugIcon,
+  ReviewIcon,
+  ShieldIcon,
+  TrashIcon,
+} from "./icons";
 
 const MAX_ROWS = 10;
 
@@ -28,6 +48,28 @@ type Menu = "none" | "commands" | "permission" | "model" | "provider" | "mcp";
 
 /** Unfiltered, the skills list would bury every other action; the filter is one
  *  keystroke away, and the note says so. */
+/** One glyph a command, so the list reads as a column of actions rather than a
+ *  wall of sentences. */
+const ICONS: Record<string, ReactElement> = {
+  new: <NewChatIcon />,
+  clear: <TrashIcon />,
+  compact: <MinimizeIcon />,
+  resume: <HistoryIcon />,
+  mention: <AtIcon />,
+  model: <CubeIcon />,
+  provider: <CloudIcon />,
+  effort: <GaugeIcon />,
+  mode: <ShieldIcon />,
+  review: <ReviewIcon />,
+  "review-range": <GitCommitIcon />,
+  "review-pr": <GitPullRequestIcon />,
+  diff: <DiffIcon />,
+  status: <ActivityIcon />,
+  memory: <BrainIcon />,
+  mcp: <PlugIcon />,
+  skill: <BookIcon />,
+};
+
 const SKILLS_SHOWN = 5;
 
 const EFFORTS = [
@@ -43,6 +85,7 @@ export function Composer({
   model,
   models,
   recommended,
+  recent,
   modelsLoading,
   modelsError,
   onRefreshModels,
@@ -73,6 +116,7 @@ export function Composer({
   model: string | null;
   models: string[];
   recommended: string[];
+  recent: string[];
   modelsLoading: boolean;
   modelsError?: string;
   onRefreshModels: () => void;
@@ -249,6 +293,18 @@ export function Composer({
 
   /** Closing any popup hands the keyboard back, so the next keystroke types
    *  instead of landing on nothing. */
+  /**
+   * Toggles on mousedown and keeps the event to itself. Every popup closes on a
+   * mousedown outside it, so a click that bubbled would shut the menu on the
+   * way down and this handler would reopen it on the way back up, which reads
+   * as a blink and never as "off".
+   */
+  const toggle = (next: Menu) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu((open) => (open === next ? "none" : next));
+  };
+
   const closeMenu = () => {
     setMenu("none");
     setDismissed(true);
@@ -298,6 +354,7 @@ export function Composer({
       id,
       label,
       hint,
+      icon: ICONS[id],
       slash: `/${id}`,
       run: () => onCommand(id),
     });
@@ -307,6 +364,7 @@ export function Composer({
       id,
       label,
       hint,
+      icon: ICONS[id],
       keepOpen: true,
       run: () => setMenu(next),
     });
@@ -322,6 +380,7 @@ export function Composer({
             kind: "action" as const,
             id: "mention",
             label: "Mention a file…",
+            icon: ICONS.mention,
             run: (rest: string) => compose("@", rest),
           },
         ],
@@ -335,6 +394,7 @@ export function Composer({
             kind: "choice" as const,
             id: "effort",
             label: "Effort",
+            icon: ICONS.effort,
             value: effort ?? "",
             options: EFFORTS,
             onSelect: (value: string) => onEffort((value || null) as Effort | null),
@@ -366,6 +426,7 @@ export function Composer({
           kind: "action" as const,
           id: `skill:${skill.name}`,
           label: `/${skill.name}`,
+          icon: ICONS.skill,
           slash: `/${skill.name}`,
           detail: skill.plugin ? `${skill.plugin} · ${skill.detail}` : skill.detail,
           // The name stays in the box, as a command reads; what it means to the
@@ -422,6 +483,7 @@ export function Composer({
           model={model}
           models={models}
           recommended={recommended}
+          recent={recent}
           loading={modelsLoading}
           error={modelsError}
           onSelect={onModel}
@@ -495,7 +557,7 @@ export function Composer({
 
           <button
             className="ghost foot-btn"
-            onClick={() => setMenu(menu === "commands" ? "none" : "commands")}
+            onMouseDown={toggle("commands")}
             title="Show command menu (/)"
             aria-label="Show command menu"
             aria-haspopup="dialog"
@@ -510,17 +572,17 @@ export function Composer({
 
           <button
             className="ghost"
-            onClick={() => setMenu(menu === "permission" ? "none" : "permission")}
+            onMouseDown={toggle("permission")}
             title="Mode"
             aria-expanded={menu === "permission"}
           >
-            <ShieldIcon />
+            {permissionIcon(permissionMode)}
             {permissionLabel(permissionMode)}
           </button>
 
           <button
             className="ghost model-btn"
-            onClick={() => setMenu(menu === "model" ? "none" : "model")}
+            onMouseDown={toggle("model")}
             title={effort ? `${model ?? "Model"} · ${effort} effort` : (model ?? "Model")}
             aria-haspopup="menu"
             aria-expanded={menu === "model"}

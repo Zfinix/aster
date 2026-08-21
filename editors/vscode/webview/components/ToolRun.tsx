@@ -10,7 +10,7 @@ import { AlertIcon, ChevronIcon, LayersIcon } from "./icons";
  */
 export function ToolRun({ run }: { run: Run }) {
   const [choice, setChoice] = useState<boolean>();
-  const running = run.calls.some((call) => call.result === undefined);
+  const running = run.calls.some((call) => call.result === undefined && !call.stopped);
   const failures = run.calls.filter((call) => call.error === true).length;
   const open = choice ?? (running || failures > 0);
 

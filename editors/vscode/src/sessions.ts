@@ -33,6 +33,22 @@ export async function listSessions(cwd: string): Promise<SessionSummary[]> {
   }
 }
 
+/** Remove a saved session. Errors are the caller's to report. */
+export async function deleteSession(cwd: string, id: string): Promise<void> {
+  const { code, stderr } = await runCli(["sessions", "delete", id, "--json"], cwd);
+  if (code !== 0) {
+    throw new Error(stderr.trim() || `could not delete session ${id}`);
+  }
+}
+
+/** Give a saved session a new name. */
+export async function renameSession(cwd: string, id: string, title: string): Promise<void> {
+  const { code, stderr } = await runCli(["sessions", "rename", id, title, "--json"], cwd);
+  if (code !== 0) {
+    throw new Error(stderr.trim() || `could not rename session ${id}`);
+  }
+}
+
 /**
  * A session's transcript, rebuilt into the turns the thread renders. Assistant
  * turns keep their thinking and tool calls: replaying only `content` dropped

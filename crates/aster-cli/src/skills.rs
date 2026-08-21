@@ -13,7 +13,9 @@ use std::process::{Command, Stdio};
 use crate::util::or_cancel;
 use anyhow::{Context, Result, bail};
 use aster_skills::agents::{Agent, agent_by_key, installed_agents};
-use aster_skills::{Skill, SkillSet, find_skills_report, install_skill, remove_skill};
+use aster_skills::{
+    Skill, SkillSet, find_skills_report, install_skill, mark_default_removed, remove_skill,
+};
 use clap::{Args, Subcommand};
 use cliclack::{confirm, input, intro, log, outro, outro_cancel, select};
 use console::{Term, style};
@@ -659,6 +661,7 @@ fn remove(names: Vec<String>, project: bool, all: bool, yes: bool) -> Result<()>
     for name in &targets {
         if remove_skill(&root, name)? {
             removed.push(name.clone());
+            mark_default_removed(&root, name);
             if !json {
                 println!("removed {name}");
             }
