@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 
-const MOD = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent) ? "cmd" : "ctrl";
+const IS_MAC = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
+const MOD = IS_MAC ? "⌘" : "ctrl";
+const ALT = IS_MAC ? "⌥" : "alt";
+const SHIFT = IS_MAC ? "⇧" : "shift";
 
 /** Openers for the empty panel. The panel is a review tool and a chat, so the
  *  line that greets you should not insist it is only one of them. */
@@ -34,11 +37,11 @@ export const TIPS = [
   "[/mcp] turns MCP servers on and off",
   "[/mode] sets what the agent may do",
   "Skills show up as their own [/name]",
-  "[alt] [a] mentions the editor selection",
-  `[${MOD}] [alt] [k] opens the command menu`,
-  `[${MOD}] [alt] [n] starts a conversation`,
-  `[${MOD}] [alt] [r] reopens the last one`,
-  "[shift] [enter] adds a newline",
+  `[${ALT}] [a] mentions the editor selection`,
+  `[${MOD}] [${ALT}] [k] opens the command menu`,
+  `[${MOD}] [${ALT}] [n] starts a conversation`,
+  `[${MOD}] [${ALT}] [r] reopens the last one`,
+  `[${SHIFT}] [enter] adds a newline`,
   "Drop a file or paste a screenshot in",
   "Fix hands a finding back for a patch",
 ];
