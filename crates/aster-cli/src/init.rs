@@ -506,12 +506,17 @@ async fn provider_setup(providers: &[Provider], current: &Current) -> Result<Opt
         let Some(url) = or_cancel(
             cliclack::input("Base URL")
                 .default_input(&provider.base_url)
+                .required(false)
                 .interact::<String>(),
         )?
         else {
             return Ok(None);
         };
-        url.trim().to_string()
+        let url = url.trim();
+        match url.is_empty() {
+            true => provider.base_url.clone(),
+            false => url.to_string(),
+        }
     } else {
         provider.base_url.clone()
     };
@@ -600,11 +605,20 @@ async fn pick_model(
 }
 
 fn type_model(provider: &Provider) -> Result<Option<String>> {
-    or_cancel(
+    let Some(model) = or_cancel(
         cliclack::input("Model")
             .default_input(&provider.example_model)
+            .required(false)
             .interact::<String>(),
-    )
+    )?
+    else {
+        return Ok(None);
+    };
+    let model = model.trim();
+    Ok(Some(match model.is_empty() {
+        true => provider.example_model.clone(),
+        false => model.to_string(),
+    }))
 }
 
 enum Search {

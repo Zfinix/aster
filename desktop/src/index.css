@@ -1501,6 +1501,15 @@ html[data-theme="light"] .activity-output .out-gutter {
   border-radius: 8px;
   padding: 10px 12px;
 }
+
+/* A plan is prose, so it reads at body width instead of in the code block. */
+.approval-plan {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--s3, 12px);
+  font-size: 13px;
+  line-height: 1.55;
+}
 .approval-preview .add {
   color: var(--ok, #3fb950);
 }

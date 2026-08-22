@@ -252,7 +252,11 @@ function App() {
   const activeReviewRef = useRef<{ convoId: string; turnId: string } | null>(null);
   const activeChatRef = useRef<{ convoId: string; turnId: string } | null>(null);
   /** Set while the CLI blocks on an `ask`-mode edit approval. */
-  const [approval, setApproval] = useState<{ preview: string; plan: boolean } | null>(null);
+  const [approval, setApproval] = useState<{
+    preview: string;
+    markdown?: string;
+    plan: boolean;
+  } | null>(null);
   /** True while a chat turn is running: the send button becomes Stop. */
   const chatRunning = busy && !reviewing;
 
@@ -556,7 +560,11 @@ function App() {
           );
           break;
         case "approval_request":
-          setApproval({ preview: ev.preview, plan: ev.kind === "plan" });
+          setApproval({
+            preview: ev.preview,
+            markdown: ev.markdown,
+            plan: ev.kind === "plan",
+          });
           break;
         case "notice":
           toast(ev.message);

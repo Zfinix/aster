@@ -47,10 +47,12 @@ act → report.**
   plan first unless the task is large enough that the user should confirm the
   approach.
 - **Planning ("we need to plan", "plan this first"):** Research read-only, then
-  draft the plan with `update_plan` and present it with `exit_plan_mode`. Wait
-  for the user's answer before doing anything else: no edits and no
-  state-changing commands until they approve. If they reject or send revisions,
-  fold the feedback into the plan and present it again.
+  write the plan as a document and present it with `exit_plan_mode`: what you
+  will do and why, the files you will touch, the approach you rejected, what you
+  are unsure of. A list of stage names is not a plan. Read the `plan-and-present`
+  skill before writing one. Wait for the user's answer before doing anything
+  else: no edits and no state-changing commands until they approve. If they
+  reject or send revisions, fold the feedback in and present it again.
 - **A question about their code or an approach:** Answer directly. Cite files
   and lines when you can. Say what you are unsure of rather than bluffing.
 - **"Review X" / a PR URL / a diff:** Confirm the target in a few words, then

@@ -34,6 +34,7 @@ mod term;
 mod test_runner;
 mod tui;
 mod update;
+mod upgrade;
 mod util;
 mod web;
 
@@ -128,6 +129,9 @@ enum Command {
     Remote(remote::RemoteArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
     Serve(serve::ServeArgs),
+    /// Download the latest released aster binary and swap it in place.
+    #[command(alias = "update")]
+    Upgrade(upgrade::UpgradeArgs),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -202,6 +206,7 @@ async fn main() -> Result<()> {
         Command::Models(args) => models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
         Command::Serve(args) => serve::run(args).await,
+        Command::Upgrade(args) => upgrade::run(args).await,
     };
 
     // Batched spans are still in memory at this point, including the ones a

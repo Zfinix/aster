@@ -28,6 +28,8 @@ export function Markdown({ text }: { text: string }) {
 }
 
 const BULLET = /^\s*[-*+]\s+(.*)$/;
+/** GFM task list: `- [ ] item`. Without this the box renders as literal text. */
+const TASK = /^\[([ xX])\]\s+(.*)$/;
 const NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const QUOTE = /^\s*>\s?/;
@@ -140,11 +142,22 @@ function Prose({ text }: { text: string }) {
         }
       }
       const List = ordered ? "ol" : "ul";
+      const tasks = items.map((item) => TASK.exec(item));
       out.push(
-        <List key={key++} className="md-list">
-          {items.map((item, n) => (
-            <li key={n}>{inline(item)}</li>
-          ))}
+        <List key={key++} className="md-list" data-tasks={tasks.some(Boolean) || undefined}>
+          {items.map((item, n) => {
+            const task = tasks[n];
+            if (!task) return <li key={n}>{inline(item)}</li>;
+            const done = task[1] !== " ";
+            return (
+              <li key={n} className="md-task" data-done={done || undefined}>
+                <span className="md-box" aria-hidden="true">
+                  {done ? "\u2611" : "\u2610"}
+                </span>
+                {inline(task[2])}
+              </li>
+            );
+          })}
         </List>
       );
       continue;

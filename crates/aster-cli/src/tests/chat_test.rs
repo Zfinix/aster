@@ -813,7 +813,45 @@ async fn update_plan_needs_at_least_one_step() {
 async fn exit_plan_mode_needs_a_plan_first() {
     let repo = tempfile::tempdir().unwrap();
     let out = run_tool(repo.path(), "exit_plan_mode", json!({})).await;
-    assert!(out.contains("update_plan"), "{out}");
+    assert!(out.contains("needs a `plan`"), "{out}");
+}
+
+/// The document is the plan the user reads; the step list is the progress
+/// strip, and standing in for a plan is what made approvals unreadable.
+#[tokio::test]
+async fn the_plan_document_is_what_gets_presented() {
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx::default();
+    let doc = "## Auth\n\nSplit the device-code flow out of `provider.rs` first,\nsince the token store needs it either way.";
+
+    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
+    let prompt = tokio::spawn(async move {
+        let req = approval(rx.recv().await.unwrap());
+        assert!(req.preview.contains("device-code flow"), "{}", req.preview);
+        assert_eq!(
+            req.markdown.as_deref(),
+            Some(
+                "## Auth\n\nSplit the device-code flow out of `provider.rs` first,\nsince the token store needs it either way."
+            ),
+            "the document reaches the front-end whole"
+        );
+        let _ = req.respond.send(Answer::Yes);
+    });
+
+    // No update_plan first: a document stands on its own.
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut plan_policy(),
+        Some(&tx),
+        &ctx,
+        "exit_plan_mode",
+        json!({ "plan": doc }),
+    )
+    .await;
+
+    prompt.await.unwrap();
+    assert!(out.contains("plan approved"), "{out}");
 }
 
 #[tokio::test]
@@ -826,7 +864,7 @@ async fn approving_the_plan_unlocks_editing() {
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     let prompt = tokio::spawn(async move {
         let req = approval(rx.recv().await.unwrap());
-        assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
+        assert!(req.preview.contains("- [ ] ship it"), "{}", req.preview);
         assert!(
             req.markdown
                 .as_deref()
@@ -967,7 +1005,7 @@ async fn an_editable_turn_still_asks_for_plan_approval() {
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     let prompt = tokio::spawn(async move {
         let req = approval(rx.recv().await.unwrap());
-        assert!(req.preview.contains("◻ ship it"), "{}", req.preview);
+        assert!(req.preview.contains("- [ ] ship it"), "{}", req.preview);
         let _ = req.respond.send(Answer::Yes);
     });
 
@@ -2011,4 +2049,65 @@ fn open_preview_is_offered_and_asks_for_a_target() {
     let params = &preview["function"]["parameters"];
     assert!(params["properties"]["target"].is_object(), "{params:#}");
     assert_eq!(params["required"], json!(["target"]));
+}
+
+fn body(content: &str) -> wiremock::ResponseTemplate {
+    wiremock::ResponseTemplate::new(200).set_body_json(json!({
+        "choices": [{ "message": { "role": "assistant", "content": content } }],
+        "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+    }))
+}
+
+async fn turn_against(server: &wiremock::MockServer) -> Result<String> {
+    let repo = tempfile::tempdir().unwrap();
+    crate::chat::agent_turn_streaming(
+        AiClient::new(server.uri(), "k", "mock-model"),
+        repo.path().to_path_buf(),
+        vec![ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }],
+        false,
+        std::sync::Arc::new(plan_policy()),
+        std::sync::Arc::new(Grants::default()),
+        None,
+        SessionCtx::default(),
+        Box::new(|_| {}),
+    )
+    .await
+    .map(|(reply, _, _)| reply)
+}
+
+/// A round with neither text nor a tool call ended the whole turn as an error,
+/// throwing away everything above it. It gets asked again instead.
+#[tokio::test]
+async fn a_silent_round_is_retried_rather_than_failing_the_turn() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body(""))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body("back on my feet"))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    assert_eq!(turn_against(&server).await.unwrap(), "back on my feet");
+}
+
+/// A model that never speaks still ends the turn cleanly: the session and the
+/// work above it survive, which an `Err` here would not.
+#[tokio::test]
+async fn a_model_that_stays_silent_ends_the_turn_without_an_error() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body("   "))
+        .mount(&server)
+        .await;
+
+    let reply = turn_against(&server).await.unwrap();
+    assert!(reply.contains("returned nothing"), "{reply}");
 }

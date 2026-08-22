@@ -36,6 +36,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an answer and edit anyway, and a plan you already approved is carried out
   rather than presented a second time.
 
+### Changed
+
+- **A plan is a document now, not five stage names.** `exit_plan_mode` took no
+  arguments and presented whatever labels `update_plan` happened to hold, so an
+  approval read "Stage 1: aster-auth crate, Stage 2: ChatGPT backend" and you
+  were asked to approve an approach nobody had described. The tool now takes the
+  plan as markdown and that is what you read: what it means to do and why, the
+  files it will touch, the approach it picked over the one it dropped, what it
+  is unsure of. The step list goes back to being the progress strip it always
+  was. A new built-in `plan-and-present` skill carries the standard, so the
+  guidance lives somewhere the agent reads rather than in a tool description
+  nobody sees.
+
+- **Task lists render as checkboxes in the panel.** `- [ ] step` came out as a
+  bullet followed by literal `[ ]`, which is exactly how every plan approval was
+  drawn. The panel now renders the box, `☐` or `☑`, and drops the bullet that
+  was doubling up with it. The desktop app drew plan approvals in the same
+  monospace block it uses for commands, red-tinting every line that started with
+  `-`; a plan renders as prose there now.
+
+- **A silent round no longer throws the turn away.** A model that came back with
+  neither text nor a tool call ended the turn as "model returned an empty reply",
+  and everything it had done up to that point went with it. Silence is usually a
+  provider hiccup or a reasoning model spending its budget on thinking, so the
+  turn now says so and asks again, twice, then falls back to the plain forced
+  answer with the tools dropped, which also clears the case where a malformed
+  tool call was what went quiet. A model that stays silent through all of that
+  ends the turn with a plain account of it rather than an error, so the session
+  and its work survive.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added

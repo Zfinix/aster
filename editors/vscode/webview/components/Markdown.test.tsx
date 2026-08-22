@@ -73,3 +73,24 @@ describe("Markdown links", () => {
     expect(out).not.toContain("<a ");
   });
 });
+
+describe("Markdown task lists", () => {
+  it("draws a checkbox instead of literal brackets", () => {
+    const out = html("- [ ] Stage 1: the auth crate\n- [x] Stage 2: the adapter");
+    expect(out).not.toContain("[ ]");
+    expect(out).not.toContain("[x]");
+    expect(out).toContain("☐");
+    expect(out).toContain("☑");
+    expect(out).toContain("Stage 1: the auth crate");
+  });
+
+  it("marks the list so the bullet does not double up with the box", () => {
+    expect(html("- [ ] one")).toContain('data-tasks="true"');
+  });
+
+  it("leaves a plain bullet list alone", () => {
+    const out = html("- one\n- two");
+    expect(out).not.toContain("☐");
+    expect(out).not.toContain("data-tasks");
+  });
+});

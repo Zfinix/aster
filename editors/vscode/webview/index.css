@@ -751,6 +751,27 @@ code {
   margin-bottom: 0;
 }
 
+/* A task list draws its own box, so the bullet would be a second marker. */
+.md-list[data-tasks] {
+  padding-left: 0;
+  list-style: none;
+}
+
+.md-task {
+  display: flex;
+  gap: var(--s1);
+  align-items: baseline;
+}
+
+.md-box {
+  flex: none;
+  color: var(--fg-dim);
+}
+
+.md-task[data-done] {
+  color: var(--fg-dim);
+}
+
 .md-list:last-child {
   margin-bottom: 0;
 }

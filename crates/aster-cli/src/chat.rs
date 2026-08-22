@@ -1518,6 +1518,22 @@ const MAX_ROUND_EXTENSIONS: usize = 2;
 /// low enough that a wandering turn is caught well before the round cap.
 const BARREN_ROUNDS: usize = 10;
 
+/// Consecutive rounds that come back with neither text nor a tool call before
+/// the turn stops asking. A silent round is usually a provider hiccup or a
+/// reasoning model spending its budget on thinking, and asking again clears it.
+const MAX_EMPTY_ROUNDS: usize = 2;
+
+/// Injected when a round returns nothing at all, in place of failing the turn.
+const EMPTY_CORRECTION: &str = "Your last reply was empty: no text and no tool \
+    calls. Answer now, even if it is only to say what you are doing next or what \
+    is blocking you.";
+
+/// Stands in for the reply when the model never produces one. The turn ends
+/// clean on this rather than as an error, so the session and its work survive.
+const SILENT_MODEL: &str = "The model returned nothing, twice over and again \
+    when asked for a plain answer. Everything above this line still happened and \
+    is saved. Send the message again, or switch models if it keeps up.";
+
 /// Injected once when the model gathers without ever acting. [`LOOP_CORRECTION`]
 /// cannot catch this: the calls differ every round, they just go nowhere.
 fn barren_correction(rounds: usize) -> String {
@@ -1679,6 +1695,8 @@ async fn agent_loop(
     // The turn tells the model what it has left exactly once. Repeating it
     // every round would spend more context than the pressure is worth.
     let mut budget_told = false;
+    // Consecutive silent rounds, reset by any round that produces something.
+    let mut empties = 0usize;
     for round in 0.. {
         if round >= round_cap {
             let now = plan_snapshot(ctx);
@@ -1819,10 +1837,18 @@ async fn agent_loop(
         let reasoning = reasoning_record(&msg.reasoning_details, duration_ms);
 
         if msg.tool_calls.is_empty() {
-            let reply = msg
-                .content
-                .filter(|c| !c.trim().is_empty())
-                .context("model returned an empty reply")?;
+            // A silent round used to end the turn as an error, losing the work
+            // above it. Ask again instead, then fall through to the forced
+            // answer, which drops the tools a malformed call may have died on.
+            let Some(reply) = msg.content.filter(|c| !c.trim().is_empty()) else {
+                empties += 1;
+                tracing::warn!(empties, "model returned no text and no tool calls");
+                if empties > MAX_EMPTY_ROUNDS {
+                    break;
+                }
+                steer(&mut wire, EMPTY_CORRECTION.to_string());
+                continue;
+            };
             if !msg.annotations.is_empty() {
                 emit_citations(&msg.annotations, &emit);
                 ctx.record(
@@ -1840,6 +1866,7 @@ async fn agent_loop(
             }
             return Ok((reply, compacted));
         }
+        empties = 0;
 
         ctx.record(
             MessageEvent::assistant(msg.content.clone(), msg.tool_calls.clone())
@@ -2062,10 +2089,15 @@ async fn agent_loop(
             |_| {},
         )
         .await?;
+    // Last resort. Failing here would throw away a whole turn's work over a
+    // provider that went quiet, so the turn ends with what happened instead.
     let reply = msg
         .content
         .filter(|c| !c.trim().is_empty())
-        .context("model returned an empty reply after the tool-round limit")?;
+        .unwrap_or_else(|| {
+            tracing::warn!("model stayed silent through the forced answer");
+            SILENT_MODEL.to_string()
+        });
     ctx.record(MessageEvent::assistant(Some(reply.clone()), Vec::new()));
     Ok((reply, compacted))
 }
@@ -2563,10 +2595,13 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "exit_plan_mode",
-                "description": "Present the current plan for user approval and wait for their answer. Build the plan with update_plan first. Do not edit files or run state-changing commands until the user approves; if they reject, revise the plan and present it again.",
+                "description": "Present your plan for user approval and wait for their answer. `plan` is the document they read before deciding, so write it for them, not for you: what you are going to do and why, the files and functions you will touch, the approach you picked and what you rejected, anything you are unsure of or want them to weigh in on. Markdown, with headings and short paragraphs; a bare list of stage names is not a plan. Scale it to the work: a page for a subsystem, a few lines for a small change. Do not edit files or run state-changing commands until the user approves; if they reject, fold their feedback in and present it again.",
                 "parameters": {
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "plan": { "type": "string", "description": "The plan as a markdown document, written for the user to read and approve" }
+                    },
+                    "required": ["plan"]
                 }
             }
         }));
@@ -2751,7 +2786,9 @@ async fn exec_tool(
             }
             Err(e) => Err(e),
         },
-        "exit_plan_mode" => exit_plan_mode(approver, ctx, allow_edits, policy).await,
+        "exit_plan_mode" => {
+            exit_plan_mode(approver, ctx, allow_edits, policy, str_arg("plan").as_deref()).await
+        }
         "read_file" => match str_arg("path").context("read_file needs a `path`") {
             Ok(path) if !edits::exists_anywhere(repo_root, &path) => {
                 return ToolOutput::text(missing_path(repo_root, &path));
@@ -3278,15 +3315,17 @@ async fn exit_plan_mode(
     ctx: &SessionCtx,
     allow_edits: &mut bool,
     policy: &mut Policy,
+    document: Option<&str>,
 ) -> Result<String> {
     let plan = ctx
         .plan
         .lock()
         .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?
         .clone();
-    if plan.steps.is_empty() {
+    let document = document.map(str::trim).filter(|d| !d.is_empty());
+    if document.is_none() && plan.steps.is_empty() {
         return Err(anyhow::anyhow!(
-            "build a plan with update_plan before leaving plan mode"
+            "exit_plan_mode needs a `plan`: the markdown document the user reads before approving"
         ));
     }
     if plan.approved {
@@ -3296,8 +3335,13 @@ async fn exit_plan_mode(
     }
 
     let locked = !*allow_edits;
-    let preview = format!("Approve this plan and start editing?\n\n{}", plan.render());
-    let markdown = plan_markdown(&plan);
+    // The step list is the progress strip, not the plan. It stands in only when
+    // the model presented no document, which the schema asks it for.
+    let markdown = match document {
+        Some(doc) => doc.to_string(),
+        None => plan_markdown(&plan),
+    };
+    let preview = format!("Approve this plan and start editing?\n\n{markdown}");
     if !request_plan_approval(approver, preview, Some(markdown))
         .await
         .allowed()
