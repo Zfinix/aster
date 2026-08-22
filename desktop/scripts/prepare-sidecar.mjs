@@ -16,9 +16,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const desktop = dirname(here);
 const root = dirname(desktop);
 
-const triple = execSync("rustc -vV", { encoding: "utf8" }).match(
-  /host:\s*(\S+)/,
-)?.[1];
+// TAURI_ENV_TARGET_TRIPLE is set by the tauri CLI for beforeBuildCommand and
+// reflects the --target being built, which differs from the host when
+// cross-compiling (e.g. x86_64-apple-darwin on an arm64 runner).
+const triple =
+  process.env.TAURI_ENV_TARGET_TRIPLE ||
+  process.env.SIDECAR_TARGET_TRIPLE ||
+  execSync("rustc -vV", { encoding: "utf8" }).match(/host:\s*(\S+)/)?.[1];
 if (!triple) {
   console.error("prepare-sidecar: could not determine host target triple");
   process.exit(1);
