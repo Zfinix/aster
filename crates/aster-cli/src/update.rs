@@ -55,15 +55,20 @@ pub async fn check() -> Option<UpdateInfo> {
     update
 }
 
-async fn fetch(current: &str) -> anyhow::Result<Option<UpdateInfo>> {
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+fn client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
         .user_agent(concat!("aster/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+        .build()?)
+}
+
+async fn fetch(current: &str) -> anyhow::Result<Option<UpdateInfo>> {
+    let client = client()?;
     let releases: Vec<Value> = client
         .get(format!(
             "https://api.github.com/repos/{REPO}/releases?per_page=20"
         ))
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?
         .error_for_status()?
@@ -123,6 +128,7 @@ async fn compare_commits(
         .get(format!(
             "https://api.github.com/repos/{REPO}/compare/{from}...{to}"
         ))
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?
         .error_for_status()?
@@ -161,7 +167,7 @@ fn tag_for(releases: &[Value], version: (u64, u64, u64)) -> Option<String> {
 
 /// The numeric triple in a tag or version string, however it is prefixed
 /// (`v0.2.0`, `cli-v0.3.0`, `0.3.0`).
-fn version_triple(text: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn version_triple(text: &str) -> Option<(u64, u64, u64)> {
     let start = text.find(|c: char| c.is_ascii_digit())?;
     let mut parts = text[start..].split('.');
     Some((

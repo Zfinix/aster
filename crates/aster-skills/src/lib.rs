@@ -57,6 +57,7 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/git-workflow/SKILL.md"),
     include_str!("../builtins/gh-pr-workflow/SKILL.md"),
     include_str!("../builtins/verify-before-done/SKILL.md"),
+    include_str!("../builtins/plan-and-present/SKILL.md"),
     include_str!("../builtins/build-triage/SKILL.md"),
     include_str!("../builtins/batched-bash/SKILL.md"),
     include_str!("../builtins/cli-toolbox/SKILL.md"),

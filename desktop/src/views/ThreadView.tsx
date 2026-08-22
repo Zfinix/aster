@@ -13,7 +13,7 @@ export function ThreadView({
   onRetry,
 }: {
   conversation: Conversation;
-  approval: { preview: string } | null;
+  approval: { preview: string; markdown?: string } | null;
   onRespondApproval: (allow: boolean) => void;
   onOpenDiff: () => void;
   onFocusFinding: (finding: Finding) => void;
@@ -40,7 +40,11 @@ export function ThreadView({
         />
       ))}
       {approval && (
-        <ApprovalPrompt preview={approval.preview} onRespond={onRespondApproval} />
+        <ApprovalPrompt
+          preview={approval.preview}
+          markdown={approval.markdown}
+          onRespond={onRespondApproval}
+        />
       )}
       <div ref={endRef} />
     </div>
