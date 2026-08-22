@@ -175,6 +175,7 @@ jobs:
           BIN="$GITHUB_WORKSPACE/desktop/.sidecar/aster"
           [ "$RUNNER_OS" = "Windows" ] && BIN="$BIN.exe"
           echo "ASTER_CLI_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "SIDECAR_TARGET_TRIPLE=${{ matrix.target }}" >> "$GITHUB_ENV"
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
