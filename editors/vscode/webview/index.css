@@ -57,7 +57,7 @@ body {
    so it still tracks the theme instead of pinning one grey. Dark only: light and
    high-contrast themes are chosen for their contrast and are left alone. */
 body.vscode-dark {
-  --bg-page: color-mix(in srgb, var(--bg) 78%, #000);
+  --bg-page: color-mix(in srgb, var(--bg) 90%, #000);
 }
 
 .app {
@@ -306,16 +306,14 @@ code {
      the start nor the finish leaves a line to see. */
   background: linear-gradient(
     to bottom,
-    transparent 50%,
-    color-mix(in srgb, var(--bg-page) 3%, transparent) 55%,
-    color-mix(in srgb, var(--bg-page) 10%, transparent) 60%,
-    color-mix(in srgb, var(--bg-page) 22%, transparent) 65%,
-    color-mix(in srgb, var(--bg-page) 35%, transparent) 70%,
-    color-mix(in srgb, var(--bg-page) 50%, transparent) 75%,
-    color-mix(in srgb, var(--bg-page) 65%, transparent) 80%,
-    color-mix(in srgb, var(--bg-page) 78%, transparent) 85%,
-    color-mix(in srgb, var(--bg-page) 90%, transparent) 90%,
-    color-mix(in srgb, var(--bg-page) 97%, transparent) 95%,
+    transparent 55%,
+    color-mix(in srgb, var(--bg-page) 2%, transparent) 62%,
+    color-mix(in srgb, var(--bg-page) 8%, transparent) 68%,
+    color-mix(in srgb, var(--bg-page) 18%, transparent) 74%,
+    color-mix(in srgb, var(--bg-page) 30%, transparent) 80%,
+    color-mix(in srgb, var(--bg-page) 45%, transparent) 86%,
+    color-mix(in srgb, var(--bg-page) 62%, transparent) 91%,
+    color-mix(in srgb, var(--bg-page) 80%, transparent) 95%,
     var(--bg-page)
   );
 }
@@ -1002,16 +1000,17 @@ code {
   margin-left: calc(-1 * var(--s1));
 }
 
-/* One `agent` tool call's swarm: a summary head over per-agent rows. */
-.agent-group {
+/* One `agent` tool call's swarm as a wired graph in a card. */
+.agent-net {
   display: flex;
   flex-direction: column;
-  margin-left: calc(-1 * var(--rail-x));
-  padding-left: calc(var(--rail-x) - 2px - var(--s1));
-  border-left: 2px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg-soft);
+  overflow: hidden;
 }
 
-.agent-group-head {
+.agent-net-head {
   display: flex;
   align-items: center;
   gap: var(--s2);
@@ -1019,23 +1018,26 @@ code {
   text-align: left;
   font: inherit;
   color: var(--fg-dim);
-  padding: 3px var(--s1);
+  padding: var(--s2) var(--s3);
   background: none;
   border: none;
-  border-radius: var(--radius);
   cursor: pointer;
 }
 
-.agent-group-head:hover {
+.agent-net-head:hover {
   background: var(--list-hover);
 }
 
-.agent-group-title {
+.agent-net-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
   font-weight: 600;
   color: var(--fg);
 }
 
-.agent-group-summary {
+.agent-net-summary {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1043,93 +1045,201 @@ code {
   white-space: nowrap;
 }
 
-.agent-group-count {
-  opacity: 0.7;
+.agent-net-failed {
+  color: var(--sev-critical);
 }
 
-.agent-group-caret {
+.agent-net-caret {
   display: flex;
   flex: none;
   color: var(--fg-dim);
   opacity: 0.7;
 }
 
-/* One level in: the rows take the head's text column as their own glyph
-   column, and the hairline sits in the gap the head's label left free. */
-.agent-card {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin-left: calc(var(--step-text) - var(--s2) - 1px);
-  padding: var(--s1) 0 var(--s1) var(--s2);
-  border-left: 1px solid var(--border);
-}
-
-.agent-row-head {
-  display: flex;
+/* Root at the left, one node per agent stacked at the right; the SVG layer
+   spans the card and draws the wires through the column gap between them. */
+.agent-net-graph {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 36px;
   align-items: center;
-  gap: var(--s1);
-  min-width: 0;
+  padding: var(--s3);
+  border-top: 1px solid var(--border);
 }
 
-.agent-row-toggle {
+.agent-net-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Wires stay neutral so the graph reads as structure; status lives in the
+   endpoint dot and, while running, the dash flowing along the wire. */
+.agent-wire {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.25;
+}
+
+.agent-net-wires [data-status="running"] {
+  color: var(--sev-low);
+}
+
+.agent-net-wires [data-status="done"] {
+  color: var(--diff-add);
+}
+
+.agent-net-wires [data-status="error"] {
+  color: var(--sev-critical);
+}
+
+.agent-wire-flow {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-dasharray: 3 5;
+  animation: wire-flow 0.9s linear infinite;
+}
+
+@keyframes wire-flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+.agent-wire-end {
+  fill: currentColor;
+}
+
+.agent-wire-port {
+  fill: var(--fg-dim);
+}
+
+.agent-net-root {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  font: inherit;
-  color: var(--fg-dim);
-  padding: 3px var(--s1);
-  background: none;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--fg);
+  font-weight: 600;
 }
 
-.agent-row-toggle:not(:disabled):hover {
-  background: var(--list-hover);
-}
-
-/* A box, not a bare character: "✓" and "◌" are different widths and the names
-   beside them would not line up. */
-.agent-row-glyph {
-  flex: none;
-  width: var(--glyph);
-  text-align: center;
-}
-
-.agent-row[data-running="true"] .agent-row-glyph {
+.agent-net-root[data-running="true"] > svg {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
-.agent-row[data-error="true"] .agent-row-glyph {
-  color: var(--sev-critical);
+.agent-net-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
 }
 
-.agent-row-error {
-  color: var(--sev-critical);
+.agent-node {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
   min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.agent-node:disabled {
+  cursor: default;
+}
+
+.agent-node:not(:disabled):hover {
+  background: var(--list-hover);
+}
+
+.agent-node[data-selected="true"] {
+  border-color: var(--vscode-focusBorder);
+}
+
+.agent-node[data-status="running"] {
+  --node-tint: var(--sev-low);
+}
+
+.agent-node[data-status="done"] {
+  --node-tint: var(--diff-add);
+}
+
+.agent-node[data-status="error"] {
+  --node-tint: var(--sev-critical);
+}
+
+.agent-node-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--node-tint);
+}
+
+.agent-node[data-status="running"] .agent-node-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.agent-node-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-node-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-row-caret {
+.agent-node-task {
+  color: var(--fg-dim);
+  font-size: 0.92em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-node[data-status="error"] .agent-node-task {
+  color: var(--sev-critical);
+}
+
+.agent-node-state {
   display: flex;
   flex: none;
-  color: var(--fg-dim);
-  opacity: 0.7;
+  color: var(--node-tint);
 }
 
-.agent-row-open {
-  flex: none;
+.agent-net-report {
+  border-top: 1px solid var(--border);
+  padding: var(--s2) var(--s3) var(--s3);
+  color: var(--fg-dim);
 }
 
-.agent-report {
-  padding: var(--s2) var(--s1) var(--s3) calc(var(--s1) + var(--step-text));
-  color: var(--fg-dim);
+.agent-net-report-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.agent-net-report-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--fg);
 }
 
 /* The whole header is the toggle, so the hit target is the row rather than a
@@ -1246,12 +1356,14 @@ code {
 /* VS Code injects `:focus { outline: 1px solid var(--vscode-focusBorder) }` into
    every webview, which leaves a loud ring on every row a mouse has touched. */
 .tool-row:focus,
-.agent-group-head:focus {
+.agent-net-head:focus,
+.agent-node:focus {
   outline: none;
 }
 
 .tool-row:focus-visible,
-.agent-group-head:focus-visible {
+.agent-net-head:focus-visible,
+.agent-node:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
