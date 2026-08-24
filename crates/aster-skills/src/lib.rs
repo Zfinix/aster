@@ -64,6 +64,7 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/context-economy/SKILL.md"),
     include_str!("../builtins/correction-protocol/SKILL.md"),
     include_str!("../builtins/security-hygiene/SKILL.md"),
+    include_str!("../builtins/security-review/SKILL.md"),
     include_str!("../builtins/web-research/SKILL.md"),
 ];
 

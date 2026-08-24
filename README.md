@@ -294,6 +294,34 @@ Keys follow the endpoint. A var named for it wins over the shared
 `ASTER_API_KEY`, so `ANTHROPIC_API_KEY` is picked up the moment you switch to
 Anthropic. In the TUI, `/provider` and `/model` do the same thing interactively.
 
+### When a provider request fails
+
+Every failed provider request is recorded locally at
+`~/.aster/logs/provider-errors.jsonl`, one JSON line per failure: timestamp,
+model, endpoint host, HTTP status, the response body (capped at 2 KB), and a
+summary of what was sent (temperature, stream flag, reasoning effort, message
+count, tool names). Keys and message contents are never written. The log is
+capped at 1 MB and restarts when it fills.
+
+When chat starts failing on every turn, read it first:
+
+```bash
+tail -5 ~/.aster/logs/provider-errors.jsonl | jq
+```
+
+A real example this log would have caught in one line instead of an afternoon:
+a `400` from OpenRouter's stealth model whose body was just `ERROR`, caused by
+`temperature` being serialized as an `f32`, so `0.4` went over the wire as
+`0.4000000059604645` and the provider's strict validation rejected every single
+request. The summary field records the exact temperature value sent, which is
+the whole diagnosis. Wire-format fields are typed `f64` now so it cannot come
+back.
+
+For deeper tracing, set `OTEL_EXPORTER_OTLP_ENDPOINT` to export spans of each
+model request (op, model, status) to any OTLP collector. It is off by default
+and costs nothing when unset.
+
+
 ### Settings
 
 `aster.yaml` holds everything else, and `aster config` edits it without opening
@@ -331,10 +359,10 @@ listed by title and read in full only when the agent needs them.
 Skills are folders with a `SKILL.md` telling the agent how to do something
 specific. Aster reads the titles and loads the body only when it is relevant.
 
-Ten core skills ship built in and are always available: git and GitHub
+Eleven core skills ship built in and are always available: git and GitHub
 workflows, verification before reporting done, build triage, shell batching,
-CLI craft, context economy, taking corrections, security hygiene, and web
-research. Ten more are bundled but off by default (debugging, refactoring,
+CLI craft, context economy, taking corrections, security hygiene, security
+review, and web research. Ten more are bundled but off by default (debugging, refactoring,
 tests, dependency upgrades, supply-chain safety, background processes, and
 others);
 `aster skills bundled` lists them. On macOS one bundled skill, macos-harness

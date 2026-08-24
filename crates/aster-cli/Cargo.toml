@@ -1,8 +1,8 @@
 [package]
-name = "aster-cli"
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+name = "aster-cli"
+version.workspace = true
 
 [[bin]]
 name = "aster"
@@ -11,59 +11,65 @@ path = "src/main.rs"
 [dependencies]
 anydoc = { workspace = true }
 anyhow = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { workspace = true, features = ["stream", "blocking"] }
-reqwest-middleware = { version = "0.4", features = ["json"] }
-clap = { version = "4.5", features = ["derive", "env"] }
-dotenvy = "0.15"
-dirs = "6.0"
-ratatui = { version = "0.29", features = [
-    "scrolling-regions",
-    "unstable-widget-ref",
-    "unstable-rendered-line-info",
-] }
-crossterm = { version = "0.28.1", features = ["event-stream"] }
-futures-util = { version = "0.3", default-features = false }
-pulldown-cmark = { version = "0.12", default-features = false }
-unicode-width = "0.2"
-serde_yaml = "0.9"
-toml = "0.8"
-chrono = { workspace = true }
-globset = { workspace = true }
-tempfile = "3"
-ignore = "0.4"
-open = "5"
-
+aster-agents = { path = "../aster-agents" }
 aster-ai = { path = "../aster-ai" }
+aster-eval = { path = "../aster-eval" }
 aster-harness = { path = "../aster-harness" }
+aster-mcp = { path = "../aster-mcp" }
 aster-models = { path = "../aster-models" }
+aster-plugins = { path = "../aster-plugins" }
 aster-policy = { path = "../aster-policy" }
 aster-persist = { path = "../aster-persist" }
 aster-remote = { path = "../aster-remote" }
+aster-sandbox = { path = "../aster-sandbox" }
 aster-serve = { path = "../aster-serve" }
-aster-agents = { path = "../aster-agents" }
+aster-shortcuts = { path = "../aster-shortcuts" }
 aster-skills = { path = "../aster-skills" }
+aster-telemetry = { path = "../aster-telemetry", version = "0.4.0" }
 aster-tools = { path = "../aster-tools" }
 aster-web = { path = "../aster-web" }
-aster-shortcuts = { path = "../aster-shortcuts" }
-aster-mcp = { path = "../aster-mcp" }
-aster-plugins = { path = "../aster-plugins" }
-aster-sandbox = { path = "../aster-sandbox" }
-cliclack = "0.5.5"
-console = "0.16"
-aster-telemetry = { version = "0.4.0", path = "../aster-telemetry" }
-aster-eval = { version = "0.4.0", path = "../aster-eval" }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 base64 = "0.23.1"
-libc = "0.2"
-self-replace = "1"
-tar = { version = "0.4", default-features = false }
+clap = { features = ["derive", "env"], version = "4.5" }
+cliclack = "0.5.5"
+chrono = { workspace = true }
+console = "0.16"
+crossterm = { features = ["event-stream"], version = "0.28.1" }
+dirs = "6.0"
+dotenvy = "0.15"
 flate2 = "1"
+futures-util = { default-features = false, version = "0.3" }
+globset = { workspace = true }
+ignore = "0.4"
+image = { default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+], version = "0.25.10" }
+libc = "0.2"
+open = "5"
+pulldown-cmark = { default-features = false, version = "0.12" }
+rand = "0.8"
+ratatui = { features = [
+    "scrolling-regions",
+    "unstable-widget-ref",
+    "unstable-rendered-line-info",
+], version = "0.29" }
+reqwest = { features = ["stream", "blocking"], workspace = true }
+reqwest-middleware = { features = ["json"], version = "0.4" }
+self-replace = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
 sha2 = "0.10"
+tar = { default-features = false, version = "0.4" }
+tempfile = "3"
+tokio = { workspace = true }
+toml = "0.8"
+tracing = { workspace = true }
+tracing-subscriber = { features = ["env-filter"], version = "0.3" }
+unicode-width = "0.2"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -1769,6 +1769,58 @@ fn no_progress_acting_resets_the_barren_streak() {
 }
 
 #[test]
+fn promise_shaped_replies_are_flagged() {
+    assert!(announces_pending_work(
+        "Found it. Fixing it now: generate a random state."
+    ));
+    assert!(announces_pending_work(
+        "What I did not get to\n- reading auth.rs"
+    ));
+    assert!(announces_pending_work("Say go and I will do exactly that."));
+    assert!(announces_pending_work("Doing that next unless you object."));
+    assert!(announces_pending_work(
+        "Say the word and I'll apply all three, then run make check."
+    ));
+    assert!(announces_pending_work(
+        "Next message I'll read the flag-resolution sites and apply the edits."
+    ));
+    assert!(announces_pending_work(
+        "The three fixes, ready to apply. No edits are written yet."
+    ));
+    assert!(announces_pending_work(
+        "Next session: write both files from the gathered facts."
+    ));
+}
+
+#[test]
+fn reports_of_finished_work_are_not_flagged() {
+    assert!(!announces_pending_work("Fixed. 15/15 tests pass."));
+    assert!(!announces_pending_work(
+        "The state param is hardcoded at codex.rs:203; OpenAI rejects it."
+    ));
+    assert!(!announces_pending_work(
+        "Changed the state to a random token and verified the callback."
+    ));
+}
+
+#[test]
+fn lookups_that_found_something_do_not_feed_the_barren_streak() {
+    let round = |result: &str| {
+        vec![(
+            "read_file".to_string(),
+            "{}".to_string(),
+            result.to_string(),
+        )]
+    };
+    assert!(round_found_something(&round("fn login() { .. }")));
+    assert!(!round_found_something(&round("")));
+    assert!(!round_found_something(&round("error: no such file")));
+    assert!(!round_found_something(&round(
+        "[identical read_file call earlier in this turn — scroll up for the result]"
+    )));
+}
+
+#[test]
 fn a_round_of_only_lookups_is_not_productive() {
     let lookup = |name: &str| (name.to_string(), "{}".to_string(), "ok".to_string());
     assert!(!is_productive_round(&[

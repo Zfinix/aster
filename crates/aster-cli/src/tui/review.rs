@@ -21,7 +21,7 @@ use super::{SPINNER, theme};
 use crate::review::{Job, execute};
 
 const AGENT_PROMPT: &str = include_str!("../../prompts/aster-agent.md");
-const CHAT_TEMPERATURE: f32 = 0.4;
+const CHAT_TEMPERATURE: f64 = 0.4;
 
 /// Findings formatted as ground truth the chat agent answers follow-ups from.
 fn review_context(report: &ReviewReport, min_confidence: f32) -> String {

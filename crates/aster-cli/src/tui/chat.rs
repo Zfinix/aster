@@ -2419,7 +2419,11 @@ impl ChatApp {
                 };
                 SelectionItem {
                     name: format!("{} {name}", if config.disabled { "◻" } else { "◼" }),
-                    description: format!("{state} · {} {}", config.command, config.args.join(" ")),
+                    description: format!(
+                        "{state} · {} {}",
+                        config.command,
+                        crate::util::redact_args(&config.args).join(" ")
+                    ),
                     is_current: false,
                     event: AppEvent::McpToggle {
                         name: name.clone(),

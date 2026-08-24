@@ -1109,3 +1109,74 @@ async fn the_runtime_routes_a_web_tool_to_the_web_connection() {
         .expect_err("no url was supplied");
     assert!(err.to_string().contains("missing url"), "{err:#}");
 }
+
+#[test]
+fn well_known_inserts_the_segment_before_the_path() {
+    let base = reqwest::Url::parse("https://mcp.linear.app/mcp").unwrap();
+    let resource = crate::mcp::oauth::well_known(&base, "oauth-protected-resource");
+    assert_eq!(
+        resource.as_str(),
+        "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp"
+    );
+    let origin = reqwest::Url::parse("https://auth.example.com").unwrap();
+    let server = crate::mcp::oauth::well_known(&origin, "oauth-authorization-server");
+    assert_eq!(
+        server.as_str(),
+        "https://auth.example.com/.well-known/oauth-authorization-server"
+    );
+}
+
+#[test]
+fn pkce_produces_a_verifier_whose_challenge_is_its_sha256() {
+    use base64::Engine;
+    use sha2::Digest;
+    let first = crate::mcp::oauth::pkce();
+    let second = crate::mcp::oauth::pkce();
+    assert_ne!(
+        first.verifier, second.verifier,
+        "the verifier must be random"
+    );
+    let digest = sha2::Sha256::digest(first.verifier.as_bytes());
+    assert_eq!(
+        first.challenge,
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+    );
+}
+
+#[test]
+fn authorize_url_carries_pkce_and_state() {
+    let built = crate::mcp::oauth::build_authorize_url(
+        "https://auth.example.com/authorize",
+        "client-1",
+        "http://127.0.0.1:9/callback",
+        "read write",
+        "state-1",
+        "challenge-1",
+    )
+    .unwrap();
+    let parsed = reqwest::Url::parse(&built).unwrap();
+    let pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+    assert!(pairs.contains(&("response_type".into(), "code".into())));
+    assert!(pairs.contains(&("client_id".into(), "client-1".into())));
+    assert!(pairs.contains(&("state".into(), "state-1".into())));
+    assert!(pairs.contains(&("code_challenge".into(), "challenge-1".into())));
+    assert!(pairs.contains(&("code_challenge_method".into(), "S256".into())));
+}
+
+#[test]
+fn stored_tokens_round_trip_and_skip_empty_fields() {
+    let tokens = crate::mcp::oauth::StoredTokens {
+        access_token: "at".into(),
+        refresh_token: Some("rt".into()),
+        expires_at: None,
+        client_id: None,
+    };
+    let text = serde_json::to_string(&tokens).unwrap();
+    assert!(!text.contains("expires_at"), "unset fields are not written");
+    let back: crate::mcp::oauth::StoredTokens = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.access_token, "at");
+    assert_eq!(back.refresh_token.as_deref(), Some("rt"));
+}

@@ -2,6 +2,7 @@
 
 mod agents;
 mod auth;
+use auth::LoginArgs;
 mod budget;
 mod chat;
 mod config;
@@ -91,9 +92,10 @@ pub struct EffortArgs {
 enum Command {
     /// Set up Aster in this repo: pick a provider, write aster.yaml, store your key.
     Init(init::InitArgs),
-    /// Link a GitHub account via device flow (opens your browser).
-    Login,
-    /// Remove the stored GitHub token.
+    /// Link a GitHub account via device flow, or ChatGPT with `login codex`
+    /// (both open your browser).
+    Login(LoginArgs),
+    /// Remove the stored GitHub token and any Codex login.
     Logout,
     /// Review a diff: the current branch, an explicit range, a file, or a PR.
     Review(review::ReviewArgs),
@@ -188,8 +190,8 @@ async fn main() -> Result<()> {
 
     let result = match command {
         Command::Init(args) => init::run(args).await,
-        Command::Login => auth::login().await,
-        Command::Logout => credentials::clear_token(),
+        Command::Login(args) => auth::run(args).await,
+        Command::Logout => credentials::logout_all(),
         Command::Review(args) => review::run(args).await,
         Command::Chat(args) => chat::run(args).await,
         Command::Fix(args) => fix::run(args).await,

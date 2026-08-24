@@ -651,7 +651,7 @@ pub(crate) struct QuestionRequest {
 pub(crate) type UiSender = mpsc::Sender<UiRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
-const CHAT_TEMPERATURE: f32 = 0.4;
+const CHAT_TEMPERATURE: f64 = 0.4;
 /// Hard stop so a confused model cannot spin forever. High enough that real
 /// multi-file work finishes inside it; `agent.max_tool_rounds` overrides.
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
@@ -1525,8 +1525,9 @@ const MAX_EMPTY_ROUNDS: usize = 2;
 
 /// Injected when a round returns nothing at all, in place of failing the turn.
 const EMPTY_CORRECTION: &str = "Your last reply was empty: no text and no tool \
-    calls. Answer now, even if it is only to say what you are doing next or what \
-    is blocking you.";
+    calls. Continue the work now with a tool call or a final answer. Do not \
+    describe what you would do; if something is blocking you, name it in one \
+    line.";
 
 /// Stands in for the reply when the model never produces one. The turn ends
 /// clean on this rather than as an error, so the session and its work survive.
@@ -1538,11 +1539,60 @@ const SILENT_MODEL: &str = "The model returned nothing, twice over and again \
 /// cannot catch this: the calls differ every round, they just go nowhere.
 fn barren_correction(rounds: usize) -> String {
     format!(
-        "You have spent {rounds} tool rounds reading and searching without \
-         editing a file or running a command. Stop gathering: nothing you have \
-         searched for so far has changed the answer. Act on what is already \
-         above, or say in one line what is blocking you."
+        "Your last {rounds} tool rounds were lookups that came back empty. \
+         Stop searching the same way: act on what is already above, try a \
+         different angle, or say in one line what is blocking you."
     )
+}
+
+/// Injected once when a reply ends the turn promising work instead of doing
+/// it. The turn continues so the promise becomes tool calls, not a report.
+const DANGLING_INTENT_CORRECTION: &str = "You ended your reply promising work \
+    you have not done. Do not narrate intent. If the work was asked for, do it \
+    now with your tools and then report what actually changed; if you cannot, \
+    name the blocker in one line.";
+
+/// Injected at turn start when the previous reply ended on a promise, so a
+/// session bricked on its own narration acts instead of narrating again.
+const PROMISED_WORK_KICK: &str = "Your previous reply promised work that was \
+    never done. Your tools are live right now, in this turn. Start with the \
+    first tool call for that work; do not restate the plan and do not mention \
+    tool availability.";
+
+/// True when a final reply announces imminent or undone work: the "fixing it
+/// now" ending that reads as a completed fix while nothing was edited.
+fn announces_pending_work(reply: &str) -> bool {
+    const PROMISES: &[&str] = &[
+        "fixing it now",
+        "fixing that now",
+        "fixing this now",
+        "doing that now",
+        "doing this now",
+        "doing that next",
+        "doing this next",
+        "i will now",
+        "i'll now",
+        "let me now",
+        "making the edit now",
+        "making the change now",
+        "say go and i",
+        "say \"go\"",
+        "say 'go'",
+        "say the word and i",
+        "next message i'll",
+        "next message i will",
+        "next session:",
+        "not applied yet",
+        "not applied any edits",
+        "no edits are written",
+        "ready to apply",
+        "unapplied",
+        "what i did not get to",
+        "what i have not done",
+        "what i haven't done",
+    ];
+    let reply = reply.to_lowercase();
+    PROMISES.iter().any(|p| reply.contains(p))
 }
 
 /// Told once, at the halfway mark, what the turn has left. Without it the model
@@ -1618,6 +1668,16 @@ fn is_productive_round(round: &[(String, String, String)]) -> bool {
         .any(|(name, _, _)| !PARALLEL_READ_TOOLS.contains(&name.as_str()) && name != "explore")
 }
 
+/// A lookup round still moves the turn forward when a result came back with
+/// substance. Only lookups that found nothing feed the barren streak.
+fn round_found_something(round: &[(String, String, String)]) -> bool {
+    round.iter().any(|(_, _, result)| {
+        !result.starts_with("error: ")
+            && !result.starts_with("[identical ")
+            && !aster_eval::barren(result)
+    })
+}
+
 /// Hash a round's (tool name, arguments, result) triples so identical rounds
 /// compare equal. The call id is deliberately excluded: a model re-issues a
 /// fresh id each round, so including it would hide a repeated round.
@@ -1684,6 +1744,14 @@ async fn agent_loop(
     for m in &history {
         wire.push(serde_json::to_value(m)?);
     }
+    // Unbrick a session whose last reply was a promise: without this the model
+    // reads its own "next turn I'll..." and settles back into narration.
+    if let Some(last) = history.iter().rev().find(|m| m.role == "assistant")
+        && announces_pending_work(&last.content.text())
+    {
+        tracing::warn!("previous reply ended on a promise; kicking the turn into acting");
+        steer(&mut wire, PROMISED_WORK_KICK.to_string());
+    }
 
     // The round cap is a runaway backstop, not a work limit: while the plan
     // keeps moving, hitting it grants another allotment. A full allotment
@@ -1697,6 +1765,9 @@ async fn agent_loop(
     let mut budget_told = false;
     // Consecutive silent rounds, reset by any round that produces something.
     let mut empties = 0usize;
+    // The dangling-intent steer fires at most twice a turn, then the reply
+    // stands rather than burning rounds on a model that will not act.
+    let mut promised = 0usize;
     for round in 0.. {
         if round >= round_cap {
             let now = plan_snapshot(ctx);
@@ -1849,6 +1920,26 @@ async fn agent_loop(
                 steer(&mut wire, EMPTY_CORRECTION.to_string());
                 continue;
             };
+            // "Fixing it now" with nothing fixed is the promise-shaped lie;
+            // steer once so the promised work happens this turn instead.
+            if promised < 2 && announces_pending_work(&reply) {
+                promised += 1;
+                empties = 0;
+                tracing::warn!("model ended its turn promising undone work; telling it to act");
+                ctx.record(
+                    MessageEvent::assistant(Some(reply.clone()), Vec::new())
+                        .with_reasoning(reasoning)
+                        .with_usage(usage),
+                );
+                if streamed {
+                    emit(json!({ "type": "token", "content": "\n\n" }));
+                } else {
+                    emit(json!({ "type": "text", "content": reply.clone() }));
+                }
+                wire.push(json!({ "role": "assistant", "content": reply }));
+                steer(&mut wire, DANGLING_INTENT_CORRECTION.to_string());
+                continue;
+            }
             if !msg.annotations.is_empty() {
                 emit_citations(&msg.annotations, &emit);
                 ctx.record(
@@ -2035,7 +2126,7 @@ async fn agent_loop(
         let verdict = no_progress.feed(
             round_signature(&round_sig),
             round_all_errors,
-            is_productive_round(&round_sig),
+            is_productive_round(&round_sig) || round_found_something(&round_sig),
         );
         match verdict {
             RoundVerdict::Continue => {}
@@ -2074,7 +2165,11 @@ async fn agent_loop(
     );
     steer(
         &mut wire,
-        "Stop using tools and answer now with what you have. Say plainly what you did not get to."
+        "Stop using tools and answer now with what you have. This applies to \
+         this reply only; your tools come back on the next message. Report \
+         only what actually happened; anything unfinished gets one plain \
+         line, not a section. Never describe an edit, command, or check that \
+         did not run as if it happened."
             .to_string(),
     );
     let msg = client

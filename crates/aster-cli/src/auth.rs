@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use clap::Args;
 use serde::Deserialize;
 
 use crate::credentials;
@@ -21,6 +22,36 @@ struct DeviceCode {
 struct TokenResponse {
     access_token: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Args)]
+pub struct LoginArgs {
+    /// `codex` links a ChatGPT subscription instead of GitHub.
+    #[arg(value_name = "TARGET", default_value = "github")]
+    target: String,
+}
+
+pub async fn run(args: LoginArgs) -> Result<()> {
+    match args.target.as_str() {
+        "github" => login().await,
+        "codex" | "chatgpt" => login_codex().await,
+        other => bail!("unknown login target {other:?}; expected github or codex"),
+    }
+}
+
+/// ChatGPT subscription OAuth. Tokens land in ~/.aster/codex.json and draw
+/// against the plan, not API credits.
+async fn login_codex() -> Result<()> {
+    let home = credentials::aster_dir()?;
+    let auth = aster_ai::codex::login(&home).await?;
+    println!(
+        "Codex login stored in {}.",
+        aster_ai::codex::store_path(&home).display()
+    );
+    if let Some(account) = auth.tokens.and_then(|t| t.account_id) {
+        println!("account {account}");
+    }
+    Ok(())
 }
 
 pub async fn login() -> Result<()> {

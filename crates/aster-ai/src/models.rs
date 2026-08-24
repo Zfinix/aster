@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct ChatRequest {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
+    pub temperature: Option<f64>,
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
@@ -210,7 +210,7 @@ pub struct ChatResponse {
 pub struct ToolChatRequest {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
+    pub temperature: Option<f64>,
     pub messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<serde_json::Value>,

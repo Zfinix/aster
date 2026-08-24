@@ -32,6 +32,45 @@ pub(crate) fn elapsed(secs: u64) -> String {
     }
 }
 
+/// Cut a string to `max` characters with an ellipsis, so prompt rows never
+/// wrap (wrapping breaks clack's frame erasing).
+pub(crate) fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// True for strings that look like credentials: anything naming a key/token/
+/// secret/password, or a long opaque token value. Used to keep secrets out of
+/// every CLI surface that echoes MCP server config.
+pub(crate) fn looks_like_secret(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    if ["api_key", "apikey", "token", "secret", "password"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return true;
+    }
+    s.len() >= 20
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// Args safe to print: secret-looking values are replaced wholesale.
+pub(crate) fn redact_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|a| {
+            if looks_like_secret(a) {
+                "<redacted>".to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
 fn trim_zero(v: f64, suffix: char) -> String {
     let s = format!("{v:.1}");
     let s = s.strip_suffix(".0").map(str::to_string).unwrap_or(s);

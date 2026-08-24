@@ -13,6 +13,9 @@ review:
   # Models (any OpenAI-compatible provider). `model` is the fallback used for a
   # stage that has no explicit override.
   model: openai/gpt-4o-mini
+  # ChatGPT subscription instead of a key: `aster login codex`, then
+  #   base_url: https://chatgpt.com/backend-api/codex
+  #   model: gpt-5.6-terra
   base_url: https://openrouter.ai/api/v1
   hypothesis_model: deepseek/deepseek-v4-flash   # cheap, high-recall
   verify_model: anthropic/claude-sonnet-5        # independent adversarial verify

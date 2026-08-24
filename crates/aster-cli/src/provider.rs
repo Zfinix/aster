@@ -84,14 +84,8 @@ fn resolve_web_search(review: &Review) -> bool {
         .unwrap_or(review.web_search.unwrap_or(false))
 }
 
-/// OpenRouter app attribution: `HTTP-Referer` is the unique app identifier that
-/// creates aster's page in OpenRouter rankings/analytics, and `X-OpenRouter-Title`
-/// (alias `X-Title`) sets the display name. Injected on requests routed through
-/// OpenRouter so usage is credited there instead of to whichever CLI spawned a
-/// turn. The referer must not be an openrouter.ai URL: OpenRouter drops
-/// openrouter.ai referers on API-key traffic so clients can't masquerade as its
-/// own web app.
-const ASTER_HTTP_REFERER: &str = "https://github.com/zfinix/aster";
+// Attribution headers for OpenRouter analytics and display name.
+const ASTER_HTTP_REFERER: &str = "https://withaster.dev";
 const ASTER_TITLE: &str = "Aster";
 
 /// Build a configured `AiClient` from already-loaded settings.

@@ -15,7 +15,7 @@ use crate::edits;
 use crate::term::{DIM, GREEN, RED, RESET};
 
 const FIX_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-fix.md");
-const FIX_TEMPERATURE: f32 = 0.0;
+const FIX_TEMPERATURE: f64 = 0.0;
 /// Files larger than this are sent as a window around the finding, not whole.
 const MAX_WHOLE_FILE_BYTES: usize = 60_000;
 const WINDOW_LINES: usize = 150;

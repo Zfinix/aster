@@ -56,8 +56,17 @@ fn no_vendor_var_is_reachable_from_another_vendors_endpoint() {
 #[test]
 fn every_catalog_endpoint_that_takes_a_key_names_its_var() {
     let catalog: Catalog = serde_json::from_str(PROVIDERS_JSON).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(PROVIDERS_JSON).unwrap();
     for entry in &catalog.providers {
         if host_only(entry.base_url.trim_end_matches('/')).starts_with("localhost") {
+            continue;
+        }
+        // Subscription endpoints authenticate by login, not a key.
+        let takes_no_key = raw["providers"].as_array().unwrap().iter().any(|p| {
+            p["base_url"] == entry.base_url
+                && p["auth"].as_str().is_some_and(|a| a.contains("OAuth"))
+        });
+        if takes_no_key {
             continue;
         }
         assert!(

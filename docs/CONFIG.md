@@ -107,6 +107,13 @@ API keys are never read from `aster.yaml`. They come from the environment, which
 `aster init` writes to `.env` next to the config, or from `aster login` for
 GitHub.
 
+One endpoint needs no key at all: `https://chatgpt.com/backend-api/codex` runs
+on a ChatGPT subscription. Run `aster login codex` once; Aster stores the tokens
+in `~/.aster/codex.json`, refreshes them before they expire, and imports an
+existing `~/.codex/auth.json` from the Codex CLI if it finds one. That endpoint
+speaks OpenAI's Responses API rather than `/chat/completions`; Aster translates
+both directions, so models and tools work as they do anywhere else.
+
 A key named for the endpoint in use wins over the shared one, so switching
 provider picks up a key you already export instead of demanding you move it:
 

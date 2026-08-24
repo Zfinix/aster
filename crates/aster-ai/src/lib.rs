@@ -15,6 +15,9 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use tokio::sync::OnceCell;
 
+pub mod codex;
+pub mod codex_api;
+mod error_log;
 pub mod keys;
 
 pub mod retry;
@@ -131,9 +134,23 @@ impl AiClient {
     pub fn from_env() -> Result<Self> {
         let base_url = env::var("ASTER_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
         // Resolved against the endpoint, not blindly: a key issued for the last
-        // provider is rejected by the next one as an unexplained 401.
-        let (api_key, _) = keys::resolve_key(&base_url)
-            .with_context(|| format!("set {}", keys::key_vars(&base_url).join(" or ")))?;
+        // provider is rejected by the next one as an unexplained 401. A ChatGPT
+        // subscription login stands in for a key on the Codex backend.
+        let resolved = match keys::resolve_key(&base_url) {
+            Some(resolved) => Some(resolved),
+            None if codex_api::is_codex(&base_url) => home_dir()
+                .ok()
+                .and_then(|home| codex::load(&home))
+                .map(|_| {
+                    (
+                        "chatgpt-subscription".to_string(),
+                        keys::KeySource::Provider,
+                    )
+                }),
+            None => None,
+        };
+        let (api_key, _) =
+            resolved.with_context(|| format!("set {}", keys::key_vars(&base_url).join(" or ")))?;
         let model = env::var("ASTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
         let timeout_secs = env_u64("ASTER_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS);
         let max_retries = env_u64("ASTER_MAX_RETRIES", DEFAULT_MAX_RETRIES as u64) as u32;
@@ -262,7 +279,7 @@ impl AiClient {
         model: &str,
         system: &str,
         user: &str,
-        temperature: f32,
+        temperature: f64,
         stream: bool,
     ) -> ChatRequest {
         self.build_request_from(
@@ -286,7 +303,7 @@ impl AiClient {
         &self,
         model: &str,
         messages: Vec<ChatMessage>,
-        temperature: f32,
+        temperature: f64,
         stream: bool,
     ) -> ChatRequest {
         ChatRequest {
@@ -386,7 +403,7 @@ impl AiClient {
     }
 
     /// Single-shot completion using the client's default model.
-    pub async fn complete(&self, system: &str, user: &str, temperature: f32) -> Result<String> {
+    pub async fn complete(&self, system: &str, user: &str, temperature: f64) -> Result<String> {
         self.complete_with(&self.model, system, user, temperature)
             .await
     }
@@ -394,7 +411,7 @@ impl AiClient {
     pub async fn complete_messages(
         &self,
         messages: &[ChatMessage],
-        temperature: f32,
+        temperature: f64,
     ) -> Result<String> {
         let prompt_chars: usize = messages.iter().map(|m| m.content.chars()).sum();
         let mut messages = messages.to_vec();
@@ -430,7 +447,7 @@ impl AiClient {
         model: &str,
         system: &str,
         user: &str,
-        temperature: f32,
+        temperature: f64,
     ) -> Result<String> {
         let request = self.build_request(model, system, user, temperature, false);
 
@@ -453,7 +470,7 @@ impl AiClient {
         &self,
         messages: Vec<serde_json::Value>,
         tools: Vec<serde_json::Value>,
-        temperature: f32,
+        temperature: f64,
     ) -> Result<AssistantMessage> {
         let model = self.model.clone();
         self.complete_tools_with(&model, messages, tools, temperature)
@@ -465,7 +482,7 @@ impl AiClient {
         model: &str,
         messages: Vec<serde_json::Value>,
         tools: Vec<serde_json::Value>,
-        temperature: f32,
+        temperature: f64,
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
         let images = self.settle_images(&mut messages).await;
@@ -537,7 +554,7 @@ impl AiClient {
         model: &str,
         system: &str,
         user: &str,
-        temperature: f32,
+        temperature: f64,
         mut on_token: impl FnMut(&str),
     ) -> Result<String> {
         let request = self.build_request(model, system, user, temperature, true);
@@ -548,8 +565,12 @@ impl AiClient {
 
         let mut acc = String::new();
         let mut usage: Option<Usage> = None;
+        let mut adapt = self.sse_adapter();
         read_sse(response, |data| {
-            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
+            let Some(data) = adapt(data) else {
+                return true;
+            };
+            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(&data) else {
                 return true;
             };
             if let Some(u) = parsed.usage {
@@ -593,7 +614,7 @@ impl AiClient {
         model: &str,
         messages: Vec<serde_json::Value>,
         tools: Vec<serde_json::Value>,
-        temperature: f32,
+        temperature: f64,
         mut on_token: impl FnMut(&str),
         mut on_reasoning: impl FnMut(&str),
     ) -> Result<AssistantMessage> {
@@ -641,8 +662,12 @@ impl AiClient {
         let mut guard = RepetitionGuard::default();
         let mut degenerate: Option<&'static str> = None;
 
+        let mut adapt = self.sse_adapter();
         read_sse(response, |data| {
-            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(data) else {
+            let Some(data) = adapt(data) else {
+                return true;
+            };
+            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(&data) else {
                 return true;
             };
             if let Some(u) = parsed.usage {
@@ -757,6 +782,11 @@ impl AiClient {
 
     /// POST a chat request. Transient failures are retried by the middleware; a
     /// non-success status that survives fails here with the response body.
+    ///
+    /// On the Codex backend the request is translated to the Responses API and
+    /// the reply translated back, so callers keep speaking chat completions
+    /// end to end. Streaming replies pass through untranslated here; the SSE
+    /// events are translated per event by [`Self::sse_adapter`].
     #[tracing::instrument(
         name = "model_request",
         skip_all,
@@ -767,8 +797,31 @@ impl AiClient {
         request: &R,
         ctx: &str,
     ) -> Result<reqwest::Response> {
-        let url = format!("{}/chat/completions", self.base_url);
-        let mut post = self.http.post(&url).bearer_auth(&self.api_key);
+        let codex = codex_api::is_codex(&self.base_url);
+        let url = if codex {
+            codex_api::endpoint(&self.base_url)
+        } else {
+            format!("{}/chat/completions", self.base_url)
+        };
+        let mut body = serde_json::to_value(request).context("serializing chat request")?;
+        if codex {
+            body = codex_api::translate_request(&body);
+        }
+        // The ChatGPT backend rejects `stream: false` outright (400 "Stream
+        // must be set to true"), so a non-streaming caller gets a stream
+        // forced on here and reassembled into one body below.
+        let assemble = codex && body["stream"] != serde_json::Value::Bool(true);
+        if assemble {
+            body["stream"] = serde_json::Value::Bool(true);
+        }
+
+        let mut post = self.http.post(&url).bearer_auth(self.bearer().await?);
+        if codex {
+            post = post.header("OpenAI-Beta", "responses=experimental");
+            if let Some(account_id) = self.codex_account_id() {
+                post = post.header("chatgpt-account-id", account_id);
+            }
+        }
         if !self.attribution_headers.is_empty() {
             let mut headers = HeaderMap::new();
             for (name, value) in &self.attribution_headers {
@@ -783,17 +836,71 @@ impl AiClient {
             post = post.headers(headers);
         }
         let response = post
-            .json(request)
+            .json(&body)
             .send()
             .await
             .with_context(|| format!("{ctx} failed"))?;
         let status = response.status();
         tracing::Span::current().record("status", status.as_u16());
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("{}", format_api_error(status, &body));
+            let text = response.text().await.unwrap_or_default();
+            if let Ok(home) = home_dir() {
+                error_log::log_request_failure(
+                    &home,
+                    &self.model,
+                    &self.base_url,
+                    status.as_u16(),
+                    &text,
+                    &body,
+                );
+            }
+            anyhow::bail!("{}", format_api_error(status, &text));
+        }
+        // A forced stream buffers here and hands the caller one translated
+        // chat-completions body. Streams the caller asked for pass through
+        // untouched: their SSE events are translated per event by
+        // [`Self::sse_adapter`], and reading the body here would buffer the
+        // whole stream before the first token reaches the caller.
+        if assemble {
+            let text = response.text().await.context("reading response body")?;
+            let translated = codex_api::assemble_stream(&text).with_context(|| {
+                let skip = text.chars().count().saturating_sub(400);
+                let tail: String = text.chars().skip(skip).collect();
+                format!("no completed response in the codex stream: {tail}")
+            })?;
+            let rebuilt = http::Response::builder()
+                .status(status)
+                .body(translated.to_string().into_bytes())
+                .context("rebuilding translated response")?;
+            return Ok(reqwest::Response::from(rebuilt));
         }
         Ok(response)
+    }
+
+    /// The bearer token for a request: the client's key off the shelf, or the
+    /// stored ChatGPT subscription token, refreshed first when it has expired.
+    async fn bearer(&self) -> Result<String> {
+        match codex_api::is_codex(&self.base_url) {
+            false => Ok(self.api_key.clone()),
+            true => codex::ensure_access_token(&home_dir()?).await,
+        }
+    }
+
+    fn codex_account_id(&self) -> Option<String> {
+        codex::load(&home_dir().ok()?)
+            .and_then(|auth| auth.tokens)
+            .and_then(|tokens| tokens.account_id)
+    }
+
+    /// Per-request SSE adapter: identity everywhere except the Codex backend,
+    /// where each event is translated into a chat-completions chunk.
+    fn sse_adapter(&self) -> SseAdapter<'_> {
+        if codex_api::is_codex(&self.base_url) {
+            let mut translator = codex_api::StreamTranslator::default();
+            Box::new(move |data| translator.event(data))
+        } else {
+            Box::new(|data| Some(data.to_string()))
+        }
     }
 
     async fn get_with_retry(&self, path: &str, ctx: &str) -> Result<reqwest::Response> {
@@ -808,6 +915,16 @@ impl AiClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if let Ok(home) = home_dir() {
+                error_log::log_request_failure(
+                    &home,
+                    &self.model,
+                    &self.base_url,
+                    status.as_u16(),
+                    &body,
+                    &serde_json::Value::Null,
+                );
+            }
             anyhow::bail!("{}", format_api_error(status, &body));
         }
         Ok(response)
@@ -1006,6 +1123,18 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
         Some(d) => format!("{label} ({}): {d}", status.as_u16()),
         None => format!("{label} ({})", status.as_u16()),
     }
+}
+
+/// Per-request SSE adapter: maps one `data:` payload to the chunk the parsing
+/// paths expect, or `None` to skip it.
+type SseAdapter<'a> = Box<dyn FnMut(&str) -> Option<String> + Send + 'a>;
+
+/// The user's home directory, where the Codex token store lives.
+fn home_dir() -> Result<std::path::PathBuf> {
+    env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .context("resolving the home directory")
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {

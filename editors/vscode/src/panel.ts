@@ -461,6 +461,12 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         if (lang) {
           await vscode.languages.setTextDocumentLanguage(doc, lang);
         }
+        // A document flagged as such (a plan, an agent report) reads better
+        // rendered than as source, so hand it to the markdown preview.
+        if (message.doc && lang === "markdown") {
+          await vscode.commands.executeCommand("markdown.showPreview", uri, true);
+          break;
+        }
         await vscode.window.showTextDocument(doc, { preview: true });
         break;
       }

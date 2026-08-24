@@ -4,6 +4,7 @@
 //! binding that preceded it. Only the wire differs; the session above it does not.
 
 mod http;
+mod oauth;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::process::Stdio;
@@ -390,11 +391,17 @@ impl Connection {
     /// handshake is what tells a reachable endpoint from a working one.
     async fn connect(name: &str, config: &ServerConfig, transport: Transport) -> Result<Self> {
         let url = config.url.trim();
+        // A stored OAuth login rides in as the Authorization header; a server
+        // with none configured or stored connects unauthenticated as before.
+        let mut headers = config.headers.clone();
+        if let Some(bearer) = oauth::bearer_header(name).await {
+            headers.insert("Authorization".into(), bearer);
+        }
         let remote = match transport {
             Transport::Sse => {
-                http::Remote::connect_sse(name, url, &config.headers, STARTUP_TIMEOUT).await?
+                http::Remote::connect_sse(name, url, &headers, STARTUP_TIMEOUT).await?
             }
-            _ => http::Remote::connect_streamable(url, &config.headers).await?,
+            _ => http::Remote::connect_streamable(url, &headers).await?,
         };
         Ok(Self::new(name, Wire::Remote(remote)))
     }
@@ -1159,7 +1166,7 @@ fn image_part(part: &Value) -> Option<String> {
 #[derive(clap::Args)]
 pub struct McpArgs {
     #[command(subcommand)]
-    pub action: McpAction,
+    pub action: Option<McpAction>,
 }
 
 #[derive(clap::Subcommand)]
@@ -1186,6 +1193,8 @@ pub enum McpAction {
     },
     /// Delete servers from the config files declaring them. Without a name, pick interactively.
     Remove { name: Option<String> },
+    /// Log in to a remote server over OAuth and store its token locally.
+    Login { name: String },
     /// Speak MCP on stdio as one of the servers Aster bundles. Plugins Aster
     /// ships invoke this; it is not meant to be run by hand.
     #[command(hide = true)]
@@ -1207,12 +1216,33 @@ async fn serve_builtin(name: &str) -> Result<()> {
 }
 
 pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<()> {
-    let no_connect = match &args.action {
+    let Some(action) = args.action else {
+        return match crate::picker::is_tty() && !crate::json_mode() {
+            true => panel(repo_root).await,
+            false => {
+                let settings = crate::settings::Settings::load(repo_root)?;
+                list_configured(&settings.mcp)
+            }
+        };
+    };
+    let no_connect = match &action {
         McpAction::List { no_connect } => *no_connect,
         McpAction::Enable { name } => return set_disabled(repo_root, name, false),
         McpAction::Disable { name } => return set_disabled(repo_root, name, true),
         McpAction::Import { from } => return crate::import::run_mcp_import(*from, repo_root),
         McpAction::Remove { name } => return remove_servers(repo_root, name.as_deref()),
+        McpAction::Login { name } => {
+            let summary = oauth::login(name).await?;
+            if crate::json_mode() {
+                println!(
+                    "{}",
+                    json!({ "ok": true, "server": name, "summary": summary })
+                );
+            } else {
+                println!("✓ {summary}");
+            }
+            return Ok(());
+        }
         McpAction::Serve { name } => return serve_builtin(name).await,
     };
     let settings = crate::settings::Settings::load(repo_root)?;
@@ -1369,6 +1399,118 @@ pub fn toggle_server(
     }
 }
 
+/// Bare `aster mcp`: the configured servers as a menu, in the style of `aster
+/// config`. Enter toggles a server, the loop redraws, Back exits. Nothing is
+/// spawned: the state shown is what the config files say.
+async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
+    use cliclack::select;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Row {
+        Server(usize),
+        Login(usize),
+        Remove,
+        Back,
+    }
+
+    loop {
+        let settings = crate::settings::Settings::load(repo_root)?;
+        let names: Vec<String> = settings.mcp.servers.keys().cloned().collect();
+        let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+
+        let mut menu = select::<Row>("MCP servers — enter toggles a server");
+        for (i, (name, config)) in settings.mcp.servers.iter().enumerate() {
+            let state = if config.disabled { "off" } else { "on" };
+            let transport = config
+                .transport()
+                .map(Transport::label)
+                .unwrap_or("unconfigured");
+            // Args are omitted: they often carry secrets (API keys), and a
+            // long hint wraps, which breaks clack's frame erasing.
+            let target = if config.url.trim().is_empty() {
+                config.command.clone()
+            } else {
+                config.url.trim().to_string()
+            };
+            let target = crate::util::truncate(&target, 48);
+            // A remote server that needs a login says so, so a 401 later is
+            // never the first hint.
+            let auth = match config.transport() {
+                Some(Transport::StreamableHttp) | Some(Transport::Sse)
+                    if oauth::has_stored_login(name) =>
+                {
+                    " · logged in"
+                }
+                Some(Transport::StreamableHttp) | Some(Transport::Sse) => " · no login",
+                _ => "",
+            };
+            menu = menu.item(
+                Row::Server(i),
+                format!("{name:<width$}  {state} · {transport}{auth}"),
+                target,
+            );
+        }
+        if names.is_empty() {
+            println!("No MCP servers configured. Add them under `mcp.servers` in aster.yaml.");
+        }
+        let remote: Vec<usize> = settings
+            .mcp
+            .servers
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, config))| {
+                matches!(
+                    config.transport(),
+                    Some(Transport::StreamableHttp) | Some(Transport::Sse)
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !remote.is_empty() {
+            menu = menu.item(
+                Row::Login(remote[0]),
+                "Log in…",
+                "OAuth login for a remote server",
+            );
+        }
+        menu = menu.item(
+            Row::Remove,
+            "Remove…",
+            "delete servers from the config files",
+        );
+        menu = menu.item(Row::Back, "Back", "");
+
+        let Some(row) = crate::util::or_cancel(menu.interact())? else {
+            break;
+        };
+        match row {
+            Row::Back => break,
+            Row::Remove => remove_servers(repo_root, None)?,
+            Row::Login(_) => {
+                let mut pick = select::<String>("Log in to which server?");
+                for name in &remote {
+                    let server = &names[*name];
+                    pick = pick.item(server.clone(), server.clone(), "");
+                }
+                if let Ok(Some(chosen)) = crate::util::or_cancel(pick.interact()) {
+                    match oauth::login(&chosen).await {
+                        Ok(summary) => cliclack::log::success(summary)?,
+                        Err(e) => cliclack::log::error(format!("{e:#}"))?,
+                    }
+                }
+            }
+            Row::Server(i) => {
+                let name = &names[i];
+                let disabled = !settings.mcp.servers[name].disabled;
+                let path = toggle_server(repo_root, name, disabled)?;
+                let verb = if disabled { "disabled" } else { "enabled" };
+                cliclack::log::success(format!("{verb} {name} · {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `aster mcp list --no-connect`: the configured servers and their on/off
 /// state, straight from the config files. Nothing is spawned, so this answers
 /// fast enough for a UI that redraws a control panel.
@@ -1382,7 +1524,7 @@ fn list_configured(settings: &McpSettings) -> Result<()> {
                 "disabled": config.disabled,
                 "transport": config.transport().map(Transport::label),
                 "command": config.command,
-                "args": config.args,
+                "args": crate::util::redact_args(&config.args),
                 "url": config.url,
             })
         })

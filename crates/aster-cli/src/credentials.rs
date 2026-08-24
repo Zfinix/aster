@@ -69,6 +69,15 @@ pub fn store_token(token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Clear every stored login: the GitHub token and any Codex subscription auth.
+pub fn logout_all() -> Result<()> {
+    let codex_removed = aster_ai::codex::clear(&aster_dir()?);
+    match clear_token() {
+        Ok(()) if codex_removed => Ok(()),
+        other => other,
+    }
+}
+
 pub fn clear_token() -> Result<()> {
     let path = token_path()?;
     let was_logged_in = match fs::remove_file(&path) {
