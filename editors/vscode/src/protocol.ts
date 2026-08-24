@@ -252,7 +252,9 @@ export type ToHost =
   | { type: "openExternal"; url: string }
   /** Open a code block's contents as a scratch editor tab. */
   /** `title` names the scratch tab; keep it short, it is the whole label. */
-  | { type: "openUntitled"; content: string; lang?: string; title?: string }
+  /** `doc` marks prose meant to be read as a page rather than looked at as
+   *  source, which is how a page renders it; an editor opens the source. */
+  | { type: "openUntitled"; content: string; lang?: string; title?: string; doc?: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setModel"; model: string }
   | { type: "setEffort"; effort: Effort | null }
@@ -318,7 +320,7 @@ export type ToWebview =
   | { type: "openCommandMenu" }
   /** A page's answer to `openUntitled`: no editor to open a tab in, so the
    *  snippet comes back and is shown over the thread. */
-  | { type: "scratch"; content: string; lang?: string; title?: string }
+  | { type: "scratch"; content: string; lang?: string; title?: string; doc?: boolean }
   | { type: "fileResults"; requestId: string; paths: string[] }
   | { type: "reviewStarted"; id: string; source: ReviewSource }
   | { type: "reviewEvent"; id: string; event: StreamEvent }

@@ -19,6 +19,7 @@ import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { onHostMessage, persist, post, restore } from "./lib/host";
 import { modelShort } from "./lib/model";
+import { closePlan, onPlanAnswer } from "./lib/plan-tab";
 import {
   appendCall,
   appendInjected,
@@ -266,6 +267,7 @@ export function App() {
           title: message.title || "Snippet",
           body: message.content,
           lang: message.lang,
+          doc: message.doc,
         });
         break;
 
@@ -483,12 +485,25 @@ export function App() {
     post({ type: "approval", allow, always });
     const plan = planApprovalRef.current;
     planApprovalRef.current = false;
+    // The plan's own tab, if one is open, has nothing left to decide.
+    if (plan) closePlan();
     // Only `plan` is unlocked by the approval; every other mode already edits,
     // so promoting would narrow yolo rather than free anything.
     if (plan && allow && permissionMode === "plan") {
       choosePermissionMode("edit");
     }
   };
+
+  // Answered in the plan's tab. It deliberately does not reply to the CLI
+  // itself: the reply belongs to the tab holding the session, which is also the
+  // one that has to promote the mode.
+  useEffect(
+    () =>
+      onPlanAnswer((answer) => {
+        if (planApprovalRef.current) answerApproval(answer.allow);
+      }),
+    [permissionMode]
+  );
 
   /** Reject, then hand the turn the alternative. The CLI routes `message`
    *  lines to the injection queue, so it lands as guidance rather than as the

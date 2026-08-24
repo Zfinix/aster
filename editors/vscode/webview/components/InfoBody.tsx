@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { InfoCardData } from "../lib/thread";
 import { ChevronIcon } from "./icons";
+import { Markdown } from "./Markdown";
 import { StatusLine } from "./StatusLine";
 import { ToolOutput } from "./ToolOutput";
 
@@ -13,7 +14,9 @@ const BODY_PREVIEW_LINES = 24;
 export function InfoBody({ card }: { card: InfoCardData }) {
   const [expanded, setExpanded] = useState(false);
   const lines = card.body?.split("\n") ?? [];
-  const long = lines.length > BODY_PREVIEW_LINES;
+  // A document is read from the top, so folding it would hide the thing it was
+  // opened for.
+  const long = !card.doc && lines.length > BODY_PREVIEW_LINES;
   const shown = long && !expanded ? lines.slice(0, BODY_PREVIEW_LINES).join("\n") : card.body;
 
   return (
@@ -32,7 +35,9 @@ export function InfoBody({ card }: { card: InfoCardData }) {
         </dl>
       )}
 
-      {shown && (
+      {shown && card.doc && <Markdown text={shown} doc />}
+
+      {shown && !card.doc && (
         <>
           <ToolOutput output={shown} lang={card.lang} />
           {long && (

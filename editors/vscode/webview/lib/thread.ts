@@ -130,6 +130,9 @@ export interface InfoCardData {
   rows?: InfoRow[];
   body?: string;
   lang?: string;
+  /** The body is a document to read, so it renders as prose rather than as
+   *  the verbatim output a card usually carries. */
+  doc?: boolean;
   note?: string;
   error?: boolean;
   pending?: boolean;

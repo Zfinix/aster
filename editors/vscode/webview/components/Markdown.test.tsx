@@ -94,3 +94,26 @@ describe("Markdown task lists", () => {
     expect(out).not.toContain("data-tasks");
   });
 });
+
+describe("Markdown documents", () => {
+  const doc = (text: string) => renderToStaticMarkup(<Markdown text={text} doc />);
+
+  it("keeps the levels a document was written with", () => {
+    const out = doc("# Title\n\n## Stage 1\n\n### Detail");
+    expect(out).toContain("<h1");
+    expect(out).toContain("<h2");
+    expect(out).toContain("<h3");
+  });
+
+  it("still flattens headings in the transcript", () => {
+    const out = html("# Title\n\n## Stage 1");
+    expect(out).not.toContain("<h1");
+    expect(out).toContain("<h3");
+    expect(out).toContain("<h4");
+  });
+
+  it("wraps a document so the page can scale it", () => {
+    expect(doc("# Title")).toContain('class="md-doc"');
+    expect(html("# Title")).not.toContain("md-doc");
+  });
+});

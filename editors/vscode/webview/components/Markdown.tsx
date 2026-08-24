@@ -7,7 +7,7 @@ import { Link } from "./Link";
  * than a library: the webview runs under a strict CSP and this covers what the
  * agent actually emits — fences, headings, lists, quotes, links, and emphasis.
  */
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, doc }: { text: string; doc?: boolean }) {
   const blocks: ReactElement[] = [];
   const fence = /```(\w*)\n([\s\S]*?)```/g;
   let cursor = 0;
@@ -16,15 +16,15 @@ export function Markdown({ text }: { text: string }) {
 
   while ((match = fence.exec(text)) !== null) {
     if (match.index > cursor) {
-      blocks.push(<Prose key={key++} text={text.slice(cursor, match.index)} />);
+      blocks.push(<Prose key={key++} text={text.slice(cursor, match.index)} doc={doc} />);
     }
     blocks.push(<CodeBlock key={key++} code={match[2].replace(/\n$/, "")} lang={match[1]} />);
     cursor = match.index + match[0].length;
   }
   if (cursor < text.length) {
-    blocks.push(<Prose key={key++} text={text.slice(cursor)} />);
+    blocks.push(<Prose key={key++} text={text.slice(cursor)} doc={doc} />);
   }
-  return <>{blocks}</>;
+  return doc ? <div className="md-doc">{blocks}</div> : <>{blocks}</>;
 }
 
 const BULLET = /^\s*[-*+]\s+(.*)$/;
@@ -38,6 +38,9 @@ const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const TABLE_SEP = /^\s*\|[\s:|-]+\|\s*$/;
 /** Panel headings start at h3: the thread is a transcript, not a document. */
 const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
+/** A document is read on its own, so it keeps the levels it was written with
+ *  and the page gives them a document's scale. */
+const DOC_HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
 function isBlockStart(line: string): boolean {
   return (
@@ -50,7 +53,7 @@ function isBlockStart(line: string): boolean {
   );
 }
 
-function Prose({ text }: { text: string }) {
+function Prose({ text, doc }: { text: string; doc?: boolean }) {
   const lines = text.split("\n");
   const out: ReactElement[] = [];
   let i = 0;
@@ -71,7 +74,7 @@ function Prose({ text }: { text: string }) {
 
     const heading = HEADING.exec(line);
     if (heading) {
-      const Tag = HEADING_TAGS[heading[1].length - 1];
+      const Tag = (doc ? DOC_HEADING_TAGS : HEADING_TAGS)[heading[1].length - 1];
       out.push(
         <Tag key={key++} className="md-heading">
           {inline(heading[2])}

@@ -38,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A plan opens in a tab of its own, and the approval keeps only the
+  decision.** The whole plan was drawn inside the approval card, so a real plan
+  buried the question it was asking under a screenful of prose you had to scroll
+  past to answer. It now opens as a document: `aster serve` gives it a browser
+  tab at `/plan`, with the Approve and Reject it belongs to waiting at the foot
+  of it: answering there closes the tab and hands you back to the thread. The
+  editor panel opens it as an editor tab instead. The card is left
+  holding the question, the choices, and the box for telling Aster what to
+  change. A document also gets a document's typography, so the headings it was
+  written with are the headings you read, instead of every level flattened to
+  the one size a transcript allows. A tab a popup blocker eats falls back to the
+  panel over the thread, which is where the answer already is.
+
 - **A plan is a document now, not five stage names.** `exit_plan_mode` took no
   arguments and presented whatever labels `update_plan` happened to hold, so an
   approval read "Stage 1: aster-auth crate, Stage 2: ChatGPT backend" and you

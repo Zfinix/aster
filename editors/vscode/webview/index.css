@@ -827,6 +827,68 @@ code {
   color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
 
+/* A document read on its own: a plan, a report. The transcript flattens
+   headings so no reply can shout over the conversation; here the levels are
+   the structure, so they get a document's scale and its air. */
+.md-doc {
+  font-size: 1.05em;
+  line-height: 1.65;
+}
+
+/* 650, not 700: near-white strokes bloom against a near-black page, and the
+   heaviest weight turns a title into glare. */
+.md-doc h1.md-heading {
+  margin: 0 0 var(--s3);
+  font-size: 1.8em;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.md-doc h2.md-heading {
+  margin: var(--s5) 0 var(--s2);
+  padding-bottom: var(--s1);
+  font-size: 1.35em;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  border-bottom: 1px solid var(--border);
+}
+
+.md-doc h3.md-heading {
+  margin: var(--s4) 0 var(--s2);
+  font-size: 1.12em;
+}
+
+.md-doc h4.md-heading,
+.md-doc h5.md-heading,
+.md-doc h6.md-heading {
+  margin: var(--s3) 0 var(--s1);
+}
+
+.md-doc .md-heading:first-child {
+  margin-top: 0;
+}
+
+.md-doc .prose,
+.md-doc .md-quote,
+.md-doc .md-table-wrap {
+  margin-bottom: var(--s3);
+}
+
+.md-doc .md-list {
+  margin-bottom: var(--s3);
+  padding-left: var(--s5);
+  line-height: 1.65;
+}
+
+.md-doc .md-list li {
+  margin-bottom: var(--s2);
+}
+
+.md-doc .md-rule {
+  margin: var(--s5) 0;
+}
+
 /* A locally-answered command: /status, /memory, /diff, /compact. Framed like a
    tool card so it reads as machinery rather than something the model said. */
 .info-card {
@@ -1636,6 +1698,26 @@ code {
 
 .approval-label {
   min-width: 0;
+}
+
+/* The plan, opened for revision rather than reading: monospace, because what
+   is being edited is markdown source. */
+.approval-plan-edit {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  line-height: 1.5;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--s2);
+}
+
+.approval-plan-edit:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
 }
 
 .approval-instead {
@@ -3154,6 +3236,17 @@ body.vscode-high-contrast-light .sh {
 
 .info-modal[data-error="true"] {
   border-color: var(--sev-critical);
+}
+
+/* A document is read top to bottom rather than glanced at, so it gets a wider
+   column and more of the screen than a card's worth of output needs. */
+.info-modal[data-doc="true"] {
+  width: min(760px, 100%);
+  max-height: 84vh;
+}
+
+.info-modal[data-doc="true"] .info-modal-body {
+  padding: 0 var(--s5) var(--s5);
 }
 
 .info-modal > .info-head {

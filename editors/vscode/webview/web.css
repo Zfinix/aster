@@ -120,6 +120,71 @@ body {
   --pop-head-pad: 10px 12px;
 }
 
+/* A plan, opened in a tab of its own. The tab is the document, so it reads as
+   a page: a measure that stays readable at any width, and the decision waiting
+   at the foot of it rather than back in the thread. */
+.plan-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  /* Not the panel's size: 13px is set for a sidebar column, and a document
+     read across a browser window wants the size a document is read at. */
+  font-size: 15px;
+}
+
+.plan-page-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.plan-page-title {
+  font-weight: 600;
+}
+
+.plan-page-doc {
+  flex: 1;
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: 40px 24px 48px;
+}
+
+.plan-page-empty {
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Pinned: a long plan is scrolled through, and the answer should never be
+   somewhere below the fold. */
+.plan-page-actions {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 24px;
+  border-top: 1px solid var(--vscode-widget-border);
+  background: var(--vscode-editor-background);
+}
+
+.plan-page-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(760px, 100%);
+  margin: 0 auto;
+}
+
+.plan-page-verdict {
+  flex: 1;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plan-page-actions .btn,
+.plan-page-actions .btn-primary {
+  padding: 5px 14px;
+}
+
 /* Edit and auto mode ride a blue accent in the browser: the composer wears its
    mode all session, and permanent red reads as an error. Red stays yolo's.
    `:root` prefix outranks the panel's own rules regardless of bundle order. */

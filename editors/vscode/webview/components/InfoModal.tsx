@@ -22,7 +22,13 @@ export function InfoModal({ card, onClose }: { card: InfoCardData; onClose: () =
       className="info-overlay"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="info-modal" role="dialog" aria-label={card.title} data-error={card.error === true}>
+      <div
+        className="info-modal"
+        role="dialog"
+        aria-label={card.title}
+        data-error={card.error === true}
+        data-doc={card.doc === true}
+      >
         <div className="info-head">
           <span className="info-title">{card.title}</span>
           {inEditor && card.body && (

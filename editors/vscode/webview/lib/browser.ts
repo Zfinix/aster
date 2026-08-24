@@ -1,4 +1,5 @@
 import type { ReviewSource, ToHost, ToWebview } from "../../src/protocol";
+import { openPlanTab } from "./plan-tab";
 
 /**
  * The host, when the page is a page: `aster serve` on this machine instead of
@@ -28,7 +29,11 @@ export function post(message: ToHost): void {
       window.open(message.url, "_blank", "noopener,noreferrer");
       return;
     case "openUntitled":
-      openScratch(message.content, message.lang, message.title);
+      // A document gets a tab of its own, which only a click can open: a popup
+      // blocker eats a window the page opens unasked, and the scratch panel
+      // below is what catches that.
+      if (message.doc && openPlanTab(message.content)) return;
+      openScratch(message.content, message.lang, message.title, message.doc);
       return;
     case "attachFiles":
       void attach();
@@ -121,8 +126,8 @@ function runCommand(command: string): void {
  * tab would have to be a `blob:` URL, which not every browser will put in one,
  * and the ones that refuse load it in place: the session goes with it.
  */
-function openScratch(content: string, lang?: string, title?: string): void {
-  dispatch({ type: "scratch", content, lang, title });
+function openScratch(content: string, lang?: string, title?: string, doc?: boolean): void {
+  dispatch({ type: "scratch", content, lang, title, doc });
 }
 
 /** The composer's `+`. A picked file arrives as bytes, like a paste, because
