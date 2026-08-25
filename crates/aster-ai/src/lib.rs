@@ -48,7 +48,7 @@ use models::{
 /// Endpoint used when `ASTER_BASE_URL` is unset.
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_DEADLINE_SECS: u64 = 180;
@@ -173,8 +173,11 @@ impl AiClient {
         max_retries: u32,
         deadline_secs: u64,
     ) -> Self {
+        // Read timeout, not total: a total timeout kills a healthy stream that
+        // simply runs long, while a read timeout only fires on silence, which
+        // is what a stalled provider actually looks like.
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
+            .read_timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .build()
             .unwrap_or_default();
@@ -566,7 +569,7 @@ impl AiClient {
         let mut acc = String::new();
         let mut usage: Option<Usage> = None;
         let mut adapt = self.sse_adapter();
-        read_sse(response, |data| {
+        let streamed = read_sse(response, |data| {
             let Some(data) = adapt(data) else {
                 return true;
             };
@@ -588,7 +591,19 @@ impl AiClient {
             }
             true
         })
-        .await?;
+        .await;
+        if let Err(e) = streamed {
+            // Nothing reached the caller yet, so a fresh request duplicates
+            // nothing; a drop after output surfaces instead of re-streaming.
+            if acc.is_empty() {
+                tracing::debug!(
+                    model,
+                    "stream died before any content: {e:#}; retrying without streaming"
+                );
+                return self.complete_with(model, system, user, temperature).await;
+            }
+            return Err(e.context("the stream dropped mid-reply"));
+        }
 
         // Some endpoints ignore `stream` and return an empty body; fall back to a
         // non-streaming call (which records its own usage).
@@ -663,7 +678,7 @@ impl AiClient {
         let mut degenerate: Option<&'static str> = None;
 
         let mut adapt = self.sse_adapter();
-        read_sse(response, |data| {
+        let streamed = read_sse(response, |data| {
             let Some(data) = adapt(data) else {
                 return true;
             };
@@ -716,7 +731,21 @@ impl AiClient {
             }
             true
         })
-        .await?;
+        .await;
+        if let Err(e) = streamed {
+            // Safe to redo only while the caller has seen nothing: after
+            // visible output, a retry would duplicate what is on screen.
+            if content.is_empty() && partials.is_empty() && reasoning_details.is_empty() {
+                tracing::debug!(
+                    model,
+                    "stream died before any content: {e:#}; retrying without streaming"
+                );
+                return self
+                    .complete_tools_with(model, messages, tools, temperature)
+                    .await;
+            }
+            return Err(e.context("the stream dropped mid-reply"));
+        }
         gate.finish(&mut on_token);
         if let Some(msg) = degenerate {
             return Err(anyhow::Error::new(DegenerateOutput).context(msg));

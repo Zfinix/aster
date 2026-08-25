@@ -267,7 +267,8 @@ Limits on one agent turn.
 ## `agents`
 
 Fan-out limits for the `agent` tool's sub-agents. Every numeric value is clamped
-to at least 1.
+to at least 1. See [SWARM.md](./SWARM.md) for the roster, the run model, and
+custom agent definitions.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -368,7 +369,7 @@ A few knobs have no `aster.yaml` key.
 | `ASTER_PRICE_PROMPT_PER_M` | Prompt price per million tokens, for cost reporting. | unset |
 | `ASTER_PRICE_COMPLETION_PER_M` | Completion price per million tokens. | unset |
 | `ASTER_NO_BROWSER` | Set it and `open_preview` never launches a browser. The agent reports the URL instead, which is what you want over SSH or in a container. | unset |
-| `ASTER_TIMEOUT_SECS` | Per-request timeout for the model client. | `120` |
+| `ASTER_TIMEOUT_SECS` | Silence tolerance for the model client: how long a request may go without delivering any data before it is dropped. A reply that keeps streaming is never cut off by this. | `300` |
 | `ASTER_MAX_RETRIES` | Retries on transient model errors. | `3` |
 | `ASTER_DEADLINE_SECS` | Wall-clock cap across those retries. | `180` |
 | `ASTER_EDITOR` | Editor for `aster config edit`, before `$VISUAL` and `$EDITOR`. | unset |
