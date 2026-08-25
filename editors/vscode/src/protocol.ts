@@ -44,6 +44,18 @@ export type ChatStreamEvent =
       done: number;
       total: number;
     }
+  /** One live action inside a running sub-agent: a tool call or a thought. */
+  | { type: "agent_activity"; call_id: string; agent: string; task?: string; line: string }
+  /** The turn opened a judged goal loop; turns repeat until the judge is satisfied. */
+  | { type: "goal_set"; condition: string; max_turns: number }
+  /** One judge verdict on the goal. `final` means the loop ended on this verdict. */
+  | {
+      type: "goal_verdict";
+      verdict: "met" | "not_yet" | "impossible";
+      reason: string;
+      turn: number;
+      final: boolean;
+    }
   /** `plan` means approving promotes the mode, so the next turn must not
    *  relaunch in `plan`; `action` is a one-off edit or command. */
   | {

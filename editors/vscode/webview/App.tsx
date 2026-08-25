@@ -21,7 +21,9 @@ import { onHostMessage, persist, post, restore } from "./lib/host";
 import { modelShort } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
 import {
+  appendAgentActivity,
   appendCall,
+  appendGoalVerdict,
   appendInjected,
   appendReasoning,
   appendReasoningDelta,
@@ -34,6 +36,7 @@ import {
   newTurn,
   patchCall,
   restoreTurn,
+  setGoal,
   stopUnfinished,
   upsertAgentState,
   type AssistantTurn,
@@ -409,6 +412,23 @@ export function App() {
             options: event.options,
           },
         }));
+        break;
+      case "agent_activity":
+        patchAssistant(id, (turn) =>
+          appendAgentActivity(turn, event.call_id, event.agent, event.task, event.line)
+        );
+        break;
+      case "goal_set":
+        patchAssistant(id, (turn) => setGoal(turn, event.condition, event.max_turns));
+        break;
+      case "goal_verdict":
+        patchAssistant(id, (turn) =>
+          appendGoalVerdict(
+            turn,
+            { verdict: event.verdict, reason: event.reason, turn: event.turn },
+            event.final
+          )
+        );
         break;
       case "agent_status":
         patchAssistant(id, (turn) =>
@@ -788,12 +808,12 @@ function applyReviewEvent(data: ReviewData, event: ReviewEvent): ReviewData {
     case "phase":
       return { ...data, phase: event.name };
     case "hypothesized":
+      return { ...data, candidates: event.count };
+    case "verifying":
       return {
         ...data,
-        phase: `${event.count} candidate${event.count === 1 ? "" : "s"} to verify`,
+        verify: { index: event.index, total: event.total, title: event.title },
       };
-    case "verifying":
-      return { ...data, phase: `Verifying ${event.index}/${event.total} · ${event.title}` };
     case "diff":
       return { ...data, files: parseDiffFiles(event.content) };
     case "finding": {

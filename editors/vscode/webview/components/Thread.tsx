@@ -14,6 +14,7 @@ import { QuestionPrompt } from "./QuestionPrompt";
 import { ReviewTurn } from "./ReviewTurn";
 import { StatusLine } from "./StatusLine";
 import { AgentGroup } from "./AgentGroup";
+import { GoalCard } from "./GoalCard";
 import { ToolGroup } from "./ToolGroup";
 
 const isUser = (turn: Turn) => turn.role === "user";
@@ -100,12 +101,20 @@ export function Thread({
                 </div>
               );
             }
+            // An `agent` call's swarm card says everything its tool row would,
+            // so the row is dropped once the card exists.
+            const swarmCalls = new Set(
+              turn.blocks.flatMap((b) => (b.kind === "agents" ? [b.callId] : []))
+            );
             return (
               <div key={turn.id} className="turn-assistant">
                 {/* Arrival order, so steps sit under the thought that led to them. */}
                 {turn.blocks.map((block) =>
                   block.kind === "tools" ? (
-                    <ToolGroup key={block.id} calls={block.calls} />
+                    <ToolGroup
+                      key={block.id}
+                      calls={block.calls.filter((c) => !swarmCalls.has(c.id))}
+                    />
                   ) : block.kind === "reasoning" ? (
                     <ReasoningBlock
                       key={block.id}
@@ -116,6 +125,8 @@ export function Thread({
                     />
                   ) : block.kind === "agents" ? (
                     <AgentGroup key={block.id} tasks={block.tasks} />
+                  ) : block.kind === "goal" ? (
+                    <GoalCard key={block.id} block={block} />
                   ) : block.kind === "injected" ? (
                     <div key={block.id} className="turn-user turn-user-injected">
                       <div className="turn-user-text">{block.text}</div>

@@ -700,10 +700,16 @@ code {
   color: var(--sev-critical);
 }
 
+/* What it means and what to do, in plain words; the raw detail sits below. */
+.error-box-hint {
+  color: var(--fg);
+  line-height: 1.45;
+}
+
 .error-box-detail {
   font-family: var(--mono);
   font-size: var(--mono-size);
-  color: var(--fg);
+  color: var(--fg-dim);
   line-height: 1.45;
 }
 
@@ -1180,15 +1186,32 @@ code {
   --node-tint: var(--sev-critical);
 }
 
-.agent-node-dot {
+/* The persona's face, with its live status as the presence dot on the rim. */
+.agent-avatar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  width: 7px;
-  height: 7px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: var(--node-tint);
+  background: var(--code-bg-strong);
+  color: var(--fg);
 }
 
-.agent-node[data-status="running"] .agent-node-dot {
+.agent-avatar-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--node-tint);
+  border: 2px solid var(--surface);
+}
+
+.agent-node[data-status="running"] .agent-avatar-dot {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
@@ -1203,6 +1226,7 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-transform: capitalize;
 }
 
 .agent-node-task {
@@ -1239,6 +1263,162 @@ code {
   flex: 1;
   min-width: 0;
   font-weight: 600;
+  color: var(--fg);
+}
+
+.agent-net-report-name {
+  text-transform: capitalize;
+}
+
+/* A batch of one: the node is the card, so its own chrome comes off. */
+.agent-net-solo .agent-node {
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: var(--s2) var(--s3);
+}
+
+.agent-net-solo .agent-node-name {
+  font-weight: 600;
+}
+
+/* A judged goal loop: condition in the head, one timeline row per verdict. */
+.goal-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg-soft);
+  overflow: hidden;
+}
+
+.goal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+}
+
+.goal-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.goal-condition {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.goal-state {
+  display: flex;
+  flex: none;
+  color: var(--sev-low);
+}
+
+.goal-card[data-outcome="met"] .goal-state {
+  color: var(--diff-add);
+}
+
+.goal-card[data-outcome="impossible"] .goal-state,
+.goal-card[data-outcome="exhausted"] .goal-state,
+.goal-card[data-outcome="stopped"] .goal-state {
+  color: var(--sev-critical);
+}
+
+.goal-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--border);
+}
+
+.goal-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.goal-row-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  align-self: center;
+}
+
+.goal-row[data-verdict="not_yet"] .goal-row-dot {
+  background: var(--sev-low);
+}
+
+.goal-row[data-verdict="met"] .goal-row-dot {
+  background: var(--diff-add);
+}
+
+.goal-row[data-verdict="impossible"] .goal-row-dot {
+  background: var(--sev-critical);
+}
+
+.goal-row-turn {
+  flex: none;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg-dim);
+}
+
+.goal-row-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.goal-row:last-child .goal-row-reason {
+  color: var(--fg);
+}
+
+.goal-final {
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.goal-card[data-outcome="impossible"] .goal-final,
+.goal-card[data-outcome="exhausted"] .goal-final,
+.goal-card[data-outcome="stopped"] .goal-final {
+  color: var(--sev-critical);
+}
+
+/* Live tail of what an agent is doing, newest line last. */
+.agent-net-log {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg-dim);
+}
+
+.agent-net-log-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-net-log-line:last-child {
   color: var(--fg);
 }
 
@@ -2087,30 +2267,141 @@ code {
 
 /* Review */
 
-.review {
+/* One object in the thread, on the agent card's geometry: a header that always
+   tells the truth, a body that folds away under it. */
+.review-card {
   display: flex;
   flex-direction: column;
-  gap: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg-soft);
+  overflow: hidden;
 }
 
 .review-head {
   display: flex;
   align-items: center;
   gap: var(--s2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
   color: var(--fg-dim);
-  min-width: 0;
+  padding: var(--s2) var(--s3);
+  background: none;
+  border: none;
+  cursor: pointer;
 }
 
-.review-phase,
-.review-verdict {
+.review-head:hover {
+  background: var(--list-hover);
+}
+
+.review-head:focus,
+.finding-row:focus {
+  outline: none;
+}
+
+.review-head:focus-visible,
+.finding-row:focus-visible,
+.review-meta-toggle:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.review-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* The state faces overlap in one cell, so the running phase can dissolve into
+   the verdict without the header ever changing size. */
+.review-state {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  justify-items: start;
+  align-items: center;
+}
+
+.review-state > * {
+  grid-area: 1 / 1;
+}
+
+.review-state-face {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.review-phase {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.review-verdict {
-  color: var(--fg);
-  font-weight: 600;
+.review-clean {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--diff-add);
+}
+
+.review-clean svg {
+  width: 12px;
+  height: 12px;
+}
+
+.review-caret {
+  display: flex;
+  flex: none;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.review-caret svg,
+.finding-caret svg {
+  transition: transform 0.14s ease;
+}
+
+.review-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-bottom: var(--s2);
+}
+
+/* Sections carry the card's inset themselves; finding rows opt out so their
+   hover can run edge to edge. */
+.review-body > * {
+  padding-inline: var(--s3);
+}
+
+.review-body > .finding-list {
+  padding-inline: 0;
+}
+
+.review-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+/* The candidate under the gate right now: one line that overwrites in place,
+   like an agent's live tail. */
+.review-live {
+  margin-left: var(--step-text);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .steps {
@@ -2194,21 +2485,9 @@ code {
   color: var(--fg-dim);
 }
 
-.review-files {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s1);
-}
-
-.review-files-label {
-  color: var(--fg-dim);
-  font-size: 0.85em;
-}
-
 .review-files-list {
   list-style: none;
   margin: 0;
-  padding: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 2px 8px;
@@ -2223,24 +2502,14 @@ code {
   font-size: var(--mono-size);
 }
 
-.review-actions {
-  display: flex;
-  gap: var(--s2);
-}
-
 .finding-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
-/* One finding, on the same rail-and-disclosure pattern as an agent row. */
 .finding {
   display: flex;
   flex-direction: column;
-  margin-left: calc(-1 * var(--rail-x));
-  padding-left: calc(var(--rail-x) - 2px - var(--s1));
-  border-left: 2px solid var(--border);
 }
 
 .finding[data-severity="critical"],
@@ -2257,46 +2526,53 @@ code {
   --sev: var(--sev-info);
 }
 
-.finding-head {
-  display: flex;
-  align-items: center;
-  gap: var(--s1);
-  min-width: 0;
-}
-
-.finding-toggle {
+/* A quiet row: severity dot, title, location, caret. The actions live in the
+   detail, after the reading, so a list of findings is a list, not a toolbar. */
+.finding-row {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  flex: 1;
+  width: 100%;
   min-width: 0;
   text-align: left;
   font: inherit;
   color: var(--fg-dim);
-  padding: 3px var(--s1);
+  padding: 4px var(--s3);
   background: none;
   border: none;
-  border-radius: var(--radius);
   cursor: pointer;
 }
 
-.finding-toggle:hover {
+.finding-row:hover {
   background: var(--list-hover);
 }
 
-/* A box, not a bare character: the severity dot is a fixed-width glyph column
-   so titles line up, the same way agent rows align their status marks. */
-.finding-glyph {
+/* A fixed-width glyph column so titles line up, the same way agent rows align
+   their status marks. */
+.finding-mark {
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: var(--glyph);
-  height: 8px;
-  border-radius: 2px;
+}
+
+.finding-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--sev, var(--fg-dim));
-  opacity: 0.9;
+}
+
+.finding-mark svg {
+  width: 12px;
+  height: 12px;
+  color: var(--diff-add);
 }
 
 .finding-title {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2305,6 +2581,11 @@ code {
 
 .finding[data-open="true"] .finding-title {
   white-space: normal;
+}
+
+/* Fixed reads as settled: the tick replaces the dot and the row steps back. */
+.finding[data-fixed] .finding-title {
+  color: var(--fg-dim);
 }
 
 .finding-loc {
@@ -2325,36 +2606,15 @@ code {
   opacity: 0.7;
 }
 
-.finding-fix-btn {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-  font: inherit;
-  font-size: 0.85em;
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  border: none;
-  border-radius: var(--radius);
-  padding: 2px 8px;
-  cursor: pointer;
-}
-
-.finding-fix-btn:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
-}
-
-.finding-fix-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
+/* Railed under the dot's column, text on the title's, like a step's unfolded
+   output. */
 .finding-detail {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  margin-left: calc(var(--step-text) - var(--s2) - 1px);
-  padding: var(--s1) 0 var(--s2) var(--s2);
+  margin-left: calc(var(--s3) + var(--glyph) / 2);
+  margin-right: var(--s3);
+  padding: var(--s1) 0 var(--s2) calc(var(--glyph) / 2 + var(--s2) - 1px);
   border-left: 1px solid var(--border);
   color: var(--fg-dim);
 }
@@ -2372,33 +2632,22 @@ code {
   letter-spacing: 0.04em;
 }
 
-.finding-meta {
+/* Read first, act last: tags on the left, the buttons at the end of the read. */
+.finding-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--s2);
   min-width: 0;
 }
 
 .finding-tags {
-  flex: none;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-dim);
   font-size: 0.85em;
-}
-
-.finding-open {
-  flex: none;
-  font: inherit;
-  font-size: 0.85em;
-  color: var(--vscode-textLink-foreground);
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-
-.finding-open:hover {
-  text-decoration: underline;
 }
 
 .finding-fix-reason {
@@ -2407,18 +2656,8 @@ code {
   font-size: 0.85em;
 }
 
-/* Severity breakdown beside the verdict. */
-.review-sev-breakdown {
-  display: flex;
-  align-items: center;
-  gap: var(--s1);
-  flex-wrap: wrap;
-}
-
 .review-sev {
-  font-size: 0.85em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 0.9em;
 }
 
 .review-sev[data-severity="critical"],
@@ -2439,18 +2678,52 @@ code {
 .review-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--s2);
   color: var(--fg-dim);
   font-size: 0.9em;
+}
+
+.review-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+}
+
+.review-meta-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: inherit;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0;
+  cursor: pointer;
+}
+
+.review-meta-toggle:hover {
+  color: var(--fg);
+}
+
+.review-meta-toggle svg {
+  width: 10px;
+  height: 10px;
+  opacity: 0.7;
+  transition: transform 0.14s ease;
+}
+
+.review-usage {
+  white-space: nowrap;
 }
 
 .refuted-list {
   display: flex;
   flex-direction: column;
   gap: var(--s1);
-  padding-left: var(--s2);
-  border-left: 1px solid var(--border);
   font-size: 0.9em;
 }
 
@@ -2828,6 +3101,12 @@ code {
 
 /* A dial rather than a number: the exact figure only matters near the end, and
    that is what the warning colour is for. */
+.context-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
 .context-meter {
   display: inline-flex;
   align-items: center;
@@ -2844,6 +3123,70 @@ code {
 
 .context-meter:hover {
   background: var(--hover);
+}
+
+/* The hover card: the exact figure, a bar, and what happens at full. */
+.context-pop {
+  position: absolute;
+  bottom: calc(100% + var(--s2));
+  left: 0;
+  width: 230px;
+  display: none;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  z-index: 30;
+  pointer-events: none;
+}
+
+.context-wrap:hover .context-pop,
+.context-meter:focus-visible + .context-pop {
+  display: flex;
+}
+
+.context-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.context-pop-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.context-pop-pct {
+  color: var(--fg-dim);
+}
+
+.context-pop-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--code-bg-strong);
+  overflow: hidden;
+}
+
+.context-pop-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--sev-low);
+  transition: width 0.3s ease;
+}
+
+.context-pop[data-low="true"] .context-pop-bar-fill {
+  background: var(--sev-medium);
+}
+
+.context-pop-note {
+  color: var(--fg-dim);
+  line-height: 1.4;
 }
 
 .context-track {

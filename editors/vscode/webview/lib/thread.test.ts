@@ -27,6 +27,7 @@ const shape = (turn: AssistantTurn) =>
     if (block.kind === "injected") return `injected:${block.text}`;
     if (block.kind === "agents") return `agents:${block.tasks.map((t) => t.agent).join(",")}`;
     if (block.kind === "reasoning") return `reasoning:${block.text}`;
+    if (block.kind === "goal") return `goal:${block.condition}`;
     return `tools:${block.calls.map((c) => c.id).join(",")}`;
   });
 

@@ -14,6 +14,10 @@ export interface ToolCall {
 export interface ReviewData {
   status: "running" | "done" | "error" | "stopped";
   phase: string;
+  /** Candidate count from the hypothesis pass, the tally on that step's row. */
+  candidates?: number;
+  /** Which candidate the verify gate is on right now. */
+  verify?: { index: number; total: number; title: string };
   findings: Finding[];
   refuted: { title: string; reason: string }[];
   summary: string;
@@ -33,6 +37,8 @@ export interface AgentTaskState {
   error?: string;
   done: number;
   total: number;
+  /** Rolling feed of the agent's live actions, newest last. */
+  log?: string[];
 }
 
 /**
@@ -58,7 +64,26 @@ export type TurnBlock =
   /** Live sub-agent swarm for one `agent` tool call. */
   | { kind: "agents"; id: string; callId: string; tasks: AgentTaskState[] }
   /** A user message the turn absorbed mid-run, shown where it landed. */
-  | { kind: "injected"; id: string; text: string };
+  | { kind: "injected"; id: string; text: string }
+  /** A judged goal loop running inside this turn, fed by `goal_*` events. */
+  | {
+      kind: "goal";
+      id: string;
+      condition: string;
+      maxTurns: number;
+      verdicts: GoalVerdictRow[];
+      /** Set once the loop ends; absent while it is still running. */
+      outcome?: GoalOutcome;
+    };
+
+/** One judge verdict on the goal, one row of the card's timeline. */
+export interface GoalVerdictRow {
+  verdict: "met" | "not_yet" | "impossible";
+  reason: string;
+  turn: number;
+}
+
+export type GoalOutcome = "met" | "impossible" | "exhausted" | "stopped";
 
 export type PlanStepStatus = "pending" | "in_progress" | "done" | "skipped" | "blocked";
 
@@ -283,6 +308,40 @@ export function appendInjected(turn: AssistantTurn, text: string): AssistantTurn
   return { ...turn, blocks: [...turn.blocks, { kind: "injected", id: blockId(), text }] };
 }
 
+/** Mount the goal card as soon as the CLI announces the judged loop. */
+export function setGoal(turn: AssistantTurn, condition: string, maxTurns: number): AssistantTurn {
+  return {
+    ...turn,
+    blocks: [
+      ...turn.blocks,
+      { kind: "goal", id: blockId(), condition, maxTurns, verdicts: [] },
+    ],
+  };
+}
+
+/** Append one judge verdict to the open goal block; `final` closes the card. */
+export function appendGoalVerdict(
+  turn: AssistantTurn,
+  row: GoalVerdictRow,
+  final: boolean
+): AssistantTurn {
+  const outcome: GoalOutcome | undefined = !final
+    ? undefined
+    : row.verdict === "met"
+      ? "met"
+      : row.verdict === "impossible"
+        ? "impossible"
+        : "exhausted";
+  return {
+    ...turn,
+    blocks: turn.blocks.map((block) =>
+      block.kind === "goal" && block.outcome === undefined
+        ? { ...block, verdicts: [...block.verdicts, row], outcome }
+        : block
+    ),
+  };
+}
+
 /**
  * Rebuild a saved assistant turn: what it thought, what it said, then what it
  * ran, which is the order the live events arrived in. A reopened session used
@@ -348,11 +407,41 @@ export function upsertAgentState(turn: AssistantTurn, st: AgentTaskState): Assis
   }
   const block = turn.blocks[i];
   if (block.kind !== "agents") return turn;
-  const j = block.tasks.findIndex((t) => t.agent === st.agent);
-  const tasks = j === -1 ? [...block.tasks, st] : block.tasks.map((t, k) => (k === j ? st : t));
+  // A batch can run the same agent several times with different tasks, so the
+  // task text is part of the identity.
+  const j = block.tasks.findIndex((t) => t.agent === st.agent && t.task === st.task);
+  const tasks =
+    j === -1
+      ? [...block.tasks, st]
+      : block.tasks.map((t, k) => (k === j ? { ...st, log: t.log } : t));
   return {
     ...turn,
     blocks: [...turn.blocks.slice(0, i), { ...block, tasks }, ...turn.blocks.slice(i + 1)],
+  };
+}
+
+/** Append one live activity line to the matching sub-agent's rolling feed. */
+export function appendAgentActivity(
+  turn: AssistantTurn,
+  callId: string,
+  agent: string,
+  task: string | undefined,
+  line: string
+): AssistantTurn {
+  return {
+    ...turn,
+    blocks: turn.blocks.map((block) =>
+      block.kind === "agents" && block.callId === callId
+        ? {
+            ...block,
+            tasks: block.tasks.map((t) =>
+              t.agent === agent && t.task === task
+                ? { ...t, log: [...(t.log ?? []), line].slice(-50) }
+                : t
+            ),
+          }
+        : block
+    ),
   };
 }
 
@@ -380,7 +469,16 @@ export function stopUnfinished(turns: Turn[]): Turn[] {
                   call.result === undefined ? { ...call, stopped: true } : call
                 ),
               }
-            : block
+            : block.kind === "agents"
+              ? {
+                  ...block,
+                  tasks: block.tasks.map((t) =>
+                    t.status === "running" ? { ...t, status: "error" as const, error: "stopped" } : t
+                  ),
+                }
+              : block.kind === "goal" && block.outcome === undefined
+                ? { ...block, outcome: "stopped" as const }
+                : block
         ),
       };
     }
