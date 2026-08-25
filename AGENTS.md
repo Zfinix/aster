@@ -16,6 +16,17 @@ working agreement for agents editing this repo.
   strip them if found.
 - Use Conventional Commits for every message.
 
+## User-facing copy
+
+Every string a user sees (TUI cells, panel cards, error boxes, status lines)
+is written in plain, relatable language, never harness vocabulary. "Turns",
+"verdict", "judge", "budget exhausted", "rate limited", "context window" are
+internal words; users get "tries", "check", "too many requests", "stopped
+after 20 tries". Errors always say what happened and what to do next in one
+plain sentence, with the raw provider detail demoted below. Protocol field
+names, config keys, env vars, and docs stay technical; only rendered copy is
+covered by this rule.
+
 ## Rust conventions
 
 - Read the crate you are touching and follow its existing patterns before

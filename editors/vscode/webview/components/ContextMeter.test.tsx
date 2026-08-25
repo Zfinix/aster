@@ -15,8 +15,11 @@ describe("ContextMeter", () => {
     expect(html(1_000, 100_000)).toBe("");
   });
 
-  it("reports what is left, not what is spent", () => {
-    expect(html(25_000, 100_000)).toContain("75% of context remaining");
+  it("reports usage in plain words on the hover card", () => {
+    const out = html(25_000, 100_000);
+    expect(out).toContain("25% used");
+    expect(out).toContain("Conversation space");
+    expect(out).toContain("folds older messages");
   });
 
   it("warns once the window is nearly gone", () => {
@@ -28,7 +31,7 @@ describe("ContextMeter", () => {
   // a ring reading past full or a negative percentage would be nonsense.
   it("clamps a conversation already over budget", () => {
     const out = html(200_000, 100_000);
-    expect(out).toContain("0% of context remaining");
+    expect(out).toContain("100% used");
     expect(out).toContain('stroke-dashoffset="0"');
   });
 });

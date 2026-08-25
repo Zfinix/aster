@@ -8,6 +8,7 @@ import { ToolRun } from "./ToolRun";
  *  folded into a single run. Plan updates render inline as a PlanCard where
  *  they landed, the same as any other tool output. */
 export function ToolGroup({ calls }: { calls: ToolCall[] }) {
+  if (calls.length === 0) return null;
   return (
     <div className="tool-list">
       {groupRuns(calls).map((item) =>
