@@ -1259,26 +1259,111 @@ async fn run_stream(
     yolo: bool,
     credentials: Arc<aster_policy::CommandGrants>,
 ) -> Result<()> {
-    let (ctx, history) = prepare_turn(&args, &repo_root, &client, mcp, limits, yolo, credentials)?;
+    let (ctx, mut history) =
+        prepare_turn(&args, &repo_root, &client, mcp, limits, yolo, credentials)?;
     // The router owns stdin from here: replies feed the approver, and typed-in
     // `{"message"}` lines join the turn at the next round boundary.
     let replies = spawn_stdin_router(ctx.injected.clone());
+    let approver = stdio_approver(replies);
+
+    // A trailing `/goal <condition>` turns this invocation into a judged loop:
+    // turns keep running until a separate judge model deems the condition met.
+    let goal = history
+        .last()
+        .filter(|m| m.role == "user")
+        .and_then(|m| crate::goal::parse_goal(&m.content.text()));
+    let max_turns = crate::goal::max_turns();
+    if let Some(condition) = &goal {
+        if let Some(last) = history.last_mut() {
+            last.content = crate::goal::directive(condition).into();
+        }
+        emit_line(&json!({
+            "type": "goal_set",
+            "condition": condition,
+            "max_turns": max_turns,
+        }));
+    }
 
     let sink: ChatEventSink = Box::new(|event| emit_line(&event));
     let mut edited: Vec<String> = Vec::new();
-    let result = agent_loop(
-        &client,
-        &repo_root,
-        &history,
-        allow_edits,
-        &policy,
-        &grants,
-        Some(&stdio_approver(replies)),
-        &mut edited,
-        &ctx,
-        Some(&sink),
-    )
-    .await;
+    let mut turns = 0usize;
+    let result = loop {
+        let round = agent_loop(
+            &client,
+            &repo_root,
+            &history,
+            allow_edits,
+            &policy,
+            &grants,
+            Some(&approver),
+            &mut edited,
+            &ctx,
+            Some(&sink),
+        )
+        .await;
+        let (reply, compacted) = match round {
+            Ok(r) => r,
+            Err(e) => break Err(e),
+        };
+        turns += 1;
+        let Some(condition) = &goal else {
+            break Ok((reply, compacted));
+        };
+        if turns >= max_turns {
+            emit_line(&json!({
+                "type": "goal_verdict",
+                "verdict": "not_yet",
+                "reason": format!("stopped after {max_turns} tries without reaching it"),
+                "turn": turns,
+                "final": true,
+            }));
+            break Ok((reply, compacted));
+        }
+        let judgment = match crate::goal::judge(
+            &client,
+            ctx.swarm.collector_model.clone(),
+            condition,
+            &crate::goal::evidence(&history, &reply),
+        )
+        .await
+        {
+            Ok(j) => j,
+            Err(e) => {
+                emit_line(&json!({
+                    "type": "goal_verdict",
+                    "verdict": "not_yet",
+                    "reason": format!("couldn't check progress: {e:#}"),
+                    "turn": turns,
+                    "final": true,
+                }));
+                break Ok((reply, compacted));
+            }
+        };
+        let done = judgment.verdict != crate::goal::GoalVerdict::NotYet;
+        emit_line(&json!({
+            "type": "goal_verdict",
+            "verdict": judgment.verdict.as_str(),
+            "reason": judgment.reason,
+            "turn": turns,
+            "final": done,
+        }));
+        if done {
+            break Ok((reply, compacted));
+        }
+        if let Some(compacted) = compacted {
+            history = compacted;
+        }
+        history.push(ChatMessage {
+            role: "assistant".into(),
+            content: reply.into(),
+        });
+        let steering = crate::goal::guidance(condition, &judgment.reason);
+        ctx.record(MessageEvent::user(steering.clone()));
+        history.push(ChatMessage {
+            role: "user".into(),
+            content: steering.into(),
+        });
+    };
 
     // Await before `done`: a title past `done` reads as a turn that never finished.
     if let Some(naming) = match result.is_ok() {
@@ -4392,7 +4477,7 @@ fn agent_tool_schema() -> Value {
         "type": "function",
         "function": {
             "name": "agent",
-            "description": "Fan out self-contained tasks to named sub-agents in parallel. Each agent starts with a fresh context and cannot see this conversation. For broad investigation, fan several cheap explorer agents out in one call, then pass their raw reports to `synthesizer` in a second call. Limit batch size to avoid overwhelming the system.",
+            "description": "Fan out self-contained tasks to named sub-agents in parallel. Each agent starts with a fresh context and cannot see this conversation. Split divisible work into distinct, non-overlapping tasks, one per entry, so the batch covers the whole; do not hand the entire job to a single agent when it splits cleanly, and do not give two agents the same task. For broad investigation, fan several cheap scout agents out in one call, then pass their raw reports to `prism` in a second call. Limit batch size to avoid overwhelming the system.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -4508,7 +4593,19 @@ async fn dispatch_agent_tool(
             sink(ev);
         }
     };
-    let mut reports = crate::agents::run_swarm(tasks, &ctx.agents, &deps, on_complete).await;
+    let on_activity = |agent: &str, task: &str, line: String| {
+        if let Some(sink) = events {
+            sink(json!({
+                "type": "agent_activity",
+                "call_id": call_id,
+                "agent": agent,
+                "task": task,
+                "line": line,
+            }));
+        }
+    };
+    let mut reports =
+        crate::agents::run_swarm(tasks, &ctx.agents, &deps, on_activity, on_complete).await;
 
     // Cap each report so the total fits in MAX_TOOL_RESULT_CHARS.
     let count = reports.len().max(1);
@@ -4524,7 +4621,9 @@ async fn dispatch_agent_tool(
     let mut result = serde_json::to_string(&reports).unwrap_or_default();
     if over_cap > 0 {
         result.push_str(&format!(
-            "\n\n({over_cap} additional task(s) skipped: per-turn cap is {max_per_turn})"
+            "\n\n({over_cap} task(s) beyond the per-call cap of {max_per_turn} were NOT run. \
+            They are not lost: re-send them in your next `agent` call, in waves of at most \
+            {max_per_turn}, until the whole batch has run.)"
         ));
     }
     result

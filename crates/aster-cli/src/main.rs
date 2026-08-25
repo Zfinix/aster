@@ -11,6 +11,7 @@ mod edits;
 mod fix;
 mod git;
 mod github;
+mod goal;
 mod images;
 mod import;
 mod init;
