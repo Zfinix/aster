@@ -6,7 +6,7 @@
 [![CI](https://github.com/zfinix/aster/actions/workflows/ci.yml/badge.svg)](https://github.com/zfinix/aster/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
-![Aster demo animation](./aster.gif)
+![Aster demo animation](./aster.png)
 
 Aster is a terminal agent that reads your code, answers questions, edits files,
 runs commands, and reviews your changes. It works with any OpenAI-compatible
@@ -31,6 +31,10 @@ Three ideas shape it:
 > **Status: early, building in the open.** Chat, review, memory, skills,
 > permissions, MCP, and the browser, editor, and desktop surfaces have landed.
 > Expect rough edges.
+
+**I am job hunting.** I build Aster alone, and it is the best picture of how
+I work. If your team is hiring for systems engineering or applied AI, email me
+at [chiziaruhoma@gmail.com](mailto:chiziaruhoma@gmail.com).
 
 ## Install
 
@@ -97,8 +101,8 @@ Type `/` for commands:
 | `/clear` | Start fresh. |
 | `/help` | Everything above, in the terminal. |
 
-`/compact`, `/status`, `/diff`, `/mcp`, `/skills`, `/memory`, `/thinking`, and
-`/yolo` are there too; `/help` lists them all.
+`/compact`, `/status`, `/diff`, `/mcp`, `/skills`, `/memory`, `/thinking`,
+`/yolo`, and `/quit` are there too; `/help` lists them all.
 
 Outside the TUI:
 
@@ -249,18 +253,19 @@ probability, so treat the number as a ranking signal rather than odds.
 | --- | --- |
 | `aster memory` | Facts Aster should keep between sessions. `add`, `list`, `show`, `remove`. |
 | `aster sessions` | Past conversations. `list`, `show`, `rename`, `delete`, `prune`, `import`. |
-| `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `bundled`, `update`, `remove`. |
+| `aster skills` | Reusable instructions the agent loads on demand. `add`, `list`, `find`, `use`, `bundled`, `update`, `init`, `remove`. |
 | `aster plugins` | Agent Plugins packages of skills and MCP servers. `add`, `list`, `remove`, `validate`. |
 | `aster config` | Everything in `aster.yaml`. `list`, `get`, `set`, `unset`, `path`, `edit`. |
 | `aster provider` | The endpoint Aster talks to. `list`, `use`. |
 | `aster model` | The model it runs. `list`, `use`, `recommended`. |
-| `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`, `import`, `remove`. |
+| `aster mcp` | MCP servers that give the agent more tools. `list`, `enable`, `disable`, `login`, `import`, `remove`. |
 | `aster web` | The web as Markdown. `search`, `extract`, `crawl`, `sitemap`, `screenshot`. |
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
 | `aster serve` | Open the agent in your browser on this machine. |
 | `aster status` | What the next turn would run with: model, mode, limits, wiring. |
 | `aster remote` | Drive the agent from Telegram, approvals and all. |
-| `aster login` | Link GitHub, for reviewing and commenting on PRs. `aster logout` undoes it. |
+| `aster login` | Link GitHub for PRs, or ChatGPT with `login codex`. `aster logout` removes both. |
+| `aster upgrade` | Download the latest released binary and swap it in place. |
 
 `--json` works everywhere, before or after the subcommand. `--effort` sets the
 reasoning budget on the commands that run a model: chat, `review`, and `fix`.
@@ -456,6 +461,7 @@ diagrams and the reasoning behind each decision, lives in the docs:
 | [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | How the crates fit together and what a turn does end to end. |
 | [ALGORITHM.md](./docs/ALGORITHM.md) | The review pipeline and its cost model. |
 | [HARNESS.md](./docs/HARNESS.md) | Sessions, memory, approvals, and delegation. |
+| [SWARM.md](./docs/SWARM.md) | Sub-agents: the persona roster, fan-out, live events, and custom `AGENT.md` definitions. |
 | [MEMORY.md](./docs/MEMORY.md) | What Aster remembers, and how it is disclosed. |
 | [MCP.md](./docs/MCP.md) | Progressive tool injection: one bridge, schemas on demand. |
 | [PLUGINS.md](./docs/PLUGINS.md) | The Agent Plugins package format, and what Aster supports. |
