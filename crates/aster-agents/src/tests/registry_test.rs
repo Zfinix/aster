@@ -9,22 +9,32 @@ fn write_agent(root: &Path, name: &str, body: &str) {
 #[test]
 fn builtins_present_and_valid() {
     let registry = AgentRegistry::discover(&[]);
-    for name in ["explorer", "reviewer", "fixer", "synthesizer"] {
+    for name in [
+        "scout",
+        "cartographer",
+        "sentinel",
+        "forge",
+        "scribe",
+        "prism",
+    ] {
         let agent = registry.get(name).unwrap();
         assert!(agent.is_builtin());
+        assert!(agent.category.is_some());
         assert!(!agent.load_body().unwrap().is_empty());
     }
-    assert!(registry.get("reviewer").unwrap().verify);
-    assert!(registry.get("synthesizer").unwrap().verify);
-    assert!(
-        registry
-            .get("fixer")
-            .unwrap()
-            .tools
-            .as_deref()
-            .unwrap()
-            .contains(&"edit_file".to_string())
-    );
+    assert!(registry.get("sentinel").unwrap().verify);
+    assert!(registry.get("prism").unwrap().verify);
+    for name in ["forge", "scribe"] {
+        assert!(
+            registry
+                .get(name)
+                .unwrap()
+                .tools
+                .as_deref()
+                .unwrap()
+                .contains(&"edit_file".to_string())
+        );
+    }
 }
 
 #[test]
@@ -32,13 +42,13 @@ fn user_agent_shadows_builtin() {
     let tmp = tempfile::tempdir().unwrap();
     write_agent(
         tmp.path(),
-        "explorer",
+        "scout",
         "---\ndescription: project override.\n---\nbe brief",
     );
     let registry = AgentRegistry::discover(&[tmp.path().to_path_buf()]);
-    let explorer = registry.get("explorer").unwrap();
-    assert!(!explorer.is_builtin());
-    assert_eq!(explorer.description, "project override.");
+    let scout = registry.get("scout").unwrap();
+    assert!(!scout.is_builtin());
+    assert_eq!(scout.description, "project override.");
 }
 
 #[test]
@@ -76,9 +86,18 @@ fn malformed_agent_skipped() {
 fn index_lists_agents() {
     let registry = AgentRegistry::discover(&[]);
     let index = registry.render_index().unwrap();
-    assert!(index.contains("**explorer**"));
-    assert!(index.contains("**reviewer**"));
-    assert!(index.contains("**fixer**"));
-    assert!(index.contains("**synthesizer**"));
+    for name in [
+        "scout",
+        "cartographer",
+        "sentinel",
+        "forge",
+        "scribe",
+        "prism",
+    ] {
+        assert!(index.contains(&format!("**{name}**")), "{name} missing");
+    }
+    for cat in ["recon", "review", "build", "docs", "synthesis"] {
+        assert!(index.contains(&format!("### {cat}")), "{cat} missing");
+    }
     assert!(index.contains("fan several cheap agents"));
 }

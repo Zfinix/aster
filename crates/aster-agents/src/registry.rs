@@ -5,13 +5,15 @@ use crate::def::{AGENT_FILE, AgentDef, AgentSource, parse_agent_md};
 
 // Built-in agents. User definitions with the same name override these.
 const BUILTINS: &[(&str, &str)] = &[
-    ("explorer", include_str!("../builtins/explorer/AGENT.md")),
-    ("reviewer", include_str!("../builtins/reviewer/AGENT.md")),
-    ("fixer", include_str!("../builtins/fixer/AGENT.md")),
+    ("scout", include_str!("../builtins/scout/AGENT.md")),
     (
-        "synthesizer",
-        include_str!("../builtins/synthesizer/AGENT.md"),
+        "cartographer",
+        include_str!("../builtins/cartographer/AGENT.md"),
     ),
+    ("sentinel", include_str!("../builtins/sentinel/AGENT.md")),
+    ("forge", include_str!("../builtins/forge/AGENT.md")),
+    ("scribe", include_str!("../builtins/scribe/AGENT.md")),
+    ("prism", include_str!("../builtins/prism/AGENT.md")),
 ];
 
 // Registry of agents, deduped by name.
@@ -55,23 +57,41 @@ impl AgentRegistry {
         self.agents.iter()
     }
 
-    // Returns a markdown index of agents or None if empty.
+    // Returns a markdown index of agents, grouped by category, or None if empty.
     pub fn render_index(&self) -> Option<String> {
         if self.agents.is_empty() {
             return None;
         }
         let mut out = String::from(
             "## Agents\n\n\
-            Agents are specialists you can delegate a self-contained task to with \
-            the `agent` tool. Each starts with a fresh context and cannot see this \
-            conversation, so the task you give it must contain everything it needs. \
-            Delegate when a sub-task is substantial and separable; otherwise work \
-            directly. For broad work, fan several cheap agents out in one `agent` \
-            call, then pass their raw reports to `synthesizer` in a second call. \
-            Treat an agent's report as findings to weigh, not verified truth.\n",
+            Agents are named specialists you can delegate a self-contained task \
+            to with the `agent` tool. Each starts with a fresh context and cannot \
+            see this conversation, so the task you give it must contain everything \
+            it needs. Delegate when a sub-task is substantial and separable; \
+            otherwise work directly. When the work is divisible, split it into \
+            distinct, non-overlapping slices and dispatch them as one `agent` call \
+            with one task per slice, so the batch covers the whole; do not hand \
+            the whole job to a single agent when it splits cleanly. When the user \
+            asks you to spin up or use agents, always fan out this way, even for \
+            work you could do yourself. For broad work, fan several cheap agents \
+            out in one `agent` call, then pass their raw reports to `prism` in a \
+            second call. Treat an agent's report as findings to weigh, not \
+            verified truth.\n",
         );
+        let mut categories: Vec<&str> = Vec::new();
         for agent in &self.agents {
-            out.push_str(&format!("\n- **{}**: {}", agent.name, agent.description));
+            let cat = agent.category.as_deref().unwrap_or("other");
+            if !categories.contains(&cat) {
+                categories.push(cat);
+            }
+        }
+        for cat in categories {
+            out.push_str(&format!("\n### {cat}\n"));
+            for agent in &self.agents {
+                if agent.category.as_deref().unwrap_or("other") == cat {
+                    out.push_str(&format!("\n- **{}**: {}", agent.name, agent.description));
+                }
+            }
         }
         Some(out)
     }

@@ -1,9 +1,33 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import type { ComponentType } from "react";
 import { post } from "../lib/host";
 import type { AgentTaskState } from "../lib/thread";
 import { Disclosure } from "../interior/disclosure";
-import { AgentIcon, CheckIcon, ChevronIcon, ExternalIcon, SpinnerIcon, XIcon } from "./icons";
+import {
+  AgentIcon,
+  CheckIcon,
+  ChevronIcon,
+  CompassIcon,
+  ExternalIcon,
+  HammerIcon,
+  PencilIcon,
+  RouteIcon,
+  ShieldIcon,
+  SparkleIcon,
+  SpinnerIcon,
+  XIcon,
+} from "./icons";
 import { Markdown } from "./Markdown";
+
+/** Persona faces for the built-in agents; unknown names get the generic mark. */
+const AVATARS: Record<string, ComponentType> = {
+  scout: CompassIcon,
+  cartographer: RouteIcon,
+  sentinel: ShieldIcon,
+  forge: HammerIcon,
+  scribe: PencilIcon,
+  prism: SparkleIcon,
+};
 
 /** One wire of the graph, in pixel coordinates relative to `.agent-net-graph`. */
 interface Wire {
@@ -18,6 +42,41 @@ interface Wire {
 /** One `agent` tool call's swarm as a wired graph in a card: the orchestrator
  *  node fans out to a live node per sub-agent; a settled node opens its report. */
 export function AgentGroup({ tasks }: { tasks: AgentTaskState[] }) {
+  return tasks.length === 1 ? <AgentSolo task={tasks[0]} /> : <AgentSwarm tasks={tasks} />;
+}
+
+/** A batch of one has no swarm to wire, so the card is the node, a live tail
+ *  of what it is doing, and its report. */
+function AgentSolo({ task }: { task: AgentTaskState }) {
+  const [open, setOpen] = useState(false);
+  const report = task.report?.trim() ? task.report : null;
+  const tail = task.status === "running" ? (task.log ?? []).slice(-6) : [];
+
+  return (
+    <div className="agent-net agent-net-solo">
+      <AgentNode
+        task={task}
+        selected={open && Boolean(report)}
+        onSelect={() => setOpen(!open)}
+        showLive={false}
+      />
+      {tail.length > 0 && (
+        <div className="agent-net-log">
+          {tail.map((line, i) => (
+            <div key={i} className="agent-net-log-line">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      <Disclosure open={open && Boolean(report)}>
+        <AgentReport agent={task.agent} report={report} />
+      </Disclosure>
+    </div>
+  );
+}
+
+function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {
   const [open, setOpen] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const graphRef = useRef<HTMLDivElement | null>(null);
@@ -70,6 +129,7 @@ export function AgentGroup({ tasks }: { tasks: AgentTaskState[] }) {
 
   const sel = tasks.find((t, i) => `${i}:${t.agent}` === selected);
   const report = sel?.report?.trim() ? sel.report : null;
+  const tail = !report && sel?.status === "running" ? (sel.log ?? []).slice(-8) : [];
 
   return (
     <div className="agent-net">
@@ -122,31 +182,49 @@ export function AgentGroup({ tasks }: { tasks: AgentTaskState[] }) {
             })}
           </div>
         </div>
-        <Disclosure open={Boolean(report)}>
-          <div className="agent-net-report">
-            <div className="agent-net-report-head">
-              <span className="agent-net-report-title">{sel?.agent} report</span>
-              <button
-                className="icon-btn"
-                onClick={() =>
-                  report &&
-                  post({
-                    type: "openUntitled",
-                    content: report,
-                    lang: "markdown",
-                    title: sel?.agent ? `${sel.agent} report` : "report",
-                  })
-                }
-                title="Open report in a markdown tab"
-                aria-label="Open report in a markdown tab"
-              >
-                <ExternalIcon />
-              </button>
+        <Disclosure open={Boolean(report) || tail.length > 0}>
+          {report ? (
+            <AgentReport agent={sel?.agent} report={report} />
+          ) : (
+            <div className="agent-net-log agent-net-log-panel">
+              {tail.map((line, i) => (
+                <div key={i} className="agent-net-log-line">
+                  {line}
+                </div>
+              ))}
             </div>
-            {report && <Markdown text={report} />}
-          </div>
+          )}
         </Disclosure>
       </Disclosure>
+    </div>
+  );
+}
+
+function AgentReport({ agent, report }: { agent?: string; report: string | null }) {
+  return (
+    <div className="agent-net-report">
+      <div className="agent-net-report-head">
+        <span className="agent-net-report-title">
+          <span className="agent-net-report-name">{agent}</span> report
+        </span>
+        <button
+          className="icon-btn"
+          onClick={() =>
+            report &&
+            post({
+              type: "openUntitled",
+              content: report,
+              lang: "markdown",
+              title: agent ? `${agent} report` : "report",
+            })
+          }
+          title="Open report in a markdown tab"
+          aria-label="Open report in a markdown tab"
+        >
+          <ExternalIcon />
+        </button>
+      </div>
+      {report && <Markdown text={report} />}
     </div>
   );
 }
@@ -156,14 +234,21 @@ function AgentNode({
   selected,
   onSelect,
   nodeRef,
+  showLive = true,
 }: {
   task: AgentTaskState;
   selected: boolean;
   onSelect: () => void;
-  nodeRef: (el: HTMLButtonElement | null) => void;
+  nodeRef?: (el: HTMLButtonElement | null) => void;
+  /** Off where a live tail is already visible, so the line isn't shown twice. */
+  showLive?: boolean;
 }) {
   const hasReport = Boolean(task.report?.trim());
-  const sub = task.status === "error" ? (task.error ?? "failed") : task.task;
+  const live = task.status === "running" ? task.log?.at(-1) : undefined;
+  const sub =
+    task.status === "error" ? (task.error ?? "failed") : ((showLive ? live : undefined) ?? task.task);
+  const hasBody = hasReport || Boolean(live);
+  const Face = AVATARS[task.agent] ?? AgentIcon;
 
   return (
     <button
@@ -172,10 +257,13 @@ function AgentNode({
       data-status={task.status}
       data-selected={selected}
       onClick={onSelect}
-      disabled={!hasReport}
-      aria-expanded={hasReport ? selected : undefined}
+      disabled={!hasBody}
+      aria-expanded={hasBody ? selected : undefined}
     >
-      <span className="agent-node-dot" />
+      <span className="agent-avatar">
+        <Face />
+        <span className="agent-avatar-dot" />
+      </span>
       <span className="agent-node-text">
         <span className="agent-node-name">{task.agent}</span>
         {sub && <span className="agent-node-task">{sub}</span>}

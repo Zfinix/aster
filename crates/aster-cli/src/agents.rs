@@ -1,6 +1,6 @@
 //! Sub-agent fan-out: the `agent` tool dispatches cheap read-only collectors
 //! in parallel, then the model hands their raw reports to the expensive
-//! synthesizer.
+//! synthesis agent.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -11,6 +11,7 @@ use aster_agents::AgentRegistry;
 use aster_ai::AiClient;
 use aster_policy::{Grants, Policy};
 use futures_util::StreamExt;
+use serde_json::Value;
 
 use crate::chat::{SessionCtx, SubAgentOverrides, SwarmLimits};
 
@@ -80,11 +81,77 @@ pub(crate) struct AgentDeps {
     pub session_registry: Arc<AgentRegistry>,
 }
 
-/// Run a single sub-agent, returning its final text answer.
+/// Clip to a display line, cutting at a char boundary.
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut cut = max;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &s[..cut])
+}
+
+/// Collapse narration to one display line, or None if it was all whitespace.
+fn condense(text: &str) -> Option<String> {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.is_empty() {
+        None
+    } else {
+        Some(clip(&joined, 120))
+    }
+}
+
+/// "read_file src/chat.rs"-style line for a child tool call event.
+fn tool_line(ev: &Value) -> Option<String> {
+    let name = ev.get("name").and_then(Value::as_str)?;
+    let args: Value = ev
+        .get("arguments")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null);
+    let detail = ["path", "dir", "command", "query", "pattern", "file", "url"]
+        .iter()
+        .find_map(|k| args.get(k).and_then(Value::as_str));
+    Some(match detail {
+        Some(d) => clip(&format!("{name} {d}"), 120),
+        None => name.to_string(),
+    })
+}
+
+/// Translate a child's stream into activity lines: narration buffers until the
+/// next tool call, so each line is a finished thought or an action.
+fn activity_sink(tx: tokio::sync::mpsc::UnboundedSender<String>) -> crate::chat::ChatEventSink {
+    let narration = std::sync::Mutex::new(String::new());
+    Box::new(move |ev| {
+        match ev.get("type").and_then(Value::as_str).unwrap_or("") {
+            "token" | "text" => {
+                if let Some(content) = ev.get("content").and_then(Value::as_str) {
+                    narration.lock().unwrap().push_str(content);
+                }
+            }
+            "tool_call" => {
+                let buffered = std::mem::take(&mut *narration.lock().unwrap());
+                if let Some(line) = condense(&buffered) {
+                    let _ = tx.send(line);
+                }
+                if let Some(line) = tool_line(&ev) {
+                    let _ = tx.send(line);
+                }
+            }
+            _ => {}
+        };
+    })
+}
+
+/// Run a single sub-agent, returning its final text answer. Live activity
+/// lines go out through `activity` as the child works.
 async fn run_agent(
     def: &aster_agents::AgentDef,
     task: &str,
     deps: &AgentDeps,
+    activity: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> anyhow::Result<String> {
     let model = def
         .model
@@ -162,7 +229,7 @@ async fn run_agent(
         deps.grants.clone(),
         None,
         child_ctx,
-        Box::new(|_| {}),
+        activity_sink(activity),
     )
     .await?;
 
@@ -170,22 +237,25 @@ async fn run_agent(
 }
 
 /// Fan out a batch of tasks concurrently, bounded by `max_concurrent`.
-/// Preserves input order regardless of completion order. Calls `on_complete`
-/// once per finished task so the UI can render live progress; the parent emits
-/// the `running` events for the whole batch up front.
-pub(crate) async fn run_swarm<F>(
+/// Preserves input order regardless of completion order. Calls `on_activity`
+/// per live action and `on_complete` once per finished task so the UI can
+/// render live progress; the parent emits the `running` events up front.
+pub(crate) async fn run_swarm<A, F>(
     tasks: Vec<AgentTask>,
     registry: &AgentRegistry,
     deps: &AgentDeps,
+    on_activity: A,
     on_complete: F,
 ) -> Vec<TaskReport>
 where
+    A: Fn(&str, &str, String) + Send + Sync,
     F: Fn(AgentProgress) + Send + Sync,
 {
     let concurrency = deps.swarm.max_concurrent.max(1);
     let timeout = std::time::Duration::from_secs(deps.swarm.agent_timeout_secs);
     let total = tasks.len();
     let done = Arc::new(AtomicUsize::new(0));
+    let on_activity = Arc::new(on_activity);
     let on_complete = Arc::new(on_complete);
 
     let fut = futures_util::stream::iter(tasks.into_iter().enumerate())
@@ -193,6 +263,7 @@ where
             let deps = deps.clone();
             let registry = registry.clone();
             let done = done.clone();
+            let on_activity = on_activity.clone();
             let on_complete = on_complete.clone();
             async move {
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -229,8 +300,25 @@ where
                     }
                 };
 
-                let result =
-                    tokio::time::timeout(timeout, run_agent(&def, &task.task, &deps)).await;
+                // Forward activity lines while the run is in flight; the
+                // channel keeps the child's 'static sink free of borrows.
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                let result = tokio::time::timeout(timeout, async {
+                    let run = run_agent(&def, &task.task, &deps, tx);
+                    tokio::pin!(run);
+                    loop {
+                        tokio::select! {
+                            r = &mut run => {
+                                while let Ok(line) = rx.try_recv() {
+                                    on_activity(&task.agent, &task.task, line);
+                                }
+                                break r;
+                            }
+                            Some(line) = rx.recv() => on_activity(&task.agent, &task.task, line),
+                        }
+                    }
+                })
+                .await;
 
                 match result {
                     Ok(Ok(report)) => {

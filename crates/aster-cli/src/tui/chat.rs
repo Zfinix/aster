@@ -718,7 +718,7 @@ fn resume_or_new(
 }
 
 /// The swarm's clean text: one status line per agent, then the curated report
-/// from the synthesizer (or the last collector to finish).
+/// from the synthesis agent (or the last collector to finish).
 fn agent_report_text(rows: &[AgentRow]) -> String {
     let mut out = String::new();
     for row in rows {

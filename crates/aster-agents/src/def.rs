@@ -33,6 +33,8 @@ pub enum AgentSource {
 pub struct AgentDef {
     pub name: String,
     pub description: String,
+    /// Role grouping shown in the agent index, e.g. "recon" or "review".
+    pub category: Option<String>,
     pub model: Option<String>,
     /// Tool allowlist; `None` means [`DEFAULT_TOOLS`].
     pub tools: Option<Vec<String>>,
@@ -68,6 +70,8 @@ struct Frontmatter {
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     tools: Option<Vec<String>>,
@@ -101,6 +105,10 @@ pub(crate) fn parse_agent_md(raw: &str, dir_name: &str, source: AgentSource) -> 
     Ok(AgentDef {
         name,
         description,
+        category: front
+            .category
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| !c.is_empty()),
         model: front.model,
         tools: front.tools,
         max_rounds: front.max_rounds,
