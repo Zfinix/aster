@@ -1,0 +1,30 @@
+# Keep spending under control, and move to a bigger-memory model when the
+# conversation gets long instead of losing the start of it.
+mom: "0.1"
+name: cost-guard
+
+models:
+  everyday:
+    power: medium
+    uses-tools: true
+  thinker:
+    power: max
+    thinking: deep
+    prefer:
+      - anthropic/claude-opus-5
+  marathon:
+    power: medium
+    memory: vast
+    uses-tools: true
+
+start-with: everyday
+
+switch:
+  - when: planning
+    use: thinker
+  - when: { chat-full: 85 }
+    use: marathon
+  - when: [stuck, looping, model-down]
+    use: thinker
+  - when: { spent-over: 5 }
+    use: everyday

@@ -1,0 +1,34 @@
+# A realistic daily coding setup on open-weight models: a solid cheap
+# default, a heavyweight for planning and trouble, and a flash tier for
+# bulk work. Pins are wishes; the file still resolves if a pinned model
+# is unavailable.
+mom: "0.1"
+name: daily-driver
+
+models:
+  everyday:
+    power: medium
+    uses-tools: true
+    prefer:
+      - deepseek/deepseek-v4-pro
+  deep:
+    power: max
+    thinking: deep
+    prefer:
+      - zai/glm-5
+      - deepseek/deepseek-v4-pro
+  scout:                      # summaries, commit messages, bulk edits
+    power: low
+    prefer:
+      - zai/glm-5.3-flash
+      - deepseek/deepseek-v4-flash
+
+start-with: everyday
+
+switch:
+  - when: planning
+    use: deep
+  - when: [stuck, looping, model-down]
+    use: deep
+  - when: { spent-over: 5 }
+    use: scout

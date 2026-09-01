@@ -93,6 +93,7 @@ Type `/` for commands:
 
 | Command | What it does |
 | --- | --- |
+| `/switch` | Thinking, mode, effort, model and provider in one panel (also `ctrl+o`). |
 | `/model` | Switch model, or pick from what the provider serves. |
 | `/provider` | Switch to a different endpoint, then pick a model. |
 | `/mode` | Choose how freely the agent edits (also `shift+tab`). |
@@ -264,7 +265,7 @@ probability, so treat the number as a ranking signal rather than odds.
 | `aster serve` | Open the agent in your browser on this machine. |
 | `aster status` | What the next turn would run with: model, mode, limits, wiring. |
 | `aster remote` | Drive the agent from Telegram, approvals and all. |
-| `aster login` | Link GitHub for PRs, or ChatGPT with `login codex`. `aster logout` removes both. |
+| `aster login` | Link GitHub for PRs, or a provider account: `login codex`, `login openrouter`, `login zai`. `aster logout` removes them all. |
 | `aster upgrade` | Download the latest released binary and swap it in place. |
 
 `--json` works everywhere, before or after the subcommand. `--effort` sets the
@@ -421,6 +422,52 @@ aster mcp disable chrome    # turn it off, keep the config
 
 Tools are injected progressively, so a large server does not eat your context.
 See [docs/MCP.md](./docs/MCP.md).
+
+## Model switching with mom.yaml
+
+Drop a `mom.yaml` in your repo root (or `~/.aster/mom.yaml`) and Aster picks
+the model per turn instead of running one model all session. Entries describe
+what you want in plain words; rules say when to switch; the router judges
+everything the rules don't cover.
+
+```yaml
+mom: "0.1"
+models:
+  everyday:
+    description: "routine coding: small edits, tests, direct questions"
+    power: medium
+    prefer: [zai/glm-5.3-flash]
+  deep:
+    description: "hard work: planning, debugging, multi-file refactors"
+    power: max
+    thinking: deep
+    prefer: [zai/glm-5.3]
+
+start-with: everyday
+
+router:
+  enabled: true      # a cheap model reads each message and picks the entry
+  power: low
+  prefer: [zai/glm-5.3-flash]
+
+switch:
+  - when: planning
+    use: deep
+  - when: [stuck, looping, model-down]
+    use: deep
+```
+
+Rules always win; the router only fills the gaps, so a hard request escalates
+on its first turn instead of after something fails. Every switch shows in the
+chat as a `mom:` note, `/mom` shows the current state, and `aster mom check`
+validates the file and shows what each entry resolves to. Router decisions log
+to `~/.aster/logs/mom-router.jsonl`, switches to `~/.aster/logs/mom-switches.jsonl`.
+
+Picking a model yourself (`/model`) suspends the manifest; `/mom resume` puts
+it back in charge. The format is an open spec: [specs/mom.md](./specs/mom.md),
+with a JSON schema and starter files in [specs/mom-examples](./specs/mom-examples).
+The model catalog used for resolution ships inside the binary and refreshes
+with each release.
 
 ## Configuration
 

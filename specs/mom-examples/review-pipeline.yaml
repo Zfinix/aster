@@ -1,0 +1,32 @@
+# A code-review flow: a cheap model proposes findings, a strong one
+# verifies them. Shows a tool-specific x- condition and x- extension.
+mom: "0.1"
+name: review-pipeline
+
+models:
+  proposer:
+    power: low
+    settings: { temperature: 0 }
+    prefer:
+      - deepseek/deepseek-v4-flash
+  verifier:
+    power: max
+    thinking: deep
+    settings: { temperature: 0 }
+    prefer:
+      - anthropic/claude-sonnet-5
+  judge:
+    power: low
+    settings: { temperature: 0 }
+    x-mytool:
+      role: collector
+
+start-with: proposer
+
+switch:
+  - when: [stuck, looping]
+    use: verifier
+  - when: { x-mytool-stage: verify }
+    use: verifier
+  - when: { x-mytool-stage: judge }
+    use: judge

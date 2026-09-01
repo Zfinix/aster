@@ -1,0 +1,31 @@
+# Repo-local MoM test over OpenRouter.
+mom: "0.1"
+name: aster-mom
+
+models:
+  everyday:
+    description: "routine coding: small edits, tests, direct questions about the code"
+    power: medium
+    uses-tools: true
+    prefer:
+      - zai/glm-5.3-flash
+  deep:
+    description: "hard work: planning, debugging, multi-file refactors, open-ended design"
+    power: max
+    thinking: deep
+    prefer:
+      - zai/glm-5.3
+
+start-with: everyday
+
+router:
+  enabled: true
+  power: low
+  prefer:
+    - zai/glm-5.3-flash
+
+switch:
+  - when: planning
+    use: deep
+  - when: [stuck, looping, model-down]
+    use: deep

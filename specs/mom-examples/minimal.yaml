@@ -1,0 +1,15 @@
+# The smallest useful file: one everyday model, one smart one for trouble.
+mom: "0.1"
+
+models:
+  everyday:
+    power: medium
+  thinker:
+    power: max
+    thinking: deep
+
+start-with: everyday
+
+switch:
+  - when: stuck
+    use: thinker
