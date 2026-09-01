@@ -1,7 +1,6 @@
-//! Wire-format translation between Aster's OpenAI `/chat/completions` shapes
-//! and the Codex backend's Responses API. The rest of the crate keeps speaking
-//! chat completions; this module is the only place that knows the other
-//! dialect. Auth lives in [`crate::codex`].
+//! Wire-format translation between Aster's OpenAI `/chat/completions` shapes and
+//! the Codex backend's Responses API. The only place that knows the other dialect;
+//! auth lives in [`crate::codex`].
 
 use serde_json::{Value, json};
 
@@ -17,7 +16,6 @@ pub fn is_codex(base_url: &str) -> bool {
     host == "chatgpt.com"
 }
 
-/// The URL to POST a translated request to.
 pub fn endpoint(base_url: &str) -> String {
     format!("{}/responses", base_url.trim_end_matches('/'))
 }

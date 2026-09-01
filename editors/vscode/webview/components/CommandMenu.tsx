@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useDismiss } from "../lib/dismiss";
+import { ChoiceSlider } from "./ChoiceSlider";
 
-/** One choice in an inline segmented control, e.g. an effort level. */
+/** One step of an inline dial, e.g. an effort level. */
 export interface MenuOption {
   value: string;
   label: string;
@@ -173,23 +174,12 @@ export function CommandMenu({
                 >
                   <span className="cmd-icon">{item.icon}</span>
                   <span className="cmd-label">{item.label}</span>
-                  <span className="cmd-options">
-                    {item.options.map((option) => (
-                      <button
-                        key={option.value}
-                        className="cmd-option"
-                        data-selected={option.value === item.value}
-                        // Mousedown, not click: the box being typed into must
-                        // keep focus so the arrow keys still drive the list.
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          item.onSelect(option.value);
-                        }}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </span>
+                  <ChoiceSlider
+                    label={item.label}
+                    options={item.options}
+                    value={item.value}
+                    onSelect={item.onSelect}
+                  />
                 </div>
               ) : (
                 <div

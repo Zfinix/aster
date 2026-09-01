@@ -90,6 +90,31 @@ export async function providers(cwd: string, env?: NodeJS.ProcessEnv): Promise<P
   return parsed.providers ?? [];
 }
 
+/** Point every surface at an endpoint: written to aster.yaml via the CLI, the
+ *  file the terminal, desktop, and this panel all read. */
+export async function useProvider(cwd: string, baseUrl: string, model?: string): Promise<void> {
+  const args = ["provider", "use", baseUrl];
+  if (model) args.push("--model", model);
+  await json(args, cwd);
+}
+
+/** Save the model where every surface reads it. */
+export async function useModel(cwd: string, model: string): Promise<void> {
+  await json(["model", "use", model], cwd);
+}
+
+/** The model the next turn resolves to, from the same config the CLI reads. */
+export async function currentModel(cwd: string): Promise<string | null> {
+  const parsed = await json<{ model?: string }>(["config", "model"], cwd);
+  return parsed.model ?? null;
+}
+
+/** Whether any var that could hold the current endpoint's key is set. */
+export async function hasKey(cwd: string): Promise<boolean> {
+  const parsed = await json<{ vars?: { var: string; source: string }[] }>(["config", "key"], cwd);
+  return (parsed.vars ?? []).some((v) => v.source !== "unset");
+}
+
 /** The endpoint's catalog. A provider that will not answer is not fatal: the
  *  picker still switched, and a model can be typed by hand. */
 export async function modelsFor(

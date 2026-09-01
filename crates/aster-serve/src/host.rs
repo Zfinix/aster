@@ -88,6 +88,10 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
         }
         "setModel" => {
             if let Some(model) = message["model"].as_str().filter(|m| !m.is_empty()) {
+                // Saved to aster.yaml, so the terminal and the browser agree.
+                if let Err(error) = state.cli.json(&["model", "use", model]).await {
+                    tracing::warn!(model, error, "could not save the model to the config");
+                }
                 let vetted = recommended(state).await;
                 let vetted: Vec<&str> = vetted.iter().map(String::as_str).collect();
                 let mut settings = state.settings.lock().await;
@@ -154,26 +158,15 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             outcome?;
         }
         "listProviders" => {
-            let provider = state.settings.lock().await.provider.clone();
             state.post(json!({
                 "type": "providers",
-                "providers": info::providers(&state.cli, provider.as_ref()).await,
+                "providers": info::providers(&state.cli).await,
             }));
         }
         "setProvider" => switch_provider(state, message).await?,
         "compact" => {
-            let (model, provider) = {
-                let settings = state.settings.lock().await;
-                (settings.model.clone(), settings.provider.clone())
-            };
-            match info::compact(
-                &state.cli,
-                &message["messages"],
-                model.as_deref(),
-                provider.as_ref(),
-            )
-            .await
-            {
+            let model = message["model"].as_str().filter(|m| !m.is_empty());
+            match info::compact(&state.cli, &message["messages"], model).await {
                 Ok(result) => state.post(json!({
                     "type": "compacted",
                     "id": id(),
@@ -244,12 +237,19 @@ async fn init(state: &Arc<AppState>) -> Value {
     let recommended = recommended(state).await;
     // The vetted shortlist, plus anything typed by hand; `fetchModels` fills in
     // the endpoint's own catalog when the picker asks.
+    // The model in use comes from the config, the same file the CLI reads.
+    let model = state
+        .cli
+        .json(&["config", "model"])
+        .await
+        .ok()
+        .and_then(|read| read["model"].as_str().map(str::to_owned));
     let mut models = recommended.clone();
     for model in settings
         .custom_models
         .iter()
         .chain(settings.recent_models.iter())
-        .chain(settings.model.iter())
+        .chain(model.iter())
     {
         if !models.contains(model) {
             models.push(model.clone());
@@ -260,11 +260,11 @@ async fn init(state: &Arc<AppState>) -> Value {
         "workspaceRoot": root.display().to_string(),
         "repoName": root.file_name().map(|name| name.to_string_lossy().into_owned()),
         "branch": info::branch(&root).await,
-        "model": settings.model,
+        "model": model,
         "models": models,
         "recommended": recommended,
         "recent": settings.recent_models,
-        "contextBudget": info::context_budget(&state.cli, settings.provider.as_ref()).await,
+        "contextBudget": info::context_budget(&state.cli).await,
         "permissionMode": settings.permission_mode,
         "effort": settings.effort,
         // The server is the binary, so there is nothing to go missing.
@@ -276,10 +276,9 @@ async fn init(state: &Arc<AppState>) -> Value {
 /// The endpoint's shortlist from the shipped catalog, so the browser's picker
 /// and the CLI's cannot disagree about what is recommended.
 async fn recommended(state: &Arc<AppState>) -> Vec<String> {
-    let provider = state.settings.lock().await.provider.clone();
     state
         .cli
-        .json(&["model", "recommended"], provider.as_ref())
+        .json(&["model", "recommended"])
         .await
         .ok()
         .and_then(|models| serde_json::from_value(models).ok())
@@ -289,11 +288,7 @@ async fn recommended(state: &Arc<AppState>) -> Vec<String> {
 /// Not every endpoint implements `/models`, so the failure is reported rather
 /// than swallowed: the picker says so and offers to take an id.
 async fn models(state: &Arc<AppState>) -> Value {
-    let provider = state.settings.lock().await.provider.clone();
-    let out = state
-        .cli
-        .run(&["models", "--json"], None, provider.as_ref())
-        .await;
+    let out = state.cli.run(&["models", "--json"], None).await;
     let Ok(out) = out else {
         return json!({ "type": "modelsLoaded", "models": [], "error": "could not run aster" });
     };
@@ -317,9 +312,8 @@ async fn models(state: &Arc<AppState>) -> Value {
 
 /// `/status`, `/memory` and `/diff`, each answered as one card in the thread.
 async fn card(state: &Arc<AppState>, id: &str, topic: &str) -> Value {
-    let provider = state.settings.lock().await.provider.clone();
     let answer = match topic {
-        "status" => info::status(&state.cli, provider.as_ref())
+        "status" => info::status(&state.cli)
             .await
             .map(|rows| json!({ "title": "Status", "rows": rows })),
         "memory" => info::memory_rows(&state.cli).await.map(|rows| {
@@ -353,36 +347,26 @@ async fn card(state: &Arc<AppState>, id: &str, topic: &str) -> Value {
     }
 }
 
-/// Repoint the endpoint for this server's runs, then adopt one of its models.
+/// Repoint the endpoint and adopt one of its models, saved to aster.yaml so
+/// the terminal and the browser agree on what runs next.
 async fn switch_provider(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
     let base_url = message["baseUrl"].as_str().unwrap_or_default().to_string();
     let model = message["model"].as_str().unwrap_or_default().to_string();
-    let current = state.settings.lock().await.provider.clone();
-    let catalog = info::providers(&state.cli, current.as_ref()).await;
-    let chosen = catalog
+
+    let mut args = vec!["provider", "use", base_url.as_str()];
+    if !model.is_empty() {
+        args.extend(["--model", model.as_str()]);
+    }
+    state.cli.json(&args).await?;
+
+    let catalog = info::providers(&state.cli).await;
+    let name = catalog
         .as_array()
         .and_then(|catalog| catalog.iter().find(|p| p["base_url"] == json!(base_url)))
-        .cloned();
-
-    let override_ = crate::settings::ProviderOverride {
-        base_url: base_url.clone(),
-        key_env: chosen
-            .as_ref()
-            .and_then(|p| serde_json::from_value(p["key_env"].clone()).ok())
-            .unwrap_or_default(),
-    };
-    let models = info::models_for(&state.cli, &model, Some(&override_)).await;
-    let name = chosen
-        .as_ref()
         .and_then(|p| p["name"].as_str())
         .unwrap_or(&base_url)
         .to_string();
-
-    let mut settings = state.settings.lock().await;
-    settings.provider = Some(override_);
-    settings.model = Some(model.clone());
-    settings.save();
-    drop(settings);
+    let models = info::models_for(&state.cli, &model).await;
 
     state.post(json!({
         "type": "providerChanged", "provider": name, "model": model, "models": models,
@@ -406,7 +390,6 @@ async fn fix(state: &Arc<AppState>, findings: &Value) -> Vec<Value> {
         .run(
             &["fix", "--findings-json", "-", "--apply", "--json"],
             Some(&findings.to_string()),
-            None,
         )
         .await;
     match out {

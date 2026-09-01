@@ -23,7 +23,6 @@ pub const SHARED_KEY_VAR: &str = "ASTER_API_KEY";
 pub enum KeySource {
     /// A var named for this endpoint, e.g. `ANTHROPIC_API_KEY`.
     Provider,
-    /// The shared [`SHARED_KEY_VAR`].
     Shared,
 }
 
@@ -51,6 +50,8 @@ struct Catalog {
 
 #[derive(Deserialize)]
 struct CatalogEntry {
+    #[serde(default)]
+    name: String,
     base_url: String,
     /// Absent for servers that take no key, e.g. Ollama.
     #[serde(default)]
@@ -120,6 +121,28 @@ fn literal_segments(host: &str) -> Vec<String> {
     segments
 }
 
+/// Every var the catalog names, as `(provider name, var)`, first spelling
+/// wins. For surfaces that list keys rather than resolve one endpoint's.
+pub fn catalog_key_vars() -> &'static [(&'static str, &'static str)] {
+    static VARS: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+    VARS.get_or_init(|| {
+        let Ok(catalog) = serde_json::from_str::<Catalog>(PROVIDERS_JSON) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+        for entry in catalog.providers {
+            let name: &'static str = Box::leak(entry.name.into_boxed_str());
+            for var in entry.key_env {
+                if out.iter().any(|(_, known)| *known == var) {
+                    continue;
+                }
+                out.push((name, Box::leak(var.into_boxed_str())));
+            }
+        }
+        out
+    })
+}
+
 /// The key held by `base_url`'s own var, when one is set.
 pub fn provider_key(base_url: &str) -> Option<String> {
     provider_key_vars(base_url)
@@ -129,14 +152,76 @@ pub fn provider_key(base_url: &str) -> Option<String> {
 }
 
 /// The key for `base_url`: the endpoint's own var first, then the shared one.
-/// The specific var wins so a saved provider switch picks up a key that is
-/// already exported. Only the shared var crosses endpoints: a var named for one
-/// vendor is never offered to another, which would fail as a bare 401.
+/// Only the shared var crosses endpoints; a var named for one vendor is never
+/// offered to another, which would fail as a bare 401.
 pub fn resolve_key(base_url: &str) -> Option<(String, KeySource)> {
+    // The Codex backend takes only the ChatGPT subscription login; an API key
+    // sent there fails as an unexplained 401, so the shared var never crosses.
+    if crate::codex_api::is_codex(base_url) {
+        let home = crate::home_dir().ok()?;
+        crate::codex::load(&home)?;
+        return Some(("chatgpt-subscription".to_string(), KeySource::Provider));
+    }
     match provider_key(base_url) {
         Some(key) => Some((key, KeySource::Provider)),
         None => Some((env_non_empty(SHARED_KEY_VAR)?, KeySource::Shared)),
     }
+}
+
+/// One catalog row's model shortlist, resolved once: `recommended`, else the
+/// example model.
+struct ModelRow {
+    base_url: String,
+    models: Vec<String>,
+}
+
+fn model_rows() -> &'static [ModelRow] {
+    static ROWS: OnceLock<Vec<ModelRow>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        #[derive(Deserialize)]
+        struct Row {
+            base_url: String,
+            #[serde(default)]
+            example_model: String,
+            #[serde(default)]
+            recommended: Vec<String>,
+        }
+        #[derive(Deserialize)]
+        struct Rows {
+            providers: Vec<Row>,
+        }
+        let Ok(catalog) = serde_json::from_str::<Rows>(PROVIDERS_JSON) else {
+            return Vec::new();
+        };
+        catalog
+            .providers
+            .into_iter()
+            .map(|row| ModelRow {
+                base_url: row.base_url.trim_end_matches('/').to_string(),
+                models: match (row.recommended.is_empty(), row.example_model.is_empty()) {
+                    (false, _) => row.recommended,
+                    (true, false) => vec![row.example_model],
+                    (true, true) => Vec::new(),
+                },
+            })
+            .collect()
+    })
+}
+
+/// The catalog's shortlist for `base_url`: the exact endpoint's row first, then
+/// the host's, so endpoints sharing a host keep their own list. Empty
+/// off-catalog, which reads as "ask the endpoint".
+pub fn catalog_models(base_url: &str) -> Vec<String> {
+    let want = base_url.trim_end_matches('/');
+    let rows = model_rows();
+    rows.iter()
+        .find(|row| row.base_url == want)
+        .or_else(|| {
+            let host = host_only(want);
+            rows.iter().find(|row| host_only(&row.base_url) == host)
+        })
+        .map(|row| row.models.clone())
+        .unwrap_or_default()
 }
 
 /// Every var a key for `base_url` could come from, most specific first, for an

@@ -29,11 +29,10 @@ struct StartupInfo {
     bin_path: Option<String>,
 }
 
-/// Persisted provider settings, injected as env (`ASTER_API_KEY` / `ASTER_BASE_URL`
-/// / `ASTER_MODEL`) when spawning the CLI, since a launched app can't see a repo
-/// `.env`.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Provider {
+/// The old `desktop.json` shape, kept only to migrate it into the CLI's own
+/// config (`~/.aster/aster.yaml` + `~/.aster/.env`), the one every surface reads.
+#[derive(Debug, Default, Deserialize)]
+struct LegacyProvider {
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
@@ -53,68 +52,98 @@ fn provider_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("aster").join("desktop.json"))
 }
 
-fn load_provider() -> Provider {
-    provider_path()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
-fn write_provider(p: &Provider) -> Result<(), String> {
-    let path = provider_path().ok_or("no config directory on this platform")?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(p).map_err(|e| e.to_string())?;
-    // Mirror the CLI's 0600 write so the key is never world-readable.
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-        f.write_all(&bytes).map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Inject the persisted provider settings as env, never clobbering a var the
-/// process already has (a repo `.env` / shell export still wins).
-/// `model_override` (the composer's model pill) wins over the stored default.
+/// Per-run overrides from the UI (the composer's model pill, a review's key
+/// field). The provider itself lives in the CLI's own config files, so
+/// nothing else is injected.
 fn inject_provider_env(
     cmd: &mut Command,
     model_override: Option<String>,
     api_key_override: Option<String>,
 ) {
-    let provider = load_provider();
-    if std::env::var("ASTER_API_KEY").is_err() {
-        if let Some(key) = provider.api_key.filter(|k| !k.trim().is_empty()) {
-            cmd.env("ASTER_API_KEY", key);
-        }
-    }
-    if std::env::var("ASTER_BASE_URL").is_err() {
-        if let Some(url) = provider.base_url.filter(|u| !u.trim().is_empty()) {
-            cmd.env("ASTER_BASE_URL", url);
-        }
-    }
-    let model = model_override
-        .filter(|m| !m.trim().is_empty())
-        .or(provider.model.filter(|m| !m.trim().is_empty()));
-    if let Some(model) = model {
+    if let Some(model) = model_override.filter(|m| !m.trim().is_empty()) {
         cmd.env("ASTER_MODEL", model);
     }
     if let Some(key) = api_key_override.filter(|k| !k.is_empty()) {
         cmd.env("ASTER_API_KEY", key);
     }
+}
+
+/// Run `aster <args> --json` and parse the reply: the same bridge the editors
+/// use, so config reads and writes land in the files every surface shares.
+async fn cli_json(args: &[&str]) -> Result<serde_json::Value, String> {
+    let mut cmd = Command::new(resolve_bin());
+    cmd.args(args).arg("--json");
+    cmd.env("PATH", augmented_path());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| format!("could not launch aster: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|_| {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        match err.is_empty() {
+            true => format!("aster {} failed", args.join(" ")),
+            false => err,
+        }
+    })?;
+    if parsed.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        return Err(parsed
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("aster failed")
+            .to_string());
+    }
+    Ok(parsed)
+}
+
+/// One-shot: fold an old `desktop.json` into the CLI's config, then park the
+/// file so this app and the terminal can never disagree again.
+async fn migrate_desktop_json() {
+    let Some(path) = provider_path() else { return };
+    if !path.is_file() {
+        return;
+    }
+    let legacy: LegacyProvider = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let base_url = legacy.base_url.filter(|u| !u.trim().is_empty());
+    let model = legacy.model.filter(|m| !m.trim().is_empty());
+    match (&base_url, &model) {
+        (Some(url), Some(model)) => {
+            let _ = cli_json(&["provider", "use", url, "--model", model]).await;
+        }
+        (Some(url), None) => {
+            let _ = cli_json(&["provider", "use", url]).await;
+        }
+        (None, Some(model)) => {
+            let _ = cli_json(&["model", "use", model]).await;
+        }
+        (None, None) => {}
+    }
+    if let Some(key) = legacy.api_key.filter(|k| !k.trim().is_empty()) {
+        let var = key_var_in_use().await;
+        let _ = cli_json(&["key", "set", &var, key.trim()]).await;
+    }
+    let _ = std::fs::rename(&path, path.with_extension("json.migrated"));
+}
+
+/// The var a key for the endpoint in use belongs in, most specific first, so a
+/// stored key survives switching away and back.
+async fn key_var_in_use() -> String {
+    cli_json(&["config", "key"])
+        .await
+        .ok()
+        .and_then(|status| {
+            status["vars"]
+                .as_array()?
+                .first()?
+                .get("var")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "ASTER_API_KEY".to_string())
 }
 
 /// The CLI's provider errors are shell-oriented; append the app's own remedy.
@@ -480,115 +509,75 @@ async fn memory_add(text: String, title: Option<String>) -> Result<serde_json::V
     run_aster_json(&refs, None, None, Vec::new()).await
 }
 
-/// The shared catalog, the same file `aster_ai::keys` reads. Parsed here rather
-/// than imported because the desktop shell is a standalone workspace, kept that
-/// way so it never perturbs the library crates or their lockfile.
-const PROVIDERS_JSON: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.json"));
-
-#[derive(serde::Deserialize)]
-struct KeyCatalog {
-    providers: Vec<KeyCatalogEntry>,
-}
-
-#[derive(serde::Deserialize)]
-struct KeyCatalogEntry {
-    base_url: String,
-    #[serde(default)]
-    key_env: Vec<String>,
-}
-
-fn host_only(url: &str) -> &str {
-    url.split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(url)
-        .split('/')
-        .next()
-        .unwrap_or(url)
-}
-
-/// Mirrors `aster_ai::keys::provider_key_vars`, off the same catalog, so an
-/// endpoint's key lives in the same var whichever surface stored it.
-fn provider_key_vars(base_url: &str) -> &'static [&'static str] {
-    static TABLE: std::sync::OnceLock<Vec<(Vec<String>, &'static [&'static str])>> =
-        std::sync::OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let Ok(catalog) = serde_json::from_str::<KeyCatalog>(PROVIDERS_JSON) else {
-            return Vec::new();
-        };
-        catalog
-            .providers
-            .into_iter()
-            .filter(|entry| !entry.key_env.is_empty())
-            .filter_map(|entry| {
-                let vars: &'static [&'static str] = Box::leak(
-                    entry
-                        .key_env
-                        .into_iter()
-                        .map(|var| &*Box::leak(var.into_boxed_str()))
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
-                );
-                let host = host_only(entry.base_url.trim_end_matches('/'));
-                let segments: Vec<String> = host
-                    .split(|c| c == '{' || c == '}')
-                    .enumerate()
-                    .filter(|(i, part)| i % 2 == 0 && !part.is_empty())
-                    .map(|(_, part)| part.to_string())
-                    .collect();
-                (!segments.is_empty()).then_some((segments, vars))
-            })
-            .collect()
-    });
-    let host = host_only(base_url.trim_end_matches('/'));
-    // An exact host wins, so the plainer of two overlapping hosts cannot
-    // swallow the more specific one.
-    table
-        .iter()
-        .find(|(segments, _)| segments.len() == 1 && segments[0] == host)
-        .or_else(|| {
-            table
-                .iter()
-                .find(|(segments, _)| segments.iter().all(|s| host.contains(s.as_str())))
-        })
-        .map(|(_, vars)| *vars)
-        .unwrap_or(&[])
-}
-
 #[tauri::command]
-fn auth_status() -> AuthStatus {
-    let p = load_provider();
+async fn auth_status() -> Result<AuthStatus, String> {
+    let provider = cli_json(&["config", "provider"]).await?;
     // A key named for another vendor is not a key for this endpoint, so only
-    // this endpoint's var and the shared one count as configured.
-    let env_key = provider_key_vars(p.base_url.as_deref().unwrap_or_default())
-        .iter()
-        .copied()
-        .chain(["ASTER_API_KEY"])
-        .any(|var| std::env::var(var).is_ok_and(|v| !v.trim().is_empty()));
-    AuthStatus {
-        has_key: env_key || p.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()),
-        base_url: p.base_url,
-        model: p.model,
-    }
+    // this endpoint's vars and the shared one count as configured.
+    let key = cli_json(&["config", "key"]).await?;
+    let has_key = key["vars"]
+        .as_array()
+        .map(|vars| {
+            vars.iter()
+                .any(|v| v["source"].as_str().is_some_and(|s| s != "unset"))
+        })
+        .unwrap_or(false);
+    Ok(AuthStatus {
+        has_key,
+        base_url: provider["base_url"].as_str().map(str::to_string),
+        model: provider["model"].as_str().map(str::to_string),
+    })
 }
 
 #[tauri::command]
-fn save_provider(
+async fn save_provider(
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
 ) -> Result<(), String> {
-    let mut p = load_provider();
+    let base_url = base_url
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let model = model
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match (&base_url, &model) {
+        (Some(url), Some(model)) => {
+            cli_json(&["provider", "use", url, "--model", model]).await?;
+        }
+        (Some(url), None) => {
+            cli_json(&["provider", "use", url]).await?;
+        }
+        (None, Some(model)) => {
+            cli_json(&["model", "use", model]).await?;
+        }
+        (None, None) => {}
+    }
     // An omitted / empty key leaves the stored one untouched; explicit clears
     // are handled by passing a single space, which we treat as "remove".
     match api_key.as_deref() {
-        Some(" ") => p.api_key = None,
-        Some(k) if !k.trim().is_empty() => p.api_key = Some(k.trim().to_string()),
+        Some(" ") => {
+            let var = key_var_in_use().await;
+            cli_json(&["key", "unset", &var]).await?;
+        }
+        Some(k) if !k.trim().is_empty() => {
+            let var = key_var_in_use().await;
+            cli_json(&["key", "set", &var, k.trim()]).await?;
+        }
         _ => {}
     }
-    p.base_url = base_url.filter(|s| !s.trim().is_empty());
-    p.model = model.filter(|s| !s.trim().is_empty());
-    write_provider(&p)
+    Ok(())
+}
+
+/// The composer's model pill writes through the CLI, so the terminal, the
+/// editors, and this app all resolve the same model afterwards.
+#[tauri::command]
+async fn set_model(model: String) -> Result<(), String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Ok(());
+    }
+    cli_json(&["model", "use", &model]).await.map(|_| ())
 }
 
 /// `ASTER_BIN` always wins. A dev build runs the workspace CLI (never the sidecar,
@@ -868,6 +857,10 @@ pub fn run() {
     }
 
     builder
+        .setup(|_app| {
+            tauri::async_runtime::spawn(migrate_desktop_json());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             startup_info,
             pick_repo,
@@ -875,6 +868,7 @@ pub fn run() {
             run_review,
             auth_status,
             save_provider,
+            set_model,
             chat,
             answer_approval,
             cancel_chat,

@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// The definition file every agent directory must contain.
 pub const AGENT_FILE: &str = "AGENT.md";
 
 /// Tools an agent may call when its frontmatter names no allowlist: read-only.
@@ -28,7 +27,6 @@ pub enum AgentSource {
     File(PathBuf),
 }
 
-/// One agent definition: frontmatter metadata plus access to the prompt body.
 #[derive(Debug, Clone)]
 pub struct AgentDef {
     pub name: String,
@@ -55,7 +53,6 @@ impl AgentDef {
         Ok(strip_frontmatter(&raw).trim().to_string())
     }
 
-    /// True when the definition is compiled in rather than user-provided.
     pub fn is_builtin(&self) -> bool {
         matches!(self.source, AgentSource::BuiltIn(_))
     }
@@ -117,10 +114,8 @@ pub(crate) fn parse_agent_md(raw: &str, dir_name: &str, source: AgentSource) -> 
     })
 }
 
-/// Split `raw` into `(frontmatter_yaml, body)` when the file opens with a
-/// `---` fence.  The closing fence must be `\n---` at the start of a line,
-/// followed by a newline or EOF.  The body strips exactly one leading newline
-/// after the closing fence.  Returns `None` when the opening fence is missing.
+/// Split `raw` into `(frontmatter_yaml, body)` when the file opens with a `---`
+/// fence, closed by `\n---`. `None` when the opening fence is missing.
 fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
     let rest = raw
         .strip_prefix("---\n")
@@ -151,7 +146,6 @@ fn strip_frontmatter(raw: &str) -> &str {
     }
 }
 
-/// Structural checks on `name`: kebab-case identity, bounded length.
 fn validate_name(name: &str) -> Result<()> {
     if name.len() > MAX_NAME_LEN {
         bail!("`name` exceeds {MAX_NAME_LEN} characters");

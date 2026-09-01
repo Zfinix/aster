@@ -1,9 +1,6 @@
-//! Transcript cells.
-//!
-//! Every cell renders to a finished block of lines, already wrapped to the
-//! terminal width, that the chat loop pushes into the terminal's own scrollback
-//! and never touches again. That is what gives the transcript native scrolling,
-//! selection and copy, and it is why nothing here needs mutable state.
+//! Transcript cells. Every cell renders to a finished block of lines, already
+//! wrapped, that the chat loop pushes into the terminal's own scrollback and never
+//! touches again. That is what gives native scrolling, selection, and copy.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

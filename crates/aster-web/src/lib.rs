@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 //! Web tools for Aster: crawl, extract, search, sitemap, and screenshot across
-//! pluggable providers. [`WebBackend::from_env`] holds every provider whose key
-//! is set and dispatches to the best one; [`register_tools`] is the catalog
-//! agents discover.
+//! pluggable providers. [`WebBackend::from_env`] holds every provider whose key is
+//! set and dispatches to the best; [`register_tools`] is the catalog agents see.
 
 mod browserbase;
 mod cloudflare_br;
@@ -24,7 +23,7 @@ use aster_mcp::McpTool;
 use async_trait::async_trait;
 use serde_json::Value;
 
-pub use config::WebConfig;
+pub use config::{KEY_VARS, WebConfig};
 pub use serve::serve;
 pub use types::{
     CrawlOptions, CrawlResult, ExtractedPage, PageMetadata, Screenshot, SearchOptions,
@@ -52,12 +51,14 @@ pub struct WebBackend {
     /// Real-time ranked search; follows Exa for `search`.
     perplexity: Option<perplexity::PerplexityClient>,
     context_dev: Option<context_dev::ContextDevClient>,
-    firecrawl: Option<firecrawl::FirecrawlClient>,
+    /// Always present: Firecrawl's keyless tier serves scrape and search
+    /// without a key, so only `crawl` and the keyed dispatch rank need one.
+    firecrawl: firecrawl::FirecrawlClient,
     browserbase: Option<browserbase::BrowserbaseClient>,
     cloudflare: Option<cloudflare_br::CloudflareBrClient>,
     jina: jina::JinaClient,
-    /// Keyless, and the only provider that can search without one. Shared
-    /// because it carries a per-process rate limiter that must not be cloned.
+    /// Keyless fallback for search. Shared because it carries a per-process
+    /// rate limiter that must not be cloned.
     duckduckgo: std::sync::Arc<duckduckgo::DuckDuckGoClient>,
     plain_http: plain_http::PlainHttpClient,
 }
@@ -75,9 +76,7 @@ impl WebBackend {
             context_dev: config
                 .resolve_context_dev_key()
                 .map(|k| context_dev::ContextDevClient::new(k, timeout_ms)),
-            firecrawl: config
-                .resolve_firecrawl_key()
-                .map(|k| firecrawl::FirecrawlClient::new(k, timeout_ms)),
+            firecrawl: firecrawl::FirecrawlClient::new(config.resolve_firecrawl_key(), timeout_ms),
             browserbase: config
                 .resolve_browserbase_key()
                 .map(|k| browserbase::BrowserbaseClient::new(k, timeout_ms)),
@@ -90,12 +89,11 @@ impl WebBackend {
         }
     }
 
-    /// True when at least one API-backed provider is configured.
     pub fn is_api_backed(&self) -> bool {
         self.exa.is_some()
             || self.perplexity.is_some()
             || self.context_dev.is_some()
-            || self.firecrawl.is_some()
+            || self.firecrawl.is_keyed()
             || self.browserbase.is_some()
             || self.cloudflare.is_some()
     }
@@ -104,8 +102,8 @@ impl WebBackend {
         if let Some(ref c) = self.context_dev {
             return c.extract(url).await;
         }
-        if let Some(ref c) = self.firecrawl {
-            return c.extract(url).await;
+        if self.firecrawl.is_keyed() {
+            return self.firecrawl.extract(url).await;
         }
         if let Some(ref c) = self.cloudflare {
             return c.extract(url).await;
@@ -115,6 +113,11 @@ impl WebBackend {
         }
         if let Some(ref c) = self.exa {
             return c.extract(url).await;
+        }
+        // Keyless Firecrawl is rate-limited per IP, so a refusal falls through
+        // to the other keyless providers rather than failing the call.
+        if let Ok(page) = self.firecrawl.extract(url).await {
+            return Ok(page);
         }
         if let Ok(page) = self.jina.extract(url).await {
             return Ok(page);
@@ -129,8 +132,8 @@ impl WebBackend {
         if let Some(ref c) = self.context_dev {
             return c.crawl(url, opts).await;
         }
-        if let Some(ref c) = self.firecrawl {
-            return c.crawl(url, opts).await;
+        if self.firecrawl.is_keyed() {
+            return self.firecrawl.crawl(url, opts).await;
         }
         if let Some(ref c) = self.cloudflare {
             return c.crawl(url, opts).await;
@@ -154,11 +157,14 @@ impl WebBackend {
         if let Some(ref c) = self.context_dev {
             return c.search(query, opts.limit).await;
         }
-        if let Some(ref c) = self.firecrawl {
-            return c.search(query, opts.limit).await;
+        if self.firecrawl.is_keyed() {
+            return self.firecrawl.search(query, opts.limit).await;
         }
         if let Some(ref c) = self.browserbase {
             return c.search(query, opts.limit).await;
+        }
+        if let Ok(hits) = self.firecrawl.search(query, opts.limit).await {
+            return Ok(hits);
         }
         self.duckduckgo.search(query, opts).await
     }
@@ -252,7 +258,7 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
         candidates.push(context_dev::sitemap_tool());
         candidates.push(context_dev::screenshot_tool());
     }
-    if backend.firecrawl.is_some() {
+    if backend.firecrawl.is_keyed() {
         candidates.push(firecrawl::scrape_tool());
         candidates.push(firecrawl::crawl_tool());
         candidates.push(firecrawl::search_tool());
@@ -268,10 +274,16 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     if backend.exa.is_some() {
         candidates.push(exa::extract_tool());
     }
+    // Firecrawl's keyless tier needs no key and covers scrape and search, so it
+    // leads the keyless providers. It cannot crawl, which stays keyed-only.
+    if !backend.firecrawl.is_keyed() {
+        candidates.push(firecrawl::scrape_tool());
+        candidates.push(firecrawl::search_tool());
+    }
     // Jina needs no key; always available as the default extract provider.
     candidates.push(jina::extract_tool());
-    // DuckDuckGo needs no key either, and is the only provider that can search
-    // without one, so `search` is on offer even on a fresh install.
+    // DuckDuckGo needs no key either, and backs `search` when keyless Firecrawl
+    // is rate-limited.
     candidates.push(duckduckgo::search_tool());
     candidates.push(duckduckgo::extract_tool());
     // Plain HTTP needs no key, so `extract` is always on offer.

@@ -14,7 +14,6 @@ const MIN_EVICT_CHARS: usize = 1_000;
 /// at four characters each, near what most providers bill an image at.
 const IMAGE_CHARS: usize = 6_000;
 
-/// One message stubbed out to fit the budget.
 pub(crate) struct Eviction {
     pub reason: &'static str,
     pub role: &'static str,

@@ -107,6 +107,22 @@
       "notes": "1M context via glm-5.2[1m] suffix. Anthropic surface at https://api.z.ai/api/anthropic"
     },
     {
+      "id": "zai_coding",
+      "name": "Z.ai (GLM Coding Plan)",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "example_model": "glm-5.3",
+      "recommended": [
+        "glm-5.3",
+        "glm-5.2"
+      ],
+      "key_env": [
+        "ZAI_API_KEY",
+        "ZHIPUAI_API_KEY"
+      ],
+      "auth": "Bearer",
+      "notes": "Coding Plan quota only. `aster login zai` signs in and stores the token. Anthropic surface at https://api.z.ai/api/anthropic"
+    },
+    {
       "id": "dashscope",
       "name": "Alibaba DashScope (Qwen)",
       "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",

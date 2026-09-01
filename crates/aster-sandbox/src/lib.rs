@@ -1,14 +1,7 @@
 #![forbid(unsafe_code)]
-//! OS-native sandboxing for running untrusted commands safely.
-//!
-//! On macOS, uses `sandbox-exec` (Seatbelt) to restrict filesystem writes to
-//! granted directories and block network access. On Linux, uses `bwrap`
-//! (bubblewrap) when available. On other platforms, degrades to a
-//! process-level sandbox: filtered environment, cwd set, timeout, and no
-//! network isolation — with a warning logged.
-//!
-//! The sandbox is a boundary, not a guarantee. The caller must still evaluate
-//! policy and approval before running a command.
+//! OS-native sandboxing for running untrusted commands. `sandbox-exec` (Seatbelt)
+//! on macOS, `bwrap` on Linux, elsewhere a process-level fallback with no network
+//! isolation. A boundary, not a guarantee: policy and approval come first.
 
 mod profile;
 mod runner;
@@ -16,7 +9,6 @@ mod runner;
 pub use profile::{SandboxProfile, command_name, credential_paths, credentials_for};
 pub use runner::{CommandOutput, SandboxConfig, run_command};
 
-/// Which sandbox backend is active on this platform
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
     /// macOS Seatbelt via `sandbox-exec`.
@@ -27,7 +19,6 @@ pub enum SandboxBackend {
     ProcessLevel,
 }
 
-/// Detect the best available sandbox backend on the current platform.
 pub fn detect_backend() -> SandboxBackend {
     #[cfg(target_os = "macos")]
     {
@@ -44,12 +35,10 @@ pub fn detect_backend() -> SandboxBackend {
     SandboxBackend::ProcessLevel
 }
 
-/// Whether the current platform has a real OS-level sandbox available.
 pub fn has_os_sandbox() -> bool {
     !matches!(detect_backend(), SandboxBackend::ProcessLevel)
 }
 
-/// Check if a binary exists on PATH.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn binary_on_path(binary: &str) -> bool {
     let Some(paths) = std::env::var_os("PATH") else {

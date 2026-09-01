@@ -163,7 +163,6 @@ fn html_to_markdown(html: &str) -> String {
     }
 }
 
-/// Register the `web/extract` MCP tool for agent discovery (plain HTTP variant).
 pub fn extract_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),

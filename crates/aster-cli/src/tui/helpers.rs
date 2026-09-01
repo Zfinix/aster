@@ -229,6 +229,17 @@ pub(super) fn severity_chip(severity: &str) -> Span<'static> {
     )
 }
 
+pub(super) fn severity_color(severity: &str) -> Color {
+    let t = theme::get();
+    match severity {
+        "critical" => t.severity_critical,
+        "high" => t.severity_high,
+        "medium" => t.severity_medium,
+        "low" => t.severity_low,
+        _ => t.severity_info,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

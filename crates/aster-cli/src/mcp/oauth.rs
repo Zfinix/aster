@@ -1,7 +1,6 @@
-//! OAuth for remote MCP servers that follow the MCP authorization spec:
-//! protected-resource metadata, dynamic client registration, an
-//! authorization-code + PKCE login through the browser with a loopback
-//! redirect, and a per-server token store under `~/.aster/mcp-auth/`.
+//! OAuth for remote MCP servers following the MCP authorization spec:
+//! protected-resource metadata, dynamic client registration, authorization-code +
+//! PKCE through the browser, and a token store under `~/.aster/mcp-auth/`.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -9,12 +8,11 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// How long any one OAuth round trip may take. A browser login is human-paced,
 /// so the callback wait is its own, much longer budget.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct StoredTokens {
@@ -237,22 +235,7 @@ struct TokenResponse {
     expires_in: Option<u64>,
 }
 
-pub(crate) struct Pkce {
-    pub verifier: String,
-    pub challenge: String,
-}
-
-pub(crate) fn pkce() -> Pkce {
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-    let digest = Sha256::digest(verifier.as_bytes());
-    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-    Pkce {
-        verifier,
-        challenge,
-    }
-}
+pub(crate) use aster_ai::pkce::pkce;
 
 /// Run the whole browser login for one configured remote server and store what
 /// it hands back. Returns the account-facing summary printed by the CLI.
@@ -296,9 +279,9 @@ pub async fn login(name: &str) -> Result<String> {
     println!("If nothing opens, visit:\n  {authorize_url}");
     let _ = open::that(&authorize_url);
 
-    let (code, returned_state) =
-        tokio::time::timeout(CALLBACK_TIMEOUT, await_callback(listener)).await??;
-    if returned_state != state {
+    let callback = tokio::time::timeout(CALLBACK_TIMEOUT, await_callback(listener)).await??;
+    let code = callback.code;
+    if callback.state.as_deref() != Some(state.as_str()) {
         bail!("the login callback carried a mismatched state; refusing it");
     }
 
@@ -346,40 +329,75 @@ pub(crate) fn build_authorize_url(
     Ok(url.to_string())
 }
 
-/// Accept exactly one browser redirect and hand back `(code, state)`.
-async fn await_callback(listener: tokio::net::TcpListener) -> Result<(String, String)> {
+#[derive(Debug)]
+pub(crate) struct Callback {
+    pub code: String,
+    pub state: Option<String>,
+}
+
+/// Accept browser connections until one carries the sign-in redirect, and return
+/// its decoded parameters. Speculative sockets and favicon probes are answered and
+/// skipped rather than ending the wait.
+pub(crate) async fn await_callback(listener: tokio::net::TcpListener) -> Result<Callback> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let (mut socket, _) = listener.accept().await?;
-    let mut buffer = vec![0u8; 8192];
-    let read = socket.read(&mut buffer).await?;
-    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-
-    let target = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or_default();
-    let query = target.split_once('?').map(|(_, query)| query).unwrap_or("");
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split('&') {
-        match pair.split_once('=') {
-            Some(("code", value)) => code = Some(percent_decode(value)),
-            Some(("state", value)) => state = Some(percent_decode(value)),
-            _ => {}
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+        // Read to the end of the headers: the redirect can straddle segments.
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 2048];
+        while !buffer.windows(4).any(|w| w == b"\r\n\r\n") && buffer.len() < 16 * 1024 {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            }
         }
-    }
-    let page = "<html><body><p>Login complete. You can close this tab.</p></body></html>";
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
-        page.len()
-    );
-    let _ = socket.write_all(response.as_bytes()).await;
+        if buffer.is_empty() {
+            continue;
+        }
+        let request = String::from_utf8_lossy(&buffer);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default();
+        let query = target.split_once('?').map(|(_, query)| query).unwrap_or("");
+        let mut code = None;
+        let mut state = None;
+        let mut denied = None;
+        for pair in query.split('&') {
+            match pair.split_once('=') {
+                Some(("code", value)) => code = Some(percent_decode(value)),
+                Some(("state", value)) => state = Some(percent_decode(value)),
+                Some(("error", value)) => denied = Some(percent_decode(value)),
+                _ => {}
+            }
+        }
+        if code.is_none() && denied.is_none() {
+            let _ = socket
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .await;
+            continue;
+        }
+        let page = match code.is_some() {
+            true => "<html><body><p>Sign-in complete. You can close this tab.</p></body></html>",
+            false => {
+                "<html><body><p>Sign-in was cancelled. You can close this tab.</p></body></html>"
+            }
+        };
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
 
-    match (code, state) {
-        (Some(code), Some(state)) => Ok((code, state)),
-        _ => bail!("the login callback carried no code"),
+        return match (code, denied) {
+            (Some(code), _) => Ok(Callback { code, state }),
+            (None, denied) => bail!(
+                "the sign-in was declined in the browser ({})",
+                denied.unwrap_or_default()
+            ),
+        };
     }
 }
 

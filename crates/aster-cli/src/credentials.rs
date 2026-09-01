@@ -13,6 +13,27 @@ pub const APP_INSTALL_URL: &str = "https://github.com/apps/aster-review/installa
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Stored {
     pub github_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zai: Option<ZaiSession>,
+}
+
+/// The ZCode JWT and chat.z.ai access token the sign-in returns beside the
+/// model key, kept so the key can be re-minted without the browser.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ZaiSession {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zcode_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    /// Unix seconds, from the exchange's `expires_in`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+impl ZaiSession {
+    pub fn is_empty(&self) -> bool {
+        self.zcode_token.is_none() && self.access_token.is_none()
+    }
 }
 
 /// The user-global directory, which also carries over anything an older build
@@ -36,13 +57,22 @@ pub fn load() -> Stored {
 }
 
 pub fn store_token(token: &str) -> Result<()> {
+    let mut stored = load();
+    stored.github_token = Some(token.to_string());
+    save(&stored)
+}
+
+pub fn store_zai_session(session: ZaiSession) -> Result<()> {
+    let mut stored = load();
+    stored.zai = Some(session);
+    save(&stored)
+}
+
+fn save(stored: &Stored) -> Result<()> {
     let dir = aster_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let stored = Stored {
-        github_token: Some(token.to_string()),
-    };
     let path = token_path()?;
-    let bytes = serde_json::to_vec_pretty(&stored)?;
+    let bytes = serde_json::to_vec_pretty(stored)?;
 
     // Create with 0o600 from the start so the token is never briefly world-readable.
     #[cfg(unix)]
@@ -69,28 +99,39 @@ pub fn store_token(token: &str) -> Result<()> {
     Ok(())
 }
 
-/// Clear every stored login: the GitHub token and any Codex subscription auth.
+/// Clear every stored login: the GitHub token, any Codex subscription auth,
+/// and the OpenRouter key `aster login openrouter` stored in `~/.aster/.env`.
+/// A key exported in the shell stays the shell's business.
 pub fn logout_all() -> Result<()> {
     let codex_removed = aster_ai::codex::clear(&aster_dir()?);
-    match clear_token() {
-        Ok(()) if codex_removed => Ok(()),
-        other => other,
-    }
+    let keys_removed = match crate::persist::global_env_path() {
+        Some(path) => {
+            let openrouter = crate::init::remove_env_key(&path, crate::openrouter_auth::KEY_VAR)?;
+            let zai = crate::init::remove_env_key(&path, crate::zai_auth::KEY_VAR)?;
+            openrouter || zai
+        }
+        None => false,
+    };
+    clear_token(codex_removed || keys_removed)
 }
 
-pub fn clear_token() -> Result<()> {
+/// `also_removed` reports logins cleared by other stores, so removing only a
+/// Codex, OpenRouter, or Z.ai login still prints "Logged out." rather than
+/// denying it.
+pub fn clear_token(also_removed: bool) -> Result<()> {
     let path = token_path()?;
     let was_logged_in = match fs::remove_file(&path) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e).context("removing stored credentials"),
     };
+    let any = was_logged_in || also_removed;
     if crate::json_mode() {
         println!(
             "{}",
-            serde_json::json!({ "ok": true, "was_logged_in": was_logged_in })
+            serde_json::json!({ "ok": true, "was_logged_in": any })
         );
-    } else if was_logged_in {
+    } else if any {
         println!("Logged out.");
     } else {
         println!("Not logged in.");

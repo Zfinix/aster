@@ -14,10 +14,9 @@ pub struct Item {
     pub detail: String,
 }
 
-/// Arrows or j/k move, space toggles, `a` toggles all, `i` inverts, enter
-/// confirms, esc cancels (`None`). Returns the selected indices in order.
-/// cliclack's own multiselect has no select-all and can't be extended, so this
-/// is a small custom widget over `console` (its same rendering backend).
+/// Arrows or j/k move, space toggles, `a` toggles all, `i` inverts, enter confirms,
+/// esc cancels (`None`). Custom because cliclack's own multiselect has no
+/// select-all and cannot be extended.
 pub fn multi_select(title: &str, items: &[Item], preselect: bool) -> Result<Option<Vec<usize>>> {
     let term = Term::stderr();
     let visible = items.len().min(MAX_VISIBLE);

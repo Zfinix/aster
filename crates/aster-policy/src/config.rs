@@ -4,11 +4,9 @@ use serde::Deserialize;
 
 use crate::decision::Mode;
 
-/// User-facing permission config, compiled into a [`crate::Policy`].
-///
-/// `allow`, `ask`, and `deny` hold rules in one language: `Edit(glob)`,
-/// `Read(glob)`, `Bash(command:*)`. A bare `Edit`, `Read`, or `Bash` covers
-/// everything that tool does.
+/// User-facing permission config, compiled into a [`crate::Policy`]. `allow`,
+/// `ask`, and `deny` hold rules in one language: `Edit(glob)`, `Read(glob)`,
+/// `Bash(command:*)`; a bare `Edit`, `Read`, or `Bash` covers everything.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionsConfig {

@@ -1,9 +1,6 @@
 //! `aster plugins`: install and inspect Agent Plugins packages. A plugin is a
-//! directory with a `plugin.json`; its skills join the session's skill index and
-//! its MCP servers join the configured ones under `<plugin>/<server>`.
-//! Plugins install user-global (`<config>/aster/plugins`) by default, or into
-//! this project (`.aster/plugins`) with `-p`, where they shadow a global plugin
-//! of the same name.
+//! directory with a `plugin.json`; its skills join the skill index and its MCP
+//! servers the configured ones. `-p` installs into the project, shadowing global.
 
 use std::path::{Path, PathBuf};
 

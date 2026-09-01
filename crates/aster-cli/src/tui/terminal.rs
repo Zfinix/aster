@@ -32,7 +32,6 @@ pub(super) enum TuiEvent {
     Mouse(MouseEvent),
     Paste(String),
     Resize,
-    /// A requested frame is due.
     Draw,
 }
 

@@ -9,6 +9,13 @@ use clap::{Args, Subcommand};
 use crate::settings::Settings;
 
 #[derive(Args)]
+pub struct KeysArgs {
+    /// Include every model endpoint, not only the ones holding a key.
+    #[arg(long)]
+    pub(crate) all: bool,
+}
+
+#[derive(Args)]
 pub struct ModelsArgs {
     /// Override the model in aster.yaml; only affects which provider is resolved
     /// when the config picks one by model name.
@@ -47,7 +54,7 @@ enum ModelCmd {
 pub struct UseModelArgs {
     /// Model id, as shown by `aster model list`.
     #[arg(value_name = "ID")]
-    id: String,
+    pub(crate) id: String,
 }
 
 pub async fn run_model(args: ModelArgs) -> Result<()> {
@@ -60,17 +67,17 @@ pub async fn run_model(args: ModelArgs) -> Result<()> {
 
 /// Write the choice where every surface reads it, then report what the next
 /// turn resolves to: the point is that this answer is the same everywhere.
-fn use_model(args: UseModelArgs) -> Result<()> {
+pub(crate) fn use_model(args: UseModelArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let saved = crate::settings::persist_user_review(Some(&repo_root), &[("model", &args.id)])?;
-    crate::provider::report(&repo_root, &saved, &["ASTER_MODEL"])
+    super::provider::report(&repo_root, &saved, &["ASTER_MODEL"])
 }
 
 /// Catalog-backed, so it costs nothing and stays right when the endpoint moves.
 fn recommended() -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
-    let (base_url, _) = crate::provider::resolve_endpoint(&settings.review, None);
+    let (base_url, _) = super::provider::resolve_endpoint(&settings.review, None);
     let models = crate::init::provider_recommended(&base_url);
     if crate::json_mode() {
         println!("{}", serde_json::to_string(&models)?);
@@ -87,7 +94,7 @@ fn recommended() -> Result<()> {
 pub fn list_providers_command() -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
-    let (base_url, _) = crate::provider::resolve_endpoint(&settings.review, None);
+    let (base_url, _) = super::provider::resolve_endpoint(&settings.review, None);
     list_providers(&base_url)
 }
 
@@ -99,7 +106,7 @@ pub async fn run(args: ModelsArgs) -> Result<()> {
     }
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
-    let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
+    let client = super::provider::resolve_client(&settings, args.model.as_deref())?;
     if args.capabilities {
         return list_capabilities(&client).await;
     }

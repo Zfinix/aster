@@ -20,7 +20,8 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::bottom_pane::{
-    BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem, scan_mentions,
+    BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem, UnifiedItem,
+    UnifiedSection, scan_mentions,
 };
 use super::guard::TuiGuard;
 use super::helpers::{clip_row, human_count, listed, short_path};
@@ -61,7 +62,6 @@ pub(super) enum AppEvent {
         scope: Option<PathBuf>,
     },
     QuestionAnswered(String),
-    /// The sandbox-bypass prompt came back yes.
     YoloConfirmed,
     SessionPicked(String),
     /// A server toggled from the `/mcp` panel: name plus its new state.
@@ -70,6 +70,8 @@ pub(super) enum AppEvent {
         disabled: bool,
     },
     ModelChanged(String),
+    ToggleThinking,
+    BrowseModels,
     /// A newer release found on GitHub, checked off the loop at startup.
     UpdateAvailable(crate::update::UpdateInfo),
     /// A skill chosen from `/skills`; its action menu opens next.
@@ -189,7 +191,12 @@ pub async fn run_chat(
         events_tx,
     );
     app.repo_root = repo_root.clone();
+    app.mom = crate::mom::MomSession::load(&repo_root);
+    if app.mom.is_some() {
+        app.note("mom.yaml active · model switching follows your manifest");
+    }
     app.width = tui.width() as usize;
+    app.markdown.set_width(app.width);
     app.instructions = sync::Arc::new(crate::instructions::discover(&repo_root));
     app.mcp_pending = true;
     app.limits = limits;
@@ -231,6 +238,10 @@ pub async fn run_chat(
         app.store = Some(store);
     }
 
+    if let Ok(settings) = crate::settings::Settings::load(Some(&repo_root)) {
+        app.show_welcome = settings.ui.welcome.unwrap_or(true);
+    }
+
     let welcome = app.welcome_block();
     app.emit(welcome);
     if let Some(messages) = seeded {
@@ -259,7 +270,7 @@ pub async fn run_chat(
 
     let mut turn: Option<ChatTurn> = None;
     if let Some(seed) = seed.filter(|s| !s.trim().is_empty()) {
-        turn = app.submit_or_hold(&seed, &[], &client, &repo_root);
+        turn = app.submit_or_hold(&seed, &[], &mut client, &repo_root);
         pane.set_task_running(turn.is_some());
     }
 
@@ -312,6 +323,7 @@ pub async fn run_chat(
                 TuiEvent::Resize => {
                     tui.resized()?;
                     app.width = tui.width() as usize;
+                    app.markdown.set_width(app.width);
                     frames.schedule_now();
                 }
                 TuiEvent::Draw => {
@@ -334,7 +346,10 @@ pub async fn run_chat(
                 }
             },
             Some(ev) = events_rx.recv() => {
-                app.on_turn_event(ev);
+                match ev {
+                    TurnEvent::MomRouted(entry) => app.on_mom_routed(&entry, &mut client),
+                    ev => app.on_turn_event(ev),
+                }
                 let queue_label = match app.running.len() {
                     0 => None,
                     1 => app.running.last().map(|t| t.label.to_lowercase()),
@@ -354,6 +369,10 @@ pub async fn run_chat(
             Some(ev) = app_rx.recv() => {
                 match ev {
                     AppEvent::ModelsLoaded(models) => app.open_model_picker(models, &mut pane),
+                    AppEvent::BrowseModels => {
+                        let tx = pane.sender();
+                        app.request_models(&client, tx);
+                    }
                     AppEvent::MentionQueried(query) => {
                         spawn_mention_search(&app_tx, &repo_root, query)
                     }
@@ -380,7 +399,7 @@ pub async fn run_chat(
                         app.error_box(&problems);
                         if let Some((text, refs)) = app.held_submit.take() {
                             app.flash = None;
-                            turn = Some(app.submit(&text, &refs, &client, &repo_root));
+                            turn = Some(app.submit(&text, &refs, &mut client, &repo_root));
                             pane.set_task_running(true);
                         }
                     }
@@ -397,10 +416,18 @@ pub async fn run_chat(
                     Ok(Ok((reply, edited, compacted))) => {
                         app.finish_turn(&reply, &edited, compacted);
                     }
-                    Ok(Err(e)) => app.fail_turn(&format!("{e:#}")),
+                    Ok(Err(e)) => {
+                        let msg = format!("{e:#}");
+                        match app.mom_rescue(&msg, &mut client) {
+                            Some(text) => {
+                                turn = Some(app.submit(&text, &[], &mut client, &repo_root));
+                            }
+                            None => app.fail_turn(&msg),
+                        }
+                    }
                     Err(e) => app.fail_turn(&format!("chat failed: {e}")),
                 }
-                pane.set_task_running(false);
+                pane.set_task_running(turn.is_some());
                 frames.schedule_now();
             }
         }
@@ -450,20 +477,7 @@ fn takeover_frame(
     let frame_n = (elapsed.as_millis() / 45) as u64;
     let w = width.clamp(20, 240);
 
-    let (bright, hot, warm, ember) = match entering {
-        true => (
-            Color::Rgb(0xff, 0x45, 0x45),
-            Color::Rgb(0xf0, 0x38, 0x38),
-            Color::Rgb(0x8a, 0x1f, 0x1f),
-            Color::Rgb(0x4a, 0x12, 0x12),
-        ),
-        false => (
-            Color::Rgb(0xf8, 0xcb, 0x66),
-            Color::Rgb(0xf2, 0x76, 0x4f),
-            Color::Rgb(0x8a, 0x4a, 0x2a),
-            Color::Rgb(0x3f, 0x2a, 0x1a),
-        ),
-    };
+    let (bright, hot, warm, ember) = theme::takeover_palette(entering);
 
     let cx = w as f32 / 2.0;
     let cy = ROWS as f32 / 2.0;
@@ -689,12 +703,9 @@ fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<A
     app.emit(history::notice("turn stopped", width));
 }
 
-/// Open the transcript this run records into. Sessions always start clean;
-/// only an explicit `--continue` reopens the repo's latest session and seeds
-/// its prior turns. Returns the live transcript handle and the seeded
-/// user/assistant turns to replay into the view.
-/// `New` and `Pick` return nothing: a transcript opened before the first
-/// message would leave an empty file behind every time aster is started.
+/// Open the transcript this run records into: sessions start clean, and only
+/// `--continue` reopens the repo's latest and seeds its turns. `New` and `Pick`
+/// return nothing, so starting aster never leaves an empty file behind.
 fn resume_or_new(
     store: &Store,
     repo_root: &std::path::Path,
@@ -916,13 +927,15 @@ enum TurnEvent {
     Reasoning(String),
     /// One live fragment of streamed thinking, buffered until `ReasoningDone`.
     ReasoningDelta(String),
-    /// Thinking finished; render the buffered block now.
     ReasoningDone,
     /// Web-search source citations from the OpenRouter `web` plugin.
     Citations(Vec<Citation>),
     /// Something the harness did that the user has to know about, e.g. the
     /// turn being cut short at the tool-round cap.
     Notice(String),
+    /// The mom router picked an entry for this turn; the app records the
+    /// switch so later turns hold it.
+    MomRouted(String),
     /// Live progress for one sub-agent in an `agent` tool call.
     AgentStatus {
         call_id: String,
@@ -935,13 +948,11 @@ enum TurnEvent {
     },
 }
 
-/// One source URL returned by the web-search plugin.
 pub(super) struct Citation {
     pub(super) url: String,
     pub(super) title: Option<String>,
 }
 
-/// A tool call the agent has made but not yet finished.
 struct RunningTool {
     id: String,
     name: String,
@@ -1020,6 +1031,10 @@ const KEY_HELP: &[(&str, &str)] = &[
     ("enter", "send · interrupts a running turn if needed"),
     ("esc esc", "quit (twice, so a stray press does not)"),
     ("shift+tab", "step to the next mode"),
+    (
+        "ctrl+o",
+        "open the switcher: thinking, mode, effort, model, provider",
+    ),
     ("ctrl+j", "newline without sending"),
     ("@", "mention a file from this repo"),
     ("↑ ↓", "move the cursor, then step through past messages"),
@@ -1032,9 +1047,19 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
         desc: "Switch the active model, or pick one with no argument",
     },
     CommandDesc {
+        name: "mom",
+        takes_arg: true,
+        desc: "Your model policy: what runs when (/mom resume puts it back in charge)",
+    },
+    CommandDesc {
         name: "provider",
+        takes_arg: true,
+        desc: "Switch the endpoint Aster talks to: an id, a name, or any base URL",
+    },
+    CommandDesc {
+        name: "switch",
         takes_arg: false,
-        desc: "Switch the endpoint Aster talks to, then pick a model",
+        desc: "Thinking, mode, effort, model and provider in one panel (ctrl+o)",
     },
     CommandDesc {
         name: "resume",
@@ -1055,6 +1080,16 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
         name: "thinking",
         takes_arg: false,
         desc: "Toggle whether the model's thinking prints in full",
+    },
+    CommandDesc {
+        name: "theme",
+        takes_arg: false,
+        desc: "Switch between the dark and light color themes",
+    },
+    CommandDesc {
+        name: "welcome",
+        takes_arg: false,
+        desc: "Show or hide the session header (model, provider, skills)",
     },
     CommandDesc {
         name: "yolo",
@@ -1168,14 +1203,12 @@ struct ChatApp {
     pending_plan_approval: bool,
     /// `AGENTS.md` and friends, read once at startup rather than per turn.
     instructions: sync::Arc<crate::instructions::Instructions>,
-    /// Connected MCP servers, cloned into each turn's context.
     mcp: Option<crate::mcp::McpRuntime>,
     /// The connect is still running, so `mcp` being `None` means "not yet"
     /// rather than "none configured" and a turn must wait for it.
     mcp_pending: bool,
     /// A submit that beat the connect, replayed once the servers answer.
     held_submit: Option<(String, Vec<(String, String)>)>,
-    /// Per-turn caps, cloned into each turn's context.
     limits: crate::chat::Limits,
     /// The endpoint in use, so `/provider` can mark the current row.
     provider_base_url: String,
@@ -1184,10 +1217,17 @@ struct ChatApp {
     /// A YOLO switch is playing its full-screen animation; cleared by
     /// `finish_takeover`, which repaints the world in the new palette.
     takeover: Option<Takeover>,
-    /// Agents discovered at startup, cloned into each turn's context.
     agents: sync::Arc<aster_agents::AgentRegistry>,
-    /// Fan-out caps, cloned into each turn's context.
     swarm: crate::chat::SwarmLimits,
+    mom: Option<crate::mom::MomSession>,
+    mom_failed_steps: u32,
+    mom_looping: bool,
+    mom_model_down: bool,
+    mom_turns: u64,
+    /// Light palette in use; `/theme` flips it. YOLO still overrides while on.
+    theme_light: bool,
+    /// Whether the session header prints; `/welcome` flips it and saves.
+    show_welcome: bool,
 }
 
 struct Takeover {
@@ -1247,6 +1287,13 @@ impl ChatApp {
             takeover: None,
             agents: sync::Arc::default(),
             swarm: crate::chat::SwarmLimits::default(),
+            mom: None,
+            mom_failed_steps: 0,
+            mom_looping: false,
+            mom_model_down: false,
+            mom_turns: 0,
+            theme_light: false,
+            show_welcome: true,
         }
     }
 
@@ -1268,6 +1315,8 @@ impl ChatApp {
 
     fn on_turn_event(&mut self, ev: TurnEvent) {
         match ev {
+            // Handled at the event-loop level, where the client is in scope.
+            TurnEvent::MomRouted(_) => {}
             TurnEvent::Token(delta) => {
                 self.end_explored();
                 self.streamed.push_str(&delta);
@@ -1291,6 +1340,11 @@ impl ChatApp {
                 });
             }
             TurnEvent::ToolResult { id, result, error } => {
+                if error {
+                    self.mom_failed_steps += 1;
+                } else {
+                    self.mom_failed_steps = 0;
+                }
                 let Some(i) = self.running.iter().position(|t| t.id == id) else {
                     return;
                 };
@@ -1471,7 +1525,7 @@ impl ChatApp {
         &mut self,
         text: &str,
         refs: &[(String, String)],
-        client: &AiClient,
+        client: &mut AiClient,
         repo_root: &std::path::Path,
     ) -> Option<ChatTurn> {
         if self.mcp_pending {
@@ -1486,7 +1540,7 @@ impl ChatApp {
         &mut self,
         text: &str,
         refs: &[(String, String)],
-        client: &AiClient,
+        client: &mut AiClient,
         repo_root: &std::path::Path,
     ) -> ChatTurn {
         // A dismissed session picker leaves no transcript open; start one now
@@ -1494,6 +1548,16 @@ impl ChatApp {
         if self.recorder.is_none() {
             self.start_new_session();
         }
+        self.mom_turns += 1;
+        self.mom_evaluate(client, true);
+        // With no rule matched, the router judges the message itself; the
+        // call runs inside the turn task so the UI never waits on it.
+        let router = self
+            .mom
+            .as_ref()
+            .filter(|m| m.router_wanted())
+            .and_then(|m| m.router_plan())
+            .map(|plan| (plan, text.to_string()));
         // Only for a line that opens with one: discovery walks the skills roots
         // and every installed plugin, which no ordinary message should pay for.
         let asked = if text.starts_with('/') {
@@ -1545,6 +1609,18 @@ impl ChatApp {
             swarm: self.swarm.clone(),
         };
         tokio::spawn(async move {
+            let mut client = client;
+            if let Some((plan, message)) = router
+                && let Some(entry) = crate::mom::consult_router(&client, &plan, &message).await
+                && let Some(target) = plan.targets.get(&entry)
+            {
+                if client.base_url().trim_end_matches('/') != target.base_url.trim_end_matches('/')
+                {
+                    client.set_endpoint(&target.base_url, target.key.clone());
+                }
+                client.model = target.model_param.clone();
+                let _ = events_tx.try_send(TurnEvent::MomRouted(entry));
+            }
             let sink: crate::chat::ChatEventSink = Box::new(move |event| {
                 let Some(ev) = decode_turn_event(&event) else {
                     return;
@@ -1599,6 +1675,11 @@ impl ChatApp {
     /// Drop the unanswered question from history so a retry resends it instead
     /// of stacking a duplicate user turn.
     fn fail_turn(&mut self, msg: &str) {
+        if msg.contains("degenerated into repeated text") {
+            self.mom_looping = true;
+        } else {
+            self.mom_model_down = true;
+        }
         self.end_message();
         self.end_explored();
         self.started = None;
@@ -1668,6 +1749,12 @@ impl ChatApp {
     /// The plan goes to the user whatever the mode: asking to plan is a request
     /// to be consulted, so an editable session answers it too.
     fn on_plan_approval_request(&mut self, req: ApprovalRequest, pane: &mut BottomPane<AppEvent>) {
+        // The pane keeps only the question; the plan itself goes into the
+        // transcript as a document, where it scrolls and copies like one.
+        if let Some(md) = &req.markdown {
+            let block = history::assistant(markdown::render(md), true, self.width);
+            self.emit(block);
+        }
         self.pending_plan_approval = true;
         pane.push_approval(req);
     }
@@ -1790,6 +1877,8 @@ impl ChatApp {
             | AppEvent::SkillDeleteConfirmed(_) => {}
             AppEvent::SkillView(name) => self.show_skill(&name),
             AppEvent::ModelsLoaded(_) => {}
+            AppEvent::ToggleThinking => self.toggle_thinking(),
+            AppEvent::BrowseModels => {}
             AppEvent::MentionQueried(_) | AppEvent::MentionResults { .. } => {}
             AppEvent::ModelsFailed(e) => self.note(&format!("failed to load model list: {e}")),
             AppEvent::Compacted {
@@ -1889,17 +1978,48 @@ impl ChatApp {
         self.load_history(transcript.to_chat_messages());
     }
 
-    fn open_mode_picker(&self, pane: &mut BottomPane<AppEvent>) {
-        let items = MODE_ORDER
-            .iter()
-            .map(|mode| SelectionItem {
-                name: mode.as_str().to_string(),
-                description: mode.description().to_string(),
-                is_current: *mode == self.mode,
-                event: AppEvent::SetMode(*mode),
-            })
-            .collect();
-        pane.push_picker("Mode", items);
+    fn base_theme(&self) -> theme::Theme {
+        match self.theme_light {
+            true => theme::Theme::LIGHT,
+            false => theme::Theme::DEFAULT,
+        }
+    }
+
+    /// Flips the session header and saves the choice, so it sticks across
+    /// sessions. `/clear` and YOLO repaints follow it too.
+    fn toggle_welcome(&mut self) {
+        self.show_welcome = !self.show_welcome;
+        let value = match self.show_welcome {
+            true => "true",
+            false => "false",
+        };
+        let saved = crate::settings::writable_config(Some(&self.repo_root)).and_then(|path| {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let updated = crate::settings::with_key(&text, "ui", "welcome", value);
+            crate::settings::save(&path, updated).map(|()| path)
+        });
+        self.flash = Some(match (self.show_welcome, saved) {
+            (true, Ok(path)) => format!("session header on ({})", short_path(&path)),
+            (false, Ok(path)) => format!("session header off ({})", short_path(&path)),
+            (_, Err(e)) => format!("saved for this session only: {e:#}"),
+        });
+    }
+
+    fn toggle_theme(&mut self) {
+        self.theme_light = !self.theme_light;
+        theme::set(self.base_theme());
+        self.flash = Some(match self.theme_light {
+            true => "light theme".into(),
+            false => "dark theme".into(),
+        });
+    }
+
+    fn toggle_thinking(&mut self) {
+        self.show_thinking = !self.show_thinking;
+        self.flash = Some(match self.show_thinking {
+            true => "thinking shown in full".into(),
+            false => "thinking collapsed".into(),
+        });
     }
 
     /// Shift+tab: step to the next mode in the footer order, wrapping around.
@@ -1908,21 +2028,11 @@ impl ChatApp {
         self.select_mode(MODE_ORDER[(at + 1) % MODE_ORDER.len()]);
     }
 
-    fn open_effort_picker(&self, pane: &mut BottomPane<AppEvent>) {
-        let items = Effort::ALL
-            .iter()
-            .map(|effort| SelectionItem {
-                name: effort.as_str().to_string(),
-                description: String::new(),
-                is_current: *effort == self.effort,
-                event: AppEvent::SetEffort(*effort),
-            })
-            .collect();
-        pane.push_picker("Effort", items);
-    }
-
     /// The session header, in the palette current when it is called.
     fn welcome_block(&self) -> Vec<Line<'static>> {
+        if !self.show_welcome {
+            return Vec::new();
+        }
         let mut fields: Vec<(&str, String)> = vec![
             ("model", self.model.clone()),
             (
@@ -1986,7 +2096,7 @@ impl ChatApp {
         self.mode = mode;
         theme::set(match mode {
             Mode::Yolo => theme::Theme::YOLO,
-            Mode::Plan | Mode::Manual | Mode::Auto | Mode::Edit => theme::Theme::DEFAULT,
+            Mode::Plan | Mode::Manual | Mode::Auto | Mode::Edit => self.base_theme(),
         });
         if recolours {
             self.takeover = Some(Takeover {
@@ -2016,10 +2126,202 @@ impl ChatApp {
         });
     }
 
+    fn mom_evaluate(&mut self, client: &mut AiClient, new_turn: bool) {
+        let Some(mut mom) = self.mom.take() else {
+            return;
+        };
+        if mom.suspended() {
+            self.mom = Some(mom);
+            return;
+        }
+        let usage = client.usage_snapshot();
+        let conversation_chars: usize = self.history.iter().map(|m| m.content.text().len()).sum();
+        let signals = aster_mom::Signals {
+            planning_mode: (self.mode == Mode::Plan).then(|| "plan".to_string()),
+            failed_steps: self.mom_failed_steps,
+            looping: std::mem::take(&mut self.mom_looping),
+            model_down: std::mem::take(&mut self.mom_model_down),
+            spent_usd: usage.estimated_cost_usd,
+            tokens_used: usage.total_tokens,
+            user_turns: self.mom_turns,
+            conversation_tokens: (conversation_chars / 4) as u64,
+            x_active: Default::default(),
+        };
+        let selection = if new_turn {
+            mom.evaluate_turn(self.mom_turns, &signals)
+        } else {
+            mom.evaluate_again(&signals)
+        };
+        if let Some(selection) = selection
+            && let Some(record) = &selection.record
+        {
+            self.mom_failed_steps = 0;
+            self.note(&format!(
+                "mom: {} -> {} · {}",
+                record.from_model.as_deref().unwrap_or("start"),
+                selection.model,
+                record.reason
+            ));
+            for skip in &record.skipped {
+                self.note(&format!("mom: skipped {skip}"));
+            }
+            crate::mom::log_switch(record);
+            self.apply_mom_switch(&mom, &selection.model, client);
+        }
+        self.mom = Some(mom);
+    }
+
+    /// The turn task already runs on the routed model; this records the pick
+    /// so the engine holds it and later turns follow.
+    fn on_mom_routed(&mut self, entry: &str, client: &mut AiClient) {
+        let Some(mut mom) = self.mom.take() else {
+            return;
+        };
+        let signals = aster_mom::Signals {
+            user_turns: self.mom_turns,
+            ..Default::default()
+        };
+        if let Some(selection) = mom.apply_router(entry, &signals)
+            && let Some(record) = &selection.record
+        {
+            self.note(&format!(
+                "mom: {} -> {} · {}",
+                record.from_model.as_deref().unwrap_or("start"),
+                selection.model,
+                record.reason
+            ));
+            crate::mom::log_switch(record);
+            self.apply_mom_switch(&mom, &selection.model, client);
+        }
+        self.mom = Some(mom);
+    }
+
+    fn mom_rescue(&mut self, error: &str, client: &mut AiClient) -> Option<String> {
+        if self.mom.as_ref().is_none_or(|m| m.suspended()) {
+            return None;
+        }
+        let text = self
+            .history
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.text().into_owned())?;
+        let degenerate = error.contains("degenerated into repeated text");
+        self.mom_looping = degenerate;
+        self.mom_model_down = !degenerate;
+        let model_before = self.model.clone();
+        self.mom_evaluate(client, false);
+        if self.model == model_before {
+            return None;
+        }
+        self.end_message();
+        self.end_explored();
+        self.thinking = false;
+        self.started = None;
+        self.streamed.clear();
+        if self.history.last().is_some_and(|m| m.role == "user") {
+            self.history.pop();
+        }
+        Some(text)
+    }
+
+    fn show_mom(&mut self, arg: Option<&str>) {
+        if self.mom.is_none() {
+            self.note("no mom.yaml here · add one to set rules for when models switch");
+            return;
+        }
+        if arg == Some("resume") {
+            if let Some(mom) = &mut self.mom {
+                mom.resume();
+            }
+            self.note("mom.yaml back in charge · applies from your next message");
+            return;
+        }
+        let Some(overview) = self.mom.as_ref().map(|m| m.overview()) else {
+            return;
+        };
+        let width = self.width;
+        let accent = theme::get().accent_style();
+        let text = theme::get().text_style();
+        let title = overview.name.unwrap_or_else(|| "model policy".into());
+        let mut lines = vec![Line::from(Span::styled(
+            format!("Model policy · {title}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        if let Some(path) = &overview.path {
+            lines.push(Line::from(Span::styled(
+                format!("{}", path.display()),
+                text,
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            if overview.suspended {
+                "paused: you picked a model yourself · /mom resume puts it back in charge"
+            } else {
+                "in charge: the policy picks the model before every message"
+            },
+            text,
+        )));
+        if let Some((entry, model)) = &overview.current {
+            lines.push(Line::from(vec![
+                Span::styled("now:       ", text),
+                Span::styled(format!("{entry} · {model}"), accent),
+            ]));
+        }
+        lines.push(Line::from(""));
+        for (name, resolved) in &overview.entries {
+            let value = match resolved {
+                Some(model) => model.clone(),
+                None => "nothing available fits this".into(),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{name:<10}"), accent),
+                Span::styled(format!(" {value}"), text),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} rule(s) · every switch is written to ~/.aster/logs/mom-switches.jsonl",
+                overview.rules
+            ),
+            text,
+        )));
+        let block = history::assistant(lines, true, width);
+        self.emit(block);
+    }
+
+    /// Not set_model: a manifest pick must not suspend the manifest or persist.
+    fn apply_mom_switch(
+        &mut self,
+        mom: &crate::mom::MomSession,
+        model_id: &str,
+        client: &mut AiClient,
+    ) {
+        let Some((base_url, key)) = mom.endpoint_for(model_id) else {
+            self.note(&format!("mom: no configured endpoint serves {model_id}"));
+            return;
+        };
+        let model = mom.model_param(&base_url, model_id);
+        if base_url.trim_end_matches('/') != self.provider_base_url.trim_end_matches('/') {
+            client.set_endpoint(&base_url, key);
+            self.provider_base_url = base_url;
+        }
+        client.model = model.clone();
+        self.model = model;
+    }
+
     /// A model change takes effect next turn, since each turn clones the client.
     fn set_model(&mut self, model: String, client: &mut AiClient) {
         if model == self.model {
             return;
+        }
+        if let Some(mom) = &mut self.mom
+            && !mom.suspended()
+        {
+            mom.suspend_for_user();
+            self.note("mom.yaml suspended for this session: you picked a model yourself");
         }
         client.model = model.clone();
         // Saved as well as applied, or the choice would silently reset next run.
@@ -2063,42 +2365,77 @@ impl ChatApp {
         pane.push_view(Box::new(view));
     }
 
-    /// Switch endpoint mid-session. The catalog is the same `providers.json`
-    /// the init wizard reads, so the two agree on names and defaults.
-    fn open_provider_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
+    /// Every session knob in one panel: thinking, mode, effort, model and
+    /// provider, so none of them needs a command of its own.
+    fn open_unified_selector(&mut self, pane: &mut BottomPane<AppEvent>) {
         let current = self.provider_base_url.clone();
-        let items: Vec<SelectionItem<AppEvent>> = crate::init::provider_choices()
-            .into_iter()
-            .map(|(name, base_url, model)| SelectionItem {
-                name,
-                description: base_url.clone(),
-                is_current: base_url.trim_end_matches('/') == current.trim_end_matches('/'),
-                event: AppEvent::ProviderPicked {
-                    base_url,
-                    model: model.clone(),
-                },
-            })
+        let thinking = UnifiedItem {
+            section: UnifiedSection::Options,
+            name: "Thinking".to_string(),
+            description: match self.show_thinking {
+                true => "shown in full".to_string(),
+                false => "collapsed".to_string(),
+            },
+            is_current: self.show_thinking,
+            event: AppEvent::ToggleThinking,
+        };
+        let modes = MODE_ORDER.iter().map(|mode| UnifiedItem {
+            section: UnifiedSection::Mode,
+            name: mode.as_str().to_string(),
+            description: mode.description().to_string(),
+            is_current: *mode == self.mode,
+            event: AppEvent::SetMode(*mode),
+        });
+        let efforts = Effort::ALL.iter().map(|effort| UnifiedItem {
+            section: UnifiedSection::Effort,
+            name: effort.as_str().to_string(),
+            description: String::new(),
+            is_current: *effort == self.effort,
+            event: AppEvent::SetEffort(*effort),
+        });
+        let model = UnifiedItem {
+            section: UnifiedSection::Model,
+            name: self.model.clone(),
+            description: "browse this provider's models".to_string(),
+            is_current: false,
+            event: AppEvent::BrowseModels,
+        };
+        let providers =
+            crate::init::provider_choices()
+                .into_iter()
+                .map(|(name, base_url, model)| UnifiedItem {
+                    section: UnifiedSection::Provider,
+                    name,
+                    description: base_url.clone(),
+                    is_current: base_url.trim_end_matches('/') == current.trim_end_matches('/'),
+                    event: AppEvent::ProviderPicked { base_url, model },
+                });
+        let items = std::iter::once(thinking)
+            .chain(modes)
+            .chain(efforts)
+            .chain(std::iter::once(model))
+            .chain(providers)
             .collect();
-        if items.is_empty() {
-            self.note("no providers in the catalog");
-            return;
-        }
-        pane.push_picker("Provider", items);
+        pane.push_unified(items);
     }
 
     /// Repoint the client, then offer that endpoint's models. A missing key is
     /// said now rather than at the next turn's failure.
     fn switch_provider(&mut self, base_url: String, model: String, client: &mut AiClient) {
-        let key = crate::init::provider_key(&base_url);
-        match key {
-            Some(key) => client.set_endpoint(&base_url, key),
+        // The same resolution every command uses, so the picker cannot hand
+        // this endpoint a key that chat would then refuse.
+        match aster_ai::keys::resolve_key(&base_url) {
+            Some((key, _)) => client.set_endpoint(&base_url, key),
+            None if aster_ai::codex_api::is_codex(&base_url) => {
+                client.set_endpoint(&base_url, String::new());
+                self.note("not signed in to ChatGPT; run `aster login codex`");
+            }
             None => {
-                // The shared key travels with the endpoint; providers that need
-                // their own are named above.
-                client.set_endpoint(&base_url, client.api_key().to_string());
+                client.set_endpoint(&base_url, String::new());
                 self.note(&format!(
-                    "no provider-specific key found for {}; using ASTER_API_KEY",
-                    crate::init::provider_label(&base_url)
+                    "no key found for {}; set {} or run `aster init`",
+                    crate::init::provider_label(&base_url),
+                    aster_ai::keys::key_vars(&base_url).join(" or ")
                 ));
             }
         }
@@ -2139,22 +2476,32 @@ impl ChatApp {
                 Some(None) => {
                     self.flash = Some("unknown mode (expected plan, manual, auto, or edit)".into());
                 }
-                None => self.open_mode_picker(pane),
+                None => self.open_unified_selector(pane),
             },
-            "provider" | "p" => self.open_provider_picker(pane),
+            "provider" | "p" | "switch" => match arg {
+                // Typed targets resolve like `aster provider use`: an id, a
+                // name, or any base URL, so custom endpoints need no picker row.
+                Some(target) => match crate::init::find_provider(target) {
+                    Ok((_, base_url, example_model)) => {
+                        let model = match example_model.is_empty() {
+                            true => self.model.clone(),
+                            false => example_model,
+                        };
+                        self.switch_provider(base_url, model, client);
+                    }
+                    Err(e) => self.flash = Some(format!("{e:#}")),
+                },
+                None => self.open_unified_selector(pane),
+            },
             "resume" | "r" => self.open_session_picker(pane),
             "effort" => match arg.map(str::parse::<Effort>) {
                 Some(Ok(effort)) => self.set_effort(effort, client),
                 Some(Err(e)) => self.flash = Some(e),
-                None => self.open_effort_picker(pane),
+                None => self.open_unified_selector(pane),
             },
-            "thinking" => {
-                self.show_thinking = !self.show_thinking;
-                self.flash = Some(match self.show_thinking {
-                    true => "thinking shown in full".into(),
-                    false => "thinking collapsed".into(),
-                });
-            }
+            "thinking" => self.toggle_thinking(),
+            "theme" => self.toggle_theme(),
+            "welcome" => self.toggle_welcome(),
             "yolo" => match self.mode {
                 Mode::Yolo => self.select_mode(Mode::Edit),
                 _ => self.confirm_yolo(pane),
@@ -2194,6 +2541,7 @@ impl ChatApp {
                 self.emit(block);
             }
             "compact" => self.start_compact(client, pane.sender()),
+            "mom" => self.show_mom(arg),
             "status" => self.show_status(),
             "diff" | "d" => self.show_diff(),
             "mcp" => self.show_mcp(pane),
@@ -2238,6 +2586,7 @@ impl ChatApp {
             ),
             Span::styled(format!("  ·  {}", self.model), dark),
             Span::styled(format!("  ⌁ {}", self.effort), dark),
+            Span::styled("  ⌄", theme::get().dimmer_style()),
         ];
         if let Some(msg) = &self.flash {
             spans.push(Span::styled("  ·  ", dark));
@@ -2587,7 +2936,6 @@ impl ChatApp {
         self.emit_rows("Memory", rows);
     }
 
-    /// Build a token-usage flash string for a post-turn status update.
     fn usage_flash(&self) -> Option<String> {
         let usage = self.usage.filter(|u| u.total_tokens > 0)?;
         let approx = if usage.estimated { "~" } else { "" };

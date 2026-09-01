@@ -8,12 +8,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::ToolProbe;
 
-/// List entries of `base` up to `max_entries`. Directories end with `/`.
-/// Tries `fd`, then falls back to `fs::read_dir`.
-/// `fd` hides `.gitignore`d entries and the manual fallback does not, so the
-/// same directory listed differently depending on what was installed. Retry
-/// with `--no-ignore` when the filtered pass comes back empty, matching how
-/// `find` and `search` reach ignored paths.
+/// Entries of `base` up to `max_entries`, directories ending with `/`. Tries `fd`,
+/// then `fs::read_dir`. `fd` hides `.gitignore`d entries and the fallback does
+/// not, so an empty filtered pass is retried with `--no-ignore`.
 pub fn list(probe: &ToolProbe, base: &Path, max_entries: usize) -> Result<String> {
     if let Some(fd) = &probe.fd {
         let entries = list_with_fd(fd, base, max_entries, true)?;

@@ -1,11 +1,6 @@
-//! Project instruction files. `AGENTS.md` is the cross-tool standard, so a
-//! repo set up for another agent works here unchanged; the sibling files other
-//! agents read are loaded too.
-//!
-//! The spec puts nested `AGENTS.md` files through a monorepo, nearest to the
-//! edited file winning. Preloading all of them would spend context on rules
-//! for directories a turn never touches, so only the root files are injected
-//! and the rest are advertised as paths for the agent to read on demand.
+//! Project instruction files. `AGENTS.md` is the cross-tool standard, and the
+//! sibling files other agents read are loaded too. Only the root files are
+//! injected; nested ones are advertised as paths, to be read on demand.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -24,7 +19,6 @@ const MAX_TOTAL_CHARS: usize = 24_000;
 /// Nested files listed by path. Beyond this the index itself is the cost the
 /// bodies were meant to avoid.
 const MAX_NESTED_LISTED: usize = 40;
-/// How deep to look for nested instruction files.
 const MAX_DEPTH: usize = 8;
 /// Stop walking after this many entries; outside a repo (a launch from `~`,
 /// say) the tree is effectively unbounded and this runs before the UI is up.

@@ -70,9 +70,8 @@ pub const IMAGE_OMITTED: &str = "[image content omitted because this model has n
 pub const IMAGE_MARK: &str = "[image]";
 
 /// A turn's content: plain text, or the parts array multimodal turns need.
-///
-/// Untagged, so a text turn still serializes as a bare JSON string and every
-/// endpoint that only ever saw strings sees the same bytes it always did.
+/// Untagged, so a text turn still serializes as a bare JSON string for every
+/// endpoint that only ever saw strings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum MessageContent {
@@ -242,7 +241,6 @@ pub struct ToolChatChoice {
     pub message: AssistantMessage,
 }
 
-/// An assistant turn that may answer in text, request tool calls, or both.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
     #[serde(default)]

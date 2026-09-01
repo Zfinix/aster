@@ -6,12 +6,14 @@ mod approval;
 mod list_selection;
 mod model_picker;
 mod status;
+mod unified_selector;
 mod view;
 
 pub(super) use approval::ApprovalView;
 pub(super) use list_selection::{ListSelectionView, SelectionItem};
 pub(super) use model_picker::ModelPickerView;
 pub(super) use status::StatusWidget;
+pub(super) use unified_selector::{UnifiedItem, UnifiedSection, UnifiedSelector};
 pub(super) use view::BottomPaneView;
 
 use std::cell::Cell;
@@ -66,7 +68,6 @@ pub(super) struct CommandDesc {
     pub desc: &'static str,
 }
 
-/// One row the slash menu offers: a built-in command or an installed skill.
 #[derive(Clone)]
 pub(super) struct MenuEntry {
     name: String,
@@ -88,7 +89,6 @@ impl From<&CommandDesc> for MenuEntry {
     }
 }
 
-/// What a keypress amounted to, once the pane has routed it.
 pub(super) enum InputResult {
     None,
     /// A message to send, plus the `[@name]` → full-path references folded out
@@ -107,7 +107,6 @@ pub(super) enum InputResult {
     },
 }
 
-/// Max mention suggestions shown at once.
 const MAX_MENTION_MATCHES: usize = 10;
 /// Cap on walked entries per search; outside a repo (a launch from `~`, say)
 /// the tree is effectively unbounded and no `.gitignore` applies.
@@ -317,6 +316,12 @@ impl<E: Clone + 'static> BottomPane<E> {
         self.push_view(Box::new(view));
     }
 
+    /// Push the one panel that holds the session's knobs.
+    pub(super) fn push_unified(&mut self, items: Vec<UnifiedItem<E>>) {
+        let view = UnifiedSelector::new(items, self.tx.clone());
+        self.push_view(Box::new(view));
+    }
+
     /// Route an approval: the top view may absorb it; otherwise a new prompt
     /// opens.
     pub(super) fn push_approval(&mut self, req: ApprovalRequest) {
@@ -420,6 +425,7 @@ impl<E: Clone + 'static> BottomPane<E> {
 
             KeyCode::Enter if alt || ctrl => self.composer.insert('\n'),
             KeyCode::Char('j') if ctrl => self.composer.insert('\n'),
+            KeyCode::Char('o') if ctrl => return InputResult::Command("switch".into()),
             KeyCode::BackTab => self.composer.insert('\n'),
             // The menu is open and a row is highlighted, so enter picks that
             // row. Without this a bare `/` submits as a message, and arrowing
@@ -551,11 +557,9 @@ impl<E: Clone + 'static> BottomPane<E> {
         }
     }
 
-    /// True when the draft should run as a slash command rather than submit as
-    /// a message. A leading `/` alone is not enough: a dragged-in absolute
-    /// path (`/Users/chizi/…`) also starts with `/`. The first word must name
-    /// or prefix a known command. A skill is not one of them: `/name` is a
-    /// message, expanded on its way out.
+    /// True when the draft should run as a slash command. A leading `/` alone is not
+    /// enough: a dragged-in absolute path starts with one too, so the first word must
+    /// name or prefix a known command. A skill is not one: `/name` is a message.
     fn looks_like_command(&self) -> bool {
         let text = self.composer.text().trim_start();
         let Some(rest) = text.strip_prefix('/') else {

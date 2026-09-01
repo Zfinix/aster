@@ -1,7 +1,6 @@
-//! The message editor: a multi-line text area with word motion, prompt recall
-//! and paste folding. It owns no drawing, only text and a cursor; the chat loop
-//! asks it for display rows and the cursor's position within them so the real
-//! terminal caret can be parked there.
+//! The message editor: a multi-line text area with word motion, prompt recall and
+//! paste folding. It owns no drawing; the chat loop asks it for display rows and
+//! the cursor's position within them.
 
 use std::ops::Range;
 
@@ -196,10 +195,9 @@ impl Composer {
         self.cursor = self.text.len();
     }
 
-    /// Hand the draft over for sending: folded pastes are expanded and the raw
-    /// draft is remembered for recall. Returns the text with long paths folded
-    /// into `[@name]` tokens; call [`Self::take_refs`] for the paths they stand
-    /// for.
+    /// Hand the draft over for sending: folded pastes are expanded and the raw draft
+    /// remembered for recall. Long paths stay folded into `[@name]` tokens; see
+    /// [`Self::take_refs`] for the paths they stand for.
     pub(super) fn take(&mut self) -> String {
         let draft = std::mem::take(&mut self.text);
         self.cursor = 0;
@@ -229,11 +227,9 @@ impl Composer {
         self.refs.clear();
     }
 
-    /// Replace path-like tokens with `[@name]` placeholders, recording each
-    /// token's full path in [`Self::refs`]. Tokens may contain shell-escaped
-    /// spaces (`Screen\ Recording\ 2026-08-01\ AM.mov`), so a space only ends a
-    /// token when it is not preceded by a backslash. Short paths, and anything
-    /// that does not look like a path, pass through untouched.
+    /// Replace path-like tokens with `[@name]` placeholders, recording each token's
+    /// full path in [`Self::refs`]. Tokens may contain shell-escaped spaces, so a
+    /// space ends one only when no backslash precedes it.
     fn fold_paths(&mut self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let bytes = text.as_bytes();
@@ -414,10 +410,9 @@ impl Composer {
     }
 }
 
-/// If `token` looks like a path, return it with shell escapes removed so it is
-/// a usable filesystem path; otherwise `None`. A token must contain a path
-/// separator and be absolute, relative (`./`, `../`, `~/`), a Windows drive, or
-/// end in a short file extension.
+/// `token` with shell escapes removed when it looks like a path, else `None`. It
+/// must contain a separator and be absolute, relative (`./`, `../`, `~/`), a
+/// Windows drive, or end in a short file extension.
 fn clean_path(token: &str) -> Option<String> {
     let has_sep = token.contains('/') || token.contains('\\');
     if !has_sep {

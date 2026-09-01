@@ -1,14 +1,6 @@
-//! Live evals: run aster against fixed cases and compare models.
-//!
-//! [`crate::turn`] grades sessions that already happened, so it can never say
-//! whether a change helped: every session ran a different task. This fixes the
-//! task and varies the model.
-//!
-//! Ori owns the running. Its eval files are `*.eval.ts` executed by bun, and
-//! `evals/features/aster` is the harness that makes `agent.run` spawn aster
-//! rather than Ori's own loop. The cases live here, get rendered to TypeScript,
-//! and go to `ori eval --json`, so Rust stays the source of truth for what is
-//! measured and TypeScript is only the thing Ori insists on.
+//! Live evals: run aster against fixed cases and compare models, where
+//! [`crate::turn`] can only grade sessions that already happened. Ori owns the
+//! running, so cases live here and render to the `*.eval.ts` it insists on.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -164,7 +156,6 @@ impl Outcome {
     }
 }
 
-/// Every case against one model, as Ori reported it.
 #[derive(Debug, Clone)]
 pub struct ModelRun {
     pub model: String,
@@ -239,11 +230,9 @@ pub fn run_model(dir: &Path, repo: &Path, cases: &[Case], model: Option<&str>) -
 /// wrong subject, so the name is checked rather than assumed.
 const HARNESS: &str = "aster";
 
-/// Pull per-case outcomes out of Ori's report.
-///
-/// Two arrays carry half the story each and are ordered alike: `tests` names
-/// the case and says whether it passed, `results` records which harness ran and
-/// what it called. They are joined by index.
+/// Pull per-case outcomes out of Ori's report. Two arrays carry half the story
+/// each and are ordered alike: `tests` names the case and whether it passed,
+/// `results` records which harness ran. They are joined by index.
 fn summarise(model: &str, report: &serde_json::Value) -> ModelRun {
     let array = |key: &str| {
         report
@@ -397,10 +386,9 @@ pub fn render_live(runs: &[ModelRun]) -> String {
     out
 }
 
-/// The checkout the cases are written against: the enclosing git worktree, not
-/// the current directory. The eval workspace lives inside the repo, so running
-/// from there would otherwise point aster at `crates/aster-eval/evals`, where
-/// every path a case names is genuinely absent and every case fails on content.
+/// The checkout the cases are written against: the enclosing git worktree, not the
+/// current directory. The eval workspace lives inside the repo, so running from
+/// there would point aster at `crates/aster-eval/evals` and fail every case.
 pub fn repo_root(from: &Path) -> PathBuf {
     from.ancestors()
         .find(|dir| dir.join(".git").exists())

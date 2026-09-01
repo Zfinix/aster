@@ -1,7 +1,6 @@
-//! Retry middleware honoring server backpressure: times waits from `Retry-After` /
-//! `x-ratelimit-reset`, treats a rate-limited `403` (GitHub's secondary limit) as
-//! transient, and bounds retries by attempt count and a total deadline.
-//! (`reqwest-retry`'s default ignores those headers and treats every `403` as fatal.)
+//! Retry middleware honoring server backpressure: waits timed from `Retry-After` /
+//! `x-ratelimit-reset`, a rate-limited `403` treated as transient, retries bounded
+//! by attempt count and a deadline. `reqwest-retry`'s default does none of it.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -115,10 +114,9 @@ fn header_delay(headers: &HeaderMap) -> Option<Duration> {
     reset_delay(reset, now)
 }
 
-/// Providers disagree on the unit of `x-ratelimit-reset`: OpenRouter sends
-/// epoch milliseconds, others epoch seconds, and some a plain seconds-from-now.
-/// Reading milliseconds as seconds asks for a wait of millennia, which the
-/// cap then turns into a full-minute stall, so normalize before subtracting.
+/// Providers disagree on the unit of `x-ratelimit-reset`: epoch milliseconds,
+/// epoch seconds, or plain seconds-from-now. Reading milliseconds as seconds asks
+/// for a wait of millennia, which the cap then turns into a full-minute stall.
 fn reset_delay(reset: u64, now: u64) -> Option<Duration> {
     // Anything an order of magnitude past "now" is a finer unit, not the year 55000.
     let reset_secs = if reset > now.saturating_mul(10) {

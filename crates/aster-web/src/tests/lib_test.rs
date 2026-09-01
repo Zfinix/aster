@@ -71,9 +71,10 @@ fn backend(with: Configured) -> WebBackend {
         context_dev: with
             .context_dev
             .then(|| context_dev::ContextDevClient::new("ctxt-key".into(), timeout)),
-        firecrawl: with
-            .firecrawl
-            .then(|| firecrawl::FirecrawlClient::new("fc-key".into(), timeout)),
+        firecrawl: firecrawl::FirecrawlClient::new(
+            with.firecrawl.then(|| "fc-key".into()),
+            timeout,
+        ),
         browserbase: with
             .browserbase
             .then(|| browserbase::BrowserbaseClient::new("bb-key".into(), timeout)),
@@ -243,23 +244,42 @@ fn perplexity_serves_search_when_exa_is_absent() {
 }
 
 #[test]
-fn a_keyed_provider_wins_the_search_name_from_duckduckgo() {
-    let keyless = register_tools(&backend(Configured::default()));
-    let described = |tools: &[McpTool]| {
-        tools
-            .iter()
+fn a_keyed_provider_wins_the_search_name_from_keyless_firecrawl() {
+    let described = |with: Configured| {
+        register_tools(&backend(with))
+            .into_iter()
             .find(|t| t.name == "search")
             .expect("search is always offered")
             .description
-            .clone()
     };
-    assert!(described(&keyless).contains("DuckDuckGo"));
+    // With no keys at all, Firecrawl's keyless tier leads search over DuckDuckGo.
+    let keyless = described(Configured::default());
+    assert!(keyless.contains("Firecrawl"), "{keyless}");
+    assert!(!keyless.contains("DuckDuckGo"), "{keyless}");
 
-    let keyed = register_tools(&backend(Configured {
+    let keyed = described(Configured {
         context_dev: true,
         ..Default::default()
-    }));
-    assert!(!described(&keyed).contains("DuckDuckGo"));
+    });
+    assert!(!keyed.contains("DuckDuckGo"), "{keyed}");
+    assert!(!keyed.contains("Firecrawl"), "{keyed}");
+}
+
+#[test]
+fn keyless_firecrawl_serves_search_and_extract_but_never_crawl() {
+    let names = tool_names(&backend(Configured::default()));
+    assert!(names.contains(&"search".to_string()));
+    assert!(names.contains(&"extract".to_string()));
+    assert!(!names.contains(&"crawl".to_string()));
+}
+
+#[tokio::test]
+async fn keyless_firecrawl_says_a_key_is_needed_to_crawl() {
+    let err = firecrawl::FirecrawlClient::new(None, 1000)
+        .crawl("https://example.com", &CrawlOptions::default())
+        .await
+        .expect_err("the keyless tier cannot crawl");
+    assert!(err.to_string().contains("FIRECRAWL_API_KEY"), "{err}");
 }
 
 #[test]
@@ -290,15 +310,6 @@ async fn crawl_without_a_capable_provider_says_which_keys_to_set() {
     let msg = err.to_string();
     assert!(msg.contains("CONTEXT_DEV_API_KEY"), "{msg}");
     assert!(msg.contains("FIRECRAWL_API_KEY"), "{msg}");
-}
-
-#[test]
-fn search_falls_through_to_the_keyless_provider() {
-    // Reaching DuckDuckGo would be a network call, so this asserts the tier
-    // exists rather than running it: with no key, search no longer errors.
-    let names = tool_names(&backend(Configured::default()));
-    assert!(names.contains(&"search".to_string()));
-    assert!(names.contains(&"extract".to_string()));
 }
 
 #[tokio::test]

@@ -7,7 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Web search and page extraction now work on a fresh install, with no key.**
+  Firecrawl opened a keyless tier, so `web/search` and `web/extract` go to
+  Firecrawl by default instead of starting at DuckDuckGo and a plain HTTP fetch.
+  The tier is rate-limited per IP, so a refusal falls through to the keyless
+  providers that were already there rather than failing the call. `web/crawl`
+  still needs `FIRECRAWL_API_KEY`, which Firecrawl does not serve keyless, and
+  setting the key also lifts the rate limit and restores Firecrawl's higher
+  place in the dispatch order.
+
+- **`aster init` can point at any OpenAI-compatible endpoint.** The provider
+  picker only offered the catalog's rows, so a self-hosted server, a proxy, or
+  a hosted endpoint the catalog does not know had no way through the wizard. A
+  Custom endpoint row now asks for the base URL, stores the key as
+  `ASTER_API_KEY` (the one var that crosses endpoints), and when the endpoint
+  already in use matches no catalog row, the cursor starts on that row with the
+  URL offered back to edit rather than retype.
+
+- **`aster init` asks about every web provider, not two of them.** Its web step
+  offered Context.dev and Jina because those two were hardcoded; Firecrawl, Exa,
+  Perplexity, Browserbase and Cloudflare had no prompt anywhere. The step now
+  reads the same catalog `aster key` and `aster-web` resolve from, so a provider
+  added there is askable without touching `init`, and Cloudflare's two vars are
+  asked for as one provider.
+
+- **`aster key` stores the API keys Aster reads.** Keys never live in
+  `aster.yaml`, and the only things that wrote them were `aster init` (which
+  asked for exactly two web-tool keys, hardcoded) and `aster login`. Every other
+  var, `FIRECRAWL_API_KEY` and the rest of the web providers included, meant
+  hand-editing `~/.aster/.env`. `aster key list` now shows every key Aster
+  reads and which layer supplies it, `set` and `unset` write the file, and
+  `path` says which files are read here. A value left off the command line is
+  asked for without echoing, so it stays out of shell history, and because the
+  shell outranks both `.env` files, `set` says when an export would keep
+  winning instead of leaving it to surface as a 401.
+
 ### Fixed
+
+- **`aster serve` loads and saves the CLI config instead of keeping its own.**
+  A model or provider picked in the browser was stored in `serve.json` and
+  applied as an environment override on every later serve, silently outranking
+  `aster.yaml`: repointing the CLI with `aster init` or `aster provider use`
+  changed nothing in the browser, which kept running a months-old click. The
+  override layer is gone. A pick in the browser now runs `aster provider use`
+  or `aster model use`, landing in the same `aster.yaml` the terminal reads,
+  and serve resolves every run from that file. `serve.json` keeps only
+  browser-side conveniences: permission mode, effort, and the picker's recent
+  and hand-typed model lists.
 
 - **Aster's editor commands are findable again in the command palette.** Ten of
   them set the `Aster` prefix as a `category` rather than baking it into the

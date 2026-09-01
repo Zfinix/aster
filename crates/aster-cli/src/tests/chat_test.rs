@@ -601,7 +601,6 @@ async fn a_question_without_options_declines_rather_than_asking_again() {
     assert!(rx.try_recv().is_err(), "the UI is never troubled");
 }
 
-/// One option is not a choice: it is answered without a round trip.
 #[tokio::test]
 async fn a_single_option_is_taken_without_asking() {
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);

@@ -11,13 +11,11 @@ use crate::SandboxBackend;
 use crate::SandboxProfile;
 use crate::detect_backend;
 
-/// Configuration for running a command in the sandbox.
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
     pub profile: SandboxProfile,
     /// Environment variables to set (in addition to a filtered inherited set).
     pub env: Vec<(String, String)>,
-    /// Environment variables to explicitly remove.
     pub unset_env: Vec<String>,
 }
 
@@ -41,7 +39,6 @@ impl SandboxConfig {
     }
 }
 
-/// The output of a sandboxed command.
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
     pub stdout: String,
@@ -51,7 +48,6 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
-    /// True when the command exited successfully (code 0).
     pub fn success(&self) -> bool {
         self.exit_code == Some(0)
     }

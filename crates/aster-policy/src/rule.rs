@@ -7,7 +7,6 @@ use globset::{Glob, GlobMatcher};
 
 use crate::action::Action;
 
-/// The tool class a rule gates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Subject {
     Edit,

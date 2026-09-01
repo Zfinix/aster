@@ -14,7 +14,6 @@ fn needs_key_follows_auth() {
         name: "X".into(),
         base_url: "https://x/v1".into(),
         example_model: "m".into(),
-        recommended: Vec::new(),
         auth: "Bearer".into(),
     };
     let local = Provider {
@@ -24,7 +23,6 @@ fn needs_key_follows_auth() {
             name: "O".into(),
             base_url: "http://localhost/v1".into(),
             example_model: "m".into(),
-            recommended: Vec::new(),
             auth: String::new(),
         }
     };
@@ -134,4 +132,70 @@ fn append_line_adds_trailing_newline_when_missing() {
     fs::write(&f, "A=1").unwrap();
     append_line(&f, "B=2").unwrap();
     assert_eq!(fs::read_to_string(&f).unwrap(), "A=1\nB=2\n");
+}
+
+#[test]
+fn remove_env_key_drops_only_its_line_and_reports_presence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join(".env");
+    set_env_key(&path, "OPEN_ROUTER_API_KEY", "sk-or-abc").unwrap();
+    set_env_key(&path, "OTHER_KEY", "keep-me").unwrap();
+
+    assert!(remove_env_key(&path, "OPEN_ROUTER_API_KEY").unwrap());
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("OPEN_ROUTER_API_KEY"));
+    assert!(text.contains("OTHER_KEY=keep-me"));
+
+    assert!(!remove_env_key(&path, "OPEN_ROUTER_API_KEY").unwrap());
+    assert!(!remove_env_key(&tmp.path().join("missing.env"), "X").unwrap());
+}
+
+#[test]
+fn a_web_key_prompt_names_the_var_only_when_the_provider_needs_two() {
+    assert_eq!(
+        web_prompt_label("Firecrawl", "FIRECRAWL_API_KEY", 1),
+        "Firecrawl API key"
+    );
+    // Asked twice for Cloudflare, the var name is the only thing telling the
+    // account id from the token.
+    assert_eq!(
+        web_prompt_label("Cloudflare Browser Rendering", "CLOUDFLARE_BR_API_TOKEN", 2),
+        "Cloudflare Browser Rendering · CLOUDFLARE_BR_API_TOKEN"
+    );
+}
+
+#[test]
+fn every_web_provider_can_be_prompted_for() {
+    // The wizard builds a prompt for each var the catalog names, so a provider
+    // added to aster-web is askable without touching init.
+    for (name, vars) in crate::config::key::web_providers() {
+        for (var, _) in &vars {
+            let label = web_prompt_label(name, var, vars.len());
+            assert!(label.contains(name), "{label}");
+            assert!(!label.is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_custom_endpoint_takes_a_key_and_stores_it_in_the_shared_var() {
+    // The synthesized row: no auth note means the key prompt is offered, and an
+    // off-catalog host resolves to the one var that crosses endpoints.
+    let custom = Provider {
+        id: "custom".to_string(),
+        name: "Custom endpoint".to_string(),
+        base_url: "http://localhost:8080/v1".to_string(),
+        example_model: String::new(),
+        auth: String::new(),
+    };
+    assert!(custom.needs_key());
+    assert!(!custom.templated());
+    assert_eq!(key_var_for(&custom.base_url), keys::SHARED_KEY_VAR);
+
+    // A hosted endpoint the catalog does not know is custom too, and must not
+    // borrow a var from a catalog vendor that merely shares a suffix.
+    let aliyun = "https://ws-26w9qup24v8mief7.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+    assert_eq!(key_var_for(aliyun), keys::SHARED_KEY_VAR);
+    let providers = load_providers().expect("catalog parses");
+    assert!(!providers.iter().any(|p| p.base_url == aliyun));
 }

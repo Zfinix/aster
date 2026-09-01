@@ -1,13 +1,7 @@
 #![forbid(unsafe_code)]
-//! Agent Plugins packages: a `plugin.json` manifest at the root, Agent Skills
-//! under `skills/`, and MCP servers in `mcp.json`. Component locations are
-//! fixed, so the manifest cannot redirect discovery.
-//!
-//! Loading is deliberately forgiving in the places the specification says it
-//! must be: a bad component fails alone, and only a bad manifest rejects the
-//! whole plugin.
-//!
-//! <https://github.com/agentplugins/agent-plugins-spec>
+//! Agent Plugins packages: a `plugin.json` manifest at the root, Agent Skills under
+//! `skills/`, MCP servers in `mcp.json`. Only a bad manifest rejects the whole
+//! plugin. <https://github.com/agentplugins/agent-plugins-spec>
 
 pub mod manifest;
 pub mod mcp;
@@ -21,7 +15,6 @@ use anyhow::{Context, Result, bail};
 pub use manifest::{Author, Manifest, PLUGIN_SCHEMA};
 pub use mcp::{Http, MCP_SCHEMA, Server, Stdio, Transport};
 
-/// The specification version this client implements.
 pub const SPEC_VERSION: &str = "1.0.0";
 
 pub const MANIFEST_FILE: &str = "plugin.json";

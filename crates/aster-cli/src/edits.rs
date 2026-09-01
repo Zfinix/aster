@@ -80,10 +80,9 @@ const REGION_CONTEXT_LINES: usize = 5;
 /// Bigram-similarity floor below which a "closest" line is just noise.
 const MIN_SIMILARITY: f64 = 0.5;
 
-/// The file region most similar to a failed search, rendered with line
-/// numbers. Retrying a mismatched edit verbatim was the most common wasted
-/// round in transcript studies; embedding the real text removes the extra
-/// read the retry depends on.
+/// The file region most similar to a failed search, with line numbers. Retrying a
+/// mismatched edit verbatim was the most common wasted round, and the real text
+/// removes the extra read the retry depends on.
 fn closest_region(content: &str, search: &str) -> Option<String> {
     let anchor = search.lines().find(|l| !l.trim().is_empty())?.trim();
     let lines: Vec<&str> = content.lines().collect();
@@ -148,7 +147,6 @@ pub fn resolve_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-/// Where a resolved path landed relative to the repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Inside the repo. The policy's globs apply to the repo-relative path.
@@ -219,11 +217,9 @@ pub fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-/// Resolve `path` for a file that does not exist yet, so it can be created.
-/// [`resolve_anywhere`] cannot: canonicalizing a missing path always fails. The
-/// nearest existing ancestor is canonicalized instead and the missing tail
-/// rebuilt under it, so a symlink cannot move the write out of the directory
-/// the caller gates on.
+/// Resolve `path` for a file that does not exist yet; [`resolve_anywhere`] cannot,
+/// since canonicalizing a missing path always fails. The nearest existing ancestor
+/// is canonicalized instead, so a symlink cannot move the write out of it.
 pub fn resolve_new_anywhere(repo_root: &Path, path: &str) -> Result<(PathBuf, Scope)> {
     let root = repo_root
         .canonicalize()

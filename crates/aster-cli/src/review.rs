@@ -13,7 +13,7 @@ use aster_models::{Finding, ReviewReport};
 use clap::Args;
 use tempfile::TempDir;
 
-use crate::provider::env_or;
+use crate::config::provider::env_or;
 use crate::term::{BOLD, CYAN, DIM, GREEN, ORANGE, RESET};
 use crate::util::{human, usage_json};
 use crate::{credentials, git, github};
@@ -89,7 +89,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
     let settings = crate::settings::Settings::load(repo_root.as_deref())?;
     let review = &settings.review;
-    let ai_client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
+    let ai_client = crate::config::provider::resolve_client(&settings, args.model.as_deref())?;
 
     let (raw_diff, pr_target) = resolve_diff(&args).await?;
     // --include overrides the file's include list; --exclude adds to it.

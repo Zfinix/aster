@@ -1,9 +1,6 @@
-//! `aster skills`: manage agent skills, mirroring the `npx skills@latest`
-//! surface. Sources include other agents' skills roots, keyed as in that CLI. Skills install user-global (`<config>/aster/skills`) by default, or
-//! into this project (`.aster/skills`) with `-p`, where they shadow a global
-//! skill of the same name. A git source is fetched lazily: a treeless partial
-//! clone with only the `SKILL.md` manifests checked out, so browsing is cheap
-//! and a skill's full contents download only when chosen.
+//! `aster skills`: manage agent skills, mirroring the `npx skills@latest` surface.
+//! `-p` installs into the project, shadowing a global skill of the same name. A git
+//! source is fetched lazily: manifests first, full contents only when chosen.
 
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal};
@@ -437,7 +434,6 @@ fn resolve_and_list(source: &str, full_depth: bool, tty: bool) -> Result<(Source
     Ok((src, skills))
 }
 
-/// Pick which skills to install from flags, or interactively.
 fn select_skills(
     title: &str,
     skills: &[Skill],

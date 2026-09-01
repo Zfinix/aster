@@ -5,7 +5,7 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::theme;
 
@@ -23,9 +23,14 @@ pub(super) struct MarkdownStream {
     in_fence: bool,
     /// Rows of an in-flight table, held until the table ends.
     table: Vec<String>,
+    /// Terminal width from the last draw; tables are capped to it.
+    width: usize,
 }
 
 impl MarkdownStream {
+    pub(super) fn set_width(&mut self, width: usize) {
+        self.width = width;
+    }
     /// Append streamed text, returning the display lines now final.
     pub(super) fn push(&mut self, delta: &str) -> Vec<Line<'static>> {
         self.buf.push_str(delta);
@@ -140,7 +145,7 @@ impl MarkdownStream {
     fn end_table(&mut self, out: &mut Vec<Line<'static>>) {
         if !self.table.is_empty() {
             let rows = std::mem::take(&mut self.table);
-            out.extend(render_table(&rows));
+            out.extend(render_table(&rows, self.width));
         }
     }
 }
@@ -245,8 +250,10 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
 }
 
 /// Render buffered `|`-rows as an aligned table; pulldown-cmark validates the
-/// header, and a malformed table falls back to plain rows.
-fn render_table(rows: &[String]) -> Vec<Line<'static>> {
+/// header, and a malformed table falls back to plain rows. Cells go through
+/// `inline` so markup renders, and the widest columns shrink with a `…` until
+/// the whole table fits `max` columns instead of wrapping mid-rule.
+fn render_table(rows: &[String], max: usize) -> Vec<Line<'static>> {
     let cells: Vec<Vec<String>> = rows
         .iter()
         .map(|r| {
@@ -271,35 +278,119 @@ fn render_table(rows: &[String]) -> Vec<Line<'static>> {
     }
 
     let columns = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let header_style = Style::default().add_modifier(Modifier::BOLD);
+    let rendered: Vec<Vec<(Vec<Span<'static>>, usize)>> = cells
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    let style = if i == 0 {
+                        header_style
+                    } else {
+                        Style::default()
+                    };
+                    let spans = inline(cell, style);
+                    let w = spans
+                        .iter()
+                        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    (spans, w)
+                })
+                .collect()
+        })
+        .collect();
+
     let mut widths = vec![0usize; columns];
-    for row in cells.iter().filter(|r| !is_delim(r)) {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(UnicodeWidthStr::width(cell.as_str()));
+    for (i, row) in rendered.iter().enumerate() {
+        if is_delim(&cells[i]) {
+            continue;
+        }
+        for (c, (_, w)) in row.iter().enumerate() {
+            widths[c] = widths[c].max(*w);
+        }
+    }
+
+    // Shrink the widest columns until the table fits the terminal, so the
+    // rule line never wraps into stray fragments.
+    let total =
+        |widths: &[usize]| widths.iter().sum::<usize>() + 3 * widths.len().saturating_sub(1);
+    if max > 0 {
+        while total(&widths) > max {
+            let (i, _) = widths
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, w)| **w)
+                .unwrap_or((0, &0));
+            if widths[i] <= 4 {
+                break;
+            }
+            widths[i] -= 1;
         }
     }
 
     let mut out = Vec::new();
-    for (i, row) in cells.iter().enumerate() {
-        if is_delim(row) {
+    for (i, row) in rendered.iter().enumerate() {
+        if is_delim(&cells[i]) {
             let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
             out.push(Line::from(Span::styled(rule.join("─┼─"), dim())));
             continue;
         }
-        let style = if i == 0 {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
         let mut spans = Vec::new();
         for (c, width) in widths.iter().enumerate() {
             if c > 0 {
                 spans.push(Span::styled(" │ ", dim()));
             }
-            let text = row.get(c).cloned().unwrap_or_default();
-            let pad = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
-            spans.push(Span::styled(format!("{text}{}", " ".repeat(pad)), style));
+            let (cell_spans, cell_w) = row.get(c).cloned().unwrap_or_default();
+            let (cell_spans, cell_w) = if cell_w > *width {
+                (truncate_spans(cell_spans, *width), *width)
+            } else {
+                (cell_spans, cell_w)
+            };
+            spans.extend(cell_spans);
+            spans.push(Span::raw(" ".repeat(width.saturating_sub(cell_w))));
         }
         out.push(Line::from(spans));
+    }
+    out
+}
+
+/// Cut styled spans down to at most `max` columns, ending with `…` when cut.
+fn truncate_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    let mut cut = false;
+    let budget = max.saturating_sub(1);
+    for span in spans {
+        if used >= budget {
+            cut = true;
+            break;
+        }
+        let w = UnicodeWidthStr::width(span.content.as_ref());
+        if used + w <= budget {
+            used += w;
+            out.push(span);
+        } else {
+            let keep = budget - used;
+            let mut taken = 0usize;
+            let mut end = 0usize;
+            for (off, ch) in span.content.char_indices() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if taken + cw > keep {
+                    break;
+                }
+                taken += cw;
+                end = off + ch.len_utf8();
+            }
+            if end > 0 {
+                out.push(Span::styled(span.content[..end].to_string(), span.style));
+            }
+            cut = true;
+            break;
+        }
+    }
+    if cut && !out.is_empty() {
+        out.push(Span::styled("…", out.last().unwrap().style));
     }
     out
 }

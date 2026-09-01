@@ -54,6 +54,27 @@ fn overshoot(t: f32) -> f32 {
 
 static ACTIVE: RwLock<ThemeState> = RwLock::new(ThemeState::stable(Theme::DEFAULT));
 
+/// Gradient stops for the YOLO takeover animation: bright at the shockwave
+/// front, ember at the tail. Entering runs hot red; leaving settles back to the
+/// default accent family.
+pub fn takeover_palette(entering: bool) -> (Color, Color, Color, Color) {
+    if entering {
+        (
+            Color::Rgb(0xff, 0x45, 0x45),
+            Color::Rgb(0xf0, 0x38, 0x38),
+            Color::Rgb(0x8a, 0x1f, 0x1f),
+            Color::Rgb(0x4a, 0x12, 0x12),
+        )
+    } else {
+        (
+            Color::Rgb(0xf8, 0xcb, 0x66),
+            Color::Rgb(0xf2, 0x76, 0x4f),
+            Color::Rgb(0x8a, 0x4a, 0x2a),
+            Color::Rgb(0x3f, 0x2a, 0x1a),
+        )
+    }
+}
+
 pub fn set(t: Theme) {
     let mut state = ACTIVE.write().unwrap();
     if state.target.same_theme(&t) {
@@ -156,13 +177,13 @@ impl Theme {
         heading_fg: Color::Rgb(0xdd, 0xdd, 0xd8),
         link_fg: Color::Rgb(0x6c, 0xb6, 0xe3),
         placeholder: Color::Rgb(0x4d, 0x4d, 0x4d),
-        success: Color::Green,
-        warning: Color::Yellow,
-        severity_critical: Color::Red,
-        severity_high: Color::LightRed,
-        severity_medium: Color::Yellow,
-        severity_low: Color::Blue,
-        severity_info: Color::DarkGray,
+        success: Color::Rgb(0x7e, 0xab, 0x6a),
+        warning: Color::Rgb(0xf8, 0xcb, 0x66),
+        severity_critical: Color::Rgb(0xef, 0x5a, 0x6f),
+        severity_high: Color::Rgb(0xe0, 0x6a, 0x6a),
+        severity_medium: Color::Rgb(0xf8, 0xcb, 0x66),
+        severity_low: Color::Rgb(0x6c, 0xb6, 0xe3),
+        severity_info: Color::Rgb(0x8a, 0x8a, 0x85),
         mark: [
             Color::Rgb(239, 90, 111),
             Color::Rgb(239, 90, 111),
@@ -174,6 +195,53 @@ impl Theme {
             Color::Rgb(247, 193, 95),
             Color::Rgb(248, 203, 102),
             Color::Rgb(248, 203, 102),
+        ],
+    };
+
+    /// Light palette for pale terminals: warm paper background, dark text, the
+    /// same accent family darkened enough to read on white.
+    pub const LIGHT: Theme = Theme {
+        text: Color::Rgb(0x1a, 0x1a, 0x1a),
+        dim: Color::Rgb(0x6a, 0x6a, 0x66),
+        dimmer: Color::Rgb(0x9a, 0x9a, 0x96),
+        faint: Color::Rgb(0xb8, 0xb4, 0xae),
+        accent: Color::Rgb(0xc2, 0x5a, 0x30),
+        error: Color::Rgb(0xc0, 0x3a, 0x50),
+        rail_bg: Color::Rgb(0xf5, 0xf2, 0xee),
+        pane_bg: Color::Rgb(0xf5, 0xf2, 0xee),
+        sel_bg: Color::Rgb(0xf0, 0xdf, 0xd2),
+        amber: Color::Rgb(0x9a, 0x6d, 0x14),
+        blue: Color::Rgb(0x2a, 0x6f, 0x9e),
+        purple: Color::Rgb(0x74, 0x4a, 0xb8),
+        add_bg: Color::Rgb(0xe2, 0xee, 0xda),
+        add_fg: Color::Rgb(0x3f, 0x6b, 0x2a),
+        add_mark: Color::Rgb(0x86, 0xa8, 0x72),
+        del_bg: Color::Rgb(0xf4, 0xdc, 0xdc),
+        del_fg: Color::Rgb(0xa3, 0x3a, 0x3a),
+        del_mark: Color::Rgb(0xc0, 0x84, 0x84),
+        inline_code_bg: Color::Rgb(0xe8, 0xe4, 0xde),
+        inline_code_fg: Color::Rgb(0x33, 0x30, 0x2c),
+        heading_fg: Color::Rgb(0x33, 0x30, 0x2c),
+        link_fg: Color::Rgb(0x2a, 0x6f, 0x9e),
+        placeholder: Color::Rgb(0xb0, 0xac, 0xa6),
+        success: Color::Rgb(0x4f, 0x7a, 0x3e),
+        warning: Color::Rgb(0x9a, 0x6d, 0x14),
+        severity_critical: Color::Rgb(0xc0, 0x3a, 0x50),
+        severity_high: Color::Rgb(0xb8, 0x4a, 0x4a),
+        severity_medium: Color::Rgb(0x9a, 0x6d, 0x14),
+        severity_low: Color::Rgb(0x2a, 0x6f, 0x9e),
+        severity_info: Color::Rgb(0x6a, 0x6a, 0x66),
+        mark: [
+            Color::Rgb(0xc2, 0x3a, 0x50),
+            Color::Rgb(0xc2, 0x3a, 0x50),
+            Color::Rgb(0xc2, 0x4a, 0x34),
+            Color::Rgb(0xc2, 0x5a, 0x30),
+            Color::Rgb(0xc2, 0x66, 0x30),
+            Color::Rgb(0xc0, 0x70, 0x36),
+            Color::Rgb(0xbc, 0x7a, 0x3c),
+            Color::Rgb(0xb8, 0x82, 0x42),
+            Color::Rgb(0xb4, 0x88, 0x48),
+            Color::Rgb(0xb4, 0x88, 0x48),
         ],
     };
 

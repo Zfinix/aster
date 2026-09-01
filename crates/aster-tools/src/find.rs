@@ -6,12 +6,9 @@ use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
 
-/// Find files under `base` whose repo-relative path or file name matches
-/// `pattern`, returning repo-relative paths up to `max_hits`.
-///
-/// A `.gitignore` entry hides a path from the fast pass but must not make it
-/// unreachable: an ignored directory is still part of the repository the user
-/// is asking about. When the filtered pass finds nothing, retry without it.
+/// Files under `base` whose repo-relative path or name matches `pattern`, up to
+/// `max_hits`. A `.gitignore` entry hides a path from the fast pass but must not
+/// make it unreachable, so an empty filtered pass is retried without it.
 pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Result<String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {

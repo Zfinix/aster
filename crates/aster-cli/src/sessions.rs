@@ -316,8 +316,7 @@ fn project_name(repo_root: &str) -> String {
 
 /// The checkout that owns a session: this one when the id is local, otherwise
 /// whichever project holds it. Sessions are filed per project, so an id from a
-/// sibling folder is invisible to a plain lookup however recent it is, and
-/// answering "no such session" there would be a lie.
+/// sibling folder is invisible to a plain lookup however recent it is.
 fn owner_of(store: &aster_persist::Store, repo_root: &Path, id: &str) -> Result<PathBuf> {
     if store.resume(repo_root, id).is_ok() {
         return Ok(repo_root.to_path_buf());

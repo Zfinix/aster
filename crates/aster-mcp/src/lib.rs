@@ -9,12 +9,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// One real tool advertised by an MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpTool {
     /// Stable server identifier configured by the host.
     pub server: String,
-    /// Tool name as advertised by that server.
     pub name: String,
     /// Short, task-oriented description used for discovery.
     pub description: String,
@@ -204,12 +202,10 @@ pub struct ToolManifestEntry {
     pub description: String,
 }
 
-/// The complete model-visible injection for one turn.
 #[derive(Debug, Clone)]
 pub struct Injection {
     /// The single OpenAI-compatible `aster_mcp` function definition.
     pub bridge_tool: Value,
-    /// Text to append to the system prompt.
     pub prompt: String,
     pub inventory: Inventory,
     /// Approximate token count of the full schema-free tool manifest.
@@ -317,7 +313,6 @@ impl Injector {
     }
 }
 
-/// The model's request to the one `aster_mcp` bridge tool.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum BridgeRequest {

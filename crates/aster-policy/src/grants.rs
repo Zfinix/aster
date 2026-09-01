@@ -4,18 +4,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-/// Out-of-repo directories the agent may read: seeded from
-/// `permissions.additional_directories`, then extended at runtime each time the
-/// user approves a prompt, so approving a directory once covers the rest of the
-/// session.
-///
-/// A lookup walks the candidate's ancestors against a hash set rather than
-/// scanning the grants, so the cost is the path's depth no matter how many
-/// grants have accumulated, and a grant automatically covers everything nested
-/// under it.
-///
-/// Shared as `Arc<Grants>`: `grant` takes `&self` so a tool call deep in the
-/// agent loop can record an approval without threading `&mut` through it.
+/// Out-of-repo directories the agent may read, seeded from
+/// `permissions.additional_directories` and extended each time the user approves.
+/// A lookup walks the candidate's ancestors, so a grant covers everything nested.
 #[derive(Debug, Default)]
 pub struct Grants {
     roots: Mutex<HashSet<PathBuf>>,
@@ -60,13 +51,9 @@ impl Grants {
     }
 }
 
-/// Credential directories a *named command* may read inside the sandbox,
-/// approved one at a time by the user.
-///
-/// Deliberately not [`Grants`]: that set widens the agent's own file tools, and
-/// approving `gh` must not make `~/.config/gh` readable to `read_file` or to
-/// the next `cat`. Keying on the command is the whole point, so the pair is
-/// what gets stored.
+/// Credential directories a named command may read inside the sandbox, approved
+/// one at a time. Deliberately not [`Grants`]: approving `gh` must not make
+/// `~/.config/gh` readable to `read_file`, so the command is part of the key.
 #[derive(Debug, Default)]
 pub struct CommandGrants {
     pairs: Mutex<HashSet<(String, PathBuf)>>,

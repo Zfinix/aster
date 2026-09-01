@@ -1,5 +1,11 @@
-//! `aster config`: read and write `aster.yaml` without opening it. Every read
-//! reports where the value came from, since the shell outranks both files.
+//! `aster config`: the one command for providers, models, keys, and every
+//! setting. Reads are bare, writes are positional (`aster config model x`),
+//! and every read reports where the value came from, since the shell outranks
+//! both files.
+
+pub mod key;
+pub mod models;
+pub mod provider;
 
 use std::path::{Path, PathBuf};
 use std::process;
@@ -8,7 +14,7 @@ use std::{env, fs};
 use anyhow::{Context, Result, bail};
 use aster_ai::keys::env_non_empty;
 use clap::{Args, Subcommand};
-use cliclack::{log, outro, select, set_theme};
+use cliclack::{log, outro, password, select, set_theme};
 use serde_json::{Value, json};
 
 use crate::settings::Settings;
@@ -23,18 +29,30 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
-    /// Every key, what the next turn resolves it to, and where that came from.
+    /// Every setting, what the next turn resolves it to, and where it came from.
     List,
-    /// Print one key's resolved value, and nothing else.
+    /// Print one setting's resolved value, and nothing else.
     Get(GetArgs),
-    /// Write one key, checking the file still parses before saving it.
+    /// Write one setting, checking the file still parses before saving it.
     Set(SetArgs),
-    /// Take one key back out, restoring its default.
+    /// Take one setting back out, restoring its default.
     Unset(UnsetArgs),
     /// Which config files Aster reads here, and which of them exist.
     Path,
     /// Open a config file in $EDITOR, then check what you saved parses.
     Edit(Target),
+    /// The endpoints Aster knows, marking the one in use.
+    Providers,
+    /// Which endpoint is in use, and where that came from.
+    Provider(ProviderReadArgs),
+    /// What the configured endpoint serves.
+    Models(models::ModelsArgs),
+    /// Which model is in use, and where that came from.
+    Model(ModelReadArgs),
+    /// Every key Aster reads, whether it is set, and which file it came from.
+    Keys(models::KeysArgs),
+    /// The key status for the endpoint in use.
+    Key(KeyReadArgs),
 }
 
 /// Which file a write lands in. Neither flag means the repo's config when it
@@ -87,13 +105,18 @@ struct UnsetArgs {
     local: bool,
 }
 
-pub fn run(args: ConfigArgs) -> Result<()> {
+pub async fn run(args: ConfigArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let Some(command) = args.command else {
-        return match crate::picker::is_tty() {
-            true => menu(&repo_root),
-            false => list(&repo_root),
-        };
+        if !crate::picker::is_tty() {
+            return list(&repo_root);
+        }
+        // Nothing set up yet means the form has nothing to show; onboarding
+        // is the answer, the same one `aster init` gives.
+        if !crate::init::Current::read(&repo_root).configured {
+            return crate::init::run_onboarding().await;
+        }
+        return menu(&repo_root).await;
     };
     match command {
         ConfigCmd::List => list(&repo_root),
@@ -102,7 +125,168 @@ pub fn run(args: ConfigArgs) -> Result<()> {
         ConfigCmd::Unset(args) => unset(&repo_root, &args.key, args.global, args.local),
         ConfigCmd::Path => paths(&repo_root),
         ConfigCmd::Edit(target) => edit(&repo_root, target),
+        ConfigCmd::Providers => models::list_providers_command(),
+        ConfigCmd::Provider(args) => match args.target {
+            Some(target) => provider::use_provider(provider::UseProviderArgs {
+                target,
+                model: args.model,
+            }),
+            None => provider_status(&repo_root),
+        },
+        ConfigCmd::Models(args) => models::run(args).await,
+        ConfigCmd::Model(args) => match args.id {
+            Some(id) => models::use_model(models::UseModelArgs { id }),
+            None => model_status(&repo_root),
+        },
+        ConfigCmd::Keys(args) => key::list(&repo_root, args.all),
+        ConfigCmd::Key(args) => match (args.var, args.value) {
+            (Some(var), value) => key::set(&repo_root, &var, value.as_deref(), args.local),
+            (None, _) => key_status(&repo_root),
+        },
     }
+}
+
+/// The endpoint in use and where each part of it came from, so the read form
+/// answers the same question every other read here does.
+fn provider_status(repo_root: &Path) -> Result<()> {
+    let settings = Settings::load(Some(repo_root))?;
+    let (base_url, model) = provider::resolve_endpoint(&settings.review, None);
+    let source = match (
+        env_non_empty("ASTER_BASE_URL").is_some(),
+        settings.review.base_url.is_some(),
+    ) {
+        (true, _) => "your shell",
+        (false, true) => "aster.yaml",
+        (false, false) => "the built-in default",
+    };
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "provider": crate::init::provider_label(&base_url),
+                "base_url": base_url,
+                "model": model,
+                "source": source,
+            })
+        );
+        return Ok(());
+    }
+    println!("provider {}", crate::init::provider_label(&base_url));
+    println!("endpoint {}", base_url);
+    println!("model    {model}");
+    println!("{}", paint(DIM, &format!("from {source}")));
+    Ok(())
+}
+
+/// The model in use and where it came from.
+fn model_status(repo_root: &Path) -> Result<()> {
+    let settings = Settings::load(Some(repo_root))?;
+    let (_, model) = provider::resolve_endpoint(&settings.review, None);
+    let source = match (
+        env_non_empty("ASTER_MODEL").is_some(),
+        settings.review.model.is_some(),
+    ) {
+        (true, _) => "your shell",
+        (false, true) => "aster.yaml",
+        (false, false) => "the built-in default",
+    };
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({ "ok": true, "model": model, "source": source })
+        );
+        return Ok(());
+    }
+    println!("{model}");
+    println!("{}", paint(DIM, &format!("from {source}")));
+    Ok(())
+}
+
+/// The key situation for the endpoint in use: which var it reads, whether one
+/// is set, and which layer is supplying it.
+fn key_status(repo_root: &Path) -> Result<()> {
+    let settings = Settings::load(Some(repo_root))?;
+    let (base_url, _) = provider::resolve_endpoint(&settings.review, None);
+    let vars = aster_ai::keys::key_vars(&base_url);
+    let rows: Vec<(String, key::Source)> = vars
+        .iter()
+        .map(|v| ((*v).to_string(), key::source(v, repo_root)))
+        .collect();
+    if crate::json_mode() {
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(v, s)| json!({ "var": v, "source": s.as_str() }))
+            .collect();
+        println!(
+            "{}",
+            json!({ "ok": true, "base_url": base_url, "vars": rows })
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        paint(
+            BOLD,
+            &format!("keys for {}", crate::init::provider_label(&base_url))
+        )
+    );
+    for (var, source) in &rows {
+        println!("  {var:<24} {}", source.label());
+    }
+    if rows.iter().all(|(_, s)| *s == key::Source::Unset) {
+        println!(
+            "{}",
+            paint(
+                DIM,
+                "No key set for this endpoint. `aster config key <VAR>` stores one."
+            )
+        );
+    }
+    Ok(())
+}
+
+/// `aster config provider <target>`: the read form has no argument, the write
+/// form takes the endpoint to switch to.
+#[derive(Args)]
+struct ProviderReadArgs {
+    /// Provider id, name, or base URL, as `aster config providers` spells it.
+    /// Left out, the endpoint in use is reported instead.
+    #[arg(value_name = "PROVIDER")]
+    target: Option<String>,
+
+    /// Model to adopt with the endpoint. Defaults to its example model, since
+    /// an endpoint kept with a model it does not serve fails next turn.
+    #[arg(long, value_name = "ID")]
+    model: Option<String>,
+}
+
+/// `aster config model <id>`: same read/write split as provider.
+#[derive(Args)]
+struct ModelReadArgs {
+    /// Model id, as `aster config models` spells it. Left out, the model in
+    /// use is reported instead.
+    #[arg(value_name = "ID")]
+    id: Option<String>,
+}
+
+/// `aster config key <var> [value]`: read the endpoint's key status, or store
+/// any key var. The value is asked for without echoing when left out.
+#[derive(Args)]
+struct KeyReadArgs {
+    /// The variable, e.g. `OPENROUTER_API_KEY`. `aster config keys` spells
+    /// them all. Left out, the endpoint in use is reported on instead.
+    #[arg(value_name = "VAR")]
+    var: Option<String>,
+
+    /// The key itself. Left out, it is asked for without echoing, which keeps
+    /// it out of your shell history.
+    #[arg(value_name = "VALUE")]
+    value: Option<String>,
+
+    /// Write this repo's `.env` instead of `~/.aster/.env`, and git-ignore it.
+    #[arg(long)]
+    local: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -167,16 +351,18 @@ enum Group {
     Subagents,
     Review,
     Mcp,
+    Ui,
 }
 
 impl Group {
-    const ALL: [Group; 6] = [
+    const ALL: [Group; 7] = [
         Group::Model,
         Group::Permissions,
         Group::Agent,
         Group::Subagents,
         Group::Review,
         Group::Mcp,
+        Group::Ui,
     ];
 
     fn title(self) -> &'static str {
@@ -187,6 +373,7 @@ impl Group {
             Group::Subagents => "Sub-agents",
             Group::Review => "Code review",
             Group::Mcp => "MCP tools",
+            Group::Ui => "Display",
         }
     }
 
@@ -198,6 +385,7 @@ impl Group {
             Group::Subagents => "the fan-out the agent tool is allowed",
             Group::Review => "the review pipeline only, not chat",
             Group::Mcp => "how much of the tool catalogue the model sees",
+            Group::Ui => "what chat prints on its own",
         }
     }
 
@@ -255,7 +443,7 @@ const KEYS: &[Key] = &[
         unit: Unit::None,
         env: &["ASTER_BASE_URL"],
         default: aster_ai::DEFAULT_BASE_URL,
-        help: "Any OpenAI-compatible provider. `aster provider use` sets this and a model together",
+        help: "Any OpenAI-compatible URL, catalog or not; custom endpoints read their key from ASTER_API_KEY. `aster provider use` sets this and a model together",
     },
     Key {
         name: "review.effort",
@@ -537,6 +725,16 @@ const KEYS: &[Key] = &[
         default: "10",
         help: "Tools returned by one search",
     },
+    Key {
+        name: "ui.welcome",
+        label: "Session header",
+        group: Group::Ui,
+        kind: Kind::Bool,
+        unit: Unit::None,
+        env: &[],
+        default: "true",
+        help: "Print the model, provider, and skills header when chat starts",
+    },
 ];
 
 fn key(name: &str) -> Result<&'static Key> {
@@ -605,6 +803,7 @@ fn configured(settings: &Settings, name: &str) -> Value {
         "mcp.context_tokens" => json!(mcp.context_tokens),
         "mcp.inventory_percent" => float(mcp.inventory_percent),
         "mcp.search_limit" => json!(mcp.search_limit),
+        "ui.welcome" => json!(settings.ui.welcome),
         _ => Value::Null,
     }
 }
@@ -771,9 +970,12 @@ fn with_unit(text: &str, unit: Unit) -> String {
     }
 }
 
-/// The first screen: a group of settings, the file writes land in, or the way out.
+/// The first screen: the provider, the keys, a group of settings, the file
+/// writes land in, or the way out.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Top {
+    Provider,
+    Keys,
     Group(Group),
     Scope,
     Done,
@@ -788,7 +990,7 @@ enum Row {
 
 /// The form a bare `aster config` opens. Every write goes through `set` and
 /// `unset`'s path, so the form can do nothing the flags cannot.
-fn menu(repo_root: &Path) -> Result<()> {
+pub(crate) async fn menu(repo_root: &Path) -> Result<()> {
     set_theme(crate::init::AsterTheme);
     print!("{}", crate::tui::mark_ansi());
 
@@ -796,13 +998,19 @@ fn menu(repo_root: &Path) -> Result<()> {
         global: crate::settings::project_config(Some(repo_root)).is_none(),
         local: crate::settings::project_config(Some(repo_root)).is_some(),
     };
-    let mut at = Top::Group(Group::Model);
+    let mut at = Top::Provider;
     let mut saved = 0usize;
 
     log::info(headline(repo_root)?)?;
     loop {
         let path = target.path(repo_root)?;
         let mut menu = select::<Top>("What do you want to change?").initial_value(at);
+        menu = menu.item(Top::Provider, "Provider & model", provider_hint(repo_root)?);
+        menu = menu.item(
+            Top::Keys,
+            "API keys",
+            "every key Aster reads, stored in .env",
+        );
         for group in Group::ALL {
             menu = menu.item(Top::Group(group), group.title(), group.blurb());
         }
@@ -816,6 +1024,8 @@ fn menu(repo_root: &Path) -> Result<()> {
         match top {
             Top::Done => break,
             Top::Scope => target = flip(target),
+            Top::Provider => saved += provider_flow(target, repo_root).await?,
+            Top::Keys => saved += keys_flow(repo_root, target.local)?,
             Top::Group(group) => saved += settings_in(group, &path, repo_root)?,
         }
     }
@@ -826,6 +1036,103 @@ fn menu(repo_root: &Path) -> Result<()> {
         n => format!("{n} settings saved."),
     })?;
     Ok(())
+}
+
+fn provider_hint(repo_root: &Path) -> Result<String> {
+    let settings = Settings::load(Some(repo_root))?;
+    let (base_url, model) = provider::resolve_endpoint(&settings.review, None);
+    Ok(format!(
+        "{} · {model}",
+        crate::init::provider_label(&base_url)
+    ))
+}
+
+/// The init wizard's provider step, reached from the form: endpoint, model,
+/// and optionally the key, saved to the scoped file. Returns writes made.
+async fn provider_flow(target: Target, repo_root: &Path) -> Result<usize> {
+    let providers = crate::init::load_providers()?;
+    let current = crate::init::Current::read(repo_root);
+    let Some(chosen) = crate::init::provider_setup(&providers, &current).await? else {
+        return Ok(0);
+    };
+    let path = target.path(repo_root)?;
+    crate::settings::write_review(
+        &path,
+        &[("base_url", &chosen.base_url), ("model", &chosen.model)],
+    )?;
+    log::success(format!(
+        "{} · {} · saved to {}",
+        crate::init::provider_label(&chosen.base_url),
+        chosen.model,
+        label(&path, repo_root)
+    ))?;
+    let mut saved = 1;
+    if let Some(key) = chosen.api_key.as_deref() {
+        key::set(repo_root, chosen.key_var, Some(key), target.local)?;
+        saved += 1;
+    }
+    for var in ["ASTER_BASE_URL", "ASTER_MODEL"] {
+        if env_non_empty(var).is_some() {
+            log::warning(format!(
+                "{var} is set in this shell and outranks the saved value"
+            ))?;
+        }
+    }
+    Ok(saved)
+}
+
+/// Every key Aster reads in one list: pick one, then type a value to store it,
+/// enter to keep it, or `-` to clear it. Returns writes made.
+fn keys_flow(repo_root: &Path, local: bool) -> Result<usize> {
+    let mut saved = 0usize;
+    let mut at = 0usize;
+    loop {
+        let rows = key::rows(repo_root, true);
+        let back = rows.len();
+        let mut menu = select::<usize>("Which key? (type to search)")
+            .initial_value(at.min(back))
+            .filter_mode()
+            .max_rows(12);
+        for (i, row) in rows.iter().enumerate() {
+            let state = match &row.masked {
+                Some(tail) => format!("{tail} · {}", row.source.label()),
+                None => "not set".to_string(),
+            };
+            menu = menu.item(i, row.var, format!("{} · {state}", row.label));
+        }
+        menu = menu.item(back, "Back", "");
+
+        let Some(i) = or_cancel(menu.interact())? else {
+            break;
+        };
+        at = i;
+        if i == back {
+            break;
+        }
+        let row = &rows[i];
+        let prompt = match &row.masked {
+            Some(tail) => format!(
+                "{} ({tail} is stored · enter to keep · {CLEAR} to clear)",
+                row.var
+            ),
+            None => format!("{} (enter to go back)", row.var),
+        };
+        let Some(entered) = or_cancel(password(prompt).mask('•').allow_empty().interact())?
+        else {
+            continue;
+        };
+        let entered = entered.trim().to_string();
+        if entered.is_empty() {
+            continue;
+        }
+        if entered == CLEAR {
+            key::unset(repo_root, row.var, false, false)?;
+        } else {
+            key::set(repo_root, row.var, Some(&entered), local)?;
+        }
+        saved += 1;
+    }
+    Ok(saved)
 }
 
 /// One group's settings, until Back. Returns how many were written.
@@ -880,7 +1187,7 @@ fn settings_in(group: Group, path: &Path, repo_root: &Path) -> Result<usize> {
 /// status` gives.
 fn headline(repo_root: &Path) -> Result<String> {
     let settings = Settings::load(Some(repo_root))?;
-    let (base_url, model) = crate::provider::resolve_endpoint(&settings.review, None);
+    let (base_url, model) = provider::resolve_endpoint(&settings.review, None);
     Ok(format!(
         "{} · {model} · {} mode",
         crate::init::provider_label(&base_url),
@@ -1301,5 +1608,5 @@ fn label(path: &Path, repo_root: &Path) -> String {
 }
 
 #[cfg(test)]
-#[path = "tests/config_test.rs"]
+#[path = "../tests/config_test.rs"]
 mod tests;

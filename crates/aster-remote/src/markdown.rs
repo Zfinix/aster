@@ -1,9 +1,8 @@
 //! Renders agent markdown as Telegram HTML, chunked under the message limit.
 
-/// Convert markdown to Telegram-safe HTML chunks of at most `limit` chars.
-///
-/// Code fences become `<pre>`, inline code `<code>`, `**bold**` `<b>`, and
-/// headers bold lines; chunks never split inside a tag pair.
+/// Convert markdown to Telegram-safe HTML chunks of at most `limit` chars. Code
+/// fences become `<pre>`, inline code `<code>`, `**bold**` `<b>`, and headers bold
+/// lines; chunks never split inside a tag pair.
 pub fn to_html_chunks(markdown: &str, limit: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();

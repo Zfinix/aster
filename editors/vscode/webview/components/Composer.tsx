@@ -9,6 +9,7 @@ import type {
 } from "../../src/protocol";
 import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
 import { post } from "../lib/host";
+import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
 import { modelShort } from "../lib/model";
 import { AddMenu } from "./AddMenu";
 import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicker";
@@ -16,8 +17,7 @@ import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
 import { McpPicker } from "./McpPicker";
-import { ModelPicker } from "./ModelPicker";
-import { ProviderPicker } from "./ProviderPicker";
+import { ModelMenu } from "./ModelMenu";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
 import {
   ActivityIcon,
@@ -44,7 +44,7 @@ import {
 const MAX_ROWS = 10;
 
 /** Only one popup can occupy the slot above the composer. */
-type Menu = "none" | "commands" | "permission" | "model" | "provider" | "mcp";
+type Menu = "none" | "commands" | "permission" | "settings" | "model" | "provider" | "mcp";
 
 /** Unfiltered, the skills list would bury every other action; the filter is one
  *  keystroke away, and the note says so. */
@@ -71,14 +71,6 @@ const ICONS: Record<string, ReactElement> = {
 };
 
 const SKILLS_SHOWN = 5;
-
-const EFFORTS = [
-  { value: "", label: "Default" },
-  { value: "off", label: "Off" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
 
 export function Composer({
   busy,
@@ -230,12 +222,35 @@ export function Composer({
     setCaret(el.selectionStart);
   };
 
+  /** A drop or clipboard that carries no URI (a file dragged from the OS, say)
+   *  gives up bytes and a name, so it goes through the paste pipeline: the host
+   *  matches it back to the workspace or writes it to storage. */
+  const sendPasted = (files: File[]) =>
+    void Promise.all(files.map(readPasted)).then((pasted) =>
+      post({ type: "pasteFiles", files: pasted })
+    );
+
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDropping(false);
     const uris = fileUris(e.dataTransfer);
     if (uris.length) {
       post({ type: "dropFiles", uris });
+      return;
+    }
+    // Chromium does not put an OS-dragged file's path in the transfer data, so
+    // the file arrives as bytes in `files`; sending it as a paste still names it.
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) {
+      sendPasted(files);
+      return;
+    }
+    // No files at all: dropped text, which preventDefault kept out of the
+    // textarea, so it goes in by hand.
+    const dropped = e.dataTransfer.getData("text/plain");
+    if (dropped) {
+      setText((prev) => `${prev}${dropped}`);
+      requestAnimationFrame(() => areaRef.current?.focus());
     }
   };
 
@@ -254,9 +269,7 @@ export function Composer({
     const files = Array.from(e.clipboardData.files);
     if (files.length === 0) return;
     e.preventDefault();
-    void Promise.all(files.map(readPasted)).then((pasted) =>
-      post({ type: "pasteFiles", files: pasted })
-    );
+    sendPasted(files);
   };
 
   const pick = (item: Suggestion) => {
@@ -396,7 +409,7 @@ export function Composer({
             label: "Effort",
             icon: ICONS.effort,
             value: effort ?? "",
-            options: EFFORTS,
+            options: EFFORT_OPTIONS,
             onSelect: (value: string) => onEffort((value || null) as Effort | null),
           },
           opens("mode", "Mode…", "permission", permissionLabel(permissionMode)),
@@ -478,16 +491,21 @@ export function Composer({
           onReview={onReview}
         />
       )}
-      {menu === "model" && (
-        <ModelPicker
+      {(menu === "settings" || menu === "model" || menu === "provider") && (
+        <ModelMenu
+          pane={menu === "settings" ? null : menu}
           model={model}
           models={models}
           recommended={recommended}
           recent={recent}
           loading={modelsLoading}
           error={modelsError}
+          effort={effort}
+          providers={providers}
           onSelect={onModel}
           onRefresh={onRefreshModels}
+          onEffort={onEffort}
+          onProvider={onProvider}
           onClose={closeMenu}
         />
       )}
@@ -496,13 +514,6 @@ export function Composer({
           sections={sections}
           query={command ? command.query : null}
           onRun={runItem}
-          onClose={closeMenu}
-        />
-      )}
-      {menu === "provider" && (
-        <ProviderPicker
-          providers={providers}
-          onSelect={onProvider}
           onClose={closeMenu}
         />
       )}
@@ -582,14 +593,17 @@ export function Composer({
 
           <button
             className="ghost model-btn"
-            onMouseDown={toggle("model")}
+            onMouseDown={toggle("settings")}
+            // The chip is a hover target, not a hunt: pointing at it opens the
+            // menu, the way the mode rows open their lists.
+            onMouseEnter={() => menu === "none" && !menuOpen && setMenu("settings")}
             title={effort ? `${model ?? "Model"} · ${effort} effort` : (model ?? "Model")}
             aria-haspopup="menu"
-            aria-expanded={menu === "model"}
+            aria-expanded={menu === "settings"}
           >
             <span className="model-label">{modelShort(model)}</span>
-            {effort && <span className="model-effort">{effort}</span>}
-            <CaretUpIcon open={menu === "model"} />
+            {effort && <span className="model-effort">{effortShort(effort)}</span>}
+            <CaretUpIcon open={menu === "settings"} />
           </button>
 
           {/* One button whose glyph morphs between send and stop, so the swap

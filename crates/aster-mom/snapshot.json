@@ -1,0 +1,24 @@
+{
+  "note": "Vendored catalog snapshot for offline resolution (spec 7.5). Update freely; a models.dev fetch overrides this at runtime when available.",
+  "as_of": "2026-08-31",
+  "models": [
+    { "id": "anthropic/claude-opus-5", "window": 200000, "in_per_m": 15.0, "out_per_m": 75.0, "reasons": true, "images": true, "tools": true, "quality": 97 },
+    { "id": "anthropic/claude-sonnet-5", "window": 200000, "in_per_m": 3.0, "out_per_m": 15.0, "reasons": true, "images": true, "tools": true, "quality": 92 },
+    { "id": "anthropic/claude-haiku-4-5", "window": 200000, "in_per_m": 1.0, "out_per_m": 5.0, "reasons": true, "images": true, "tools": true, "quality": 80 },
+    { "id": "openai/gpt-5.5", "window": 400000, "in_per_m": 1.25, "out_per_m": 10.0, "reasons": true, "images": true, "tools": true, "quality": 95 },
+    { "id": "openai/gpt-5.2", "window": 400000, "in_per_m": 1.25, "out_per_m": 10.0, "reasons": true, "images": true, "tools": true, "quality": 90 },
+    { "id": "openai/gpt-5-pro", "window": 400000, "in_per_m": 15.0, "out_per_m": 120.0, "reasons": true, "images": true, "tools": true, "quality": 96 },
+    { "id": "openai/gpt-5", "window": 400000, "in_per_m": 1.25, "out_per_m": 10.0, "reasons": true, "images": true, "tools": true, "quality": 94 },
+    { "id": "openai/gpt-5-mini", "window": 400000, "in_per_m": 0.25, "out_per_m": 2.0, "reasons": true, "images": true, "tools": true, "quality": 84 },
+    { "id": "openai/gpt-5-nano", "window": 400000, "in_per_m": 0.05, "out_per_m": 0.4, "reasons": true, "images": true, "tools": true, "quality": 74 },
+    { "id": "google/gemini-3.1-pro", "window": 1000000, "in_per_m": 2.0, "out_per_m": 12.0, "reasons": true, "images": true, "tools": true, "quality": 93 },
+    { "id": "google/gemini-3.7-flash", "window": 1000000, "in_per_m": 0.3, "out_per_m": 2.5, "reasons": true, "images": true, "tools": true, "quality": 82 },
+    { "id": "deepseek/deepseek-v4-pro", "window": 128000, "in_per_m": 0.55, "out_per_m": 2.2, "reasons": true, "images": false, "tools": true, "quality": 90 },
+    { "id": "deepseek/deepseek-v4-flash", "window": 128000, "in_per_m": 0.1, "out_per_m": 0.4, "reasons": false, "images": false, "tools": true, "quality": 76 },
+    { "id": "zai/glm-5", "window": 200000, "in_per_m": 0.6, "out_per_m": 2.2, "reasons": true, "images": true, "tools": true, "quality": 89 },
+    { "id": "zai/glm-5.3", "window": 200000, "in_per_m": 0.6, "out_per_m": 2.2, "reasons": true, "images": true, "tools": true, "quality": 91 },
+    { "id": "zai/glm-5.3-flash", "window": 128000, "in_per_m": 0.1, "out_per_m": 0.4, "reasons": false, "images": false, "tools": true, "quality": 75 },
+    { "id": "xai/grok-4.6", "window": 256000, "in_per_m": 3.0, "out_per_m": 15.0, "reasons": true, "images": true, "tools": true, "quality": 91 },
+    { "id": "alibaba/qwen3.8-max", "window": 256000, "in_per_m": 1.2, "out_per_m": 6.0, "reasons": true, "images": true, "tools": true, "quality": 88 }
+  ]
+}

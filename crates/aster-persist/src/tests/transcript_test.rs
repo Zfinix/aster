@@ -52,10 +52,9 @@ fn an_untitled_session_displays_its_opening_message() {
     assert_eq!(loaded.display_title(), Some("how does naming work"));
 }
 
-/// The agent loop records its own steering (loop corrections, round budgets) as
-/// `system` so it stays out of the replayed conversation. Replaying it would
-/// re-nag the model about a turn that already ended, and show the user words
-/// they never wrote.
+/// The agent loop records its own steering as `system` so it stays out of the
+/// replayed conversation: replaying it would re-nag the model about a turn that
+/// already ended, and show the user words they never wrote.
 #[test]
 fn harness_steering_is_recorded_but_never_replayed() {
     let dir = tempfile::tempdir().unwrap();

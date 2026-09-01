@@ -7,6 +7,12 @@ use aster_persist::{SessionWriter, Store};
 
 pub type Recorder = Arc<Mutex<SessionWriter>>;
 
+/// The global `.env` Aster loads at startup. Config stays in `~/.aster` even
+/// though data moved under the XDG root.
+pub fn global_env_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".aster/.env"))
+}
+
 /// User-global data: credentials, sessions, memory, skills. Config
 /// (`aster.yaml`, `mcp.json`, `.env`) stays in `~/.aster`.
 pub fn home() -> Result<PathBuf> {

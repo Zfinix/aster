@@ -3257,6 +3257,112 @@ code {
   }
 }
 
+/* One menu that changes shape: the chip opens three rows, and the row under
+   the pointer slides its list out beside them. */
+.model-menu {
+  position: absolute;
+  bottom: 100%;
+  right: var(--s3);
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+  /* Sized to the rows and the list beside them, not to the composer: this is a
+     menu hanging off the chip, not a sheet. */
+  width: min(518px, calc(100% - 2 * var(--s3)));
+}
+
+.model-menu > .model-root {
+  position: static;
+  flex: 0 0 auto;
+  width: 230px;
+  animation: popupIn 0.12s ease-out;
+}
+
+/* The label names the row and always fits; it is the value beside it that
+   gives way when the panel is narrow. */
+.model-row .picker-body {
+  flex: 0 0 auto;
+}
+
+.model-row-value {
+  margin-left: auto;
+  padding-left: var(--s2);
+  min-width: 0;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The rows are a summary, not a menu of things to read: one line each, with
+   the icon at the size the mode picker settled on. */
+.model-row > svg {
+  margin-top: 0;
+  width: 16px;
+  height: 16px;
+}
+
+/* One box beside the rows that resizes between the lists, so switching rows
+   moves and reshapes it rather than tearing one popup down to raise another. */
+.model-menu > .model-flyout {
+  position: relative;
+  flex: 0 1 auto;
+  width: 280px;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(6px);
+  pointer-events: none;
+  transition:
+    height 0.18s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.12s ease-out,
+    transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.model-menu > .model-flyout[data-open="true"] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* Absolute, so the box can shrink under it while the outgoing list keeps its
+   own size on the way out. */
+.model-flyout-inner {
+  position: absolute;
+  inset: auto 0 0 0;
+  animation: fadeSwap 0.14s ease-out;
+}
+
+.model-flyout-inner > .picker,
+.model-flyout-inner > .cmd {
+  position: static;
+  width: 100%;
+  max-height: 300px;
+}
+
+/* The list is narrower than the composer it used to span, so a second line
+   wraps here rather than losing its tail to an ellipsis. */
+.model-flyout-inner .picker-detail {
+  white-space: normal;
+  overflow: visible;
+}
+
+@keyframes fadeSwap {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-root,
+  .model-flyout,
+  .model-flyout-inner {
+    animation: none;
+    transition: none;
+  }
+}
+
 .picker {
   position: absolute;
   display: flex;
@@ -3576,32 +3682,80 @@ code {
   cursor: default;
 }
 
-.cmd-options {
+/* A ladder as a row of dots in a track: the setting reads as a position, so
+   the eye lands on where it sits rather than on five words to compare. */
+.slider {
   display: flex;
-  margin-left: auto;
+  align-items: center;
+  gap: var(--s2);
   flex: none;
-  gap: 1px;
-  padding: 1px;
-  border-radius: var(--radius);
+  height: 18px;
+  padding: 0 var(--s2);
+  border-radius: 999px;
   background: var(--code-bg);
 }
 
-.cmd-option {
-  font: inherit;
-  font-size: 0.85em;
-  color: var(--fg-dim);
-  background: none;
+.slider-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  padding: 0;
   border: none;
-  border-radius: calc(var(--radius) - 1px);
-  padding: 1px var(--s2);
+  border-radius: 50%;
+  background: var(--fg-dim);
+  opacity: 0.55;
   cursor: pointer;
+  transition:
+    width 0.14s cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 0.14s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.14s ease-out;
 }
 
-/* Reads as the current setting, not as the menu's call to action: a filled
-   accent here outshouts every row around it. */
-.cmd-option[data-selected="true"] {
-  color: var(--fg);
-  background: var(--code-bg-strong);
+.slider-dot:hover {
+  opacity: 1;
+}
+
+/* The far end of the dial carries its own color, so the most expensive step is
+   marked before it is chosen. */
+.slider-dot[data-top="true"] {
+  background: var(--vscode-charts-purple, #c586c0);
+  opacity: 0.8;
+}
+
+.slider-dot[data-on="true"] {
+  width: 12px;
+  height: 12px;
+  background: var(--fg);
+  opacity: 1;
+}
+
+.slider-dot[data-on="true"][data-top="true"] {
+  background: var(--vscode-charts-purple, #c586c0);
+}
+
+.slider-dot:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--fg));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slider-dot {
+    transition: none;
+  }
+}
+
+.cmd-row-choice .slider {
+  margin-left: auto;
+}
+
+/* The effort dial sits on its row in the model menu, the way choice rows do
+   in the command menu: no pane of its own. */
+.model-row-choice {
+  cursor: default;
+}
+
+.model-row-choice .slider {
+  margin-left: auto;
 }
 
 .cmd-note,

@@ -9,55 +9,93 @@ export interface ParsedError {
   detail: string;
 }
 
-const STATUS_LABELS: Record<string, { label: string; hint: string }> = {
+interface Explanation {
+  label: string;
+  hint: string;
+}
+
+const SIGN_IN: Explanation = {
+  label: "Sign-in problem",
+  hint: "Aster couldn't authenticate with your model provider. Check your API key, or switch with /provider.",
+};
+
+const CONNECTION: Explanation = {
+  label: "Connection dropped",
+  hint: "The model provider stopped responding mid-reply. Alpha and preview models do this under load. Send again to retry, or pick a steadier model with /model.",
+};
+
+const PROVIDER_DOWN: Explanation = {
+  label: "Provider trouble",
+  hint: "The model provider had an internal problem. These are usually brief. Send again in a moment.",
+};
+
+const STATUS_LABELS: Record<string, Explanation> = {
   "400": {
     label: "The request didn't go through",
     hint: "The model provider rejected it. The details below say why.",
   },
-  "401": {
-    label: "Sign-in problem",
-    hint: "Aster couldn't authenticate with your model provider. Check your API key, or switch with /provider.",
-  },
-  "403": {
-    label: "Sign-in problem",
-    hint: "Aster couldn't authenticate with your model provider. Check your API key, or switch with /provider.",
-  },
+  "401": SIGN_IN,
+  "403": SIGN_IN,
   "404": {
     label: "Model not found",
     hint: "This endpoint doesn't know the selected model. Pick another with /model.",
   },
+  "408": CONNECTION,
   "429": {
     label: "Too many requests",
     hint: "The provider asked Aster to slow down. Give it a moment and send again. Nothing was lost.",
   },
+  "500": PROVIDER_DOWN,
+  "502": PROVIDER_DOWN,
+  "503": PROVIDER_DOWN,
+  "529": PROVIDER_DOWN,
 };
 
-/**
- * The CLI formats provider failures as `bad request (400): <detail>`. Pull the
- * code out for a label and keep the rest as the detail. Anything that does not
- * match that shape is shown whole, so we never mangle an unexpected message.
- */
 /** Transport failures: stalls, drops, and timeouts that read as plumbing. */
 const NETWORKISH = /timed out|time out|connection|network|dropped mid-reply|decoding response body|stream chunk/i;
 
+/** Wrappers like `aster chat exited with code 1: <detail>` add plumbing the
+ *  reader doesn't need; the detail is what actually went wrong. */
+const EXIT_PREFIX = /^aster(?: \w+)? exited with code \d+[.:]?\s*/i;
+
+/** A status code stated as one, e.g. `model endpoint returned 429`. The
+ *  context word keeps line numbers and byte counts from reading as statuses. */
+const STATUS_ANYWHERE = /\b(?:status|returned|error|code|http)\D{0,4}\b(400|401|403|404|408|429|500|502|503|529)\b/i;
+
 export function parseError(message: string): ParsedError {
-  const match = /^([a-z ]+)\((\d{3})\):\s*(.*)$/s.exec(message);
-  if (!match) {
-    if (NETWORKISH.test(message)) {
-      return {
-        label: "Connection dropped",
-        hint: "The model provider stopped responding mid-reply. Alpha and preview models do this under load. Send again to retry, or pick a steadier model with /model.",
-        detail: message,
-      };
-    }
-    return { label: "Something went wrong", detail: message };
+  const stripped = message.replace(EXIT_PREFIX, "");
+  const wrapped = stripped !== message;
+
+  const match = /^([a-z ]+)\((\d{3})\):\s*(.*)$/s.exec(stripped);
+  if (match) {
+    const [, , code, detail] = match;
+    const known = STATUS_LABELS[code];
+    return {
+      label: known?.label ?? `Error ${code}`,
+      hint: known?.hint,
+      detail: detail || stripped,
+    };
   }
 
-  const [, , code, detail] = match;
-  const known = STATUS_LABELS[code];
-  return {
-    label: known?.label ?? `Error ${code}`,
-    hint: known?.hint,
-    detail: detail || message,
-  };
+  // Transport failures first: a dropped stream often quotes a status from an
+  // earlier retry, and the connection advice is the one that helps.
+  if (NETWORKISH.test(stripped)) {
+    return { label: CONNECTION.label, hint: CONNECTION.hint, detail: stripped };
+  }
+
+  const embedded = STATUS_ANYWHERE.exec(stripped);
+  if (embedded && STATUS_LABELS[embedded[1]]) {
+    const { label, hint } = STATUS_LABELS[embedded[1]];
+    return { label, hint, detail: stripped };
+  }
+
+  if (wrapped) {
+    return {
+      label: "Aster stopped unexpectedly",
+      hint: "Aster stopped before finishing. The Aster output channel has the full story.",
+      detail: stripped,
+    };
+  }
+
+  return { label: "Something went wrong", detail: message };
 }

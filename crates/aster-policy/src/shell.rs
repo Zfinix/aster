@@ -1,9 +1,6 @@
-//! Breaking a command into the lines a rule should actually see.
-//!
-//! `run_command` has no shell, so the agent is told to chain through
-//! `bash -lc "one && two"`. Matching only the outer binary would make every
-//! command look like `bash`, so the script is split into its parts and each one
-//! is matched too.
+//! Breaking a command into the lines a rule should actually see. `run_command` has
+//! no shell, so the agent chains through `bash -lc "one && two"`; matching only the
+//! outer binary would make every command look like `bash`.
 
 use std::path::Path;
 

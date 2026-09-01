@@ -1,5 +1,6 @@
 //! Firecrawl HTTP client for `/v2/scrape`, `/v2/crawl`, and `/v2/search`.
-//! See <https://docs.firecrawl.dev/api-reference>.
+//! Works without a key on Firecrawl's keyless tier, which serves scrape and
+//! search only. See <https://docs.firecrawl.dev/api-reference>.
 
 use std::time::Duration;
 
@@ -16,12 +17,14 @@ const BASE_URL: &str = "https://api.firecrawl.dev";
 
 #[derive(Debug, Clone)]
 pub struct FirecrawlClient {
-    key: String,
+    key: Option<String>,
     client: reqwest::Client,
 }
 
 impl FirecrawlClient {
-    pub fn new(key: String, timeout_ms: u64) -> Self {
+    /// `key` is optional: without one the keyless tier serves scrape and
+    /// search, rate-limited per IP.
+    pub fn new(key: Option<String>, timeout_ms: u64) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
@@ -29,11 +32,17 @@ impl FirecrawlClient {
         Self { key, client }
     }
 
+    pub fn is_keyed(&self) -> bool {
+        self.key.is_some()
+    }
+
     fn headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        let value = HeaderValue::from_str(&format!("Bearer {}", self.key))
-            .context("building authorization header")?;
-        headers.insert(AUTHORIZATION, value);
+        if let Some(ref key) = self.key {
+            let value = HeaderValue::from_str(&format!("Bearer {key}"))
+                .context("building authorization header")?;
+            headers.insert(AUTHORIZATION, value);
+        }
         Ok(headers)
     }
 }
@@ -77,6 +86,11 @@ impl WebExtract for FirecrawlClient {
 #[async_trait]
 impl WebCrawl for FirecrawlClient {
     async fn crawl(&self, url: &str, opts: &CrawlOptions) -> Result<CrawlResult> {
+        if !self.is_keyed() {
+            bail!(
+                "Firecrawl only crawls with an API key. Set FIRECRAWL_API_KEY to crawl a site, or use extract on single pages."
+            );
+        }
         let body = json!({
             "url": url,
             "maxPages": opts.max_pages,
@@ -261,7 +275,7 @@ pub fn search_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
         name: "search".into(),
-        description: "Search the web and return full page content as Markdown for each result. Use for research, fact-checking, or finding documentation.".into(),
+        description: "Search the web via Firecrawl and return full page content as Markdown for each result. Use for research, fact-checking, or finding documentation.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

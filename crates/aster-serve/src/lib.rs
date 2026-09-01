@@ -1,9 +1,7 @@
 #![forbid(unsafe_code)]
-//! `aster serve`: Aster's own front-end, in a browser on this machine.
-//!
-//! The page is the desktop app's, built for the web. Every turn runs as a child
-//! `aster` process, so a browser tab and a terminal drive the same CLI, in the
-//! same repo, with the same settings.
+//! `aster serve`: Aster's own front-end, in a browser on this machine. The page is
+//! the desktop app's, built for the web, and every turn runs as a child `aster`
+//! process, so a tab and a terminal drive the same CLI in the same repo.
 
 mod assets;
 mod cli;
@@ -68,7 +66,6 @@ pub struct Server {
     pub addr: SocketAddr,
 }
 
-/// Take the port and get ready to serve.
 pub async fn bind(config: ServeConfig) -> Result<Server> {
     let listener = listen(config.host, config.port).await?;
     let addr = listener.local_addr().context("reading the bound address")?;
@@ -100,7 +97,6 @@ impl Server {
         assets::is_built()
     }
 
-    /// Serve until the process is stopped.
     pub async fn run(self) -> Result<()> {
         let app = router(self.state);
         axum::serve(self.listener, app)

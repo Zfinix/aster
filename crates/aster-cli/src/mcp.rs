@@ -1,10 +1,9 @@
-//! MCP transport and session runtime. `aster-mcp` owns discovery and routing
-//! and deliberately has no transport, so the host supplies them: JSON-RPC 2.0
-//! over a child process's stdio, over Streamable HTTP, or over the HTTP+SSE
-//! binding that preceded it. Only the wire differs; the session above it does not.
+//! MCP transport and session runtime. `aster-mcp` owns discovery and routing and
+//! has no transport, so the host supplies it: JSON-RPC over a child's stdio, over
+//! Streamable HTTP, or over the HTTP+SSE binding that preceded it.
 
 mod http;
-mod oauth;
+pub(crate) mod oauth;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::process::Stdio;
@@ -27,9 +26,8 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// whole session, so they get a tighter budget than a tool call.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// A legacy server may never answer `server/discover`, so the probe waits only
-/// long enough to tell silence from slowness. A server that speaks the modern
-/// protocol answers in single-digit milliseconds, so this is a hair-trigger:
-/// every legacy server pays it in full, on every session.
+/// long enough to tell silence from slowness. A modern server answers in
+/// single-digit milliseconds; every legacy one pays this in full, per session.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 /// Backstop against a server that paginates without ever ending.
 const MAX_TOOLS_PER_SERVER: usize = 2_000;
@@ -72,7 +70,6 @@ pub struct ServerConfig {
     pub env: BTreeMap<String, String>,
     /// Working directory for the child; the inherited one when unset.
     pub cwd: Option<std::path::PathBuf>,
-    /// Endpoint of a remote server.
     pub url: String,
     /// Fixed headers sent when connecting to a remote server.
     pub headers: BTreeMap<String, String>,
@@ -84,7 +81,6 @@ pub struct ServerConfig {
     pub disabled: bool,
 }
 
-/// How to reach a server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Transport {
@@ -128,14 +124,12 @@ impl ServerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct McpSettings {
     pub servers: BTreeMap<String, ServerConfig>,
-    /// Which of the connected servers' tools the model may see.
     pub tools: ToolFilter,
     /// Context the inventory is measured against.
     pub context_tokens: usize,
     /// Share of `context_tokens` the tool inventory may spend. Above it the
     /// prompt lists servers only and the model searches for what it needs.
     pub inventory_percent: f32,
-    /// Matches returned by one `search`.
     pub search_limit: usize,
 }
 
@@ -210,7 +204,6 @@ impl McpSettings {
     }
 }
 
-/// A live connection to one MCP server: a JSON-RPC session over some wire.
 struct Connection {
     name: String,
     next_id: i64,
@@ -223,7 +216,6 @@ enum Wire {
     Remote(http::Remote),
 }
 
-/// A child process speaking JSON-RPC over its stdio.
 struct StdioWire {
     child: Child,
     /// Taken on shutdown: closing stdin is the portable signal telling the
@@ -455,10 +447,9 @@ impl Connection {
             .map_err(|e| anyhow::anyhow!("MCP server `{}` rejected {method}: {e}", self.name))
     }
 
-    /// One JSON-RPC round trip. The outer `Result` is a transport failure; the
-    /// inner one is the server's own error, which the probe inspects rather
-    /// than treats as fatal. Notifications are skipped, not mistaken for the
-    /// reply.
+    /// One JSON-RPC round trip. The outer `Result` is a transport failure, the inner
+    /// one the server's own error, which the probe inspects rather than treats as
+    /// fatal. Notifications are skipped, not mistaken for the reply.
     async fn try_request(
         &mut self,
         method: &str,
@@ -790,7 +781,6 @@ fn stderr_headline(tail: &VecDeque<String>) -> Option<String> {
         .map(|line| line.to_string())
 }
 
-/// Live MCP servers plus the injector that decides what the model sees.
 #[derive(Clone)]
 pub struct McpRuntime {
     injector: Arc<Injector>,
@@ -808,7 +798,6 @@ pub struct McpRuntime {
 #[derive(Clone)]
 pub struct DisabledServer {
     pub name: String,
-    /// What the server does, so the agent can decide when to ask.
     pub description: String,
 }
 
@@ -1201,11 +1190,8 @@ pub enum McpAction {
     Serve { name: String },
 }
 
-/// `aster mcp list`: start the configured servers, report what they expose,
-/// then stop them. The same connection path a chat session uses, so a failure
-/// here is the failure a session would hit.
-/// Serve a bundled server on this process's stdio. Stdout is the wire, so
-/// nothing else may write to it for the life of the call.
+/// Serve a bundled server on this process's stdio. Stdout is the wire, so nothing
+/// else may write to it for the life of the call.
 async fn serve_builtin(name: &str) -> Result<()> {
     match name {
         // `websearch` is the retired name of the same server, kept so a stale

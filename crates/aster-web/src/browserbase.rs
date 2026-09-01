@@ -1,9 +1,6 @@
-//! Browserbase HTTP client for `/v1/fetch` and `/v1/search`.
-//! See <https://docs.browserbase.com/reference/api/openapi.v1.yaml>.
-//!
-//! Browser sessions (navigate, snapshot, click) happen over CDP/WebSocket, not
-//! REST. Use Playwright MCP or Chrome DevTools MCP for interactive browser
-//! automation.
+//! Browserbase HTTP client for `/v1/fetch` and `/v1/search`. Browser sessions run
+//! over CDP/WebSocket, not REST, so interactive automation belongs elsewhere.
+//! <https://docs.browserbase.com/reference/api/openapi.v1.yaml>
 
 use std::time::Duration;
 

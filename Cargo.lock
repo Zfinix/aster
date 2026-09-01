@@ -254,6 +254,7 @@ dependencies = [
  "aster-harness",
  "aster-mcp",
  "aster-models",
+ "aster-mom",
  "aster-persist",
  "aster-plugins",
  "aster-policy",
@@ -361,6 +362,16 @@ name = "aster-models"
 version = "0.4.1"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "aster-mom"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

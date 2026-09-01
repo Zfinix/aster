@@ -7,7 +7,6 @@ use aster_ai::{AiClient, ChatMessage};
 /// Turn cap for one goal run, so a stuck loop dies instead of spending forever.
 const DEFAULT_MAX_TURNS: usize = 20;
 
-/// What the judge decided about the condition after one turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GoalVerdict {
     Met,
@@ -25,14 +24,12 @@ impl GoalVerdict {
     }
 }
 
-/// One judgment: the verdict plus the judge's one-line reason.
 #[derive(Debug, Clone)]
 pub(crate) struct Judgment {
     pub verdict: GoalVerdict,
     pub reason: String,
 }
 
-/// Extract the condition from a `/goal <condition>` user message.
 pub(crate) fn parse_goal(text: &str) -> Option<String> {
     let rest = text.strip_prefix("/goal")?;
     let condition = rest.trim();

@@ -1,8 +1,6 @@
-//! Sandbox profile generation for OS-native isolation.
-//!
-//! On macOS, generates a Seatbelt (sandbox-exec) profile that allows most
-//! operations but restricts filesystem writes to the repo root and temp
-//! directories. On Linux, generates bwrap args that achieve the same effect.
+//! Sandbox profile generation: a Seatbelt profile on macOS and bwrap args on Linux,
+//! both allowing most operations but restricting filesystem writes to the repo root
+//! and temp directories.
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +14,6 @@ pub struct SandboxProfile {
     pub readable_dirs: Vec<PathBuf>,
     /// Additional directories the command may write to (beyond repo and temp).
     pub writable_dirs: Vec<PathBuf>,
-    /// Whether network access is allowed.
     pub network: bool,
     /// Maximum execution time in seconds.
     pub timeout_secs: u64,
@@ -69,12 +66,9 @@ impl SandboxProfile {
         self
     }
 
-    /// Generate a macOS Seatbelt profile string for `sandbox-exec -p`.
-    ///
-    /// Starts from `(allow default)`, denies all writes, then re-allows the
-    /// writable set. Seatbelt takes the last matching rule, so ordering does
-    /// the work; the alternative, one deny with `(not (subpath ...))` filters,
-    /// ORs its filters together and denies everything.
+    /// Generate a macOS Seatbelt profile for `sandbox-exec -p`. Starts from `(allow
+    /// default)`, denies all writes, then re-allows the writable set: Seatbelt takes
+    /// the last matching rule, and one deny with filters ORs them and denies all.
     #[cfg(target_os = "macos")]
     pub fn seatbelt_profile(&self) -> String {
         let mut profile = String::new();
@@ -164,7 +158,6 @@ impl SandboxProfile {
         resolve_existing(paths)
     }
 
-    /// Generate `bwrap` arguments for Linux.
     #[cfg(target_os = "linux")]
     pub fn bwrap_args(&self) -> Vec<String> {
         let mut args = vec![

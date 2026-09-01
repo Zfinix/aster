@@ -23,7 +23,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// configured headers to a host the user never named.
 const MAX_REDIRECTS: usize = 5;
 
-/// A live connection to a remote server.
 pub(super) enum Remote {
     Streamable(Streamable),
     Sse(Sse),

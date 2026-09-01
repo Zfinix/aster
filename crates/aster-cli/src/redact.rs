@@ -1,9 +1,6 @@
-//! Redacts known secret values from text before Aster surfaces it.
-//!
-//! The values come from the process environment and the `.env` files Aster
-//! itself loads, keyed on names that look like credentials. Tool output passes
-//! through here once, so the stream, transcript, and model context all stay
-//! free of live secrets.
+//! Redacts known secret values from text before Aster surfaces it. The values come
+//! from the environment and the `.env` files Aster loads; tool output passes
+//! through once, so stream, transcript, and model context all stay clean.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -12,7 +9,6 @@ use std::sync::OnceLock;
 /// words all over the output.
 const MIN_SECRET_LEN: usize = 8;
 
-/// The fixed marker a redacted value is replaced with.
 const REDACTED: &str = "[redacted]";
 
 /// Secret-named values discovered once, longest first so a value that is a
@@ -51,7 +47,6 @@ impl Redactor {
         Self { secrets }
     }
 
-    /// Replace every known secret value in `text` with a fixed marker.
     pub fn redact(&self, text: &str) -> String {
         let mut out = text.to_string();
         for secret in &self.secrets {
@@ -82,8 +77,8 @@ fn is_secret_name(name: &str) -> bool {
 /// environment.
 fn env_files() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".aster/.env"));
+    if let Some(global) = crate::persist::global_env_path() {
+        paths.push(global);
     }
     if let Ok(cwd) = std::env::current_dir() {
         paths.push(cwd.join(".env"));
@@ -112,7 +107,6 @@ fn parse_env_line(line: &str) -> Option<(String, String)> {
     Some((name.to_string(), value.to_string()))
 }
 
-/// The shared redactor, built once on first use.
 fn redactor() -> &'static Redactor {
     static INSTANCE: OnceLock<Redactor> = OnceLock::new();
     INSTANCE.get_or_init(Redactor::discover)

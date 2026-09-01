@@ -13,7 +13,7 @@ use crate::settings::Settings;
 pub fn run() -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
-    let client = crate::provider::resolve_client(&settings, None)?;
+    let client = crate::config::provider::resolve_client(&settings, None)?;
     let limits = crate::chat::Limits::resolve(&settings.agent);
 
     let servers: Vec<_> = settings

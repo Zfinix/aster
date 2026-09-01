@@ -1,10 +1,7 @@
 #![forbid(unsafe_code)]
-//! Filesystem-based agent skills. A skill is a directory holding a `SKILL.md`:
-//! YAML frontmatter (`name`, `description`) then a markdown instruction body.
-//! Discovery loads only the frontmatter; the body is read on demand.
-//!
-//! Layout mirrors Claude Code: a project root (`.aster/skills`) overrides a
-//! user-global root (`<config>/aster/skills`) on name collision.
+//! Filesystem-based agent skills: a directory holding a `SKILL.md`, YAML
+//! frontmatter then a markdown body, of which discovery loads only the frontmatter.
+//! A project root overrides a user-global one on name collision.
 
 pub mod agents;
 
@@ -13,14 +10,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-/// The instruction file every skill directory must contain.
 pub const SKILL_FILE: &str = "SKILL.md";
 
 /// Spec limits on the frontmatter fields.
 const MAX_NAME_LEN: usize = 64;
 const MAX_DESCRIPTION_LEN: usize = 1024;
 
-/// One discovered skill: its metadata plus the path to its `SKILL.md`.
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
@@ -42,17 +37,14 @@ impl Skill {
         Ok(strip_frontmatter(&raw).trim().to_string())
     }
 
-    /// True when the skill ships with the binary rather than a directory.
     pub fn is_builtin(&self) -> bool {
         self.builtin.is_some()
     }
 }
 
-/// Core skills every session gets: every-day workflows, verification and
-/// triage discipline, shell and context efficiency, and conduct. The index is
-/// a standing context cost, so only skills that earn their place on a routine
-/// coding turn live here. An installed skill with the same name shadows its
-/// built-in, so a repo can override any of them.
+/// Core skills every session gets. The index is a standing context cost, so only
+/// skills that earn their place on a routine coding turn live here. An installed
+/// skill with the same name shadows its built-in.
 const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/git-workflow/SKILL.md"),
     include_str!("../builtins/gh-pr-workflow/SKILL.md"),
@@ -315,10 +307,9 @@ use aster_models::SKIP_DIRS;
 /// levels down (`skills/<category>/<name>/SKILL.md`); this bounds the search.
 const MAX_FIND_DEPTH: usize = 6;
 
-/// Recursively find every skill under `root` (deduped by name, first found wins).
-/// Unlike [`SkillSet::discover`], this walks the whole tree, not just immediate
-/// children. `full_depth` keeps descending into a skill dir to find nested skills;
-/// otherwise it stops at the first `SKILL.md`.
+/// Every skill under `root`, deduped by name, first found wins. Unlike
+/// [`SkillSet::discover`] this walks the whole tree; `full_depth` keeps descending
+/// into a skill dir, otherwise it stops at the first `SKILL.md`.
 pub fn find_skills(root: &Path, full_depth: bool) -> Vec<Skill> {
     find_skills_report(root, full_depth).0
 }
@@ -517,10 +508,8 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
 }
 
 /// One scalar: an inline value, a `>`/`|` block, or a value continued on the
-/// indented lines below it. Blocks and continuations fold to a single line,
-/// which is what both the prompt index and `/skills` want; `|` keeps its
-/// newlines. Consumes the continuation lines so the caller resumes at the next
-/// key.
+/// indented lines below it. Blocks and continuations fold to a single line, `|`
+/// keeping its newlines. Consumes the continuation lines.
 fn read_value(inline: &str, lines: &mut std::iter::Peekable<std::str::Lines>) -> String {
     let (marker, literal) = match inline {
         ">" | ">-" | ">+" => (true, false),

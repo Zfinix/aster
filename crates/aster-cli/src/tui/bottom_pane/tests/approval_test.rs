@@ -51,6 +51,36 @@ fn a_second_request_queues_and_is_shown_next() {
 }
 
 #[test]
+fn a_plan_approval_keeps_the_question_and_drops_always() {
+    let (tx, _rx_ev) = mpsc::unbounded_channel::<Decided>();
+    let (respond, rx) = oneshot::channel();
+    let req = ApprovalRequest {
+        markdown: Some("## Plan\n- step one\n- step two".into()),
+        preview: "Approve this plan and start editing?\n\n## Plan\n- step one\n- step two".into(),
+        scope: None,
+        respond,
+    };
+    let mut v = ApprovalView::new(req, tx, Decided);
+
+    let text: Vec<String> = v
+        .lines(80)
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert!(text[0].contains("Approve this plan and start editing?"));
+    assert!(
+        !text.iter().any(|l| l.contains("step one")),
+        "the plan body stays out of the pane; it prints in the transcript"
+    );
+    assert!(!text.iter().any(|l| l.contains("always")));
+
+    v.handle_key(key(KeyCode::Char('a')));
+    assert!(!v.is_complete(), "a plan has no always answer");
+    v.handle_key(key(KeyCode::Char('n')));
+    assert_eq!(rx.blocking_recv(), Ok(Answer::No));
+}
+
+#[test]
 fn enter_confirms_the_highlighted_option() {
     let (tx, mut rx_ev) = mpsc::unbounded_channel();
     let (req, rx) = request("edit a.rs:\n+ a");

@@ -1,7 +1,6 @@
-//! Perplexity Search HTTP client for `/search`. Real-time ranked results with
-//! content snippets and per-page publication dates. Unlike the Sonar/Agent chat
-//! completions, this endpoint returns a structured `results[]` array, not prose
-//! with citations. See <https://docs.perplexity.ai/api-reference/search-post>.
+//! Perplexity Search client for `/search`: real-time ranked results with snippets
+//! and publication dates, returned as a structured `results[]` array rather than
+//! prose with citations. <https://docs.perplexity.ai/api-reference/search-post>
 
 use std::time::Duration;
 

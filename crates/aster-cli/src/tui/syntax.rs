@@ -1,9 +1,6 @@
-//! A small, language-agnostic highlighter for code shown in the transcript.
-//!
-//! One tokenizer covers every language the agent is likely to print: it splits
-//! on strings, comments, numbers and words, then colours words by a shared
-//! keyword set. That is deliberately less precise than a real grammar and far
-//! cheaper, which is the right trade for text that scrolls past once.
+//! A small, language-agnostic highlighter for code shown in the transcript. One
+//! tokenizer splits on strings, comments, numbers, and words, then colours words by
+//! a shared keyword set: cheaper than a grammar, right for text seen once.
 
 use ratatui::style::Style;
 use ratatui::text::Span;

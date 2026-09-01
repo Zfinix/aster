@@ -1,7 +1,6 @@
-//! Images a turn mentions, read off disk and attached to it.
-//!
-//! Every surface sends its turn as text with `@path` mentions, so resolving
-//! them here gives the TUI, the editors, and a piped prompt image input at once.
+//! Images a turn mentions, read off disk and attached to it. Every surface sends
+//! its turn as text with `@path` mentions, so resolving them here gives the TUI,
+//! the editors, and a piped prompt image input at once.
 
 use std::path::{Path, PathBuf};
 
@@ -22,12 +21,9 @@ const MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// pixels and cap dimensions well below what a modern screenshot arrives at.
 const MAX_EDGE: u32 = 2048;
 
-/// The turn with each image it mentions attached, or unchanged text when it
-/// mentions none.
-///
-/// The mention stays in the text: it is what the user wrote, what the
-/// transcript records, and what tells the model which image is which when a
-/// turn carries several.
+/// The turn with each image it mentions attached. The mention stays in the text:
+/// it is what the user wrote, and what tells the model which image is which when
+/// a turn carries several.
 pub(crate) fn attach(text: &str, repo_root: &Path) -> MessageContent {
     let paths = mentioned(text, repo_root);
     if paths.is_empty() {

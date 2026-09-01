@@ -284,9 +284,8 @@ async fn working_directory_is_repo_root() {
     );
 }
 
-/// The bug this exists for: `gh` could not read `~/.config/gh`, so every
-/// GitHub operation died inside the sandbox even though a core skill
-/// prescribes `gh`. Approving the directory for one command must actually
+/// The bug this exists for: `gh` could not read `~/.config/gh`, so every GitHub
+/// operation died inside the sandbox. Approving the directory for one command must
 /// change what the OS permits, not just what the profile string says.
 #[tokio::test]
 async fn an_approved_credential_directory_becomes_readable() {

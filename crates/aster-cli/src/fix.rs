@@ -65,7 +65,7 @@ pub async fn run(args: FixArgs) -> Result<()> {
         .context("could not determine the repository root")?;
 
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
-    let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
+    let client = crate::config::provider::resolve_client(&settings, args.model.as_deref())?;
     let policy = Policy::compile(&settings.permissions)?;
 
     let json = crate::json_mode();

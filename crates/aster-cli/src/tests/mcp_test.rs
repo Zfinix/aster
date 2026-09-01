@@ -305,10 +305,9 @@ async fn connect(settings: &McpSettings) -> (Option<McpRuntime>, Vec<String>) {
     McpRuntime::connect_with(settings, &BTreeMap::new()).await
 }
 
-/// Every server carries whatever web tools the environment's provider keys
-/// enable, on top of its own. Counting them here keeps the assertions honest
-/// regardless of which `WEB_*`/`*_API_KEY` vars happen to be set in a given
-/// environment, rather than mutating process env from a test.
+/// Every server carries whatever web tools the environment's provider keys enable.
+/// Counting them keeps the assertions honest whichever `WEB_*` vars are set,
+/// rather than mutating process env from a test.
 fn web_tool_count() -> usize {
     let config = aster_web::WebConfig::from_env();
     let backend = aster_web::WebBackend::from_env(&config);

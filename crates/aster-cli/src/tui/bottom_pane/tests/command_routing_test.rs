@@ -85,7 +85,6 @@ fn an_unknown_slash_word_submits_as_a_message() {
     }
 }
 
-/// Every command in the real chat menu runs when typed in full.
 #[test]
 fn every_chat_command_runs_when_typed_in_full() {
     for c in crate::tui::chat::CHAT_COMMANDS {
@@ -143,7 +142,6 @@ fn a_prefix_runs_the_matching_command() {
     }
 }
 
-/// The composer is emptied, so the next message does not carry the command.
 #[test]
 fn running_a_command_clears_the_draft() {
     let mut p = pane();

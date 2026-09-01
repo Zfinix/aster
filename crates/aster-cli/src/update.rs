@@ -12,7 +12,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Changelog entries carried in the notice; the rest collapse to `+N more`.
 const MAX_CHANGELOG: usize = 10;
 
-/// A release newer than the running binary, ready to render.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateInfo {
     pub current: String,

@@ -238,13 +238,13 @@ file you commit.
 
 Aster serves a `web` server in-process, so its tools are in the catalogue with
 no subprocess and nothing to install. `web/search` and `web/extract` need no API
-key: they fall through to DuckDuckGo and a plain HTTP fetch when nothing else is
-configured.
+key: they use Firecrawl's keyless tier when nothing else is configured, and fall
+through to DuckDuckGo and a plain HTTP fetch when that is rate-limited.
 
 | Tool | Keyless | Better with |
 | --- | --- | --- |
-| `web/search` | DuckDuckGo | `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY` |
-| `web/extract` | Jina Reader, then DuckDuckGo, then plain HTTP | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY`, `EXA_API_KEY`, or Cloudflare (both `CLOUDFLARE_BR_ACCOUNT_ID` and `CLOUDFLARE_BR_API_TOKEN`) |
+| `web/search` | Firecrawl keyless, then DuckDuckGo | `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY` |
+| `web/extract` | Firecrawl keyless, then Jina Reader, then DuckDuckGo, then plain HTTP | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY`, `EXA_API_KEY`, or Cloudflare (both `CLOUDFLARE_BR_ACCOUNT_ID` and `CLOUDFLARE_BR_API_TOKEN`) |
 | `web/crawl` | no | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, or the Cloudflare pair |
 | `web/sitemap` | no | `CONTEXT_DEV_API_KEY` |
 | `web/screenshot` | no | `CONTEXT_DEV_API_KEY` |
@@ -253,6 +253,10 @@ A configured provider takes over a tool it can serve, and the tool description
 the model reads names whichever provider will answer it. Exa leads `search`
 because that is what it is built for, with Perplexity next; the
 extraction-first providers outrank it on `extract`.
+
+Firecrawl's keyless tier is rate-limited per IP and cannot crawl. Set
+`FIRECRAWL_API_KEY` to lift the limit, move Firecrawl up the dispatch order, and
+enable `web/crawl`.
 
 The same catalogue is available to other MCP clients as `aster mcp serve web`.
 

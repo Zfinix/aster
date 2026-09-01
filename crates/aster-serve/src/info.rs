@@ -8,12 +8,11 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 
 use crate::cli::Cli;
-use crate::settings::ProviderOverride;
 
 /// The TUI's `/status` rows. Session-local facts (context spent, usage) are the
 /// panel's to add: the CLI has no view of a conversation it is not running.
-pub async fn status(cli: &Cli, provider: Option<&ProviderOverride>) -> Result<Value, String> {
-    let s = cli.json(&["status"], provider).await?;
+pub async fn status(cli: &Cli) -> Result<Value, String> {
+    let s = cli.json(&["status"]).await?;
     let limits = &s["limits"];
     let servers = s["mcp"]["servers"].as_array().map_or(0, Vec::len);
     let rows = [
@@ -58,8 +57,8 @@ pub async fn status(cli: &Cli, provider: Option<&ProviderOverride>) -> Result<Va
 
 /// The history size the CLI auto-compacts above, so the composer can show how
 /// much of it the conversation has spent. Zero when the CLI cannot be asked.
-pub async fn context_budget(cli: &Cli, provider: Option<&ProviderOverride>) -> u64 {
-    cli.json(&["status"], provider)
+pub async fn context_budget(cli: &Cli) -> u64 {
+    cli.json(&["status"])
         .await
         .ok()
         .and_then(|s| s["limits"]["compact_budget_chars"].as_u64())
@@ -67,7 +66,7 @@ pub async fn context_budget(cli: &Cli, provider: Option<&ProviderOverride>) -> u
 }
 
 pub async fn memory_rows(cli: &Cli) -> Result<Value, String> {
-    let parsed = cli.json(&["memory", "list"], None).await?;
+    let parsed = cli.json(&["memory", "list"]).await?;
     let rows = parsed["blocks"]
         .as_array()
         .map(|blocks| {
@@ -81,7 +80,7 @@ pub async fn memory_rows(cli: &Cli) -> Result<Value, String> {
 }
 
 pub async fn mcp_servers(cli: &Cli) -> Value {
-    cli.json(&["mcp", "list", "--no-connect"], None)
+    cli.json(&["mcp", "list", "--no-connect"])
         .await
         .map(|parsed| parsed["servers"].clone())
         .unwrap_or(Value::Null)
@@ -89,11 +88,11 @@ pub async fn mcp_servers(cli: &Cli) -> Value {
 
 pub async fn toggle_mcp(cli: &Cli, name: &str, disabled: bool) -> Result<(), String> {
     let action = if disabled { "disable" } else { "enable" };
-    cli.json(&["mcp", action, name], None).await.map(|_| ())
+    cli.json(&["mcp", action, name]).await.map(|_| ())
 }
 
-pub async fn providers(cli: &Cli, provider: Option<&ProviderOverride>) -> Value {
-    cli.json(&["models", "--providers"], provider)
+pub async fn providers(cli: &Cli) -> Value {
+    cli.json(&["models", "--providers"])
         .await
         .map(|parsed| parsed["providers"].clone())
         .unwrap_or(Value::Null)
@@ -101,10 +100,8 @@ pub async fn providers(cli: &Cli, provider: Option<&ProviderOverride>) -> Value 
 
 /// An endpoint's catalog. One that will not answer is not fatal: the picker
 /// still switched, and a model id can be typed by hand.
-pub async fn models_for(cli: &Cli, model: &str, provider: Option<&ProviderOverride>) -> Value {
-    let out = cli
-        .run(&["models", "--model", model, "--json"], None, provider)
-        .await;
+pub async fn models_for(cli: &Cli, model: &str) -> Value {
+    let out = cli.run(&["models", "--model", model, "--json"], None).await;
     match out {
         Ok(out) if out.code == 0 => {
             serde_json::from_str(out.stdout.trim()).unwrap_or_else(|_| json!([]))
@@ -115,20 +112,13 @@ pub async fn models_for(cli: &Cli, model: &str, provider: Option<&ProviderOverri
 
 /// Fold the head of a transcript into a summary. The browser owns its history,
 /// so the shorter one comes back for it to adopt rather than being applied here.
-pub async fn compact(
-    cli: &Cli,
-    messages: &Value,
-    model: Option<&str>,
-    provider: Option<&ProviderOverride>,
-) -> Result<Value, String> {
+pub async fn compact(cli: &Cli, messages: &Value, model: Option<&str>) -> Result<Value, String> {
     let mut args: Vec<&str> = vec!["chat", "--messages-json", "-", "--compact", "--json"];
     if let Some(model) = model.filter(|m| !m.is_empty()) {
         args.push("--model");
         args.push(model);
     }
-    let out = cli
-        .run(&args, Some(&messages.to_string()), provider)
-        .await?;
+    let out = cli.run(&args, Some(&messages.to_string())).await?;
     let parsed: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| {
         let stderr = out.stderr.trim();
         match stderr.is_empty() {
@@ -151,7 +141,7 @@ pub async fn compact(
 
 /// The slash commands this repo's skills contribute, deduplicated by name.
 pub async fn skills(cli: &Cli) -> Value {
-    let Ok(parsed) = cli.json(&["skills", "list"], None).await else {
+    let Ok(parsed) = cli.json(&["skills", "list"]).await else {
         return json!([]);
     };
     let from = |group: &Value, plugin_key: Option<&str>| -> Vec<Value> {

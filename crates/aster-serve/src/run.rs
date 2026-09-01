@@ -37,7 +37,6 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
         .and_then(Value::as_str)
         .unwrap_or(&settings.permission_mode)
         .to_string();
-    let provider = settings.provider.clone();
     drop(settings);
 
     let mut args: Vec<String> = vec![
@@ -70,7 +69,7 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut child = state
         .cli
-        .command(&argv, provider.as_ref())
+        .command(&argv)
         .spawn()
         .map_err(|e| format!("could not launch aster: {e}"))?;
 
@@ -143,7 +142,6 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
         args.push(value.into());
     }
 
-    let provider = state.settings.lock().await.provider.clone();
     let mut slot = state.review.lock().await;
     if slot.is_some() {
         return Err("A review is already running.".into());
@@ -151,7 +149,7 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut child = state
         .cli
-        .command(&argv, provider.as_ref())
+        .command(&argv)
         .spawn()
         .map_err(|e| format!("could not launch aster: {e}"))?;
 

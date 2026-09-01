@@ -8,14 +8,11 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use crate::settings::ProviderOverride;
-
 pub struct Cli {
     /// The binary turns are spawned from: this one, unless `ASTER_BIN` says
     /// otherwise. `aster serve` is the CLI, so a turn runs the build the
     /// browser is already talking to.
     pub bin: PathBuf,
-    /// The repo every run happens in: where the server was started.
     pub root: PathBuf,
 }
 
@@ -34,33 +31,18 @@ impl Cli {
         Self { bin, root }
     }
 
-    /// An `aster` invocation in the served repo. A provider chosen in the UI
-    /// travels as environment, so it belongs to this server rather than being
-    /// written into the repo's aster.yaml.
-    pub fn command(&self, args: &[&str], provider: Option<&ProviderOverride>) -> Command {
+    pub fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(args).current_dir(&self.root);
-        if let Some(provider) = provider {
-            cmd.env("ASTER_BASE_URL", &provider.base_url);
-            if let Some(key) = provider.key() {
-                cmd.env("ASTER_API_KEY", key);
-            }
-        }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         cmd
     }
 
-    /// Run to completion, writing `stdin` first.
-    pub async fn run(
-        &self,
-        args: &[&str],
-        stdin: Option<&str>,
-        provider: Option<&ProviderOverride>,
-    ) -> Result<Output, String> {
+    pub async fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<Output, String> {
         let mut child = self
-            .command(args, provider)
+            .command(args)
             .spawn()
             .map_err(|e| format!("could not run {}: {e}", self.bin.display()))?;
         if let Some(mut pipe) = child.stdin.take() {
@@ -80,16 +62,10 @@ impl Cli {
         })
     }
 
-    /// `aster <args> --json`, parsed. `--json` turns failures into
-    /// `{ok: false, error}` rather than stderr, so those come back as errors.
-    pub async fn json(
-        &self,
-        args: &[&str],
-        provider: Option<&ProviderOverride>,
-    ) -> Result<Value, String> {
+    pub async fn json(&self, args: &[&str]) -> Result<Value, String> {
         let mut args = args.to_vec();
         args.push("--json");
-        let out = self.run(&args, None, provider).await?;
+        let out = self.run(&args, None).await?;
         let parsed: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| {
             let stderr = out.stderr.trim();
             match stderr.is_empty() {

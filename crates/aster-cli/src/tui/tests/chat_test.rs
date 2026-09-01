@@ -792,11 +792,11 @@ fn record_user_persists_turn() {
 
 #[test]
 fn a_submit_before_mcp_connects_is_held_not_run() {
-    let client = AiClient::new("http://localhost", "k", "m1");
+    let mut client = AiClient::new("http://localhost", "k", "m1");
     let mut app = chat_app(client.model.clone());
     app.mcp_pending = true;
 
-    let turn = app.submit_or_hold("go", &[], &client, std::path::Path::new("/tmp"));
+    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
 
     assert!(turn.is_none());
     assert_eq!(
@@ -808,10 +808,10 @@ fn a_submit_before_mcp_connects_is_held_not_run() {
 
 #[tokio::test]
 async fn a_submit_after_mcp_connects_runs_straight_away() {
-    let client = AiClient::new("http://localhost", "k", "m1");
+    let mut client = AiClient::new("http://localhost", "k", "m1");
     let mut app = chat_app(client.model.clone());
 
-    let turn = app.submit_or_hold("go", &[], &client, std::path::Path::new("/tmp"));
+    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
 
     assert!(turn.is_some());
     assert!(app.held_submit.is_none());

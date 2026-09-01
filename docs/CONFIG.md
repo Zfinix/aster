@@ -104,8 +104,37 @@ then built-in defaults. A non-empty environment variable beats the file; an
 empty one counts as unset.
 
 API keys are never read from `aster.yaml`. They come from the environment, which
-`aster init` writes to `.env` next to the config, or from `aster login` for
-GitHub.
+`aster key` and `aster init` write to `.env`, or from `aster login`: GitHub
+by default, ChatGPT with `aster login codex`, and OpenRouter with
+`aster login openrouter`, which runs the browser sign-in flow and stores the key
+as `OPEN_ROUTER_API_KEY` in `~/.aster/.env`. Starting a chat with no OpenRouter
+key on a terminal offers that sign-in before failing.
+
+`aster login zai` signs in to a Z.ai account the same way and stores the GLM
+Coding Plan token as `ZAI_API_KEY`. Z.ai only registers its own redirect, so the
+browser lands back on `zcode.z.ai` with a message meant for the ZCode app; paste
+that address back into Aster to finish. The plan token is served by
+`https://api.z.ai/api/coding/paas/v4` alone, so the sign-in offers to point Aster
+there (`aster provider use zai_coding`).
+
+`aster key` owns those `.env` files without opening them:
+
+```bash
+aster key list                                # every key Aster reads, and where it came from
+aster key set FIRECRAWL_API_KEY               # asks for the value without echoing it
+aster key set EXA_API_KEY exa-… --local       # this repo's .env, git-ignored
+aster key unset FIRECRAWL_API_KEY             # clears both files
+aster key path                                # which files are read here
+```
+
+`aster init`'s web step asks from the same catalog, so the two never disagree
+about which providers exist.
+
+Writes land in `~/.aster/.env` unless `--local` names the repo's. Because the
+shell outranks both files, `set` says so when an export would keep winning
+rather than leaving you to find out as a 401. `list` prints where each key came
+from and never prints the key itself; model endpoints holding no key are hidden
+until `--all`.
 
 One endpoint needs no key at all: `https://chatgpt.com/backend-api/codex` runs
 on a ChatGPT subscription. Run `aster login codex` once; Aster stores the tokens
@@ -276,6 +305,14 @@ custom agent definitions.
 | `max_concurrent` | int | `8` | Sub-agents running at once. Env `ASTER_AGENT_MAX_CONCURRENT`. |
 | `max_per_turn` | int | `24` | `agent` tool tasks accepted in one turn. Env `ASTER_AGENT_MAX_PER_TURN`. |
 | `agent_timeout_secs` | int | `300` | Seconds a single sub-agent may run. Env `ASTER_AGENT_TIMEOUT`. |
+
+## `ui`
+
+What chat prints on its own.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `welcome` | bool | `true` | Print the session header (model, provider, skills) when chat starts. `/welcome` in a chat toggles it and saves the choice. |
 
 ## `mcp`
 

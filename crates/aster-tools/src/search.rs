@@ -21,9 +21,8 @@ pub struct Hit {
     pub text: String,
 }
 
-/// Search `base`, a directory or a single file, for `query`, at most
-/// [`PER_FILE`] matches per file and `max_hits` overall. Matching is
-/// smart-case: lowercase queries ignore case, a query with any uppercase
+/// Search `base`, a directory or a single file, for `query`, at most [`PER_FILE`]
+/// matches per file and `max_hits` overall. Smart-case: a query with any uppercase
 /// letter is taken literally.
 pub fn search(
     probe: &ToolProbe,

@@ -10,8 +10,6 @@ fn defaults_leave_the_repo_in_charge() {
         settings.effort, None,
         "unset effort keeps aster.yaml deciding"
     );
-    assert_eq!(settings.model, None);
-    assert!(settings.provider.is_none());
 }
 
 #[test]
@@ -35,7 +33,6 @@ fn recents_are_most_recent_first_without_repeats() {
         settings.remember_model(model, &VETTED);
     }
     assert_eq!(settings.recent_models, ["a", "c", "b"]);
-    assert_eq!(settings.model.as_deref(), Some("a"));
     assert_eq!(settings.custom_models, ["a", "b", "c"], "each is kept once");
 }
 
@@ -49,28 +46,30 @@ fn recents_stay_short_enough_for_a_picker() {
 }
 
 #[test]
-fn an_endpoints_own_key_var_wins_over_nothing() {
-    let provider = ProviderOverride {
-        base_url: "https://x.test/v1".into(),
-        key_env: vec!["ASTER_SERVE_TEST_KEY_UNSET".into()],
-    };
-    assert_eq!(
-        provider.key(),
-        None,
-        "unset vars leave the CLI to fall back"
-    );
-}
-
-#[test]
 fn settings_survive_a_json_round_trip() {
     let mut settings = Settings::default();
     settings.remember_model("z/model", &VETTED);
-    settings.provider = Some(ProviderOverride {
-        base_url: "https://x.test/v1".into(),
-        key_env: vec!["X_API_KEY".into()],
-    });
+    settings.effort = Some("low".into());
     let json = serde_json::to_string(&settings).expect("serialize");
     let back: Settings = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(back.model.as_deref(), Some("z/model"));
-    assert_eq!(back.provider.expect("provider").key_env, ["X_API_KEY"]);
+    assert_eq!(back.recent_models, ["z/model"]);
+    assert_eq!(back.effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn a_file_with_a_retired_override_still_loads() {
+    // serve.json used to carry the model and a provider override; the config
+    // owns both now, and an old file must not fail to parse over them.
+    let legacy = r#"{
+        "permissionMode": "auto",
+        "model": "deepseek-v4-pro",
+        "customModels": ["stealth/ox-alpha"],
+        "recentModels": ["deepseek-v4-pro"],
+        "effort": "low",
+        "provider": { "baseUrl": "https://api.deepseek.com/v1", "keyEnv": ["DEEPSEEK_API_KEY"] }
+    }"#;
+    let back: Settings = serde_json::from_str(legacy).expect("legacy file parses");
+    assert_eq!(back.permission_mode, "auto");
+    assert_eq!(back.custom_models, ["stealth/ox-alpha"]);
+    assert_eq!(back.effort.as_deref(), Some("low"));
 }

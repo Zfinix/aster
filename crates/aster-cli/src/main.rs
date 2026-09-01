@@ -17,13 +17,13 @@ mod import;
 mod init;
 mod instructions;
 mod mcp;
-mod models;
+mod mom;
+mod openrouter_auth;
 mod persist;
 mod picker;
 mod plugins;
 mod preview;
 mod project;
-mod provider;
 mod redact;
 mod remote;
 mod review;
@@ -39,6 +39,7 @@ mod update;
 mod upgrade;
 mod util;
 mod web;
+mod zai_auth;
 
 use std::env;
 use std::fs;
@@ -91,12 +92,13 @@ pub struct EffortArgs {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Set up Aster in this repo: pick a provider, write aster.yaml, store your key.
+    /// Set up Aster for this machine: pick a provider and store your key in ~/.aster (--local scopes it to one repo).
     Init(init::InitArgs),
-    /// Link a GitHub account via device flow, or ChatGPT with `login codex`
-    /// (both open your browser).
+    /// Sign in: GitHub by default, ChatGPT with `login codex`, OpenRouter
+    /// with `login openrouter`, Z.ai with `login zai` (each opens your browser).
     Login(LoginArgs),
-    /// Remove the stored GitHub token and any Codex login.
+    /// Sign out everywhere: GitHub token, Codex login, stored OpenRouter and
+    /// Z.ai keys.
     Logout,
     /// Review a diff: the current branch, an explicit range, a file, or a PR.
     Review(review::ReviewArgs),
@@ -113,6 +115,8 @@ enum Command {
     Status,
     /// Configure Aster: a form in a terminal, get/set/unset in a script.
     Config(config::ConfigArgs),
+    /// Store the API keys Aster reads: list, set, and unset them in `.env`.
+    Key(config::key::KeyArgs),
     /// Install, list, and remove agent skills.
     Skills(skills::SkillsArgs),
     /// Install, list, and validate Agent Plugins packages.
@@ -122,12 +126,14 @@ enum Command {
     /// Inspect the MCP servers configured for this repo.
     Mcp(mcp::McpArgs),
     /// List the models the provider serves, and switch which one is used.
-    Model(models::ModelArgs),
+    Model(config::models::ModelArgs),
+    /// Inspect the mom.yaml model policy: what every entry resolves to.
+    Mom(mom::MomArgs),
     /// List the endpoints Aster knows, and switch which one is used.
-    Provider(provider::ProviderArgs),
+    Provider(config::provider::ProviderArgs),
     /// Older spelling of `aster model list`, kept for existing scripts.
     #[command(hide = true)]
-    Models(models::ModelsArgs),
+    Models(config::models::ModelsArgs),
     /// Drive the agent remotely from a messaging channel (Telegram).
     Remote(remote::RemoteArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
@@ -147,7 +153,6 @@ enum OutputFormat {
 /// between its human and machine output.
 static JSON: AtomicBool = AtomicBool::new(false);
 
-/// True when the run was asked for machine-readable output.
 pub fn json_mode() -> bool {
     JSON.load(Ordering::Relaxed)
 }
@@ -155,7 +160,6 @@ pub fn json_mode() -> bool {
 /// Set once from the command's `--effort` flag; `None` leaves env and aster.yaml in charge.
 static EFFORT: OnceLock<Option<Effort>> = OnceLock::new();
 
-/// The `--effort` level this run was started with, if any.
 pub fn effort_flag() -> Option<Effort> {
     EFFORT.get().copied().flatten()
 }
@@ -163,7 +167,7 @@ pub fn effort_flag() -> Option<Effort> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
-    if let Some(global) = dirs::home_dir().map(|h| h.join(".aster/.env")) {
+    if let Some(global) = persist::global_env_path() {
         let _ = dotenvy::from_path(&global);
     }
 
@@ -189,6 +193,9 @@ async fn main() -> Result<()> {
         || matches!(&command, Command::Chat(a) if !a.is_interactive());
     let telemetry = init_tracing(tui_mode, stream_mode);
 
+    // A Z.ai plan key dies well before the sign-in that minted it.
+    zai_auth::refresh_if_stale().await;
+
     let result = match command {
         Command::Init(args) => init::run(args).await,
         Command::Login(args) => auth::run(args).await,
@@ -199,14 +206,16 @@ async fn main() -> Result<()> {
         Command::Sessions(args) => sessions::run_sessions(args).await,
         Command::Memory(args) => sessions::run_memory(args),
         Command::Status => status::run(),
-        Command::Config(args) => config::run(args),
+        Command::Config(args) => config::run(args).await,
+        Command::Key(args) => config::key::run(args),
         Command::Skills(args) => skills::run(args).await,
         Command::Plugins(args) => plugins::run(args, std::env::current_dir().ok().as_deref()),
         Command::Web(args) => web::run(args).await,
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
-        Command::Model(args) => models::run_model(args).await,
-        Command::Provider(args) => provider::run(args),
-        Command::Models(args) => models::run(args).await,
+        Command::Model(args) => config::models::run_model(args).await,
+        Command::Mom(args) => mom::run_mom(args).await,
+        Command::Provider(args) => config::provider::run(args),
+        Command::Models(args) => config::models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
         Command::Serve(args) => serve::run(args).await,
         Command::Upgrade(args) => upgrade::run(args).await,

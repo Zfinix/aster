@@ -120,3 +120,12 @@ fn the_catalogs_own_endpoints_all_resolve() {
         );
     }
 }
+
+#[test]
+fn catalog_models_reads_the_codex_shortlist_and_skips_unknown_hosts() {
+    assert_eq!(
+        catalog_models("https://chatgpt.com/backend-api/codex"),
+        ["gpt-5.6-terra"]
+    );
+    assert!(catalog_models("https://example.com/v1").is_empty());
+}

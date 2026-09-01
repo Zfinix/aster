@@ -30,12 +30,9 @@ impl fmt::Display for DegenerateOutput {
 
 impl std::error::Error for DegenerateOutput {}
 
-/// Tracks streamed content and trips when the trailing window keeps repeating.
-///
-/// A fixed chunk boundary would miss periodic text ("I'm committing. " repeats
-/// every 17 chars, so 64-char aligned chunks never match). Instead the guard
-/// checks whether the trailing window reappears anywhere in the recent buffer,
-/// which is phase-independent.
+/// Trips when the trailing window keeps reappearing in the recent buffer. A fixed
+/// chunk boundary would miss periodic text ("I'm committing. " repeats every 17
+/// chars); searching the buffer is phase-independent.
 #[derive(Default)]
 pub struct RepetitionGuard {
     buf: String,
@@ -70,10 +67,9 @@ impl RepetitionGuard {
     }
 }
 
-/// The first char boundary at or after `index`. Both cuts here are computed
-/// from byte lengths, so a multi-byte character straddling one would otherwise
-/// panic mid-stream: box-drawing glyphs, emoji, and CJK all reach this.
-/// Rounding forward shortens the window slightly rather than splitting a char.
+/// The first char boundary at or after `index`. Both cuts are computed from byte
+/// lengths, so a multi-byte character straddling one would panic mid-stream:
+/// rounding forward shortens the window instead of splitting a char.
 fn boundary(text: &str, index: usize) -> usize {
     let mut index = index.min(text.len());
     while index < text.len() && !text.is_char_boundary(index) {

@@ -444,7 +444,6 @@ struct ScreenshotResponse {
 #[path = "tests/context_dev_test.rs"]
 mod tests;
 
-/// Register the `web/extract` MCP tool (Context.dev backend).
 pub fn extract_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
@@ -463,7 +462,6 @@ pub fn extract_tool() -> McpTool {
     }
 }
 
-/// Register the `web/search` MCP tool (Context.dev backend).
 pub fn search_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
@@ -489,7 +487,6 @@ pub fn search_tool() -> McpTool {
     }
 }
 
-/// Register the `web/sitemap` MCP tool (Context.dev backend).
 pub fn sitemap_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
@@ -519,7 +516,6 @@ pub fn sitemap_tool() -> McpTool {
     }
 }
 
-/// Register the `web/screenshot` MCP tool (Context.dev backend).
 pub fn screenshot_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
@@ -543,7 +539,6 @@ pub fn screenshot_tool() -> McpTool {
     }
 }
 
-/// Register the `web/crawl` MCP tool for agent discovery.
 pub fn crawl_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useDismiss } from "../lib/dismiss";
 import { modelShort } from "../lib/model";
 
@@ -25,6 +25,7 @@ export function ModelPicker({
   onSelect,
   onRefresh,
   onClose,
+  boundary,
 }: {
   model: string | null;
   models: string[];
@@ -35,12 +36,15 @@ export function ModelPicker({
   onSelect: (model: string) => void;
   onRefresh: () => void;
   onClose: () => void;
+  /** What counts as "inside" for a click: the pane this picker shares with the
+   *  effort and provider rail, when it has one. */
+  boundary?: RefObject<HTMLElement | null>;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  useDismiss(ref, onClose);
+  useDismiss(boundary ?? ref, onClose);
 
   useEffect(() => {
     inputRef.current?.focus();

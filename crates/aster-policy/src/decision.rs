@@ -53,7 +53,6 @@ impl Mode {
         }
     }
 
-    /// One line describing what the mode does, for menus and headers.
     pub fn description(self) -> &'static str {
         match self {
             Mode::Plan => "explore the code and present a plan before editing",
@@ -64,13 +63,11 @@ impl Mode {
         }
     }
 
-    /// True when the mode lets the agent write at all.
     pub fn can_edit(self) -> bool {
         matches!(self, Mode::Manual | Mode::Auto | Mode::Edit | Mode::Yolo)
     }
 }
 
-/// What the caller should do with the action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,

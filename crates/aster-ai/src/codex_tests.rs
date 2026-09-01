@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 use std::fs;
 
 fn temp_home() -> tempfile::TempDir {
@@ -163,9 +164,9 @@ fn callback_ignores_probes_and_empty_reads() {
 
 #[test]
 fn pkce_challenge_is_verifier_sha256() {
-    let verifier = pkce_verifier();
-    assert!((43..=128).contains(&verifier.len()));
+    let pair = crate::pkce::pkce();
+    assert!((43..=128).contains(&pair.verifier.len()));
     let expected = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(Sha256::digest(verifier.as_bytes()));
-    assert_eq!(pkce_challenge(&verifier), expected);
+        .encode(Sha256::digest(pair.verifier.as_bytes()));
+    assert_eq!(pair.challenge, expected);
 }

@@ -86,10 +86,9 @@ fn percent_decode(raw: &str) -> String {
     out
 }
 
-/// A file pasted or dropped into the page, which arrives as bytes and a name:
-/// the browser has no path to give. One already in the repo is matched back to
-/// it, name and size, so the agent reads the real file instead of a copy;
-/// anything else is written where the agent can still reach it.
+/// A file pasted or dropped into the page, which arrives as bytes and a name. One
+/// already in the repo is matched back to it by name and size, so the agent reads
+/// the real file; anything else is written where the agent can still reach it.
 pub fn stage(root: &Path, name: &str, size: u64, data: &[u8]) -> Result<String, String> {
     if let Some(existing) = find(root, name, size) {
         return Ok(existing);

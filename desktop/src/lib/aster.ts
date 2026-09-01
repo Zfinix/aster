@@ -188,6 +188,11 @@ export function saveProvider(fields: {
   });
 }
 
+/** Save the model where every surface reads it: aster.yaml, via the CLI. */
+export function persistModel(model: string): Promise<void> {
+  return invoke("set_model", { model });
+}
+
 interface RunHandlers {
   onEvent: (event: StreamEvent) => void;
   onLog: (line: string) => void;

@@ -1,7 +1,6 @@
-//! Remote control for the Aster agent over messaging channels.
-//!
-//! Each adapter turns inbound chat messages into headless `aster chat --stream`
-//! turns and relays approval prompts back as tappable buttons.
+//! Remote control for the Aster agent over messaging channels. Each adapter turns
+//! inbound chat messages into headless `aster chat --stream` turns and relays
+//! approval prompts back as tappable buttons.
 
 mod bridge;
 mod markdown;

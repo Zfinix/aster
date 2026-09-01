@@ -10,13 +10,9 @@ use crate::models::{ChatMessage, IMAGE_OMITTED};
 const OPEN: &str = "<system-note>";
 const CLOSE: &str = "</system-note>";
 
-/// Fold system messages that are not the leading one into the turn beside them.
-///
-/// Only a leading system message is portable. Anthropic rejects one that
-/// follows an assistant reply, and hosts legitimately record mid-conversation
-/// notes: a permission-mode change, an editor's injected context. The note is
-/// kept as user content so the model still sees it, merged into the user turn
-/// before it when there is one.
+/// Fold non-leading system messages into the turn beside them: only a leading one
+/// is portable, and Anthropic rejects one that follows an assistant reply. The
+/// note is kept as user content, merged into the user turn before it.
 pub(crate) fn fold_system_notes(messages: Vec<Value>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());
     for message in messages {

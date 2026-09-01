@@ -1,11 +1,7 @@
 #![forbid(unsafe_code)]
-//! Tool detection and tiered dispatch for the best available CLI tool on
-//! each platform. The chat agent's `search_files`, `list_files`, and
-//! `find_files` delegate here so they get `rg` / `fd` when present and fall
-//! back to embedded or hand-rolled implementations when they are not.
-//!
-//! This crate has no policy dependency. Secret-file filtering stays in the
-//! caller.
+//! Tool detection and tiered dispatch: `search_files`, `list_files`, and
+//! `find_files` delegate here so they get `rg` / `fd` when present and fall back
+//! when not. No policy dependency; secret-file filtering stays in the caller.
 
 mod find;
 mod list;
@@ -34,9 +30,7 @@ pub(crate) fn is_skipped(entry: &ignore::DirEntry) -> bool {
 /// `&ToolProbe` into tool functions.
 #[derive(Debug, Clone, Default)]
 pub struct ToolProbe {
-    /// Path to `rg` if found on `PATH`.
     pub rg: Option<PathBuf>,
-    /// Path to `fd` if found on `PATH`.
     pub fd: Option<PathBuf>,
 }
 

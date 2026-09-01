@@ -1,8 +1,6 @@
-//! ChatGPT subscription auth for the Codex backend. OAuth PKCE against
-//! auth.openai.com, tokens kept where the Codex CLI keeps them so one login
-//! serves both, and usage draws against the ChatGPT plan rather than API
-//! credits. Wire format translation lives elsewhere; this module only answers
-//! "what Bearer token do I send".
+//! ChatGPT subscription auth for the Codex backend: OAuth PKCE against
+//! auth.openai.com, tokens kept where the Codex CLI keeps them so one login serves
+//! both. Wire translation lives in [`crate::codex_api`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +9,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// Codex CLI's public OAuth client. It is not a secret; every Codex build ships it.
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -196,11 +193,13 @@ fn rfc3339_now() -> String {
 /// Run the browser PKCE flow and store the result. Blocks until the local
 /// callback server sees a code or the user gives up.
 pub async fn login(home: &Path) -> Result<CodexAuth> {
-    let verifier = pkce_verifier();
-    let challenge = pkce_challenge(&verifier);
+    let crate::pkce::Pkce {
+        verifier,
+        challenge,
+    } = crate::pkce::pkce();
     // Fresh entropy per attempt: the provider rejects short state, and the
     // callback check refuses a redirect this attempt did not start.
-    let state = pkce_verifier();
+    let state = crate::pkce::random_urlsafe();
     let url = authorize_url(&challenge, &state)?;
     println!(
         "Opening {} in your browser; approve access to continue.",
@@ -360,17 +359,6 @@ fn respond(mut stream: &std::net::TcpStream, status: &str, body: &str) {
         body.len()
     );
     let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
-}
-
-fn pkce_verifier() -> String {
-    // 32 random bytes from the OS, base64url: 43 chars, inside the 43-128 range.
-    let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("OS entropy unavailable");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn pkce_challenge(verifier: &str) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier))
 }
 
 #[derive(Deserialize)]

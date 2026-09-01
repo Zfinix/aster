@@ -26,8 +26,6 @@ use crate::mcp::ToolOutput;
 use crate::persist::Recorder;
 use crate::util::usage_json;
 
-/// Persistence handles threaded through a chat turn: the live append handle for
-/// this session's transcript, and the store used to read and write memory.
 #[derive(Default, Clone)]
 pub(crate) struct SessionCtx {
     pub recorder: Option<Recorder>,
@@ -36,16 +34,11 @@ pub(crate) struct SessionCtx {
     /// `AGENTS.md` and friends, read from the repo at session start.
     pub instructions: Arc<crate::instructions::Instructions>,
     pub probe: Arc<bash_tools::ToolProbe>,
-    /// Plan state maintained by the `update_plan` tool, rendered as a progress
-    /// strip in the TUI and the desktop UI.
     pub plan: std::sync::Arc<std::sync::Mutex<PlanState>>,
-    /// Connected MCP servers, when any are configured and reachable.
     pub mcp: Option<crate::mcp::McpRuntime>,
-    /// Per-turn caps, from aster.yaml `agent` and the environment.
     pub limits: Limits,
     /// Lockfile-derived repo facts, rendered into the system prompt.
     pub environment: Option<String>,
-    /// YOLO mode: the session is running without sandbox restrictions.
     pub yolo: bool,
     /// Credential directories approved per command this session. Kept apart
     /// from the file-read grants: approving `gh` must not widen `read_file`.
@@ -68,12 +61,10 @@ pub(crate) struct SessionCtx {
     /// User messages sent while the turn runs, absorbed at the next round
     /// boundary instead of waiting out the whole turn.
     pub injected: Arc<std::sync::Mutex<Vec<String>>>,
-    /// Agents discovered at startup, rendered into the system prompt.
     pub agents: Arc<aster_agents::AgentRegistry>,
     /// Non-None when this is a sub-agent session.  Shapes the system prompt,
     /// tool schema, and persistence.
     pub sub_agent: Option<Arc<SubAgentOverrides>>,
-    /// Fan-out caps read from aster.yaml + env.
     pub swarm: SwarmLimits,
 }
 
@@ -163,7 +154,6 @@ impl Default for SwarmLimits {
     }
 }
 
-/// Overrides applied to a sub-agent's session so it runs as a child.
 #[derive(Debug, Clone)]
 pub(crate) struct SubAgentOverrides {
     pub prompt_body: String,
@@ -180,7 +170,6 @@ pub(crate) struct PlanState {
     pub approved: bool,
 }
 
-/// One step in an agent's execution plan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct PlanStep {
     pub label: String,
@@ -272,7 +261,6 @@ impl SessionCtx {
             .is_some_and(|w| w.title().is_some())
     }
 
-    /// The name this session carries, if one was generated or set already.
     fn current_title(&self) -> Option<String> {
         self.recorder
             .as_ref()
@@ -368,7 +356,6 @@ pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
     Some(note)
 }
 
-/// How many package.json script names the snapshot lists.
 const MAX_SCRIPT_NAMES: usize = 12;
 
 /// The project's own verbs: task-runner files and script names, so the model
@@ -403,7 +390,6 @@ fn task_runner_note(repo_root: &Path) -> Option<String> {
     (!note.is_empty()).then_some(note)
 }
 
-/// Script names from a `package.json`, bounded, alphabetical.
 fn package_scripts(manifest: &Path) -> Option<Vec<String>> {
     let raw = fs::read_to_string(manifest).ok()?;
     let json: Value = serde_json::from_str(&raw).ok()?;
@@ -418,7 +404,6 @@ fn package_scripts(manifest: &Path) -> Option<Vec<String>> {
     Some(names)
 }
 
-/// How many changed files the git snapshot lists before summarizing the rest.
 const GIT_STATUS_LINES: usize = 15;
 
 /// Branch, working-tree status, and recent commits, labelled as a snapshot so
@@ -520,7 +505,6 @@ fn package_manager_note(repo_root: &Path) -> Option<String> {
     Some(note)
 }
 
-/// The agent persona, the repo's own instructions, and the memory block.
 fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     // Sub-agents get only their prompt body and an environment note; the
     // persona, instructions, memory, skills, and agent index are skipped.
@@ -636,7 +620,6 @@ impl Answer {
     }
 }
 
-/// A structured question the agent asks the user, e.g. to disambiguate a plan.
 pub(crate) struct QuestionRequest {
     pub header: String,
     pub question: String,
@@ -790,6 +773,11 @@ pub struct ChatArgs {
     #[arg(long)]
     no_tools: bool,
 
+    /// Skip connecting MCP servers at startup so the chat opens instantly.
+    /// `/mcp` can still bring them up later in the session.
+    #[arg(long)]
+    no_mcp: bool,
+
     /// Fold the history from --messages-json into a summary and print the
     /// shorter history instead of answering. For front-ends that own their
     /// own transcript; the TUI does this from `/compact`.
@@ -842,7 +830,6 @@ impl ChatArgs {
     }
 }
 
-/// Which session a run opens with.
 pub(crate) enum Resume {
     New,
     /// This repo's most recent session.
@@ -867,7 +854,33 @@ fn ask_needs_front_end(mode: aster_policy::Mode, allow_edits: bool, can_prompt: 
 pub async fn run(args: ChatArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
-    let client = crate::provider::resolve_client(&settings, args.model.as_deref())?;
+    let mut client = match crate::config::provider::resolve_client(&settings, args.model.as_deref())
+    {
+        Ok(client) => client,
+        Err(err) => {
+            if crate::openrouter_auth::offer_sign_in(&err.to_string()).await? {
+                crate::config::provider::resolve_client(&settings, args.model.as_deref())?
+            } else {
+                return Err(err);
+            }
+        }
+    };
+
+    if args.model.is_none()
+        && let Some(mut mom) = crate::mom::MomSession::load(&repo_root)
+        && let Some(selection) = mom.evaluate_turn(1, &aster_mom::Signals::default())
+        && let Some(record) = &selection.record
+        && let Some((base_url, key)) = mom.endpoint_for(&selection.model)
+    {
+        client.model = mom.model_param(&base_url, &selection.model);
+        client.set_endpoint(&base_url, key);
+        eprintln!(
+            "mom: using {} ({}) · {}",
+            selection.entry, client.model, record.reason
+        );
+        crate::mom::log_switch(record);
+    }
+    let client = client;
 
     if args.compact {
         return run_compact(&args, &client).await;
@@ -916,8 +929,13 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         // Every server costs a process spawn, and `npx` ones a registry round
         // trip, so waiting here would leave the terminal blank for seconds.
         // The TUI draws first and adopts the tools when the connect lands.
+        // `--no-mcp` resolves the same handle immediately.
         let mcp_settings = settings.mcp.clone();
-        let mcp = tokio::spawn(async move { crate::mcp::McpRuntime::connect(&mcp_settings).await });
+        let mcp = if args.no_mcp {
+            tokio::spawn(async { (None, Vec::new()) })
+        } else {
+            tokio::spawn(async move { crate::mcp::McpRuntime::connect(&mcp_settings).await })
+        };
         let seed = args.prompt.clone();
         return crate::tui::run_chat(
             client,
@@ -934,7 +952,11 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         .await;
     }
 
-    let (mcp, mcp_problems) = crate::mcp::McpRuntime::connect(&settings.mcp).await;
+    let (mcp, mcp_problems) = if args.no_mcp {
+        (None, Vec::new())
+    } else {
+        crate::mcp::McpRuntime::connect(&settings.mcp).await
+    };
     for problem in &mcp_problems {
         eprintln!("{}", console::style(format!("✗ {problem}")).red());
     }
@@ -1026,7 +1048,6 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the session and assemble the history for one headless turn.
 fn prepare_turn(
     args: &ChatArgs,
     repo_root: &Path,
@@ -1780,8 +1801,6 @@ fn round_signature(round: &[(String, String, String)]) -> u64 {
 /// Drive the model's tool calls until it answers in plain text or the round cap trips.
 /// Tool failures return to the model as tool results so it can retry instead of dying.
 #[allow(clippy::too_many_arguments)]
-/// `rounds` and `calls` are the two numbers a slow turn is almost always made
-/// of, so they are recorded on the span rather than left to be counted later.
 #[tracing::instrument(
     name = "turn",
     skip_all,
@@ -2342,7 +2361,6 @@ fn opener_names_session(first: &str) -> bool {
     text.split_whitespace().count() >= OPENER_WORDS || text.chars().count() >= OPENER_CHARS
 }
 
-/// User turns this history needs before it earns a name.
 fn turns_before_naming(history: &[ChatMessage]) -> usize {
     let opener = history
         .iter()
@@ -2363,12 +2381,8 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(10);
 const TITLE_MAX_CHARS: usize = 60;
 
 /// Name the session once it has shape: after the first turn when the opening
-/// message carries the topic, after the second otherwise. Best-effort, so a
-/// failure leaves the session named after its opening message.
-///
-/// Runs in the background, since titling is a second round-trip: the reply and
-/// `done` go out first. A caller whose process exits at the end of the turn MUST
-/// await the handle, or the runtime drop kills the request mid-flight.
+/// message carries the topic, after the second otherwise. Runs in the background,
+/// so a caller whose process exits at turn end MUST await the handle.
 fn name_session(
     client: &AiClient,
     ctx: &SessionCtx,
@@ -2842,8 +2856,6 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
     tools
 }
 
-/// Execute one tool call. Failures come back as plain text so the model can react.
-#[allow(clippy::too_many_arguments)]
 /// The escapes JSON actually allows.
 const JSON_ESCAPES: &str = "\"\\/bfnrtu";
 
@@ -3655,9 +3667,8 @@ async fn mcp_bridge(
 }
 
 /// The binary and its arguments, recovered from the shapes models send when
-/// `command` is not a plain string: the whole argv as a list, or the binary
-/// left in `args`. A shell line in `command` runs through `bash -lc`, and a
-/// leading flag is treated as a shell flag for the same reason.
+/// `command` is not a plain string: the whole argv as a list, or the binary left
+/// in `args`. A shell line, or a leading flag, runs through `bash -lc`.
 fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
     let tail = string_list(&args["args"]);
     match args["command"].as_str().filter(|s| !s.trim().is_empty()) {

@@ -12,10 +12,14 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use super::guard::TuiGuard;
-use super::helpers::{dim, draw_banner, draw_input_box, human_count, severity_chip};
+use super::helpers::{
+    dim, draw_banner, draw_input_box, human_count, severity_chip, severity_color,
+};
 use super::summary::print_summary;
 use super::{SPINNER, theme};
 use crate::review::{Job, execute};
@@ -354,9 +358,11 @@ impl App {
                     .confidence
                     .map(|c| format!("  ·  {:.0}%", c * 100.0))
                     .unwrap_or_default();
+                let rail = Style::default().fg(severity_color(&f.severity));
                 self.lines.push(Line::from(vec![
+                    Span::styled("▎", rail),
                     Span::styled(
-                        "  ✓ ",
+                        " ✓ ",
                         Style::default()
                             .fg(theme::get().success)
                             .add_modifier(Modifier::BOLD),
@@ -368,13 +374,20 @@ impl App {
                     ),
                 ]));
                 self.lines.push(Line::from(vec![
-                    Span::raw("      "),
+                    Span::styled("▎", rail),
+                    Span::styled("     ", Style::default()),
                     Span::styled(
                         format!("{}:{}{}", f.file_path, f.line, conf),
                         Style::default().fg(theme::get().blue),
                     ),
                 ]));
-                self.lines.push(dim(format!("      {}", f.description)));
+                self.lines.push(Line::from(vec![
+                    Span::styled("▎", rail),
+                    Span::styled(
+                        format!("     {}", f.description),
+                        theme::get().faint_style(),
+                    ),
+                ]));
             }
             Progress::Refuted { title, .. } => {
                 self.lines.push(Line::from(vec![
@@ -443,6 +456,17 @@ impl App {
                 .scroll((scroll, 0)),
             body,
         );
+        // Only meaningful once the feed can overflow; the position is the
+        // paragraph's top offset, so it tracks PageUp/PageDown and arrows.
+        if max_scroll > 0 {
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .thumb_style(theme::get().accent_style())
+                    .track_style(theme::get().faint_style()),
+                body,
+                &mut ScrollbarState::new(self.lines.len()).position(scroll.into()),
+            );
+        }
 
         if let Some(input) = input {
             self.draw_input(frame, input);

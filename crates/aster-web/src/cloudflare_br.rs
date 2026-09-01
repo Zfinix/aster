@@ -1,8 +1,6 @@
-//! Cloudflare Browser Run HTTP client for quick actions.
-//! See <https://developers.cloudflare.com/browser-run/quick-actions/>.
-//!
-//! Requires a Cloudflare account ID and API token with Browser Rendering
-//! permission. Set `CLOUDFLARE_BR_ACCOUNT_ID` and `CLOUDFLARE_BR_API_TOKEN`.
+//! Cloudflare Browser Run client for quick actions. Needs an account id and a token
+//! with Browser Rendering permission: `CLOUDFLARE_BR_ACCOUNT_ID` and
+//! `CLOUDFLARE_BR_API_TOKEN`. <https://developers.cloudflare.com/browser-run/quick-actions/>
 
 use std::time::Duration;
 

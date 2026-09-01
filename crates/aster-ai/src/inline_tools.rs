@@ -1,10 +1,6 @@
-//! Recovery for models that write their tool calls into the message content
-//! instead of the API's `tool_calls` field.
-//!
-//! DeepSeek's `<｜｜DSML｜｜tool_calls>` blocks are the common case: the turn
-//! comes back with no tool calls, the agent loop treats it as the final answer,
-//! and the user sees raw markup. Parsing the block back into real calls keeps
-//! the turn going.
+//! Recovery for models that write tool calls into the message content instead of
+//! the API's `tool_calls` field. DeepSeek's blocks are the common case: unparsed,
+//! the turn reads as a final answer full of raw markup.
 
 use serde_json::{Map, Value};
 

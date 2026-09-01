@@ -405,14 +405,19 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     return this.context.globalState.get<Effort>(EFFORT_KEY) ?? null;
   }
 
-  /** The endpoint `/provider` chose, if any. Unset means `aster.yaml` decides. */
-  private provider(): ProviderOverride | undefined {
-    return this.context.globalState.get<ProviderOverride>(PROVIDER_KEY);
+  /** The environment every CLI child of this panel runs with. The provider
+   *  lives in aster.yaml now, so nothing is overridden here. */
+  private env(): NodeJS.ProcessEnv {
+    return process.env;
   }
 
-  /** The environment every CLI child of this panel runs with. */
-  private env(): NodeJS.ProcessEnv {
-    return cliEnv(this.provider());
+  /** One-shot: a provider chosen before this became aster.yaml-backed still
+   *  applies, then the panel-local override is gone for good. */
+  private async migrateProviderOverride(root: string | undefined): Promise<void> {
+    const legacy = this.context.globalState.get<ProviderOverride>(PROVIDER_KEY);
+    if (!legacy?.baseUrl) return;
+    await this.context.globalState.update(PROVIDER_KEY, undefined);
+    if (root) await info.useProvider(root, legacy.baseUrl).catch(() => {});
   }
 
   private async onMessage(message: ToHost, origin: vscode.Webview): Promise<void> {
@@ -485,6 +490,9 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         if (message.model) {
           const recent = this.recentModels().filter((m) => m !== message.model);
           await this.context.globalState.update(RECENT_MODELS_KEY, [message.model, ...recent].slice(0, 5));
+          // Written through the CLI too, so the terminal and desktop agree.
+          const root = workspaceRoot();
+          if (root) void info.useModel(root, message.model).catch(() => {});
         }
         break;
       }
@@ -701,28 +709,31 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Repoint the endpoint for this panel's runs, then adopt one of its models. */
+  /** Repoint the endpoint for every surface: written to aster.yaml via the
+   *  CLI, so the terminal, desktop, and this panel resolve the same provider. */
   private async switchProvider(baseUrl: string, model: string): Promise<void> {
     const root = workspaceRoot();
     if (!root) return;
-    const catalog = await info.providers(root, this.env()).catch(() => []);
+    const catalog = await info.providers(root).catch(() => []);
     const chosen = catalog.find((p) => p.base_url === baseUrl);
-    const override: ProviderOverride = { baseUrl, keyEnv: chosen?.key_env ?? [] };
-    await this.context.globalState.update(PROVIDER_KEY, override);
+    try {
+      await info.useProvider(root, baseUrl, model);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Aster: ${describe(err)}`);
+      return;
+    }
     await this.context.globalState.update(MODEL_KEY, model);
 
-    if (!cliEnv(override).ASTER_API_KEY) {
+    if (!(await info.hasKey(root).catch(() => true))) {
       void vscode.window.showWarningMessage(
-        `Aster: no key found for ${chosen?.name ?? baseUrl} in ${
-          override.keyEnv.join(" or ") || "the environment"
-        }; falling back to ASTER_API_KEY.`
+        `Aster: no key found for ${chosen?.name ?? baseUrl}. Add one in Aster Settings, under API keys.`
       );
     }
     this.post({
       type: "providerChanged",
       provider: chosen?.name ?? baseUrl,
       model,
-      models: await info.modelsFor(root, model, cliEnv(override)),
+      models: await info.modelsFor(root, model),
     });
   }
 
@@ -741,7 +752,11 @@ export class AsterPanel implements vscode.WebviewViewProvider {
 
   private async sendInit(target?: vscode.Webview): Promise<void> {
     const root = workspaceRoot();
-    const model = this.model();
+    await this.migrateProviderOverride(root);
+    // The panel's own pick wins for this window; otherwise the config decides,
+    // so a fresh install opens on what the terminal already uses.
+    const model =
+      this.model() ?? (root ? await info.currentModel(root).catch(() => null) : null);
     this.postTo(target, {
       type: "init",
       workspaceRoot: root ?? null,

@@ -39,7 +39,6 @@ impl WireMessage {
     }
 }
 
-/// A reply to a relayed approval prompt.
 #[derive(Clone, Copy)]
 pub enum Answer {
     Allow,
@@ -56,15 +55,15 @@ pub enum TurnEvent {
         name: String,
         arguments: String,
     },
-    /// That tool call finished, so its step can be ticked off.
-    ToolResult { id: String, error: bool },
-    /// The agent needs a yes/no from the user before it can continue.
+    ToolResult {
+        id: String,
+        error: bool,
+    },
     ApprovalRequest {
         preview: String,
         scope: Option<String>,
         respond: oneshot::Sender<Answer>,
     },
-    /// The agent asked a multiple-choice question.
     Question {
         header: String,
         question: String,
@@ -82,9 +81,7 @@ pub struct TurnOutcome {
 /// Everything constant across one chat's turns.
 #[derive(Clone)]
 pub struct Turn {
-    /// Path to the `aster` binary to spawn.
     pub bin: PathBuf,
-    /// Repository the agent operates on.
     pub repo_root: PathBuf,
     /// Session id the turn records into, e.g. `telegram-12345`.
     pub session: String,

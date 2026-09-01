@@ -36,4 +36,42 @@ describe("parseError", () => {
     expect(hint).toContain("Send again");
     expect(detail).toContain("operation timed out");
   });
+
+  it("sees through an exit-code wrapper to the status inside", () => {
+    const { label, hint, detail } = parseError(
+      "aster exited with code 1: model endpoint returned 429"
+    );
+    expect(label).toBe("Too many requests");
+    expect(hint).toContain("slow down");
+    expect(detail).toBe("model endpoint returned 429");
+  });
+
+  it("explains a bare exit-code failure without plumbing", () => {
+    const { label, hint } = parseError(
+      "aster chat exited with code 1. See the Aster output channel."
+    );
+    expect(label).toBe("Aster stopped unexpectedly");
+    expect(hint).toContain("output channel");
+    expect(hint).not.toContain("engine");
+  });
+
+  it("does not mistake a panic's line number for an HTTP status", () => {
+    const { label } = parseError(
+      "aster chat exited with code 101: thread 'main' panicked at src/wire.rs:429"
+    );
+    expect(label).toBe("Aster stopped unexpectedly");
+  });
+
+  it("prefers the connection advice when a dropped stream quotes a status", () => {
+    const { label } = parseError(
+      "connection reset by peer (os error 104) after retrying status 503"
+    );
+    expect(label).toBe("Connection dropped");
+  });
+
+  it("maps provider 5xx errors to a retry hint", () => {
+    const { label, hint } = parseError("bad gateway (502): upstream reset");
+    expect(label).toBe("Provider trouble");
+    expect(hint).toContain("Send again");
+  });
 });

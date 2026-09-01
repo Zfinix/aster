@@ -40,8 +40,18 @@ pub fn resolve_endpoint(review: &Review, model_flag: Option<&str>) -> (String, S
 pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
     let (base_url, model) = resolve_endpoint(review, model_flag);
     let Some((api_key, _)) = resolve_key(&base_url) else {
+        if aster_ai::codex_api::is_codex(&base_url) {
+            bail!(
+                "not signed in to ChatGPT. Run `aster login codex` to link your subscription, then try again"
+            );
+        }
+        let sign_in = if base_url.contains("openrouter.ai") {
+            ", or run `aster login openrouter`"
+        } else {
+            ""
+        };
         bail!(
-            "no API key found for {}. Run `aster init` to set one up globally, or set {} in your shell environment",
+            "no API key found for {}. Run `aster init` to set one up globally{sign_in}, or set {} in your shell environment",
             crate::init::provider_label(&base_url),
             keys::key_vars(&base_url).join(" or ")
         );
@@ -88,7 +98,6 @@ fn resolve_web_search(review: &Review) -> bool {
 const ASTER_HTTP_REFERER: &str = "https://withaster.dev";
 const ASTER_TITLE: &str = "Aster";
 
-/// Build a configured `AiClient` from already-loaded settings.
 pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Result<AiClient> {
     let llm = resolve(&settings.review, model_override)?;
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model)
@@ -142,24 +151,24 @@ enum ProviderCmd {
 pub struct UseProviderArgs {
     /// Provider id, name, or base URL, as shown by `aster provider list`.
     #[arg(value_name = "PROVIDER")]
-    target: String,
+    pub(crate) target: String,
 
     /// Model to adopt with it. Defaults to the provider's example model,
     /// since an endpoint kept with a model it does not serve fails next turn.
     #[arg(long, value_name = "ID")]
-    model: Option<String>,
+    pub(crate) model: Option<String>,
 }
 
 pub fn run(args: ProviderArgs) -> Result<()> {
     match args.command {
-        ProviderCmd::List => crate::models::list_providers_command(),
+        ProviderCmd::List => super::models::list_providers_command(),
         ProviderCmd::Use(args) => use_provider(args),
     }
 }
 
 /// Repoint the endpoint and its model together, the way the TUI's `/provider`
 /// does, then report what the next turn resolves to.
-fn use_provider(args: UseProviderArgs) -> Result<()> {
+pub(crate) fn use_provider(args: UseProviderArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let (name, base_url, example_model) = crate::init::find_provider(&args.target)?;
     let model = args.model.unwrap_or(example_model);
@@ -219,6 +228,9 @@ pub(crate) fn report(repo_root: &Path, saved: &Saved, watch: &[&str]) -> Result<
         println!("         {} (this repo pinned it too)", also.display());
     }
     match source {
+        None if aster_ai::codex_api::is_codex(&base_url) => {
+            eprintln!("note: not signed in to ChatGPT; run `aster login codex`");
+        }
         None => {
             eprintln!(
                 "note: no key for this endpoint; set {}, or run `aster init`",

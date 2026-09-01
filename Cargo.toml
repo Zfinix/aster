@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/aster-models",
+    "crates/aster-mom",
     "crates/aster-ai",
     "crates/aster-index",
     "crates/aster-analyzers",

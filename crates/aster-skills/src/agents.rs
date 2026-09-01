@@ -27,7 +27,6 @@ pub struct Agent {
     /// Stable identifier, the same key the `skills` CLI uses for `--agent`.
     pub key: &'static str,
     pub display_name: &'static str,
-    /// Skills root relative to a repository root.
     pub project_dir: &'static str,
     global: Root,
 }
@@ -50,7 +49,6 @@ impl Agent {
         }
     }
 
-    /// This agent's skills root inside `repo_root`.
     pub fn project_dir_in(&self, repo_root: &Path) -> PathBuf {
         repo_root.join(self.project_dir)
     }
@@ -512,7 +510,6 @@ const fn agent(
     }
 }
 
-/// Look an agent up by its `--agent` key.
 pub fn agent_by_key(key: &str) -> Option<&'static Agent> {
     let key = key.trim().to_ascii_lowercase();
     AGENTS.iter().find(|a| a.key == key)

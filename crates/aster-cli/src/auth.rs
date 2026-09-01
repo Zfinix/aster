@@ -26,7 +26,8 @@ struct TokenResponse {
 
 #[derive(Args)]
 pub struct LoginArgs {
-    /// `codex` links a ChatGPT subscription instead of GitHub.
+    /// `github` (default) links a GitHub account, `codex` a ChatGPT
+    /// subscription, `openrouter` and `zai` sign in with those providers.
     #[arg(value_name = "TARGET", default_value = "github")]
     target: String,
 }
@@ -35,7 +36,11 @@ pub async fn run(args: LoginArgs) -> Result<()> {
     match args.target.as_str() {
         "github" => login().await,
         "codex" | "chatgpt" => login_codex().await,
-        other => bail!("unknown login target {other:?}; expected github or codex"),
+        "openrouter" | "or" => crate::openrouter_auth::login_and_report().await,
+        "zai" | "z.ai" | "glm" => crate::zai_auth::login_and_report().await,
+        other => {
+            bail!("unknown login target {other:?}; expected github, codex, openrouter, or zai")
+        }
     }
 }
 

@@ -40,7 +40,6 @@ pub struct ToolStat {
     pub result_chars: Dist,
 }
 
-/// Accumulator for building a [`ToolStat`] across turns.
 #[derive(Default)]
 struct ToolAccum {
     calls: usize,

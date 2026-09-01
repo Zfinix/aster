@@ -13,6 +13,7 @@ anydoc = { workspace = true }
 anyhow = { workspace = true }
 aster-agents = { path = "../aster-agents" }
 aster-ai = { path = "../aster-ai" }
+aster-mom = { path = "../aster-mom" }
 aster-eval = { path = "../aster-eval" }
 aster-harness = { path = "../aster-harness" }
 aster-mcp = { path = "../aster-mcp" }

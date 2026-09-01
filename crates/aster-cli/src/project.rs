@@ -1,7 +1,6 @@
-//! A skim of the repository, read once at session start: its name, what it says
-//! it does, how big it is in each language, where its packages and docs sit.
-//! Short enough to sit in every request, specific enough that the first turn can
-//! talk about this project rather than about software in general.
+//! A skim of the repository, read once at session start: its name, what it says it
+//! does, its languages, where its packages and docs sit. Short enough for every
+//! request, specific enough that the first turn talks about this project.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,7 +18,6 @@ const MAX_STACKS: usize = 4;
 const MIN_STACK_SHARE: usize = 20;
 /// Top-level directories listed before the rest become a count.
 const MAX_TOP_LEVEL: usize = 16;
-/// Documentation pages listed by name.
 const MAX_DOCS: usize = 8;
 /// Characters of description kept. Long enough for the opening claim, short
 /// enough that it does not crowd the instructions that follow it.
@@ -31,7 +29,6 @@ const MAX_MANIFEST_DEPTH: usize = 3;
 /// UI up; counts past this are reported as approximate.
 const MAX_WALK_ENTRIES: usize = 20_000;
 
-/// Manifest filenames and the ecosystem each one declares.
 const MANIFESTS: &[(&str, &str)] = &[
     ("Cargo.toml", "Rust"),
     ("package.json", "JavaScript/TypeScript"),

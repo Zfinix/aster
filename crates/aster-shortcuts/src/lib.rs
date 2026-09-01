@@ -15,7 +15,6 @@ impl ShortcutsBackend {
         Self
     }
 
-    /// List every shortcut available on this Mac.
     pub async fn list(&self) -> anyhow::Result<Vec<String>> {
         let output = tokio::process::Command::new("/usr/bin/shortcuts")
             .arg("list")

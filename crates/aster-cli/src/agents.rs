@@ -26,14 +26,12 @@ pub(crate) fn discover_agents(repo_root: &std::path::Path) -> Arc<AgentRegistry>
     Arc::new(AgentRegistry::discover(&roots))
 }
 
-/// One task in a batch `agent` tool call.
 #[derive(Debug, Clone)]
 pub(crate) struct AgentTask {
     pub agent: String,
     pub task: String,
 }
 
-/// The result of one agent task, ready for serialization into the tool result.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TaskReport {
     pub agent: String,
@@ -64,7 +62,6 @@ pub(crate) struct AgentProgress {
     pub total: usize,
 }
 
-/// Dependencies a sub-agent run needs from the parent session.
 #[derive(Clone)]
 pub(crate) struct AgentDeps {
     pub client: AiClient,
@@ -236,10 +233,9 @@ async fn run_agent(
     Ok(reply)
 }
 
-/// Fan out a batch of tasks concurrently, bounded by `max_concurrent`.
-/// Preserves input order regardless of completion order. Calls `on_activity`
-/// per live action and `on_complete` once per finished task so the UI can
-/// render live progress; the parent emits the `running` events up front.
+/// Fan out a batch of tasks concurrently, bounded by `max_concurrent`, in input
+/// order regardless of completion order. `on_activity` fires per live action and
+/// `on_complete` once per finished task, so the UI can render live progress.
 pub(crate) async fn run_swarm<A, F>(
     tasks: Vec<AgentTask>,
     registry: &AgentRegistry,

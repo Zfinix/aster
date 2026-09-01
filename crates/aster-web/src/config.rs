@@ -4,6 +4,44 @@ use std::env;
 
 use serde::{Deserialize, Serialize};
 
+/// Every env var the providers read, as `(provider, var, what it buys)`, in
+/// dispatch order. Kept beside the `resolve_*` methods so a provider cannot
+/// gain a key without `aster key` listing it.
+pub const KEY_VARS: &[(&str, &str, &str)] = &[
+    ("Exa", "EXA_API_KEY", "leads web/search"),
+    ("Perplexity", "PERPLEXITY_API_KEY", "web/search, behind Exa"),
+    (
+        "Context.dev",
+        "CONTEXT_DEV_API_KEY",
+        "web/sitemap and web/screenshot, and leads extract and crawl",
+    ),
+    (
+        "Firecrawl",
+        "FIRECRAWL_API_KEY",
+        "web/crawl, and lifts the keyless limit on search and extract",
+    ),
+    (
+        "Browserbase",
+        "BROWSERBASE_API_KEY",
+        "browser-backed web/extract and web/search",
+    ),
+    (
+        "Cloudflare Browser Rendering",
+        "CLOUDFLARE_BR_ACCOUNT_ID",
+        "web/extract and web/crawl, with the API token",
+    ),
+    (
+        "Cloudflare Browser Rendering",
+        "CLOUDFLARE_BR_API_TOKEN",
+        "web/extract and web/crawl, with the account id",
+    ),
+    (
+        "Jina Reader",
+        "JINA_API_KEY",
+        "a higher rate limit on keyless web/extract",
+    ),
+];
+
 /// Configuration loaded from env vars at startup. `aster.yaml` overrides
 /// can be layered on top when available.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

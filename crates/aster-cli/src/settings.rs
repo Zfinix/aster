@@ -14,6 +14,15 @@ pub struct Settings {
     pub mcp: crate::mcp::McpSettings,
     pub agent: Agent,
     pub agents: Agents,
+    pub ui: Ui,
+}
+
+/// Terminal presentation choices.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ui {
+    /// Whether chat prints the session header (model, provider, skills).
+    pub welcome: Option<bool>,
 }
 
 /// Limits on one agent turn. Both are also settable per run via
@@ -117,11 +126,9 @@ impl Settings {
         Ok(settings)
     }
 
-    /// Layer `project` over `self`. Scalars are the project's when it sets
-    /// them; permission lists union, since both files are grants and dropping
-    /// the global one silently would widen or narrow access by accident.
-    /// `mode` takes the stricter of the two rather than the nearer, so a
-    /// project file cannot loosen a global `ask` just by omitting the key.
+    /// Layer `project` over `self`. Scalars are the project's; permission lists union,
+    /// since both files are grants. `mode` takes the stricter of the two, so a project
+    /// file cannot loosen a global `ask` just by omitting the key.
     fn overlaid_with(self, project: Settings) -> Settings {
         Settings {
             review: self.review.overlaid_with(project.review),
@@ -150,14 +157,16 @@ impl Settings {
                     .agent_timeout_secs
                     .or(self.agents.agent_timeout_secs),
             },
+            ui: Ui {
+                welcome: project.ui.welcome.or(self.ui.welcome),
+            },
         }
     }
 }
 
-/// Servers union by name, the project's definition winning a collision, so a
-/// repo can point a shared server name at its own binary. The tool filter
-/// unions like permissions do: a global `deny` is a decision, and a project
-/// file omitting the key must not undo it.
+/// Servers union by name, the project's definition winning, so a repo can point a
+/// shared name at its own binary. The tool filter unions like permissions do: a
+/// global `deny` is a decision a project file must not undo by omission.
 fn merge_mcp(
     mut global: crate::mcp::McpSettings,
     project: crate::mcp::McpSettings,
@@ -255,7 +264,6 @@ pub(crate) fn writable_config(repo_root: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-/// The files a saved choice landed in.
 pub struct Saved {
     /// The global config, where the choice lives.
     pub path: PathBuf,
@@ -263,12 +271,9 @@ pub struct Saved {
     pub also: Option<PathBuf>,
 }
 
-/// Save a choice that belongs to the user rather than to one repo. The model
-/// and the endpoint follow you between directories, so they go in the global
-/// config: writing them beside whichever repo you happened to be in is why a
-/// switch used to vanish on the next `cd`. A project file that pins the same
-/// key is moved along with it, since it outranks the global one and the switch
-/// would otherwise read as a no-op in that one repo.
+/// Save a choice that belongs to the user rather than to one repo: the model and
+/// endpoint follow you between directories, so they go in the global config. A
+/// project file pinning the same key is moved along with it, since it outranks.
 pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> Result<Saved> {
     let path = user_config()?;
     write_review(&path, pairs)?;
@@ -440,7 +445,6 @@ fn rejoin(lines: &[String], original: &str) -> String {
     out
 }
 
-/// Compiled include/exclude matcher for file paths.
 pub struct PathFilter {
     include: Option<GlobSet>,
     exclude: GlobSet,

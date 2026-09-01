@@ -43,14 +43,20 @@ impl<E> ApprovalView<E> {
         }
     }
 
-    fn options(req: &ApprovalRequest) -> [(&'static str, Answer); 3] {
+    fn options(req: &ApprovalRequest) -> &'static [(&'static str, Answer)] {
+        if req.markdown.is_some() {
+            return &[
+                ("Yes, start editing", Answer::Yes),
+                ("No, keep planning", Answer::No),
+            ];
+        }
         match &req.scope {
-            Some(_) => [
+            Some(_) => &[
                 ("Yes", Answer::Yes),
                 ("Yes, always allow this directory", Answer::Always),
                 ("No", Answer::No),
             ],
-            None => [
+            None => &[
                 ("Yes", Answer::Yes),
                 ("Yes to all edits this session", Answer::Always),
                 ("No", Answer::No),
@@ -78,11 +84,15 @@ impl<E> ApprovalView<E> {
             .preview
             .split_once('\n')
             .unwrap_or((req.preview.as_str(), ""));
+        // A plan prints as a document in the transcript; the pane keeps only
+        // the question, so diffing its markdown here would mangle it.
+        let plan = req.markdown.is_some();
         let title = match &req.scope {
             Some(dir) => format!(
                 "Allow reads and writes to {}?",
                 super::super::helpers::short_path(dir)
             ),
+            None if plan => title.to_string(),
             None => format!("Approve: {}", title.trim_end_matches(':')),
         };
 
@@ -90,15 +100,17 @@ impl<E> ApprovalView<E> {
             Span::styled("? ", theme::get().amber_style()),
             Span::styled(title, theme::get().amber_style()),
         ])];
-        let diff = history::diff_lines(body, (width as usize).saturating_sub(2).max(8));
-        let hidden = diff.len().saturating_sub(MAX_PREVIEW_ROWS);
-        if hidden > 0 {
-            out.push(Line::from(Span::styled(
-                format!("… +{hidden} earlier lines"),
-                dim.add_modifier(Modifier::ITALIC),
-            )));
+        if !plan {
+            let diff = history::diff_lines(body, (width as usize).saturating_sub(2).max(8));
+            let hidden = diff.len().saturating_sub(MAX_PREVIEW_ROWS);
+            if hidden > 0 {
+                out.push(Line::from(Span::styled(
+                    format!("… +{hidden} earlier lines"),
+                    dim.add_modifier(Modifier::ITALIC),
+                )));
+            }
+            out.extend(diff.into_iter().skip(hidden));
         }
-        out.extend(diff.into_iter().skip(hidden));
         out.push(Line::from(""));
         for (i, (label, _)) in Self::options(req).iter().enumerate() {
             let active = i == self.selected;
@@ -118,10 +130,12 @@ impl<E> ApprovalView<E> {
                 dim,
             )));
         }
-        out.push(Line::from(Span::styled(
-            "  y yes · a always · n/esc no",
-            dim,
-        )));
+        let hint = if plan {
+            "  y yes · n/esc no"
+        } else {
+            "  y yes · a always · n/esc no"
+        };
+        out.push(Line::from(Span::styled(hint, dim)));
         out
     }
 
@@ -147,9 +161,10 @@ impl<E> BottomPaneView<E> for ApprovalView<E> {
             return;
         };
         let options = Self::options(req);
+        let has_always = options.iter().any(|(_, a)| *a == Answer::Always);
         match key.code {
             KeyCode::Char('y' | 'Y') => self.decide(Answer::Yes),
-            KeyCode::Char('a' | 'A') => self.decide(Answer::Always),
+            KeyCode::Char('a' | 'A') if has_always => self.decide(Answer::Always),
             KeyCode::Char('n' | 'N') | KeyCode::Esc => self.decide(Answer::No),
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => self.selected = (self.selected + 1).min(options.len() - 1),

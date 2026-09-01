@@ -29,7 +29,6 @@ impl Runner {
     }
 }
 
-/// The command to run and how to read its output.
 #[derive(Debug)]
 pub(crate) struct TestCommand {
     pub runner: Runner,

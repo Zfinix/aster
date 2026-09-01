@@ -1,39 +1,35 @@
 //! Saved sessions, and the transcript a reopened one is rebuilt from. Assistant
 //! turns keep their thinking and tool calls: replaying only `content` would drop
-//! every reasoning block and any turn that was tool calls alone, which is most
-//! of a working session.
+//! every reasoning block and any turn that was tool calls alone.
 
 use serde_json::{Value, json};
 
 use crate::cli::Cli;
 
 pub async fn list(cli: &Cli) -> Value {
-    cli.json(&["sessions", "list"], None)
+    cli.json(&["sessions", "list"])
         .await
         .unwrap_or_else(|_| json!([]))
 }
 
 pub async fn delete(cli: &Cli, id: &str) -> Result<(), String> {
-    cli.json(&["sessions", "delete", id], None)
-        .await
-        .map(|_| ())
+    cli.json(&["sessions", "delete", id]).await.map(|_| ())
 }
 
 pub async fn rename(cli: &Cli, id: &str, title: &str) -> Result<(), String> {
-    cli.json(&["sessions", "rename", id, title], None)
+    cli.json(&["sessions", "rename", id, title])
         .await
         .map(|_| ())
 }
 
 pub async fn load(cli: &Cli, id: &str) -> Result<Value, String> {
     let parsed = cli
-        .json(&["sessions", "show", id], None)
+        .json(&["sessions", "show", id])
         .await
         .map_err(|_| format!("could not load session {id}"))?;
     Ok(turns(&parsed))
 }
 
-/// Rebuild the turns the thread renders from a session's recorded events.
 fn turns(session: &Value) -> Value {
     let events: Vec<&Value> = session["events"]
         .as_array()

@@ -62,7 +62,6 @@ enum Scope {
     Repo,
 }
 
-/// One MCP server found in another tool's config, local or remote.
 struct FoundServer {
     name: String,
     scope: Scope,
@@ -374,7 +373,6 @@ fn opencode_server(v: &Value) -> Value {
     Value::Object(out)
 }
 
-/// One conversation pulled out of another tool's history.
 struct ImportedSession {
     /// Source-prefixed, e.g. `claude-<uuid>`, so ids never collide across tools.
     id: String,

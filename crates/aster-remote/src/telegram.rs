@@ -38,11 +38,8 @@ pub struct TelegramConfig {
     /// Telegram user ids allowed to drive the agent. Empty rejects everyone
     /// while telling senders their id, which is the onboarding path.
     pub allowed_users: Vec<i64>,
-    /// Path to the `aster` binary to spawn per turn.
     pub bin: PathBuf,
-    /// Repository the agent operates on.
     pub repo_root: PathBuf,
-    /// Permission mode for remote turns.
     pub mode: String,
 }
 
@@ -234,7 +231,6 @@ async fn model_catalog() -> Result<&'static Vec<String>> {
     Ok(MODEL_CACHE.get_or_init(|| models))
 }
 
-/// Run the Telegram bridge until the process is stopped.
 pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
     let api = Api::new(&cfg.token)?;
     let me = api
@@ -725,7 +721,6 @@ async fn aster_remote_ask(cfg: &Arc<TelegramConfig>, prompt: &str) -> Result<Str
     crate::bridge::ask_once(&cfg.bin, &cfg.repo_root, prompt).await
 }
 
-/// The prompt that runs one skill.
 fn skill_prompt(skill: &SkillCommand, input: &str) -> String {
     let mut prompt = format!(
         "Load the skill `{}` with the read_skill tool and follow its instructions.",
@@ -869,11 +864,9 @@ fn get_override<T>(chats: &Chats, chat_id: i64, read: impl FnOnce(&ChatState) ->
     chat_state(chats, chat_id, |state| read(state))
 }
 
-/// Kick off one agent turn for this chat unless one is already running.
-///
-/// A plain `fn`, not `async`: it only locks state, spawns the turn's driving
-/// task, and returns. That keeps its callers free of a non-`Send` future when
-/// they run inside `tokio::spawn`.
+/// Kick off one agent turn for this chat unless one is already running. A plain
+/// `fn`, not `async`: it only locks state and spawns, which keeps its callers free
+/// of a non-`Send` future when they run inside `tokio::spawn`.
 fn start_turn(
     api: &Api,
     cfg: &Arc<TelegramConfig>,
@@ -1096,7 +1089,6 @@ async fn drive_turn(
     result
 }
 
-/// Record the outcome and report it back to the chat.
 async fn finish_turn(
     api: &Api,
     cfg: &Arc<TelegramConfig>,
@@ -1397,7 +1389,6 @@ impl Activity {
         });
     }
 
-    /// Tick off the step this result belongs to.
     fn complete(&mut self, id: &str, error: bool) {
         // A tool that reports no id still completes the oldest running step.
         let index = self

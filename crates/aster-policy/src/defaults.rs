@@ -1,8 +1,6 @@
 //! Built-in rules, in the same language as the user's. A security boundary,
-//! distinct from the review scope filter in `aster-cli` (`DEFAULT_EXCLUDE`); do
-//! not conflate the two.
-//!
-//! User rules are consulted first, so an `allow` entry overrides anything here.
+//! distinct from the review scope filter in `aster-cli` (`DEFAULT_EXCLUDE`). User
+//! rules are consulted first, so an `allow` entry overrides anything here.
 
 /// Writes that run as code later: a git hook or CI workflow written now
 /// executes outside the sandbox afterwards. Confirmed rather than refused, so

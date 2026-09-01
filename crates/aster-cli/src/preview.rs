@@ -1,7 +1,6 @@
-//! `open_preview`: hand finished visual work to the user's browser instead of
-//! only describing it. Resolves a URL or a repo file to something a browser can
-//! load, refuses schemes that are not a page, and asks before opening anything
-//! that is not this machine's own repo or loopback.
+//! `open_preview`: hand finished visual work to the user's browser. Resolves a URL
+//! or a repo file to something a browser can load, refuses schemes that are not a
+//! page, and asks before opening anything but this repo or loopback.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -21,10 +20,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(700);
 /// agent reports it instead of opening it.
 const NO_BROWSER: &str = "ASTER_NO_BROWSER";
 
-/// A target resolved to something a browser can load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Preview {
-    /// The URL handed to the browser.
     pub url: String,
     /// True when the target is loopback or a file inside the repository, which
     /// opens without asking. Anything else is a page the agent chose to send
@@ -101,7 +98,6 @@ async fn open_with(
     ))
 }
 
-/// Turn what the model passed into a URL a browser can load.
 pub(crate) fn resolve(repo_root: &Path, target: &str) -> Result<Preview> {
     let target = target.trim();
     if target.is_empty() {

@@ -1,9 +1,6 @@
-//! A local record of every failed provider request, so a regression like a
-//! wire-format change is diagnosable from disk instead of by diffing binaries
-//! against a local server. One JSON line per failure at
-//! `~/.aster/logs/provider-errors.jsonl`, holding the status, the response
-//! body, and a summary of what was sent. Never the API key and never message
-//! contents: only shape metadata that is safe to paste into a bug report.
+//! One JSON line per failed provider request at
+//! `~/.aster/logs/provider-errors.jsonl`, so a wire-format regression is
+//! diagnosable from disk. Never the API key, never message contents.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -18,7 +15,6 @@ pub const MAX_BODY_CHARS: usize = 2048;
 /// over: recent failures matter, history does not.
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
-/// Where the log lives under the home directory.
 pub const LOG_RELATIVE_PATH: &str = ".aster/logs/provider-errors.jsonl";
 
 /// Append one failure record. Best effort: logging must never turn a provider

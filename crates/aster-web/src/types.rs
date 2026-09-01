@@ -7,7 +7,6 @@ pub struct ExtractedPage {
     pub metadata: PageMetadata,
 }
 
-/// Metadata for a single crawled page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageMetadata {
     pub url: String,
@@ -19,7 +18,6 @@ pub struct PageMetadata {
     pub language: Option<String>,
 }
 
-/// Parameters that control a crawl.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlOptions {
     /// Maximum pages to crawl (1-500).
@@ -106,7 +104,6 @@ impl Default for SearchOptions {
     }
 }
 
-/// The result of a full crawl.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlResult {
     pub pages: Vec<ExtractedPage>,

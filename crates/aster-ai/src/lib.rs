@@ -19,6 +19,7 @@ pub mod codex;
 pub mod codex_api;
 mod error_log;
 pub mod keys;
+pub mod pkce;
 
 pub mod retry;
 use retry::RetryWithBackoff;
@@ -41,8 +42,8 @@ pub use models::{
     MessageContent, ReasoningDetail, ToolCall, ToolCallFunction, UrlCitation, WebSearchPlugin,
 };
 use models::{
-    ChatRequest, ChatResponse, ChatStreamChunk, Reasoning, StreamOptions, ToolChatRequest,
-    ToolChatResponse, Usage,
+    ChatRequest, ChatResponse, ChatStreamChunk, Reasoning, StreamOptions, ToolCallDelta,
+    ToolChatRequest, ToolChatResponse, Usage,
 };
 
 /// Endpoint used when `ASTER_BASE_URL` is unset.
@@ -73,7 +74,6 @@ fn estimate_tokens(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
 }
 
-/// A point-in-time view of token spend.
 #[derive(Debug, Clone, Copy)]
 pub struct UsageSnapshot {
     pub prompt_tokens: u64,
@@ -136,21 +136,11 @@ impl AiClient {
         // Resolved against the endpoint, not blindly: a key issued for the last
         // provider is rejected by the next one as an unexplained 401. A ChatGPT
         // subscription login stands in for a key on the Codex backend.
-        let resolved = match keys::resolve_key(&base_url) {
-            Some(resolved) => Some(resolved),
-            None if codex_api::is_codex(&base_url) => home_dir()
-                .ok()
-                .and_then(|home| codex::load(&home))
-                .map(|_| {
-                    (
-                        "chatgpt-subscription".to_string(),
-                        keys::KeySource::Provider,
-                    )
-                }),
-            None => None,
-        };
         let (api_key, _) =
-            resolved.with_context(|| format!("set {}", keys::key_vars(&base_url).join(" or ")))?;
+            keys::resolve_key(&base_url).with_context(|| match codex_api::is_codex(&base_url) {
+                true => "not signed in to ChatGPT; run `aster login codex`".to_string(),
+                false => format!("set {}", keys::key_vars(&base_url).join(" or ")),
+            })?;
         let model = env::var("ASTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
         let timeout_secs = env_u64("ASTER_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS);
         let max_retries = env_u64("ASTER_MAX_RETRIES", DEFAULT_MAX_RETRIES as u64) as u32;
@@ -228,10 +218,8 @@ impl AiClient {
         self
     }
 
-    /// Builder form of [`AiClient::set_attribution_headers`]-friendly for a
-    /// client built from config. Headers like `HTTP-Referer` and
-    /// `X-OpenRouter-Title` attribute usage to this app on a provider's
-    /// rankings and analytics.
+    /// Builder form of [`AiClient::set_attribution_headers`]. `HTTP-Referer` and
+    /// `X-OpenRouter-Title` attribute usage to this app on a provider's rankings.
     pub fn with_attribution_headers(
         mut self,
         headers: impl IntoIterator<Item = (String, String)>,
@@ -618,12 +606,9 @@ impl AiClient {
         Ok(acc)
     }
 
-    /// Streaming tool-call completion: the same contract as
-    /// [`Self::complete_tools_with`], but `on_token` receives each content delta
-    /// as it arrives and `on_reasoning` each plaintext thinking fragment, so a
-    /// caller can show reasoning live instead of once the round closes.
-    /// Tool-call fragments are reassembled by index. Falls back to a
-    /// non-streaming call when the endpoint yields nothing.
+    /// [`Self::complete_tools_with`], streamed: `on_token` gets each content delta and
+    /// `on_reasoning` each plaintext thinking fragment. Tool-call fragments are
+    /// reassembled by index; falls back to a non-streaming call when nothing yields.
     pub async fn complete_tools_stream_with(
         &self,
         model: &str,
@@ -716,18 +701,7 @@ impl AiClient {
                 merge_reasoning(&mut reasoning_details, fragment);
             }
             for fragment in choice.delta.tool_calls {
-                let slot = partials.entry(fragment.index).or_default();
-                if let Some(id) = fragment.id.filter(|s| !s.is_empty()) {
-                    slot.id = id;
-                }
-                if let Some(function) = fragment.function {
-                    if let Some(name) = function.name.filter(|s| !s.is_empty()) {
-                        slot.name = name;
-                    }
-                    if let Some(args) = function.arguments {
-                        slot.arguments.push_str(&args);
-                    }
-                }
+                merge_tool_call(&mut partials, fragment);
             }
             true
         })
@@ -809,13 +783,9 @@ impl AiClient {
         })
     }
 
-    /// POST a chat request. Transient failures are retried by the middleware; a
-    /// non-success status that survives fails here with the response body.
-    ///
-    /// On the Codex backend the request is translated to the Responses API and
-    /// the reply translated back, so callers keep speaking chat completions
-    /// end to end. Streaming replies pass through untranslated here; the SSE
-    /// events are translated per event by [`Self::sse_adapter`].
+    /// POST a chat request. A non-success status that survives the retry middleware
+    /// fails here with the response body. The Codex backend is translated to the
+    /// Responses API and back; streamed events go through [`Self::sse_adapter`].
     #[tracing::instrument(
         name = "model_request",
         skip_all,
@@ -937,7 +907,7 @@ impl AiClient {
         let response = self
             .http
             .get(&url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.bearer().await?)
             .send()
             .await
             .with_context(|| format!("{ctx} failed"))?;
@@ -974,6 +944,17 @@ impl AiClient {
     /// As [`AiClient::fetch_models`], with the capabilities the endpoint declares
     /// alongside each ID. Order is the endpoint's own.
     pub async fn fetch_model_catalog(&self) -> Result<Vec<ModelInfo>> {
+        // The Codex backend has no `/models`; the catalog's shortlist stands
+        // in so pickers and capability checks work without a doomed probe.
+        if codex_api::is_codex(&self.base_url) {
+            return Ok(keys::catalog_models(&self.base_url)
+                .into_iter()
+                .map(|id| ModelInfo {
+                    id,
+                    takes_images: None,
+                })
+                .collect());
+        }
         let response = self
             .get_with_retry("/models", "fetching model list")
             .await?;
@@ -997,12 +978,9 @@ impl AiClient {
         false
     }
 
-    /// Whether this client's model takes image input.
-    ///
-    /// Optimistic by design: only an endpoint that declares its modalities and
-    /// leaves images out answers `false`. Most OpenAI-compatible endpoints
-    /// declare nothing, and refusing images there would be worse than trying
-    /// and falling back on the rejection.
+    /// Whether this client's model takes image input. Optimistic: only an endpoint
+    /// that declares its modalities and leaves images out answers `false`, since most
+    /// declare nothing and refusing there is worse than trying.
     pub async fn supports_images(&self) -> bool {
         *self
             .images
@@ -1039,7 +1017,6 @@ fn strip_images(messages: &mut [ChatMessage]) {
     }
 }
 
-/// One model the endpoint serves, with what it says about its own inputs.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,
@@ -1081,12 +1058,57 @@ struct ModelListResponse {
     data: Vec<ModelEntry>,
 }
 
-/// A tool call being reassembled from streamed fragments.
 #[derive(Default)]
 struct PartialToolCall {
     id: String,
     name: String,
     arguments: String,
+}
+
+/// Merge one streamed tool-call fragment into `partials`. A buggy endpoint reuses
+/// an index across two calls, splicing them into one, so a fragment whose id or
+/// name disagrees with the occupied slot is given a fresh slot.
+fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: ToolCallDelta) {
+    let index = match partials.get(&fragment.index) {
+        Some(slot) if !same_call(slot, &fragment) => fresh_index(partials),
+        _ => fragment.index,
+    };
+    let slot = partials.entry(index).or_default();
+    if let Some(id) = fragment.id.filter(|s| !s.is_empty()) {
+        slot.id = id;
+    }
+    if let Some(function) = fragment.function {
+        if let Some(name) = function.name.filter(|s| !s.is_empty()) {
+            slot.name = name;
+        }
+        if let Some(args) = function.arguments {
+            slot.arguments.push_str(&args);
+        }
+    }
+}
+
+/// Whether `fragment` belongs to `slot`: it must not carry an id or name that
+/// contradicts the identity already in the slot. Empty fields are "no opinion",
+/// so a continuation fragment that omits the id still lands in its own slot.
+fn same_call(slot: &PartialToolCall, fragment: &ToolCallDelta) -> bool {
+    let id_matches = fragment
+        .id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_none_or(|id| slot.id.is_empty() || slot.id == id);
+    let name_matches = fragment
+        .function
+        .as_ref()
+        .and_then(|f| f.name.as_deref())
+        .filter(|s| !s.is_empty())
+        .is_none_or(|name| slot.name.is_empty() || slot.name == name);
+    id_matches && name_matches
+}
+
+/// First index above every slot in use, so a fresh call never lands on a
+/// provider index that has already arrived.
+fn fresh_index(partials: &BTreeMap<usize, PartialToolCall>) -> usize {
+    partials.last_key_value().map_or(0, |(&key, _)| key + 1)
 }
 
 /// Feed each SSE `data:` payload to `on_data`, skipping keep-alives and the
@@ -1133,13 +1155,19 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
         500..=599 => "provider error",
         _ => "request failed",
     };
+    // Every wire shape seen in the wild: OpenAI `error.message`, OpenRouter's
+    // upstream `error.metadata.raw`, bare `error`/`message` strings, and the
+    // ChatGPT backend's FastAPI `detail` (a string, or a list of {msg}).
     let detail = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| {
             v["error"]["metadata"]["raw"]
                 .as_str()
                 .or_else(|| v["error"]["message"].as_str())
+                .or_else(|| v["error"].as_str())
                 .or_else(|| v["message"].as_str())
+                .or_else(|| v["detail"].as_str())
+                .or_else(|| v["detail"][0]["msg"].as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
@@ -1158,7 +1186,6 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
 /// paths expect, or `None` to skip it.
 type SseAdapter<'a> = Box<dyn FnMut(&str) -> Option<String> + Send + 'a>;
 
-/// The user's home directory, where the Codex token store lives.
 fn home_dir() -> Result<std::path::PathBuf> {
     env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))
@@ -1177,12 +1204,9 @@ fn env_f64(key: &str) -> Option<f64> {
     env::var(key).ok().and_then(|v| v.trim().parse().ok())
 }
 
-/// Rejoin a streamed reasoning fragment with the block it belongs to. The
-/// provider only accepts the sequence back when it matches what it emitted,
-/// so fragments with the same kind and index have to become one block again,
-/// in arrival order. Fragments without an index merge into the last block
-/// of the same kind, since the provider does not give us a way to
-/// distinguish them.
+/// Rejoin a streamed reasoning fragment with its block: the provider only takes
+/// the sequence back as it emitted it, so fragments of the same kind and index
+/// become one block in arrival order. Indexless ones merge into the last block.
 fn merge_reasoning(out: &mut Vec<ReasoningDetail>, fragment: ReasoningDetail) {
     let existing = out
         .iter_mut()

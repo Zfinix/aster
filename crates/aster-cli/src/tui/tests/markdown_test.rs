@@ -80,6 +80,37 @@ fn an_unclosed_table_flushes_at_end_of_turn() {
 }
 
 #[test]
+fn table_cells_render_inline_markup() {
+    let out = render("| name | see |\n|---|---|\n| **streak** | [docs](https://a.dev) |\n");
+    let rows = text_of(&out);
+    assert_eq!(rows[0], "name   │ see");
+    assert_eq!(rows[2], "streak │ docs (https://a.dev)");
+    assert!(
+        out[2]
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
+    );
+}
+
+#[test]
+fn wide_tables_shrink_to_fit_the_width() {
+    let mut md = MarkdownStream::default();
+    md.set_width(30);
+    let long = "b".repeat(30);
+    let nums = "2".repeat(30);
+    let src = format!("| a | {long} |\n|---|---|\n| 1 | {nums} |\n\ndone\n");
+    let out = md.push(&src);
+    let rows = text_of(&out);
+    for row in &rows[..3] {
+        assert!(row.chars().count() <= 30, "row too wide: {row}");
+    }
+    assert!(rows[1].contains("┼"));
+    assert!(rows[2].contains('…'));
+    assert_eq!(rows[4], "done");
+}
+
+#[test]
 fn checkboxes_render_as_glyphs() {
     let out = render("- [x] done\n- [ ] todo\n");
     assert_eq!(text_of(&out), ["☑ done", "☐ todo"]);

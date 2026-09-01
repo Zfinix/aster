@@ -7,6 +7,7 @@ import {
   cancelChat,
   deleteSession,
   listSessions,
+  persistModel,
   pickDiff,
   pickRepo,
   runChat,
@@ -282,6 +283,15 @@ function App() {
   const refreshAuth = useCallback(() => {
     authStatus().then(setAuth).catch(() => setAuth(null));
   }, []);
+
+  // The CLI config is the source of truth for the model; localStorage only
+  // seeds the first paint before auth_status answers.
+  useEffect(() => {
+    if (auth?.model) {
+      localStorage.setItem("aster.model", auth.model);
+      setModel(auth.model);
+    }
+  }, [auth?.model]);
 
   useEffect(() => {
     startupInfo().then((info) => {
@@ -807,10 +817,15 @@ function App() {
     }
   }, [opts, busy, toast, startReview]);
 
-  const onModel = useCallback((value: string) => {
-    localStorage.setItem("aster.model", value);
-    setModel(value);
-  }, []);
+  const onModel = useCallback(
+    (value: string) => {
+      localStorage.setItem("aster.model", value);
+      setModel(value);
+      // Written through the CLI so the terminal and editors agree next turn.
+      persistModel(value).then(refreshAuth).catch(() => {});
+    },
+    [refreshAuth],
+  );
 
   const onAddModel = useCallback(
     (value: string) => {
