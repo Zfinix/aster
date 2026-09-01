@@ -1,0 +1,500 @@
+{"task_id": "mbpp/17", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 115, "completion_tokens": 25, "cost": 0.0024, "error": null}
+{"task_id": "mbpp/18", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 173, "completion_tokens": 45, "cost": 0.00398, "error": null}
+{"task_id": "mbpp/12", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 285, "completion_tokens": 31, "cost": 0.0044, "error": null}
+{"task_id": "mbpp/14", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 130, "completion_tokens": 33, "cost": 0.00295, "error": null}
+{"task_id": "mbpp/13", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 366, "completion_tokens": 37, "cost": 0.00551, "error": null}
+{"task_id": "mbpp/11", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 143, "completion_tokens": 106, "cost": 0.00673, "error": null}
+{"task_id": "mbpp/16", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 176, "completion_tokens": 187, "cost": 0.01111, "error": null}
+{"task_id": "mbpp/19", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 160, "completion_tokens": 34, "cost": 0.0033, "error": null}
+{"task_id": "mbpp/22", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 172, "completion_tokens": 61, "cost": 0.00477, "error": null}
+{"task_id": "mbpp/21", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 154, "completion_tokens": 40, "cost": 0.00354, "error": null}
+{"task_id": "mbpp/23", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 215, "completion_tokens": 37, "cost": 0.004, "error": null}
+{"task_id": "mbpp/24", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 134, "completion_tokens": 33, "cost": 0.00299, "error": null}
+{"task_id": "mbpp/20", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 114, "completion_tokens": 112, "cost": 0.00674, "error": null}
+{"task_id": "mbpp/25", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 147, "completion_tokens": 95, "cost": 0.00622, "error": null}
+{"task_id": "mbpp/26", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 195, "completion_tokens": 44, "cost": 0.00415, "error": null}
+{"task_id": "mbpp/28", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 83, "cost": 0.00546, "error": null}
+{"task_id": "mbpp/27", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 188, "completion_tokens": 41, "cost": 0.00393, "error": null}
+{"task_id": "mbpp/29", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 190, "completion_tokens": 50, "cost": 0.0044, "error": null}
+{"task_id": "mbpp/15", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 185, "completion_tokens": 68, "cost": 0.00525, "error": null}
+{"task_id": "mbpp/30", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 156, "completion_tokens": 83, "cost": 0.00571, "error": null}
+{"task_id": "mbpp/33", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 34, "cost": 0.00302, "error": null}
+{"task_id": "mbpp/35", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 28, "cost": 0.00259, "error": null}
+{"task_id": "mbpp/32", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 116, "cost": 0.00711, "error": null}
+{"task_id": "mbpp/36", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 63, "cost": 0.00465, "error": null}
+{"task_id": "mbpp/37", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 285, "completion_tokens": 87, "cost": 0.0072, "error": null}
+{"task_id": "mbpp/41", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 198, "completion_tokens": 45, "cost": 0.00423, "error": null}
+{"task_id": "mbpp/40", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 371, "completion_tokens": 55, "cost": 0.00646, "error": null}
+{"task_id": "mbpp/38", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 160, "completion_tokens": 208, "cost": 0.012, "error": null}
+{"task_id": "mbpp/45", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 148, "completion_tokens": 46, "cost": 0.00378, "error": null}
+{"task_id": "mbpp/44", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 57, "cost": 0.00421, "error": null}
+{"task_id": "mbpp/46", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 143, "completion_tokens": 30, "cost": 0.00293, "error": null}
+{"task_id": "mbpp/42", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 153, "completion_tokens": 124, "cost": 0.00773, "error": null}
+{"task_id": "mbpp/47", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 143, "completion_tokens": 104, "cost": 0.00663, "error": null}
+{"task_id": "mbpp/51", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 29, "cost": 0.00278, "error": null}
+{"task_id": "mbpp/48", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 198, "cost": 0.01119, "error": null}
+{"task_id": "mbpp/50", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 223, "completion_tokens": 55, "cost": 0.00498, "error": null}
+{"task_id": "mbpp/53", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 43, "cost": 0.00357, "error": null}
+{"task_id": "mbpp/39", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 857, "cost": 0.04437, "error": null}
+{"task_id": "mbpp/54", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 213, "completion_tokens": 108, "cost": 0.00753, "error": null}
+{"task_id": "mbpp/55", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 126, "completion_tokens": 34, "cost": 0.00296, "error": null}
+{"task_id": "mbpp/52", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 127, "completion_tokens": 26, "cost": 0.00257, "error": null}
+{"task_id": "mbpp/57", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 51, "cost": 0.00407, "error": null}
+{"task_id": "mbpp/56", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 107, "completion_tokens": 72, "cost": 0.00467, "error": null}
+{"task_id": "mbpp/58", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 33, "cost": 0.003, "error": null}
+{"task_id": "mbpp/63", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 194, "completion_tokens": 38, "cost": 0.00384, "error": null}
+{"task_id": "mbpp/61", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 137, "completion_tokens": 172, "cost": 0.00997, "error": null}
+{"task_id": "mbpp/62", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 145, "completion_tokens": 25, "cost": 0.0027, "error": null}
+{"task_id": "mbpp/59", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 118, "completion_tokens": 31, "cost": 0.00273, "error": null}
+{"task_id": "mbpp/65", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 166, "completion_tokens": 76, "cost": 0.00546, "error": null}
+{"task_id": "mbpp/68", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 101, "cost": 0.00655, "error": null}
+{"task_id": "mbpp/69", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 156, "completion_tokens": 89, "cost": 0.00601, "error": null}
+{"task_id": "mbpp/67", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 150, "cost": 0.00886, "error": null}
+{"task_id": "mbpp/70", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 201, "completion_tokens": 65, "cost": 0.00526, "error": null}
+{"task_id": "mbpp/71", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 190, "completion_tokens": 150, "cost": 0.0094, "error": null}
+{"task_id": "mbpp/72", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 123, "completion_tokens": 53, "cost": 0.00388, "error": null}
+{"task_id": "mbpp/75", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 248, "completion_tokens": 60, "cost": 0.00548, "error": null}
+{"task_id": "mbpp/73", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 274, "completion_tokens": 34, "cost": 0.00444, "error": null}
+{"task_id": "mbpp/76", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 125, "completion_tokens": 79, "cost": 0.0052, "error": null}
+{"task_id": "mbpp/49", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 251, "completion_tokens": 32, "cost": 0.00411, "error": null}
+{"task_id": "mbpp/74", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 178, "completion_tokens": 159, "cost": 0.00973, "error": null}
+{"task_id": "mbpp/64", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 275, "completion_tokens": 53, "cost": 0.0054, "error": null}
+{"task_id": "mbpp/79", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 116, "completion_tokens": 28, "cost": 0.00256, "error": null}
+{"task_id": "mbpp/80", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 42, "cost": 0.00342, "error": null}
+{"task_id": "mbpp/82", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 37, "cost": 0.00318, "error": null}
+{"task_id": "mbpp/81", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 303, "completion_tokens": 81, "cost": 0.00708, "error": null}
+{"task_id": "mbpp/77", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 297, "cost": 0.01607, "error": null}
+{"task_id": "mbpp/78", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 141, "completion_tokens": 94, "cost": 0.00611, "error": null}
+{"task_id": "mbpp/85", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 145, "completion_tokens": 38, "cost": 0.00335, "error": null}
+{"task_id": "mbpp/83", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 126, "completion_tokens": 191, "cost": 0.01081, "error": null}
+{"task_id": "mbpp/88", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 254, "completion_tokens": 57, "cost": 0.00539, "error": null}
+{"task_id": "mbpp/84", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 114, "completion_tokens": 115, "cost": 0.00689, "error": null}
+{"task_id": "mbpp/86", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 39, "cost": 0.00327, "error": null}
+{"task_id": "mbpp/87", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 468, "completion_tokens": 89, "cost": 0.00913, "error": null}
+{"task_id": "mbpp/90", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 138, "completion_tokens": 28, "cost": 0.00278, "error": null}
+{"task_id": "mbpp/96", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 114, "completion_tokens": 42, "cost": 0.00324, "error": null}
+{"task_id": "mbpp/91", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 171, "completion_tokens": 38, "cost": 0.00361, "error": null}
+{"task_id": "mbpp/95", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 171, "completion_tokens": 35, "cost": 0.00346, "error": null}
+{"task_id": "mbpp/92", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 118, "completion_tokens": 117, "cost": 0.00703, "error": null}
+{"task_id": "mbpp/94", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 222, "completion_tokens": 41, "cost": 0.00427, "error": null}
+{"task_id": "mbpp/98", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 156, "completion_tokens": 50, "cost": 0.00406, "error": null}
+{"task_id": "mbpp/99", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 137, "completion_tokens": 31, "cost": 0.00292, "error": null}
+{"task_id": "mbpp/100", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 57, "cost": 0.0042, "error": null}
+{"task_id": "mbpp/97", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 364, "completion_tokens": 70, "cost": 0.00714, "error": null}
+{"task_id": "mbpp/102", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 153, "completion_tokens": 43, "cost": 0.00368, "error": null}
+{"task_id": "mbpp/104", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 311, "completion_tokens": 41, "cost": 0.00516, "error": null}
+{"task_id": "mbpp/101", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 150, "cost": 0.00902, "error": null}
+{"task_id": "mbpp/105", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 117, "completion_tokens": 22, "cost": 0.00227, "error": null}
+{"task_id": "mbpp/106", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 191, "completion_tokens": 38, "cost": 0.00381, "error": null}
+{"task_id": "mbpp/103", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 98, "cost": 0.00619, "error": null}
+{"task_id": "mbpp/108", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 483, "completion_tokens": 94, "cost": 0.00953, "error": null}
+{"task_id": "mbpp/109", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 141, "completion_tokens": 126, "cost": 0.00771, "error": null}
+{"task_id": "mbpp/107", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 139, "completion_tokens": 373, "cost": 0.02004, "error": null}
+{"task_id": "mbpp/116", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 137, "completion_tokens": 36, "cost": 0.00317, "error": null}
+{"task_id": "mbpp/114", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 371, "completion_tokens": 66, "cost": 0.00701, "error": null}
+{"task_id": "mbpp/112", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 62, "cost": 0.00432, "error": null}
+{"task_id": "mbpp/113", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 112, "completion_tokens": 82, "cost": 0.00522, "error": null}
+{"task_id": "mbpp/111", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 283, "completion_tokens": 223, "cost": 0.01398, "error": null}
+{"task_id": "mbpp/110", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 306, "completion_tokens": 565, "cost": 0.03131, "error": null}
+{"task_id": "mbpp/115", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 83, "cost": 0.00547, "error": null}
+{"task_id": "mbpp/119", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 155, "completion_tokens": 69, "cost": 0.005, "error": null}
+{"task_id": "mbpp/118", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 162, "completion_tokens": 26, "cost": 0.00292, "error": null}
+{"task_id": "mbpp/117", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 353, "completion_tokens": 113, "cost": 0.00918, "error": null}
+{"task_id": "mbpp/120", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 188, "completion_tokens": 35, "cost": 0.00363, "error": null}
+{"task_id": "mbpp/124", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 143, "completion_tokens": 37, "cost": 0.00328, "error": null}
+{"task_id": "mbpp/123", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 138, "completion_tokens": 120, "cost": 0.00738, "error": null}
+{"task_id": "mbpp/126", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 107, "cost": 0.00654, "error": null}
+{"task_id": "mbpp/127", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 123, "completion_tokens": 86, "cost": 0.00553, "error": null}
+{"task_id": "mbpp/122", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 115, "completion_tokens": 501, "cost": 0.0262, "error": null}
+{"task_id": "mbpp/125", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 124, "cost": 0.0077, "error": null}
+{"task_id": "mbpp/130", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 229, "completion_tokens": 66, "cost": 0.00559, "error": null}
+{"task_id": "mbpp/129", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 211, "completion_tokens": 172, "cost": 0.01071, "error": null}
+{"task_id": "mbpp/131", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 161, "cost": 0.0094, "error": null}
+{"task_id": "mbpp/132", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 174, "completion_tokens": 27, "cost": 0.00309, "error": null}
+{"task_id": "mbpp/135", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 32, "cost": 0.00282, "error": null}
+{"task_id": "mbpp/134", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 155, "completion_tokens": 271, "cost": 0.0151, "error": null}
+{"task_id": "mbpp/133", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 204, "completion_tokens": 41, "cost": 0.00409, "error": null}
+{"task_id": "mbpp/137", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 217, "completion_tokens": 84, "cost": 0.00637, "error": null}
+{"task_id": "mbpp/138", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 169, "completion_tokens": 95, "cost": 0.00644, "error": null}
+{"task_id": "mbpp/136", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 121, "completion_tokens": 497, "cost": 0.02606, "error": null}
+{"task_id": "mbpp/141", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 200, "completion_tokens": 141, "cost": 0.00905, "error": null}
+{"task_id": "mbpp/139", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 45, "cost": 0.00354, "error": null}
+{"task_id": "mbpp/140", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 239, "completion_tokens": 78, "cost": 0.00629, "error": null}
+{"task_id": "mbpp/143", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 182, "completion_tokens": 97, "cost": 0.00667, "error": null}
+{"task_id": "mbpp/145", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 159, "completion_tokens": 37, "cost": 0.00344, "error": null}
+{"task_id": "mbpp/144", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 168, "completion_tokens": 75, "cost": 0.00543, "error": null}
+{"task_id": "mbpp/142", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 257, "completion_tokens": 53, "cost": 0.00522, "error": null}
+{"task_id": "mbpp/146", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 42, "cost": 0.00334, "error": null}
+{"task_id": "mbpp/149", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 220, "completion_tokens": 111, "cost": 0.00775, "error": null}
+{"task_id": "mbpp/151", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 123, "completion_tokens": 37, "cost": 0.00308, "error": null}
+{"task_id": "mbpp/153", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 171, "completion_tokens": 66, "cost": 0.00501, "error": null}
+{"task_id": "mbpp/156", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 205, "completion_tokens": 53, "cost": 0.0047, "error": null}
+{"task_id": "mbpp/148", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 138, "completion_tokens": 267, "cost": 0.01473, "error": null}
+{"task_id": "mbpp/154", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 248, "completion_tokens": 32, "cost": 0.00408, "error": null}
+{"task_id": "mbpp/152", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 225, "completion_tokens": 189, "cost": 0.0117, "error": null}
+{"task_id": "mbpp/150", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 141, "completion_tokens": 204, "cost": 0.01161, "error": null}
+{"task_id": "mbpp/161", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 271, "completion_tokens": 38, "cost": 0.00461, "error": null}
+{"task_id": "mbpp/157", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 317, "completion_tokens": 52, "cost": 0.00577, "error": null}
+{"task_id": "mbpp/163", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 140, "completion_tokens": 48, "cost": 0.0038, "error": null}
+{"task_id": "mbpp/160", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 166, "completion_tokens": 273, "cost": 0.01531, "error": null}
+{"task_id": "mbpp/162", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 45, "cost": 0.00361, "error": null}
+{"task_id": "mbpp/159", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 667, "cost": 0.03457, "error": null}
+{"task_id": "mbpp/165", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 147, "completion_tokens": 94, "cost": 0.00617, "error": null}
+{"task_id": "mbpp/166", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 155, "completion_tokens": 83, "cost": 0.0057, "error": null}
+{"task_id": "mbpp/168", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 145, "completion_tokens": 25, "cost": 0.0027, "error": null}
+{"task_id": "mbpp/167", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 44, "cost": 0.00356, "error": null}
+{"task_id": "mbpp/172", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 176, "completion_tokens": 63, "cost": 0.00491, "error": null}
+{"task_id": "mbpp/169", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 112, "completion_tokens": 71, "cost": 0.00467, "error": null}
+{"task_id": "mbpp/171", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 127, "completion_tokens": 28, "cost": 0.00267, "error": null}
+{"task_id": "mbpp/170", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 207, "completion_tokens": 37, "cost": 0.00392, "error": null}
+{"task_id": "mbpp/173", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 194, "completion_tokens": 46, "cost": 0.00424, "error": null}
+{"task_id": "mbpp/174", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 315, "completion_tokens": 58, "cost": 0.00605, "error": null}
+{"task_id": "mbpp/176", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 31, "cost": 0.0029, "error": null}
+{"task_id": "mbpp/175", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 121, "cost": 0.0074, "error": null}
+{"task_id": "mbpp/179", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 118, "completion_tokens": 97, "cost": 0.00603, "error": null}
+{"task_id": "mbpp/177", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 74, "cost": 0.00503, "error": null}
+{"task_id": "mbpp/181", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 182, "completion_tokens": 78, "cost": 0.00572, "error": null}
+{"task_id": "mbpp/183", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 181, "completion_tokens": 200, "cost": 0.01181, "error": null}
+{"task_id": "mbpp/182", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 295, "completion_tokens": 153, "cost": 0.0106, "error": null}
+{"task_id": "mbpp/185", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 162, "completion_tokens": 70, "cost": 0.00512, "error": null}
+{"task_id": "mbpp/184", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 149, "completion_tokens": 51, "cost": 0.00404, "error": null}
+{"task_id": "mbpp/186", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 200, "completion_tokens": 68, "cost": 0.0054, "error": null}
+{"task_id": "mbpp/189", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 163, "completion_tokens": 55, "cost": 0.00438, "error": null}
+{"task_id": "mbpp/191", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 40, "cost": 0.00324, "error": null}
+{"task_id": "mbpp/187", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 191, "completion_tokens": 175, "cost": 0.01066, "error": null}
+{"task_id": "mbpp/192", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 66, "cost": 0.00449, "error": null}
+{"task_id": "mbpp/193", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 236, "completion_tokens": 33, "cost": 0.00401, "error": null}
+{"task_id": "mbpp/188", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 296, "cost": 0.01602, "error": null}
+{"task_id": "mbpp/194", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 32, "cost": 0.00289, "error": null}
+{"task_id": "mbpp/196", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 299, "completion_tokens": 40, "cost": 0.00499, "error": null}
+{"task_id": "mbpp/197", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 238, "completion_tokens": 50, "cost": 0.00488, "error": null}
+{"task_id": "mbpp/200", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 190, "completion_tokens": 51, "cost": 0.00445, "error": null}
+{"task_id": "mbpp/199", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 56, "cost": 0.00415, "error": null}
+{"task_id": "mbpp/195", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 375, "cost": 0.02027, "error": null}
+{"task_id": "mbpp/201", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 30, "cost": 0.00285, "error": null}
+{"task_id": "mbpp/205", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 226, "completion_tokens": 41, "cost": 0.00431, "error": null}
+{"task_id": "mbpp/206", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 363, "completion_tokens": 53, "cost": 0.00628, "error": null}
+{"task_id": "mbpp/202", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 118, "completion_tokens": 55, "cost": 0.00393, "error": null}
+{"task_id": "mbpp/209", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 243, "completion_tokens": 59, "cost": 0.00538, "error": null}
+{"task_id": "mbpp/208", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 128, "completion_tokens": 50, "cost": 0.00378, "error": null}
+{"task_id": "mbpp/210", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 182, "completion_tokens": 54, "cost": 0.00452, "error": null}
+{"task_id": "mbpp/207", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 167, "completion_tokens": 182, "cost": 0.01077, "error": null}
+{"task_id": "mbpp/212", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 139, "completion_tokens": 43, "cost": 0.00354, "error": null}
+{"task_id": "mbpp/211", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 98, "cost": 0.00609, "error": null}
+{"task_id": "mbpp/213", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 331, "completion_tokens": 58, "cost": 0.00621, "error": null}
+{"task_id": "mbpp/215", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 286, "completion_tokens": 74, "cost": 0.00656, "error": null}
+{"task_id": "mbpp/214", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 65, "cost": 0.00454, "error": null}
+{"task_id": "mbpp/221", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 151, "completion_tokens": 44, "cost": 0.00371, "error": null}
+{"task_id": "mbpp/217", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 66, "cost": 0.00465, "error": null}
+{"task_id": "mbpp/220", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 204, "completion_tokens": 47, "cost": 0.00439, "error": null}
+{"task_id": "mbpp/216", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 269, "completion_tokens": 303, "cost": 0.01784, "error": null}
+{"task_id": "mbpp/222", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 48, "cost": 0.00392, "error": null}
+{"task_id": "mbpp/224", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 31, "cost": 0.00279, "error": null}
+{"task_id": "mbpp/219", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 229, "completion_tokens": 409, "cost": 0.02274, "error": null}
+{"task_id": "mbpp/223", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 181, "completion_tokens": 76, "cost": 0.00561, "error": null}
+{"task_id": "mbpp/225", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 83, "cost": 0.00567, "error": null}
+{"task_id": "mbpp/218", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 221, "cost": 0.01234, "error": null}
+{"task_id": "mbpp/226", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 137, "completion_tokens": 25, "cost": 0.00262, "error": null}
+{"task_id": "mbpp/227", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 128, "completion_tokens": 31, "cost": 0.00283, "error": null}
+{"task_id": "mbpp/230", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 146, "completion_tokens": 31, "cost": 0.00301, "error": null}
+{"task_id": "mbpp/234", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 111, "completion_tokens": 24, "cost": 0.00231, "error": null}
+{"task_id": "mbpp/228", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 171, "completion_tokens": 143, "cost": 0.00886, "error": null}
+{"task_id": "mbpp/237", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 306, "completion_tokens": 54, "cost": 0.00576, "error": null}
+{"task_id": "mbpp/233", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 159, "completion_tokens": 73, "cost": 0.00524, "error": null}
+{"task_id": "mbpp/232", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 233, "completion_tokens": 42, "cost": 0.00443, "error": null}
+{"task_id": "mbpp/235", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 125, "completion_tokens": 221, "cost": 0.0123, "error": null}
+{"task_id": "mbpp/238", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 40, "cost": 0.00332, "error": null}
+{"task_id": "mbpp/236", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 151, "completion_tokens": 292, "cost": 0.01611, "error": null}
+{"task_id": "mbpp/242", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 109, "completion_tokens": 22, "cost": 0.00219, "error": null}
+{"task_id": "mbpp/239", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 175, "completion_tokens": 265, "cost": 0.015, "error": null}
+{"task_id": "mbpp/241", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 598, "completion_tokens": 54, "cost": 0.00868, "error": null}
+{"task_id": "mbpp/243", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 321, "completion_tokens": 81, "cost": 0.00726, "error": null}
+{"task_id": "mbpp/240", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 220, "completion_tokens": 32, "cost": 0.0038, "error": null}
+{"task_id": "mbpp/245", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 197, "completion_tokens": 243, "cost": 0.01412, "error": null}
+{"task_id": "mbpp/249", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 235, "completion_tokens": 53, "cost": 0.005, "error": null}
+{"task_id": "mbpp/250", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 220, "completion_tokens": 27, "cost": 0.00355, "error": null}
+{"task_id": "mbpp/244", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 54, "cost": 0.00402, "error": null}
+{"task_id": "mbpp/251", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 219, "completion_tokens": 51, "cost": 0.00474, "error": null}
+{"task_id": "mbpp/248", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 145, "completion_tokens": 142, "cost": 0.00855, "error": null}
+{"task_id": "mbpp/258", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 160, "completion_tokens": 48, "cost": 0.004, "error": null}
+{"task_id": "mbpp/255", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 428, "completion_tokens": 55, "cost": 0.00703, "error": null}
+{"task_id": "mbpp/257", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 130, "completion_tokens": 27, "cost": 0.00265, "error": null}
+{"task_id": "mbpp/256", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 134, "completion_tokens": 128, "cost": 0.00774, "error": null}
+{"task_id": "mbpp/254", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 145, "completion_tokens": 102, "cost": 0.00655, "error": null}
+{"task_id": "mbpp/253", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 138, "completion_tokens": 65, "cost": 0.00463, "error": null}
+{"task_id": "mbpp/259", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 334, "completion_tokens": 82, "cost": 0.00744, "error": null}
+{"task_id": "mbpp/261", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 214, "completion_tokens": 55, "cost": 0.00489, "error": null}
+{"task_id": "mbpp/262", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 245, "completion_tokens": 36, "cost": 0.00425, "error": null}
+{"task_id": "mbpp/263", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 261, "completion_tokens": 46, "cost": 0.00491, "error": null}
+{"task_id": "mbpp/266", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 127, "completion_tokens": 30, "cost": 0.00277, "error": null}
+{"task_id": "mbpp/265", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 333, "completion_tokens": 34, "cost": 0.00503, "error": null}
+{"task_id": "mbpp/267", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 42, "cost": 0.00334, "error": null}
+{"task_id": "mbpp/268", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 113, "completion_tokens": 34, "cost": 0.00283, "error": null}
+{"task_id": "mbpp/273", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 199, "completion_tokens": 56, "cost": 0.00479, "error": null}
+{"task_id": "mbpp/271", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 47, "cost": 0.00371, "error": null}
+{"task_id": "mbpp/272", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 259, "completion_tokens": 36, "cost": 0.00439, "error": null}
+{"task_id": "mbpp/270", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 192, "completion_tokens": 61, "cost": 0.00497, "error": null}
+{"task_id": "mbpp/274", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 147, "completion_tokens": 38, "cost": 0.00337, "error": null}
+{"task_id": "mbpp/277", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 353, "completion_tokens": 40, "cost": 0.00553, "error": null}
+{"task_id": "mbpp/276", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 144, "completion_tokens": 76, "cost": 0.00524, "error": null}
+{"task_id": "mbpp/278", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 177, "completion_tokens": 63, "cost": 0.00492, "error": null}
+{"task_id": "mbpp/279", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 35, "cost": 0.00299, "error": null}
+{"task_id": "mbpp/275", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 141, "completion_tokens": 283, "cost": 0.01556, "error": null}
+{"task_id": "mbpp/282", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 159, "completion_tokens": 47, "cost": 0.00394, "error": null}
+{"task_id": "mbpp/281", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 32, "cost": 0.00296, "error": null}
+{"task_id": "mbpp/280", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 197, "completion_tokens": 58, "cost": 0.00487, "error": null}
+{"task_id": "mbpp/284", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 31, "cost": 0.00305, "error": null}
+{"task_id": "mbpp/283", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 120, "completion_tokens": 45, "cost": 0.00345, "error": null}
+{"task_id": "mbpp/287", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 123, "completion_tokens": 44, "cost": 0.00343, "error": null}
+{"task_id": "mbpp/290", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 198, "completion_tokens": 44, "cost": 0.00418, "error": null}
+{"task_id": "mbpp/291", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 167, "completion_tokens": 120, "cost": 0.00767, "error": null}
+{"task_id": "mbpp/285", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 81, "cost": 0.00555, "error": null}
+{"task_id": "mbpp/292", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 110, "completion_tokens": 20, "cost": 0.0021, "error": null}
+{"task_id": "mbpp/288", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 182, "completion_tokens": 65, "cost": 0.00507, "error": null}
+{"task_id": "mbpp/286", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 201, "completion_tokens": 153, "cost": 0.00966, "error": null}
+{"task_id": "mbpp/289", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 120, "completion_tokens": 300, "cost": 0.0162, "error": null}
+{"task_id": "mbpp/296", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 149, "completion_tokens": 76, "cost": 0.00529, "error": null}
+{"task_id": "mbpp/297", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 308, "completion_tokens": 73, "cost": 0.00673, "error": null}
+{"task_id": "mbpp/293", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 66, "cost": 0.00472, "error": null}
+{"task_id": "mbpp/298", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 328, "completion_tokens": 48, "cost": 0.00568, "error": null}
+{"task_id": "mbpp/299", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 319, "completion_tokens": 86, "cost": 0.00749, "error": null}
+{"task_id": "mbpp/301", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 172, "completion_tokens": 63, "cost": 0.00487, "error": null}
+{"task_id": "mbpp/300", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 69, "cost": 0.00497, "error": null}
+{"task_id": "mbpp/302", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 71, "cost": 0.00486, "error": null}
+{"task_id": "mbpp/304", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 188, "completion_tokens": 317, "cost": 0.01773, "error": null}
+{"task_id": "mbpp/303", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 316, "cost": 0.01709, "error": null}
+{"task_id": "mbpp/308", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 249, "completion_tokens": 63, "cost": 0.00564, "error": null}
+{"task_id": "mbpp/309", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 26, "cost": 0.00249, "error": null}
+{"task_id": "mbpp/310", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 186, "completion_tokens": 56, "cost": 0.00466, "error": null}
+{"task_id": "mbpp/306", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 255, "completion_tokens": 519, "cost": 0.0285, "error": null}
+{"task_id": "mbpp/295", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 112, "completion_tokens": 59, "cost": 0.00407, "error": null}
+{"task_id": "mbpp/312", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 40, "cost": 0.00336, "error": null}
+{"task_id": "mbpp/311", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 218, "cost": 0.01223, "error": null}
+{"task_id": "mbpp/314", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 264, "completion_tokens": 148, "cost": 0.01004, "error": null}
+{"task_id": "mbpp/315", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 118, "cost": 0.00732, "error": null}
+{"task_id": "mbpp/316", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 225, "completion_tokens": 141, "cost": 0.0093, "error": null}
+{"task_id": "mbpp/317", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 227, "completion_tokens": 102, "cost": 0.00737, "error": null}
+{"task_id": "mbpp/313", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 255, "cost": 0.01417, "error": null}
+{"task_id": "mbpp/319", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 156, "completion_tokens": 41, "cost": 0.00361, "error": null}
+{"task_id": "mbpp/322", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 186, "completion_tokens": 51, "cost": 0.00441, "error": null}
+{"task_id": "mbpp/320", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 141, "completion_tokens": 84, "cost": 0.00561, "error": null}
+{"task_id": "mbpp/318", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 245, "cost": 0.01349, "error": null}
+{"task_id": "mbpp/321", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 145, "cost": 0.00861, "error": null}
+{"task_id": "mbpp/325", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 128, "cost": 0.00776, "error": null}
+{"task_id": "mbpp/324", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 187, "completion_tokens": 138, "cost": 0.00877, "error": null}
+{"task_id": "mbpp/327", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 35, "cost": 0.00308, "error": null}
+{"task_id": "mbpp/326", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 215, "completion_tokens": 71, "cost": 0.0057, "error": null}
+{"task_id": "mbpp/328", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 294, "completion_tokens": 37, "cost": 0.00479, "error": null}
+{"task_id": "mbpp/329", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 35, "cost": 0.00317, "error": null}
+{"task_id": "mbpp/323", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 266, "completion_tokens": 750, "cost": 0.04016, "error": null}
+{"task_id": "mbpp/332", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 234, "completion_tokens": 59, "cost": 0.00529, "error": null}
+{"task_id": "mbpp/334", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 40, "cost": 0.00333, "error": null}
+{"task_id": "mbpp/333", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 292, "completion_tokens": 40, "cost": 0.00492, "error": null}
+{"task_id": "mbpp/330", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 199, "completion_tokens": 138, "cost": 0.00889, "error": null}
+{"task_id": "mbpp/336", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 121, "completion_tokens": 29, "cost": 0.00266, "error": null}
+{"task_id": "mbpp/331", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 78, "cost": 0.00512, "error": null}
+{"task_id": "mbpp/335", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 127, "completion_tokens": 107, "cost": 0.00662, "error": null}
+{"task_id": "mbpp/338", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 155, "completion_tokens": 70, "cost": 0.00505, "error": null}
+{"task_id": "mbpp/341", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 208, "completion_tokens": 31, "cost": 0.00363, "error": null}
+{"task_id": "mbpp/345", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 255, "completion_tokens": 50, "cost": 0.00505, "error": null}
+{"task_id": "mbpp/340", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 181, "completion_tokens": 49, "cost": 0.00426, "error": null}
+{"task_id": "mbpp/339", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 52, "cost": 0.00391, "error": null}
+{"task_id": "mbpp/342", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 279, "completion_tokens": 256, "cost": 0.01559, "error": null}
+{"task_id": "mbpp/343", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 81, "cost": 0.00534, "error": null}
+{"task_id": "mbpp/344", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 139, "completion_tokens": 144, "cost": 0.00859, "error": null}
+{"task_id": "mbpp/347", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 125, "completion_tokens": 57, "cost": 0.0041, "error": null}
+{"task_id": "mbpp/346", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 79, "cost": 0.00517, "error": null}
+{"task_id": "mbpp/349", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 37, "cost": 0.00304, "error": null}
+{"task_id": "mbpp/353", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 270, "completion_tokens": 44, "cost": 0.0049, "error": null}
+{"task_id": "mbpp/352", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 32, "cost": 0.00284, "error": null}
+{"task_id": "mbpp/351", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 165, "completion_tokens": 80, "cost": 0.00565, "error": null}
+{"task_id": "mbpp/354", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 33, "cost": 0.00294, "error": null}
+{"task_id": "mbpp/350", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 70, "cost": 0.00485, "error": null}
+{"task_id": "mbpp/356", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 120, "completion_tokens": 27, "cost": 0.00255, "error": null}
+{"task_id": "mbpp/357", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 204, "completion_tokens": 34, "cost": 0.00374, "error": null}
+{"task_id": "mbpp/355", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 313, "cost": 0.01694, "error": null}
+{"task_id": "mbpp/358", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 167, "completion_tokens": 49, "cost": 0.00412, "error": null}
+{"task_id": "mbpp/360", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 111, "completion_tokens": 32, "cost": 0.00271, "error": null}
+{"task_id": "mbpp/363", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 287, "completion_tokens": 45, "cost": 0.00512, "error": null}
+{"task_id": "mbpp/359", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 149, "completion_tokens": 194, "cost": 0.01119, "error": null}
+{"task_id": "mbpp/361", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 255, "completion_tokens": 83, "cost": 0.0067, "error": null}
+{"task_id": "mbpp/366", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 162, "completion_tokens": 52, "cost": 0.00422, "error": null}
+{"task_id": "mbpp/364", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 163, "completion_tokens": 191, "cost": 0.01118, "error": null}
+{"task_id": "mbpp/362", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 175, "completion_tokens": 204, "cost": 0.01195, "error": null}
+{"task_id": "mbpp/365", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 29, "cost": 0.00267, "error": null}
+{"task_id": "mbpp/368", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 209, "completion_tokens": 42, "cost": 0.00419, "error": null}
+{"task_id": "mbpp/369", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 146, "completion_tokens": 40, "cost": 0.00346, "error": null}
+{"task_id": "mbpp/370", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 275, "completion_tokens": 44, "cost": 0.00495, "error": null}
+{"task_id": "mbpp/372", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 293, "completion_tokens": 62, "cost": 0.00603, "error": null}
+{"task_id": "mbpp/373", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 132, "completion_tokens": 30, "cost": 0.00282, "error": null}
+{"task_id": "mbpp/367", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 128, "completion_tokens": 905, "cost": 0.04653, "error": null}
+{"task_id": "mbpp/376", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 345, "completion_tokens": 89, "cost": 0.0079, "error": null}
+{"task_id": "mbpp/378", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 154, "completion_tokens": 33, "cost": 0.00319, "error": null}
+{"task_id": "mbpp/380", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 711, "completion_tokens": 49, "cost": 0.00956, "error": null}
+{"task_id": "mbpp/374", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 295, "completion_tokens": 245, "cost": 0.0152, "error": null}
+{"task_id": "mbpp/379", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 45, "cost": 0.00367, "error": null}
+{"task_id": "mbpp/375", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 124, "completion_tokens": 211, "cost": 0.01179, "error": null}
+{"task_id": "mbpp/381", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 530, "completion_tokens": 49, "cost": 0.00775, "error": null}
+{"task_id": "mbpp/384", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 184, "completion_tokens": 48, "cost": 0.00424, "error": null}
+{"task_id": "mbpp/387", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 52, "cost": 0.00402, "error": null}
+{"task_id": "mbpp/388", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 137, "completion_tokens": 49, "cost": 0.00382, "error": null}
+{"task_id": "mbpp/385", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 157, "cost": 0.00904, "error": null}
+{"task_id": "mbpp/389", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 115, "completion_tokens": 52, "cost": 0.00375, "error": null}
+{"task_id": "mbpp/391", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 444, "completion_tokens": 60, "cost": 0.00744, "error": null}
+{"task_id": "mbpp/392", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 161, "completion_tokens": 153, "cost": 0.00926, "error": null}
+{"task_id": "mbpp/396", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 133, "completion_tokens": 76, "cost": 0.00513, "error": null}
+{"task_id": "mbpp/394", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 154, "completion_tokens": 39, "cost": 0.00349, "error": null}
+{"task_id": "mbpp/393", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 236, "completion_tokens": 55, "cost": 0.00511, "error": null}
+{"task_id": "mbpp/395", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 139, "completion_tokens": 51, "cost": 0.00394, "error": null}
+{"task_id": "mbpp/399", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 229, "completion_tokens": 60, "cost": 0.00529, "error": null}
+{"task_id": "mbpp/400", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 202, "completion_tokens": 43, "cost": 0.00417, "error": null}
+{"task_id": "mbpp/404", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 26, "cost": 0.00249, "error": null}
+{"task_id": "mbpp/403", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 144, "completion_tokens": 112, "cost": 0.00704, "error": null}
+{"task_id": "mbpp/398", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 154, "completion_tokens": 173, "cost": 0.01019, "error": null}
+{"task_id": "mbpp/401", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 353, "completion_tokens": 73, "cost": 0.00718, "error": null}
+{"task_id": "mbpp/405", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 212, "completion_tokens": 31, "cost": 0.00367, "error": null}
+{"task_id": "mbpp/402", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 128, "completion_tokens": 129, "cost": 0.00773, "error": null}
+{"task_id": "mbpp/409", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 188, "completion_tokens": 35, "cost": 0.00363, "error": null}
+{"task_id": "mbpp/407", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 182, "cost": 0.01041, "error": null}
+{"task_id": "mbpp/412", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 37, "cost": 0.00327, "error": null}
+{"task_id": "mbpp/406", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 229, "cost": 0.01276, "error": null}
+{"task_id": "mbpp/411", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 161, "completion_tokens": 51, "cost": 0.00416, "error": null}
+{"task_id": "mbpp/413", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 387, "completion_tokens": 35, "cost": 0.00562, "error": null}
+{"task_id": "mbpp/414", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 157, "completion_tokens": 43, "cost": 0.00372, "error": null}
+{"task_id": "mbpp/418", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 188, "completion_tokens": 29, "cost": 0.00333, "error": null}
+{"task_id": "mbpp/416", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 135, "completion_tokens": 123, "cost": 0.0075, "error": null}
+{"task_id": "mbpp/417", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 250, "completion_tokens": 97, "cost": 0.00735, "error": null}
+{"task_id": "mbpp/415", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 167, "completion_tokens": 131, "cost": 0.00822, "error": null}
+{"task_id": "mbpp/383", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 134, "completion_tokens": 290, "cost": 0.01584, "error": null}
+{"task_id": "mbpp/419", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 195, "completion_tokens": 70, "cost": 0.00545, "error": null}
+{"task_id": "mbpp/420", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 125, "completion_tokens": 45, "cost": 0.0035, "error": null}
+{"task_id": "mbpp/425", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 238, "completion_tokens": 43, "cost": 0.00453, "error": null}
+{"task_id": "mbpp/424", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 194, "completion_tokens": 38, "cost": 0.00384, "error": null}
+{"task_id": "mbpp/422", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 47, "cost": 0.00377, "error": null}
+{"task_id": "mbpp/426", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 200, "completion_tokens": 46, "cost": 0.0043, "error": null}
+{"task_id": "mbpp/427", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 171, "completion_tokens": 65, "cost": 0.00496, "error": null}
+{"task_id": "mbpp/429", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 220, "completion_tokens": 56, "cost": 0.005, "error": null}
+{"task_id": "mbpp/423", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 191, "completion_tokens": 317, "cost": 0.01776, "error": null}
+{"task_id": "mbpp/428", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 249, "completion_tokens": 137, "cost": 0.00934, "error": null}
+{"task_id": "mbpp/432", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 37, "cost": 0.00314, "error": null}
+{"task_id": "mbpp/434", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 140, "completion_tokens": 60, "cost": 0.0044, "error": null}
+{"task_id": "mbpp/433", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 216, "completion_tokens": 72, "cost": 0.00576, "error": null}
+{"task_id": "mbpp/435", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 116, "completion_tokens": 27, "cost": 0.00251, "error": null}
+{"task_id": "mbpp/431", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 165, "completion_tokens": 65, "cost": 0.0049, "error": null}
+{"task_id": "mbpp/441", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 121, "completion_tokens": 29, "cost": 0.00266, "error": null}
+{"task_id": "mbpp/437", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 58, "cost": 0.00412, "error": null}
+{"task_id": "mbpp/440", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 191, "completion_tokens": 62, "cost": 0.00501, "error": null}
+{"task_id": "mbpp/436", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 278, "cost": 0.01542, "error": null}
+{"task_id": "mbpp/439", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 152, "completion_tokens": 102, "cost": 0.00662, "error": null}
+{"task_id": "mbpp/442", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 218, "completion_tokens": 83, "cost": 0.00633, "error": null}
+{"task_id": "mbpp/443", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 96, "cost": 0.0063, "error": null}
+{"task_id": "mbpp/444", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 380, "completion_tokens": 75, "cost": 0.00755, "error": null}
+{"task_id": "mbpp/446", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 207, "completion_tokens": 41, "cost": 0.00412, "error": null}
+{"task_id": "mbpp/445", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 350, "completion_tokens": 71, "cost": 0.00705, "error": null}
+{"task_id": "mbpp/449", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 167, "completion_tokens": 105, "cost": 0.00692, "error": null}
+{"task_id": "mbpp/451", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 176, "completion_tokens": 40, "cost": 0.00376, "error": null}
+{"task_id": "mbpp/447", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 201, "completion_tokens": 38, "cost": 0.00391, "error": null}
+{"task_id": "mbpp/450", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 211, "completion_tokens": 38, "cost": 0.00401, "error": null}
+{"task_id": "mbpp/453", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 121, "completion_tokens": 64, "cost": 0.00441, "error": null}
+{"task_id": "mbpp/452", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 41, "cost": 0.00336, "error": null}
+{"task_id": "mbpp/448", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 119, "completion_tokens": 400, "cost": 0.02119, "error": null}
+{"task_id": "mbpp/455", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 130, "completion_tokens": 52, "cost": 0.0039, "error": null}
+{"task_id": "mbpp/454", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 148, "completion_tokens": 83, "cost": 0.00563, "error": null}
+{"task_id": "mbpp/456", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 220, "completion_tokens": 39, "cost": 0.00415, "error": null}
+{"task_id": "mbpp/460", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 175, "completion_tokens": 33, "cost": 0.0034, "error": null}
+{"task_id": "mbpp/459", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 210, "completion_tokens": 43, "cost": 0.00425, "error": null}
+{"task_id": "mbpp/458", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 121, "completion_tokens": 25, "cost": 0.00246, "error": null}
+{"task_id": "mbpp/463", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 172, "completion_tokens": 146, "cost": 0.00902, "error": null}
+{"task_id": "mbpp/457", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 176, "completion_tokens": 29, "cost": 0.00321, "error": null}
+{"task_id": "mbpp/462", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 1384, "completion_tokens": 150, "cost": 0.02134, "error": null}
+{"task_id": "mbpp/461", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 126, "completion_tokens": 200, "cost": 0.01126, "error": null}
+{"task_id": "mbpp/465", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 223, "completion_tokens": 42, "cost": 0.00433, "error": null}
+{"task_id": "mbpp/467", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 113, "cost": 0.00694, "error": null}
+{"task_id": "mbpp/464", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 268, "completion_tokens": 33, "cost": 0.00433, "error": null}
+{"task_id": "mbpp/468", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 192, "completion_tokens": 123, "cost": 0.00807, "error": null}
+{"task_id": "mbpp/470", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 196, "completion_tokens": 52, "cost": 0.00456, "error": null}
+{"task_id": "mbpp/469", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 183, "completion_tokens": 182, "cost": 0.01093, "error": null}
+{"task_id": "mbpp/474", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 136, "completion_tokens": 31, "cost": 0.00291, "error": null}
+{"task_id": "mbpp/471", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 160, "completion_tokens": 61, "cost": 0.00465, "error": null}
+{"task_id": "mbpp/472", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 150, "completion_tokens": 63, "cost": 0.00465, "error": null}
+{"task_id": "mbpp/475", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 263, "completion_tokens": 49, "cost": 0.00508, "error": null}
+{"task_id": "mbpp/473", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 332, "completion_tokens": 72, "cost": 0.00692, "error": null}
+{"task_id": "mbpp/477", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 129, "completion_tokens": 23, "cost": 0.00244, "error": null}
+{"task_id": "mbpp/476", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 139, "completion_tokens": 30, "cost": 0.00289, "error": null}
+{"task_id": "mbpp/478", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 143, "completion_tokens": 41, "cost": 0.00348, "error": null}
+{"task_id": "mbpp/479", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 116, "completion_tokens": 45, "cost": 0.00341, "error": null}
+{"task_id": "mbpp/484", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 325, "completion_tokens": 50, "cost": 0.00575, "error": null}
+{"task_id": "mbpp/481", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 194, "completion_tokens": 130, "cost": 0.00844, "error": null}
+{"task_id": "mbpp/480", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 140, "completion_tokens": 55, "cost": 0.00415, "error": null}
+{"task_id": "mbpp/482", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 143, "completion_tokens": 54, "cost": 0.00413, "error": null}
+{"task_id": "mbpp/485", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 174, "completion_tokens": 93, "cost": 0.00639, "error": null}
+{"task_id": "mbpp/487", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 242, "completion_tokens": 42, "cost": 0.00452, "error": null}
+{"task_id": "mbpp/490", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 279, "completion_tokens": 68, "cost": 0.00619, "error": null}
+{"task_id": "mbpp/492", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 156, "completion_tokens": 111, "cost": 0.00711, "error": null}
+{"task_id": "mbpp/489", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 166, "completion_tokens": 45, "cost": 0.00391, "error": null}
+{"task_id": "mbpp/491", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 126, "completion_tokens": 136, "cost": 0.00806, "error": null}
+{"task_id": "mbpp/483", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 151, "completion_tokens": 381, "cost": 0.02056, "error": null}
+{"task_id": "mbpp/494", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 184, "completion_tokens": 46, "cost": 0.00414, "error": null}
+{"task_id": "mbpp/495", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 223, "completion_tokens": 40, "cost": 0.00423, "error": null}
+{"task_id": "mbpp/496", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 248, "completion_tokens": 46, "cost": 0.00478, "error": null}
+{"task_id": "mbpp/498", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 118, "completion_tokens": 36, "cost": 0.00298, "error": null}
+{"task_id": "mbpp/499", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 115, "completion_tokens": 25, "cost": 0.0024, "error": null}
+{"task_id": "mbpp/502", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 110, "completion_tokens": 20, "cost": 0.0021, "error": null}
+{"task_id": "mbpp/503", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 250, "completion_tokens": 46, "cost": 0.0048, "error": null}
+{"task_id": "mbpp/505", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 263, "completion_tokens": 58, "cost": 0.00553, "error": null}
+{"task_id": "mbpp/501", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 131, "completion_tokens": 96, "cost": 0.00611, "error": null}
+{"task_id": "mbpp/507", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 253, "completion_tokens": 39, "cost": 0.00448, "error": null}
+{"task_id": "mbpp/506", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 142, "completion_tokens": 50, "cost": 0.00392, "error": null}
+{"task_id": "mbpp/504", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 130, "completion_tokens": 39, "cost": 0.00325, "error": null}
+{"task_id": "mbpp/508", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 182, "completion_tokens": 73, "cost": 0.00547, "error": null}
+{"task_id": "mbpp/509", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 50, "cost": 0.00372, "error": null}
+{"task_id": "mbpp/510", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 164, "completion_tokens": 186, "cost": 0.01094, "error": null}
+{"task_id": "mbpp/34", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 143, "completion_tokens": 298, "cost": 0.01633, "error": null}
+{"task_id": "mbpp/66", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 137, "completion_tokens": 35, "cost": 0.00312, "error": null}
+{"task_id": "mbpp/128", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 150, "completion_tokens": 36, "cost": 0.0033, "error": null}
+{"task_id": "mbpp/121", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 195, "completion_tokens": 143, "cost": 0.0091, "error": null}
+{"task_id": "mbpp/147", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 221, "completion_tokens": 97, "cost": 0.00706, "error": null}
+{"task_id": "mbpp/155", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 133, "completion_tokens": 306, "cost": 0.01663, "error": null}
+{"task_id": "mbpp/158", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 153, "completion_tokens": 208, "cost": 0.01193, "error": null}
+{"task_id": "mbpp/178", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 147, "completion_tokens": 68, "cost": 0.00487, "error": null}
+{"task_id": "mbpp/198", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 150, "completion_tokens": 167, "cost": 0.00985, "error": null}
+{"task_id": "mbpp/190", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 156, "completion_tokens": 1138, "cost": 0.05846, "error": null}
+{"task_id": "mbpp/229", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 262, "completion_tokens": 342, "cost": 0.01972, "error": null}
+{"task_id": "mbpp/246", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 141, "completion_tokens": 102, "cost": 0.00651, "error": null}
+{"task_id": "mbpp/260", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 123, "completion_tokens": 225, "cost": 0.01248, "error": null}
+{"task_id": "mbpp/264", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 113, "completion_tokens": 139, "cost": 0.00808, "error": null}
+{"task_id": "mbpp/307", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 210, "completion_tokens": 97, "cost": 0.00695, "error": null}
+{"task_id": "mbpp/337", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 145, "completion_tokens": 236, "cost": 0.01325, "error": null}
+{"task_id": "mbpp/348", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 128, "completion_tokens": 320, "cost": 0.01728, "error": null}
+{"task_id": "mbpp/377", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 141, "completion_tokens": 30, "cost": 0.00291, "error": null}
+{"task_id": "mbpp/397", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 131, "completion_tokens": 38, "cost": 0.00321, "error": null}
+{"task_id": "mbpp/408", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 241, "completion_tokens": 225, "cost": 0.01366, "error": null}
+{"task_id": "mbpp/497", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 145, "completion_tokens": 79, "cost": 0.0054, "error": null}
+{"task_id": "mbpp/31", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 370, "completion_tokens": 27, "cost": 0.00505, "error": null}
+{"task_id": "mbpp/43", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 161, "completion_tokens": 21, "cost": 0.00266, "error": null}
+{"task_id": "mbpp/60", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef max_len_sub(arr, n):\n    dp = [1] * n\n    for i in range(1, n):\n        for j in range(i):\n            if abs(arr[i] - arr[j]) == 1 and dp[j] + 1 > dp[i]:\n                dp[i] = dp[j] +", "prompt_tokens": 196, "completion_tokens": 263, "cost": 0.01511, "error": null}
+{"task_id": "mbpp/89", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef closest_num", "prompt_tokens": 339, "completion_tokens": 24, "cost": 0.0045899999999999995, "error": null}
+{"task_id": "mbpp/164", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef areEquivalent(num1, num2):\n    def divSum(n):\n        total = 0\n        for i in range(1, n + 1):\n            if n % i == 0:\n                total += i\n        return total\n    return di", "prompt_tokens": 127, "completion_tokens": 98, "cost": 0.00617, "error": null}
+{"task_id": "mbpp/93", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 354, "completion_tokens": 36, "cost": 0.00534, "error": null}
+{"task_id": "mbpp/203", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 131, "completion_tokens": 36, "cost": 0.00311, "error": null}
+{"task_id": "mbpp/180", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\nfrom math import sin, cos, acos\n\ndef distance_lat_long(slat, slon, elat, elon):\n    dist = 6371.01 * acos(sin(slat) * sin(elat) + cos(slat) * cos(elat) * cos(slon - elon))\n    return dist\n``", "prompt_tokens": 177, "completion_tokens": 248, "cost": 0.01417, "error": null}
+{"task_id": "mbpp/204", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 248, "completion_tokens": 32, "cost": 0.00408, "error": null}
+{"task_id": "mbpp/231", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 352, "completion_tokens": 33, "cost": 0.005169999999999999, "error": null}
+{"task_id": "mbpp/247", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 149, "completion_tokens": 8, "cost": 0.00189, "error": null}
+{"task_id": "mbpp/269", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "mbpp/252", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\nimport cmath\n\ndef convert(numb", "prompt_tokens": 402, "completion_tokens": 22, "cost": 0.0051199999999999996, "error": null}
+{"task_id": "mbpp/294", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef max_val(", "prompt_tokens": 486, "completion_tokens": 24, "cost": 0.00606, "error": null}
+{"task_id": "mbpp/305", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\nimport", "prompt_tokens": 576, "completion_tokens": 12, "cost": 0.006359999999999999, "error": null}
+{"task_id": "mbpp/371", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 198, "completion_tokens": 22, "cost": 0.00308, "error": null}
+{"task_id": "mbpp/382", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 187, "completion_tokens": 3, "cost": 0.00202, "error": null}
+{"task_id": "mbpp/390", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "mbpp/386", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 138, "completion_tokens": 142, "cost": 0.00848, "error": null}
+{"task_id": "mbpp/421", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 213, "completion_tokens": 42, "cost": 0.00423, "error": null}
+{"task_id": "mbpp/410", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 324, "completion_tokens": 44, "cost": 0.00544, "error": null}
+{"task_id": "mbpp/430", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "mbpp/438", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 238, "completion_tokens": 12, "cost": 0.00298, "error": null}
+{"task_id": "mbpp/466", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 164, "completion_tokens": 13, "cost": 0.00229, "error": null}
+{"task_id": "mbpp/486", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "mbpp/488", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 133, "completion_tokens": 145, "cost": 0.00858, "error": null}
+{"task_id": "mbpp/500", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 218, "completion_tokens": 3, "cost": 0.00233, "error": null}
+{"task_id": "mbpp/493", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\nimport math\n\ndef calculate_polygons(startx, starty, endx, endy, radius):\n    sl = (2 * radius) * math.tan(math.pi / 6)\n    p = sl * 0.5\n    b = sl * math.cos(math.radians(30))\n    w = b * 2\n", "prompt_tokens": 2377, "completion_tokens": 1047, "cost": 0.07612, "error": null}

@@ -2,7 +2,7 @@
 # default, a heavyweight for planning and trouble, and a flash tier for
 # bulk work. Pins are wishes; the file still resolves if a pinned model
 # is unavailable.
-mom: "0.1"
+mom: "1.0"
 name: daily-driver
 
 models:

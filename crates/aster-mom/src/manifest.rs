@@ -184,9 +184,9 @@ pub fn parse(text: &str) -> Result<Manifest> {
     let raw: RawManifest = serde_yaml::from_str(text).context("mom.yaml is not valid YAML")?;
 
     let major = raw.mom.split('.').next().unwrap_or_default();
-    if major != "0" {
+    if major != "1" && major != "0" {
         bail!(
-            "mom.yaml declares format version '{}'; this tool supports 0.x",
+            "mom.yaml declares format version '{}'; this tool supports 1.x (and the 0.x draft)",
             raw.mom
         );
     }
@@ -497,8 +497,14 @@ switch:
     }
 
     #[test]
+    fn parse_accepts_one_point_oh_and_draft_zero() {
+        assert!(parse(r#"{ mom: "1.0", models: { a: {} }, start-with: a }"#).is_ok());
+        assert!(parse(r#"{ mom: "0.1", models: { a: {} }, start-with: a }"#).is_ok());
+    }
+
+    #[test]
     fn parse_rejects_unsupported_major() {
-        assert!(parse(r#"{ mom: "1.0", models: { a: {} }, start-with: a }"#).is_err());
+        assert!(parse(r#"{ mom: "2.0", models: { a: {} }, start-with: a }"#).is_err());
     }
 
     #[test]

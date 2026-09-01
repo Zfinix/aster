@@ -1,6 +1,6 @@
 # A code-review flow: a cheap model proposes findings, a strong one
 # verifies them. Shows a tool-specific x- condition and x- extension.
-mom: "0.1"
+mom: "1.0"
 name: review-pipeline
 
 models:

@@ -1,6 +1,6 @@
 # Keep spending under control, and move to a bigger-memory model when the
 # conversation gets long instead of losing the start of it.
-mom: "0.1"
+mom: "1.0"
 name: cost-guard
 
 models:

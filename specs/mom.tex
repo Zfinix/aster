@@ -38,7 +38,7 @@
 
 \setlist{itemsep=0.2em}
 
-\title{MoM: Model Manifest\\\large Specification 0.1.0 (draft)}
+\title{MoM: Model Manifest\\\large Specification 1.0.0}
 \author{}
 \date{2026-08-30}
 
@@ -62,7 +62,7 @@ semantic router, and it is unrelated to vLLM's Mixture-of-Models.
 A complete, useful file:
 
 \begin{lstlisting}
-mom: "0.1"
+mom: "1.0"
 
 models:
   everyday:                 # fast and cheap, for normal work
@@ -88,9 +88,9 @@ person's \key{mom.yaml}, understand every line, change a number, and share it.
 \section{Status of this document}
 
 \begin{itemize}
-  \item Specification version: 0.1.0 (draft)
+  \item Specification version: 1.0.0
   \item Date: 2026-08-30
-  \item Manifest version string covered: \key{"0.1"}
+  \item Manifest version string covered: \key{"1.0"} (and the \key{"0.1"} draft string, which tools SHOULD accept as an alias)
   \item JSON Schema: \key{specs/mom.schema.json}, published alongside this
         document. If the schema and this text disagree, this text is
         authoritative.
@@ -101,8 +101,8 @@ incompatible changes to the file format bump the major version and the
 manifest \key{mom} version string together. Minor versions may add condition
 keywords, model entry keys, and top-level keys; section~\ref{sec:conformance}
 defines how a tool built against an older minor version behaves when it meets
-them. The manifest string carries only major.minor (\key{"0.1"}, not
-\key{"0.1.0"}) because a patch release cannot change the format by
+them. The manifest string carries only major.minor (\key{"1.0"}, not
+\key{"1.0.0"}) because a patch release cannot change the format by
 definition.
 
 \section{Conformance language}
@@ -174,7 +174,7 @@ Top-level keys:
 \toprule
 Key & Type & Required & Meaning \\
 \midrule
-\key{mom} & string & yes & Manifest format version. \key{"0.1"} for this specification. \\
+\key{mom} & string & yes & Manifest format version. \key{"1.0"} for this specification. \\
 \key{name} & string & no & Display name for the setup. \\
 \key{models} & map & yes & Named model entries. At least one. \\
 \key{start-with} & string & yes & Name of the model entry used when no rule matches. MUST name a key of \key{models}. \\
@@ -735,7 +735,7 @@ Non-normative. The same three files ship next to this spec in
 \key{minimal.yaml} (one default, one escalation):
 
 \begin{lstlisting}
-mom: "0.1"
+mom: "1.0"
 
 models:
   everyday:
@@ -754,7 +754,7 @@ switch:
 \key{cost-guard.yaml} (budget brake plus a long-conversation model):
 
 \begin{lstlisting}
-mom: "0.1"
+mom: "1.0"
 name: cost-guard
 
 models:
@@ -788,7 +788,7 @@ switch:
 verifier, and a tool-specific \key{x-} extension):
 
 \begin{lstlisting}
-mom: "0.1"
+mom: "1.0"
 name: review-pipeline
 
 models:

@@ -1,5 +1,5 @@
 # The smallest useful file: one everyday model, one smart one for trouble.
-mom: "0.1"
+mom: "1.0"
 
 models:
   everyday:

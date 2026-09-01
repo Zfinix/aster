@@ -12,8 +12,8 @@
   "properties": {
     "mom": {
       "type": "string",
-      "pattern": "^0\\.1$",
-      "description": "Manifest format version."
+      "pattern": "^(1\\.0|0\\.1)$",
+      "description": "Manifest format version. \"1.0\" for this specification; \"0.1\" is the draft alias."
     },
     "name": {
       "type": "string",

@@ -431,7 +431,7 @@ what you want in plain words; rules say when to switch; the router judges
 everything the rules don't cover.
 
 ```yaml
-mom: "0.1"
+mom: "1.0"
 models:
   everyday:
     description: "routine coding: small edits, tests, direct questions"

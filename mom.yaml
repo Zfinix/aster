@@ -1,5 +1,5 @@
 # Repo-local MoM test over OpenRouter.
-mom: "0.1"
+mom: "1.0"
 name: aster-mom
 
 models:

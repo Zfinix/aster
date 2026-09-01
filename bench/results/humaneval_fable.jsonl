@@ -1,0 +1,164 @@
+{"task_id": "HumanEval/7", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 193, "completion_tokens": 158, "cost": 0.00983, "error": null}
+{"task_id": "HumanEval/4", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 227, "completion_tokens": 223, "cost": 0.01342, "error": null}
+{"task_id": "HumanEval/3", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 212, "completion_tokens": 199, "cost": 0.01207, "error": null}
+{"task_id": "HumanEval/0", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 211, "completion_tokens": 226, "cost": 0.01341, "error": null}
+{"task_id": "HumanEval/5", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 183, "completion_tokens": 184, "cost": 0.01103, "error": null}
+{"task_id": "HumanEval/8", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 210, "completion_tokens": 199, "cost": 0.01205, "error": null}
+{"task_id": "HumanEval/9", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 186, "completion_tokens": 192, "cost": 0.01146, "error": null}
+{"task_id": "HumanEval/13", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 151, "completion_tokens": 124, "cost": 0.00771, "error": null}
+{"task_id": "HumanEval/15", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 154, "completion_tokens": 126, "cost": 0.00784, "error": null}
+{"task_id": "HumanEval/16", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 156, "completion_tokens": 118, "cost": 0.00746, "error": null}
+{"task_id": "HumanEval/18", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 176, "completion_tokens": 181, "cost": 0.01081, "error": null}
+{"task_id": "HumanEval/24", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 122, "completion_tokens": 106, "cost": 0.00652, "error": null}
+{"task_id": "HumanEval/26", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 170, "completion_tokens": 161, "cost": 0.00975, "error": null}
+{"task_id": "HumanEval/20", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 260, "completion_tokens": 393, "cost": 0.02225, "error": null}
+{"task_id": "HumanEval/27", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 130, "completion_tokens": 89, "cost": 0.00575, "error": null}
+{"task_id": "HumanEval/28", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 145, "completion_tokens": 105, "cost": 0.0067, "error": null}
+{"task_id": "HumanEval/30", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 187, "completion_tokens": 151, "cost": 0.00942, "error": null}
+{"task_id": "HumanEval/33", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 235, "completion_tokens": 222, "cost": 0.01345, "error": null}
+{"task_id": "HumanEval/37", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 202, "completion_tokens": 187, "cost": 0.01137, "error": null}
+{"task_id": "HumanEval/39", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 185, "completion_tokens": 284, "cost": 0.01605, "error": null}
+{"task_id": "HumanEval/40", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 284, "completion_tokens": 308, "cost": 0.01824, "error": null}
+{"task_id": "HumanEval/44", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 172, "completion_tokens": 183, "cost": 0.01087, "error": null}
+{"task_id": "HumanEval/53", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 114, "completion_tokens": 69, "cost": 0.00459, "error": null}
+{"task_id": "HumanEval/52", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 154, "completion_tokens": 116, "cost": 0.00734, "error": null}
+{"task_id": "HumanEval/58", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 183, "completion_tokens": 150, "cost": 0.00933, "error": null}
+{"task_id": "HumanEval/64", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 228, "completion_tokens": 222, "cost": 0.01338, "error": null}
+{"task_id": "HumanEval/63", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 261, "completion_tokens": 301, "cost": 0.01766, "error": null}
+{"task_id": "HumanEval/69", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 254, "completion_tokens": 270, "cost": 0.01604, "error": null}
+{"task_id": "HumanEval/70", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 226, "completion_tokens": 300, "cost": 0.01726, "error": null}
+{"task_id": "HumanEval/75", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 164, "completion_tokens": 313, "cost": 0.01729, "error": null}
+{"task_id": "HumanEval/77", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 204, "completion_tokens": 193, "cost": 0.01169, "error": null}
+{"task_id": "HumanEval/85", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 125, "completion_tokens": 114, "cost": 0.00695, "error": null}
+{"task_id": "HumanEval/83", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 113, "completion_tokens": 238, "cost": 0.01303, "error": null}
+{"task_id": "HumanEval/90", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 207, "completion_tokens": 191, "cost": 0.01162, "error": null}
+{"task_id": "HumanEval/92", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 234, "completion_tokens": 288, "cost": 0.01674, "error": null}
+{"task_id": "HumanEval/95", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 313, "completion_tokens": 342, "cost": 0.02023, "error": null}
+{"task_id": "HumanEval/100", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 218, "completion_tokens": 186, "cost": 0.01148, "error": null}
+{"task_id": "HumanEval/102", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 168, "completion_tokens": 169, "cost": 0.01013, "error": null}
+{"task_id": "HumanEval/96", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 232, "completion_tokens": 272, "cost": 0.01592, "error": null}
+{"task_id": "HumanEval/103", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 234, "completion_tokens": 55, "cost": 0.00509, "error": null}
+{"task_id": "HumanEval/105", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 417, "completion_tokens": 141, "cost": 0.01122, "error": null}
+{"task_id": "HumanEval/107", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 327, "completion_tokens": 117, "cost": 0.00912, "error": null}
+{"task_id": "HumanEval/110", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 319, "completion_tokens": 99, "cost": 0.00814, "error": null}
+{"task_id": "HumanEval/124", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 361, "completion_tokens": 491, "cost": 0.02816, "error": null}
+{"task_id": "HumanEval/135", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 184, "completion_tokens": 181, "cost": 0.01089, "error": null}
+{"task_id": "HumanEval/133", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 238, "completion_tokens": 215, "cost": 0.01313, "error": null}
+{"task_id": "HumanEval/136", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 239, "completion_tokens": 263, "cost": 0.01554, "error": null}
+{"task_id": "HumanEval/138", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 168, "completion_tokens": 135, "cost": 0.00843, "error": null}
+{"task_id": "HumanEval/137", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 237, "completion_tokens": 275, "cost": 0.01612, "error": null}
+{"task_id": "HumanEval/155", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 146, "completion_tokens": 164, "cost": 0.00966, "error": null}
+{"task_id": "HumanEval/156", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 213, "completion_tokens": 315, "cost": 0.01788, "error": null}
+{"task_id": "HumanEval/157", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 207, "completion_tokens": 216, "cost": 0.01287, "error": null}
+{"task_id": "HumanEval/163", "model": "anthropic/claude-fable-5", "pass": true, "prompt_tokens": 178, "completion_tokens": 287, "cost": 0.01613, "error": null}
+{"task_id": "HumanEval/45", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 112, "completion_tokens": 72, "cost": 0.00472, "error": null}
+{"task_id": "HumanEval/43", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 289, "completion_tokens": 278, "cost": 0.01679, "error": null}
+{"task_id": "HumanEval/46", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 285, "completion_tokens": 335, "cost": 0.0196, "error": null}
+{"task_id": "HumanEval/48", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 165, "completion_tokens": 125, "cost": 0.0079, "error": null}
+{"task_id": "HumanEval/88", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 300, "completion_tokens": 292, "cost": 0.0176, "error": null}
+{"task_id": "HumanEval/116", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 269, "completion_tokens": 327, "cost": 0.01904, "error": null}
+{"task_id": "HumanEval/146", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 200, "completion_tokens": 224, "cost": 0.0132, "error": null}
+{"task_id": "HumanEval/151", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 240, "completion_tokens": 232, "cost": 0.014, "error": null}
+{"task_id": "HumanEval/74", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 1026, "completion_tokens": 763, "cost": 0.048409999999999995, "error": null}
+{"task_id": "HumanEval/104", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 194, "completion_tokens": 178, "cost": 0.01084, "error": null}
+{"task_id": "HumanEval/108", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 436, "completion_tokens": 273, "cost": 0.018009999999999998, "error": null}
+{"task_id": "HumanEval/2", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/6", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/1", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/10", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/11", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/12", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/14", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/17", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/21", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/19", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/25", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/23", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/31", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/32", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/29", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/22", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 176, "completion_tokens": 13, "cost": 0.00241, "error": null}
+{"task_id": "HumanEval/34", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/36", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/35", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/38", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/41", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/42", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/47", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/49", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/50", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/51", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/54", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/55", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/56", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/60", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/59", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/57", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/61", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/65", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/62", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/66", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/67", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/68", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/71", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/72", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/76", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/78", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/79", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/80", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/81", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/73", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 241, "completion_tokens": 32, "cost": 0.00401, "error": null}
+{"task_id": "HumanEval/82", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/86", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/84", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/87", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/91", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/89", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/93", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/94", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/97", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/98", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/101", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/106", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/99", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 256, "completion_tokens": 10, "cost": 0.00306, "error": null}
+{"task_id": "HumanEval/111", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/112", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/113", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/114", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/115", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/118", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 268, "completion_tokens": 108, "cost": 0.00808, "error": null}
+{"task_id": "HumanEval/109", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 1365, "completion_tokens": 486, "cost": 0.03795, "error": null}
+{"task_id": "HumanEval/120", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/119", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/122", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/121", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/123", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/125", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/126", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/117", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef select_words(s, n):\n    \"\"\"Given a string s and", "prompt_tokens": 930, "completion_tokens": 371, "cost": 0.02785, "error": null}
+{"task_id": "HumanEval/127", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/128", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/129", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/131", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/130", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/134", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/139", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/140", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/142", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/143", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/141", "model": "anthropic/claude-fable-5", "pass": true, "snippet": null, "prompt_tokens": 343, "completion_tokens": 154, "cost": 0.01113, "error": null}
+{"task_id": "HumanEval/132", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 500, "completion_tokens": 82, "cost": 0.0091, "error": null}
+{"task_id": "HumanEval/144", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/147", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/148", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/149", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/150", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/152", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/154", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/145", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 404, "completion_tokens": 105, "cost": 0.00929, "error": null}
+{"task_id": "HumanEval/158", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/159", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/161", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/162", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "", "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "error": null}
+{"task_id": "HumanEval/153", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef", "prompt_tokens": 1290, "completion_tokens": 20, "cost": 0.0139, "error": null}
+{"task_id": "HumanEval/160", "model": "anthropic/claude-fable-5", "pass": false, "snippet": "```python\ndef do_algebra(operator, operand):\n    \"\"\"\n    Given two lists operator, and operand. The first list has basic algebra operations, and \n    the second list is a list of integers. Use the two", "prompt_tokens": 1047, "completion_tokens": 642, "cost": 0.04257, "error": null}
