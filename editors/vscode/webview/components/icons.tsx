@@ -687,11 +687,13 @@ export function BoltIcon() {
 /** Thinking effort: the needle swings bottom left to top right with the
  *  budget. */
 export function GaugeIcon() {
+  // Drawn to fill the grid's height like its row neighbours (cube, cloud), so
+  // the trio reads as one set instead of the gauge sitting low and small.
   return (
     <svg {...base}>
-      <path d="M1.8 11.8 a6.6 6.6 0 1 1 12.4 0" />
-      <path d="M8 11.8 l3.3 -4.2" />
-      <path d="M1.8 11.8 h2.3 M11.8 11.8 h2.3" />
+      <path d="M2 12.5 a6.6 6.6 0 1 1 12 0" />
+      <path d="M8 12.5 l3.3 -4.2" />
+      <path d="M2 12.5 h2.3 M11.7 12.5 h2.3" />
     </svg>
   );
 }

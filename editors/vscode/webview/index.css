@@ -3296,7 +3296,13 @@ code {
 }
 
 /* The rows are a summary, not a menu of things to read: one line each, with
-   the icon at the size the mode picker settled on. */
+   the icon at the size the mode picker settled on. Centered, unlike the
+   generic picker row, so the Effort row's taller slider cannot pin its glyph
+   to the top while the text-height rows centre theirs. */
+.model-row {
+  align-items: center;
+}
+
 .model-row > svg {
   margin-top: 0;
   width: 16px;

@@ -71,6 +71,12 @@ export function ModelMenu({
 
   const current = providers.find((p) => p.current);
 
+  const cycleEffort = () => {
+    const at = EFFORT_OPTIONS.findIndex((o) => o.value === (effort ?? ""));
+    const next = EFFORT_OPTIONS[(at + 1) % EFFORT_OPTIONS.length];
+    onEffort((next.value || null) as Effort | null);
+  };
+
   const row = (id: Pane, icon: React.ReactNode, label: string, value: string) => (
     <button
       className="picker-row model-row"
@@ -133,9 +139,27 @@ export function ModelMenu({
 
       <div className="picker model-root" role="menu" aria-label="Turn settings">
         {row("model", <CubeIcon />, "Model", modelShort(model))}
-        {/* Effort is a dial, not a list: the slider sits on the row itself,
-            and coming onto it puts the flyout away. */}
-        <div className="picker-row model-row model-row-choice" onMouseEnter={() => setPane(null)}>
+        {/* Effort cycles inline rather than opening a pane. A div, not a
+            button: the slider's dots are buttons and cannot nest in one. */}
+        <div
+          className="picker-row model-row model-row-choice"
+          role="button"
+          tabIndex={0}
+          aria-label="Effort"
+          onMouseDown={(e) => {
+            // A click on a dot picks that dot; only the rest of the row cycles.
+            if ((e.target as HTMLElement).closest(".slider")) return;
+            e.preventDefault();
+            cycleEffort();
+          }}
+          onKeyDown={(e) => {
+            if ((e.target as HTMLElement).closest(".slider")) return;
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              cycleEffort();
+            }
+          }}
+        >
           <GaugeIcon />
           <span className="picker-body">
             <span className="picker-label">Effort</span>

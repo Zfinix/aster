@@ -133,7 +133,10 @@
             "off",
             "low",
             "medium",
-            "high"
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
           ]
         },
         "temperature": {

@@ -84,8 +84,8 @@ struct Cli {
 /// the help of the ones that never run a model.
 #[derive(clap::Args, Clone, Copy)]
 pub struct EffortArgs {
-    /// Reasoning budget for thinking models: off, low, medium, or high.
-    /// Overrides ASTER_EFFORT and aster.yaml `review.effort`.
+    /// Reasoning budget for thinking models: off, low, medium, high, xhigh,
+    /// max, or ultra. Overrides ASTER_EFFORT and aster.yaml `review.effort`.
     #[arg(long, value_name = "LEVEL")]
     pub effort: Option<Effort>,
 }

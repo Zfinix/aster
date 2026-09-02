@@ -71,12 +71,19 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
 fn resolve_effort(review: &Review) -> Effort {
     crate::effort_flag()
         .or_else(|| {
-            let raw = env_or("ASTER_EFFORT", None).or_else(|| env_or("ASTER_REASONING_EFFORT", None))?;
+            let raw =
+                env_or("ASTER_EFFORT", None).or_else(|| env_or("ASTER_REASONING_EFFORT", None))?;
             match raw.parse() {
                 Ok(effort) => Some(effort),
                 Err(_) => {
+                    let expected = Effort::ALL
+                        .iter()
+                        .copied()
+                        .map(Effort::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     eprintln!(
-                        "note: ignoring effort {raw:?} from the environment; expected off, low, medium, or high"
+                        "note: ignoring effort {raw:?} from the environment; expected {expected}"
                     );
                     None
                 }
