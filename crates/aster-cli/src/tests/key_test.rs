@@ -76,6 +76,31 @@ fn a_written_key_reads_back_through_the_same_parser() {
 }
 
 #[test]
+fn setting_a_duplicated_key_leaves_only_the_new_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".env");
+    std::fs::write(&path, "FOO=first\nOTHER=x\nFOO=second\n").expect("write");
+
+    crate::init::set_env_key(&path, "FOO", "third").expect("rewrite");
+    let text = std::fs::read_to_string(&path).expect("read");
+    assert_eq!(text.matches("FOO=").count(), 1, "{text}");
+    assert!(text.contains("OTHER=x"), "{text}");
+    assert_eq!(file_value(Some(&path), "FOO").as_deref(), Some("third"));
+}
+
+#[test]
+fn a_masked_key_shows_its_tail_and_nothing_more() {
+    assert_eq!(mask_tail("sk-or-v1-abcdef1234"), "…1234");
+    assert_eq!(mask_tail("fc-1234abcd"), "…abcd");
+
+    // Short keys hide entirely: a four-char tail of an eight-char key would be
+    // half the secret.
+    for short in ["x", "12345678"] {
+        assert_eq!(mask_tail(short), "••••");
+    }
+}
+
+#[test]
 fn source_labels_never_print_the_key() {
     for source in [Source::Shell, Source::Local, Source::Global, Source::Unset] {
         assert!(!source.label().is_empty());

@@ -58,6 +58,11 @@ struct SetArgs {
     #[arg(value_name = "VALUE")]
     value: Option<String>,
 
+    /// Read the value from stdin instead, so it never appears in the process
+    /// list or an error message.
+    #[arg(long, conflicts_with = "value")]
+    stdin: bool,
+
     /// Write this repo's `.env` instead of `~/.aster/.env`, and git-ignore it.
     #[arg(long)]
     local: bool,
@@ -84,7 +89,7 @@ pub fn run(args: KeyArgs) -> Result<()> {
         None => list(&repo_root, false),
         Some(KeyCmd::List(a)) => list(&repo_root, a.all),
         Some(KeyCmd::Get(a)) => get(&repo_root, &a.var),
-        Some(KeyCmd::Set(a)) => set(&repo_root, &a.var, a.value.as_deref(), a.local),
+        Some(KeyCmd::Set(a)) => set(&repo_root, &a.var, a.value.as_deref(), a.local, a.stdin),
         Some(KeyCmd::Unset(a)) => unset(&repo_root, &a.var, a.global, a.local),
         Some(KeyCmd::Path) => paths(&repo_root),
     }
@@ -203,15 +208,18 @@ pub(crate) struct Row {
 }
 
 /// The tail of a stored key, enough to tell two apart without showing one.
-/// Short keys mask whole so the tail does not give most of the value away.
 pub(crate) fn masked(var: &str) -> Option<String> {
-    let live = env_non_empty(var)?;
+    env_non_empty(var).map(|live| mask_tail(&live))
+}
+
+/// Short keys mask whole so the tail does not give most of the value away.
+fn mask_tail(live: &str) -> String {
     let chars: Vec<char> = live.chars().collect();
     if chars.len() <= 8 {
-        return Some("••••".to_string());
+        return "••••".to_string();
     }
     let tail: String = chars[chars.len() - 4..].iter().collect();
-    Some(format!("…{tail}"))
+    format!("…{tail}")
 }
 
 pub(crate) fn rows(repo_root: &Path, all: bool) -> Vec<Row> {
@@ -334,11 +342,24 @@ fn get(repo_root: &Path, var: &str) -> Result<()> {
     }
 }
 
-pub(crate) fn set(repo_root: &Path, var: &str, value: Option<&str>, local: bool) -> Result<()> {
+pub(crate) fn set(
+    repo_root: &Path,
+    var: &str,
+    value: Option<&str>,
+    local: bool,
+    stdin: bool,
+) -> Result<()> {
     let var = normalize(var)?;
-    let value = match value {
-        Some(v) => v.trim().to_string(),
-        None => ask(&var)?,
+    let value = match (stdin, value) {
+        (true, _) => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("could not read the key from stdin")?;
+            line.trim().to_string()
+        }
+        (false, Some(v)) => v.trim().to_string(),
+        (false, None) => ask(&var)?,
     };
     if value.is_empty() {
         bail!(

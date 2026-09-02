@@ -930,16 +930,17 @@ fn assigns(line: &str, key: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('='))
 }
 
-/// Set `KEY=value` in `.env`, rewriting the line in place when the key is
-/// already there so a replaced key leaves no stale duplicate behind.
+/// Set `KEY=value` in `.env`, dropping every earlier line that assigns the key:
+/// the loader takes the last match, so a survivor would keep the old value in
+/// effect.
 pub(crate) fn set_env_key(path: &Path, key: &str, value: &str) -> Result<()> {
     let text = fs::read_to_string(path).unwrap_or_default();
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let line = format!("{key}={value}");
-    match lines.iter().position(|l| assigns(l, key)) {
-        Some(at) => lines[at] = line,
-        None => lines.push(line),
-    }
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !assigns(l, key))
+        .collect();
+    lines.push(format!("{key}={value}"));
     let mut out = lines.join("\n");
     out.push('\n');
     write_secret(path, out.as_bytes())

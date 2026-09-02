@@ -140,7 +140,7 @@ pub async fn run(args: ConfigArgs) -> Result<()> {
         },
         ConfigCmd::Keys(args) => key::list(&repo_root, args.all),
         ConfigCmd::Key(args) => match (args.var, args.value) {
-            (Some(var), value) => key::set(&repo_root, &var, value.as_deref(), args.local),
+            (Some(var), value) => key::set(&repo_root, &var, value.as_deref(), args.local, false),
             (None, _) => key_status(&repo_root),
         },
     }
@@ -420,7 +420,7 @@ impl Key {
     }
 }
 
-const EFFORTS: &[&str] = &["off", "low", "medium", "high"];
+const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 
 /// `mcp.servers` and `mcp.tools` are absent on purpose: `aster mcp` owns them.
@@ -1068,7 +1068,7 @@ async fn provider_flow(target: Target, repo_root: &Path) -> Result<usize> {
     ))?;
     let mut saved = 1;
     if let Some(key) = chosen.api_key.as_deref() {
-        key::set(repo_root, chosen.key_var, Some(key), target.local)?;
+        key::set(repo_root, chosen.key_var, Some(key), target.local, false)?;
         saved += 1;
     }
     for var in ["ASTER_BASE_URL", "ASTER_MODEL"] {
@@ -1128,7 +1128,7 @@ fn keys_flow(repo_root: &Path, local: bool) -> Result<usize> {
         if entered == CLEAR {
             key::unset(repo_root, row.var, false, false)?;
         } else {
-            key::set(repo_root, row.var, Some(&entered), local)?;
+            key::set(repo_root, row.var, Some(&entered), local, false)?;
         }
         saved += 1;
     }

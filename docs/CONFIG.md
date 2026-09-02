@@ -123,6 +123,7 @@ there (`aster provider use zai_coding`).
 aster key list                                # every key Aster reads, and where it came from
 aster key set FIRECRAWL_API_KEY               # asks for the value without echoing it
 aster key set EXA_API_KEY exa-… --local       # this repo's .env, git-ignored
+aster key set EXA_API_KEY --stdin < key.txt   # reads the value from stdin, off the process list
 aster key unset FIRECRAWL_API_KEY             # clears both files
 aster key path                                # which files are read here
 ```

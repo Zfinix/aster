@@ -294,8 +294,6 @@ fn each_scope_keeps_its_own_value() {
     assert_eq!(model["global"], json!("global/model"));
     assert_eq!(model["local"], json!("repo/model"));
 
-    // Set globally and nowhere else: the workspace row stays empty rather than
-    // inheriting a value it does not hold.
     let effort = scoped(key("review.effort").unwrap(), &layers, &global);
     assert_eq!(effort["global"], json!("low"));
     assert!(effort["local"].is_null());
