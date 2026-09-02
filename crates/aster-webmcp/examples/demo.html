@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebMCP demo shop</title>
+  <style>
+    body { font-family: system-ui; max-width: 40rem; margin: 2rem auto; }
+    pre { background: #f4f4f4; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Demo shop</h1>
+  <p>Tools registered on this page: <code>search_products</code>, <code>add_to_cart</code>, <code>get_cart</code>.</p>
+  <pre id="log"></pre>
+  <script>
+    const products = [
+      { id: "mug", name: "Enamel mug", price: 12 },
+      { id: "shirt", name: "Logo shirt", price: 25 },
+      { id: "sticker", name: "Sticker pack", price: 4 },
+    ];
+    const cart = [];
+    const log = (msg) => {
+      document.getElementById("log").textContent += msg + "\n";
+    };
+
+    document.modelContext.registerTool({
+      name: "search_products",
+      description: "Search the demo shop catalogue by name",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+      execute: ({ query }) =>
+        products.filter((p) => p.name.toLowerCase().includes(query.toLowerCase())),
+    });
+
+    document.modelContext.registerTool({
+      name: "add_to_cart",
+      description: "Add a product to the cart by id",
+      inputSchema: {
+        type: "object",
+        properties: { id: { type: "string" }, quantity: { type: "number" } },
+        required: ["id"],
+      },
+      execute: ({ id, quantity = 1 }) => {
+        const product = products.find((p) => p.id === id);
+        if (!product) throw new Error(`unknown product: ${id}`);
+        cart.push({ ...product, quantity });
+        log(`added ${quantity} x ${product.name}`);
+        return { ok: true, cartSize: cart.length };
+      },
+    });
+
+    document.modelContext.registerTool({
+      name: "get_cart",
+      description: "Read the current cart contents",
+      inputSchema: { type: "object", properties: {} },
+      execute: () => ({ items: cart, total: cart.reduce((s, i) => s + i.price * i.quantity, 0) }),
+    });
+  </script>
+</body>
+</html>
