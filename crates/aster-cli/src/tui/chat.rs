@@ -62,6 +62,7 @@ pub(super) enum AppEvent {
         scope: Option<PathBuf>,
     },
     QuestionAnswered(String),
+    QuestionDismissed,
     YoloConfirmed,
     SessionPicked(String),
     /// A server toggled from the `/mcp` panel: name plus its new state.
@@ -626,8 +627,6 @@ fn on_key(
             return Flow::Continue;
         }
         app.quit_armed = None;
-        // Shift+tab steps to the next mode, unless it is standing in for
-        // shift+enter mid-composition. `/mode` opens the full panel.
         if key.code == KeyCode::BackTab && pane.composer.is_empty() {
             app.cycle_mode();
             return Flow::Continue;
@@ -1782,7 +1781,7 @@ impl ChatApp {
             })
             .collect();
         self.note(&req.question);
-        pane.push_picker(&req.header, items);
+        pane.push_picker(&req.header, items, Some(AppEvent::QuestionDismissed));
     }
 
     /// YOLO drops the sandbox, so it is the one mode the user is asked about
@@ -1817,6 +1816,7 @@ impl ChatApp {
                     event: AppEvent::YoloConfirmed,
                 },
             ],
+            None,
         );
     }
 
@@ -1859,6 +1859,12 @@ impl ChatApp {
                     let _ = respond.send(Some(answer.clone()));
                 }
                 self.note(&format!("answered: {answer}"));
+            }
+            AppEvent::QuestionDismissed => {
+                // Esc on a question picker: drop the sender so the agent
+                // gets "declined" instead of hanging forever.
+                drop(self.pending_question.take());
+                self.note("question dismissed");
             }
             AppEvent::SessionPicked(id) => self.resume_session(&id),
             AppEvent::McpToggle { name, disabled } => self.toggle_mcp(&name, disabled),
@@ -1952,7 +1958,7 @@ impl ChatApp {
             self.note("no saved sessions for this repo yet");
             return;
         }
-        pane.push_picker("Resume a session", items);
+        pane.push_picker("Resume a session", items, None);
     }
 
     /// Adopt a chosen session: its history seeds the view and later turns append
@@ -2031,7 +2037,7 @@ impl ChatApp {
     /// The session header, in the palette current when it is called.
     fn welcome_block(&self) -> Vec<Line<'static>> {
         if !self.show_welcome {
-            return Vec::new();
+            return history::banner();
         }
         let mut fields: Vec<(&str, String)> = vec![
             ("model", self.model.clone()),
@@ -2497,7 +2503,14 @@ impl ChatApp {
             "effort" => match arg.map(str::parse::<Effort>) {
                 Some(Ok(effort)) => self.set_effort(effort, client),
                 Some(Err(e)) => self.flash = Some(e),
-                None => self.open_unified_selector(pane),
+                None => {
+                    let at = Effort::ALL
+                        .iter()
+                        .position(|e| *e == self.effort)
+                        .unwrap_or(0);
+                    let next = Effort::ALL[(at + 1) % Effort::ALL.len()];
+                    self.set_effort(next, client);
+                }
             },
             "thinking" => self.toggle_thinking(),
             "theme" => self.toggle_theme(),
@@ -2781,7 +2794,7 @@ impl ChatApp {
                 }
             })
             .collect();
-        pane.push_picker("MCP servers — enter toggles on/off", items);
+        pane.push_picker("MCP servers — enter toggles on/off", items, None);
     }
 
     fn toggle_mcp(&mut self, name: &str, disabled: bool) {
@@ -2812,7 +2825,7 @@ impl ChatApp {
                 event: AppEvent::SkillPicked(s.name.clone()),
             })
             .collect();
-        pane.push_picker("Skills", items);
+        pane.push_picker("Skills", items, None);
     }
 
     fn open_skill_actions(&mut self, name: &str, pane: &mut BottomPane<AppEvent>) {
@@ -2836,7 +2849,7 @@ impl ChatApp {
                 event: AppEvent::SkillDelete(name.to_string()),
             },
         ];
-        pane.push_picker(&format!("Skill: {name}"), items);
+        pane.push_picker(&format!("Skill: {name}"), items, None);
     }
 
     /// Deleting removes a folder from disk, so it gets the same ask-first
@@ -2868,6 +2881,7 @@ impl ChatApp {
                     event: AppEvent::SkillDeleteConfirmed(name.to_string()),
                 },
             ],
+            None,
         );
     }
 

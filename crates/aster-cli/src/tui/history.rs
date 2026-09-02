@@ -429,10 +429,9 @@ pub(super) fn diff_lines(body: &str, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The session header, printed once above the first prompt: the mark, the
-/// name and version, then the fields. No box; hints only for what you cannot
-/// guess.
-pub(super) fn welcome(fields: &[(&str, String)], width: usize) -> Vec<Line<'static>> {
+/// The mark, then the name and version. Always printed, even when
+/// `/welcome` has turned the rest of the header off.
+fn banner_lines() -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = super::helpers::mark_lines();
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
@@ -442,6 +441,22 @@ pub(super) fn welcome(fields: &[(&str, String)], width: usize) -> Vec<Line<'stat
             theme::get().dimmer_style(),
         ),
     ]));
+    lines
+}
+
+/// The banner alone, for when `/welcome` has turned off the fields and tip
+/// but the logo, name, and version should still land above the first prompt.
+pub(super) fn banner() -> Vec<Line<'static>> {
+    let mut lines = banner_lines();
+    lines.push(Line::from(""));
+    prepend_blank(lines)
+}
+
+/// The session header, printed once above the first prompt: the mark, the
+/// name and version, then the fields. No box; hints only for what you cannot
+/// guess.
+pub(super) fn welcome(fields: &[(&str, String)], width: usize) -> Vec<Line<'static>> {
+    let mut lines = banner_lines();
     lines.push(Line::from(""));
     // Widest key plus a gap, so a key as long as the column still separates.
     let key_w = fields

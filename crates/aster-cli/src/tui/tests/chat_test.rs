@@ -273,7 +273,6 @@ fn approval_always_promotes_the_session_to_edit() {
     );
     assert_eq!(app.mode, Mode::Edit);
 
-    // The next request needs no prompt at all.
     let (respond, rx) = tokio::sync::oneshot::channel();
     app.on_approval_request(
         ApprovalRequest {
@@ -665,7 +664,6 @@ fn resume_by_id_reopens_that_session() {
             .unwrap();
         w.meta().id.clone()
     };
-    // A newer session, so "latest" and "this id" disagree.
     {
         let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
         w.append_message(MessageEvent::user("the second one"))

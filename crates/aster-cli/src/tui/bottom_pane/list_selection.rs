@@ -30,6 +30,8 @@ pub(crate) struct ListSelectionView<E> {
     selected: usize,
     complete: bool,
     tx: mpsc::UnboundedSender<E>,
+    /// Sent on Esc when set; otherwise the view just closes silently.
+    on_dismiss: Option<E>,
 }
 
 impl<E: Clone> ListSelectionView<E> {
@@ -37,6 +39,7 @@ impl<E: Clone> ListSelectionView<E> {
         title: impl Into<String>,
         items: Vec<SelectionItem<E>>,
         tx: mpsc::UnboundedSender<E>,
+        on_dismiss: Option<E>,
     ) -> Self {
         let selected = items.iter().position(|i| i.is_current).unwrap_or(0);
         Self {
@@ -46,6 +49,7 @@ impl<E: Clone> ListSelectionView<E> {
             selected,
             complete: false,
             tx,
+            on_dismiss,
         }
     }
 
@@ -184,7 +188,12 @@ impl<E: Clone> BottomPaneView<E> for ListSelectionView<E> {
             KeyCode::Up => self.move_by(-1),
             KeyCode::Down => self.move_by(1),
             KeyCode::Enter => self.accept(self.selected),
-            KeyCode::Esc => self.complete = true,
+            KeyCode::Esc => {
+                if let Some(event) = self.on_dismiss.take() {
+                    let _ = self.tx.send(event);
+                }
+                self.complete = true;
+            }
             KeyCode::Backspace => {
                 self.query.pop();
                 self.selected = 0;

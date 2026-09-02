@@ -311,8 +311,13 @@ impl<E: Clone + 'static> BottomPane<E> {
         self.frames.schedule_now();
     }
 
-    pub(super) fn push_picker(&mut self, title: &str, items: Vec<SelectionItem<E>>) {
-        let view = ListSelectionView::new(title, items, self.tx.clone());
+    pub(super) fn push_picker(
+        &mut self,
+        title: &str,
+        items: Vec<SelectionItem<E>>,
+        on_dismiss: Option<E>,
+    ) {
+        let view = ListSelectionView::new(title, items, self.tx.clone(), on_dismiss);
         self.push_view(Box::new(view));
     }
 

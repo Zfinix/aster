@@ -26,7 +26,7 @@ fn view(tx: mpsc::UnboundedSender<u8>) -> ListSelectionView<u8> {
             event: 3,
         },
     ];
-    ListSelectionView::new("Pick", items, tx)
+    ListSelectionView::new("Pick", items, tx, None)
 }
 
 fn long_view(count: usize) -> ListSelectionView<u8> {
@@ -39,7 +39,7 @@ fn long_view(count: usize) -> ListSelectionView<u8> {
             event: 0,
         })
         .collect();
-    ListSelectionView::new("Resume", items, tx)
+    ListSelectionView::new("Resume", items, tx, None)
 }
 
 #[test]
@@ -129,10 +129,25 @@ fn y_and_n_answer_a_yes_no_list_without_enter() {
             event: 1,
         },
     ];
-    let mut v = ListSelectionView::new("Delete?", items, tx);
+    let mut v = ListSelectionView::new("Delete?", items, tx, None);
     v.handle_key(key(KeyCode::Char('y')));
     assert!(v.is_complete());
     assert_eq!(rx.try_recv().unwrap(), 1);
+}
+
+#[test]
+fn esc_sends_dismiss_event_when_provided() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let items = vec![SelectionItem {
+        name: "only".into(),
+        description: String::new(),
+        is_current: false,
+        event: 1u8,
+    }];
+    let mut v = ListSelectionView::new("Pick", items, tx, Some(99u8));
+    v.handle_key(key(KeyCode::Esc));
+    assert!(v.is_complete());
+    assert_eq!(rx.try_recv().unwrap(), 99);
 }
 
 #[test]
