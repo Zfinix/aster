@@ -19,6 +19,7 @@ members = [
     "crates/aster-tools",
     "crates/aster-sandbox",
     "crates/aster-web",
+    "crates/aster-webmcp",
     "crates/aster-shortcuts",
     "crates/aster-serve",
     "crates/aster-remote",

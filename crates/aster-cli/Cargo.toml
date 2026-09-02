@@ -29,6 +29,7 @@ aster-skills = { path = "../aster-skills" }
 aster-telemetry = { path = "../aster-telemetry", version = "0.4.0" }
 aster-tools = { path = "../aster-tools" }
 aster-web = { path = "../aster-web" }
+aster-webmcp = { path = "../aster-webmcp" }
 base64 = "0.23.1"
 clap = { features = ["derive", "env"], version = "4.5" }
 cliclack = "0.5.5"

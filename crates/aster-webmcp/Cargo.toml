@@ -1,0 +1,22 @@
+[package]
+name = "aster-webmcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-std"] }
+tracing = { workspace = true }
+aster-mcp = { path = "../aster-mcp" }
+futures-util = "0.3"
+# Plain ws:// only: Chrome's DevTools endpoint is loopback and speaks no TLS,
+# so the TLS features stay off and no TLS stack is pulled in for this.
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-std", "test-util"] }

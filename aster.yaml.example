@@ -129,6 +129,12 @@ mcp:
   context_tokens: 100000
   inventory_percent: 1.5
   search_limit: 10          # matches returned by one `search`
+  # The WebMCP bridge: tools a page registers through `document.modelContext`
+  # become `webmcp/<tool>` here, called in your own browser tab with your
+  # session. Start Chrome with `--remote-debugging-port=9222` first.
+  # webmcp:
+  #   enabled: true
+  #   cdp_url: http://127.0.0.1:9222
   servers:
     # A real browser: navigate, click, type, screenshot. Needs uv and Python
     # 3.11+, then `uvx browser-use install` once to fetch Chromium. It browses

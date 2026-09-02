@@ -125,6 +125,9 @@ impl ServerConfig {
 pub struct McpSettings {
     pub servers: BTreeMap<String, ServerConfig>,
     pub tools: ToolFilter,
+    /// The WebMCP bridge: tools a page registers through
+    /// `document.modelContext`, served from the user's own browser tab.
+    pub webmcp: aster_webmcp::WebmcpConfig,
     /// Context the inventory is measured against.
     pub context_tokens: usize,
     /// Share of `context_tokens` the tool inventory may spend. Above it the
@@ -138,6 +141,7 @@ impl Default for McpSettings {
         Self {
             servers: BTreeMap::new(),
             tools: ToolFilter::default(),
+            webmcp: aster_webmcp::WebmcpConfig::default(),
             context_tokens: 100_000,
             // Deliberately below the crate default: an inventory is a standing
             // cost on every turn, and search recovers anything it hides.
@@ -250,6 +254,20 @@ struct ShortcutsConnection {
 impl ShortcutsConnection {
     async fn call(&self, tool: &str, arguments: &Value) -> Result<Value> {
         let name = tool.strip_prefix("shortcuts/").unwrap_or(tool);
+        self.backend.call(name, arguments).await
+    }
+}
+
+/// A wrapper for the WebMCP bridge, acting as an MCP server. The tool list is
+/// live: the page registers and unregisters tools as its state changes, so
+/// the catalog is re-read on every call rather than frozen at startup.
+struct WebmcpConnection {
+    backend: aster_webmcp::WebmcpBackend,
+}
+
+impl WebmcpConnection {
+    async fn call(&self, tool: &str, arguments: &Value) -> Result<Value> {
+        let name = tool.strip_prefix("webmcp/").unwrap_or(tool);
         self.backend.call(name, arguments).await
     }
 }
@@ -785,6 +803,7 @@ pub struct McpRuntime {
     connections: Arc<Mutex<BTreeMap<String, Connection>>>,
     web_connection: Option<Arc<WebConnection>>,
     shortcuts_connection: Option<Arc<ShortcutsConnection>>,
+    webmcp_connection: Option<Arc<WebmcpConnection>>,
     disabled_servers: Vec<DisabledServer>,
     /// Tools `mcp.tools` held back, kept so `aster mcp list` can say a tool is
     /// off rather than let it silently vanish from the catalog.
@@ -846,6 +865,29 @@ impl McpRuntime {
         let shortcuts_connection = Some(Arc::new(ShortcutsConnection {
             backend: shortcuts_backend,
         }));
+
+        // The WebMCP bridge attaches to the user's browser, so it is opt-in
+        // and its failure is a problem line, never a session failure.
+        let webmcp_connection = if settings.webmcp.enabled {
+            match aster_webmcp::WebmcpBackend::connect(&settings.webmcp).await {
+                Ok(backend) => match backend.list_tools().await {
+                    Ok(listed) => {
+                        tools.extend(listed);
+                        Some(Arc::new(WebmcpConnection { backend }))
+                    }
+                    Err(e) => {
+                        problems.push(format!("webmcp {e:#}"));
+                        None
+                    }
+                },
+                Err(e) => {
+                    problems.push(format!("webmcp {e:#}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Servers start concurrently: each costs a process spawn and a probe,
         // and serially that is the whole session's startup budget.
@@ -913,6 +955,7 @@ impl McpRuntime {
             connections: Arc::new(Mutex::new(connections)),
             web_connection,
             shortcuts_connection,
+            webmcp_connection,
             disabled_servers,
             filtered_tools,
         };
@@ -1010,6 +1053,12 @@ impl McpRuntime {
                 return sc.call(&tool.id(), arguments).await;
             }
             bail!("shortcuts tools are not configured");
+        }
+        if tool.server == "webmcp" {
+            if let Some(webmcp) = &self.webmcp_connection {
+                return webmcp.call(&tool.id(), arguments).await;
+            }
+            bail!("the WebMCP bridge is not connected");
         }
         let mut connections = self.connections.lock().await;
         let connection = connections
@@ -1193,6 +1242,7 @@ async fn serve_builtin(name: &str) -> Result<()> {
         // `websearch` is the retired name of the same server, kept so a stale
         // plugin left on disk starts rather than failing mid-session.
         "web" | "websearch" => aster_web::serve().await,
+        "webmcp" => aster_webmcp::serve().await,
         other => bail!("Aster bundles no MCP server named `{other}`"),
     }
 }

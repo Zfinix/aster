@@ -310,6 +310,51 @@ under `~/.config/browseruse`, not the Chrome the user is signed into.
 Prefer `web/extract` for reading a page. The browser is for what a fetch cannot
 do: JavaScript-heavy pages, screenshots, and clicking through a flow.
 
+## WebMCP: tools a page registers
+
+[WebMCP](https://github.com/webmachinelearning/webmcp) is a W3C draft that lets
+a web page expose tools to agents: the page calls
+`document.modelContext.registerTool({ name, description, inputSchema, execute })`,
+and an agent discovers and invokes those tools in the page, with the user's
+session, while the user watches. A WebMCP page is, in the spec's own words, an
+in-page MCP server.
+
+`aster-webmcp` bridges that into the catalogue. It attaches to a tab in the
+user's own Chrome or Edge over the DevTools protocol, injects a shim that
+polyfills `document.modelContext` where the browser has no native WebMCP (only
+experimental Chrome builds do today), and maps `tools/list` and `tools/call`
+onto the page's registry. The page's tools appear as `webmcp/<tool>` and go
+through the same policy and approval flow as any MCP tool.
+
+It is opt-in, because it attaches to the browser the user is signed into:
+
+```yaml
+mcp:
+  webmcp:
+    enabled: true
+    cdp_url: http://127.0.0.1:9222
+```
+
+The browser must be started with its DevTools endpoint open:
+
+```sh
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+```
+
+An unreachable browser, or one with no open tab, is reported and skipped like
+any other broken server; the session is unaffected. The tool list is live: it
+is re-read from the page whenever the catalogue is built, so tools a page
+registers or unregisters as its state changes show up without a restart.
+
+Two caveats, both from the draft being young. Calls run with the user's
+logged-in page session, which is the point and the risk: approval prompts are
+what stand between the model and the user's accounts. And the shim covers the
+imperative API only; the declarative `<form>` attribute API and `exposedTo`
+origin scoping are not bridged yet.
+
+`aster mcp serve webmcp` exposes the same bridge as a stdio MCP server for
+other clients, reading `ASTER_WEBMCP_CDP_URL` for the endpoint.
+
 ## Turning individual tools off
 
 `mcp.tools` filters the catalogue by `server/tool` id, the same id the policy
