@@ -6,7 +6,7 @@ import { Finding, StreamEvent, UsageSummary } from "./types";
 export type PermissionMode = "plan" | "manual" | "auto" | "edit" | "yolo";
 
 /** Mirrors `aster_ai::Effort`; see crates/aster-ai/src/effort.rs. */
-export type Effort = "off" | "low" | "medium" | "high";
+export type Effort = "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -187,6 +187,20 @@ export interface ConfigKey {
   help: string;
 }
 
+/** One row of `aster key list --all --json`: a key Aster reads, whether one is
+ *  stored, and its masked tail. The value itself is only fetched on reveal. */
+export interface ApiKey {
+  var: string;
+  provider: string;
+  group: string;
+  set: boolean;
+  /** `shell`, `local`, `global`, or `unset`. */
+  source: string;
+  /** `…abcd` for a stored key, null when unset. */
+  masked: string | null;
+  help: string;
+}
+
 /** Which config files this directory reads, from `aster config path --json`. */
 export interface ConfigPaths {
   global: string;
@@ -207,6 +221,7 @@ export interface EditorSettings {
 
 export interface SettingsSnapshot {
   keys: ConfigKey[];
+  apiKeys: ApiKey[];
   paths: ConfigPaths | null;
   editor: EditorSettings;
   servers: McpServer[];
@@ -225,6 +240,9 @@ export type SettingsToHost =
   | { type: "ready" }
   | { type: "setKey"; key: string; value: Exclude<ConfigValue, null>; scope: ConfigScope }
   | { type: "unsetKey"; key: string; scope: ConfigScope }
+  | { type: "setApiKey"; var: string; value: string; scope: ConfigScope }
+  | { type: "unsetApiKey"; var: string; scope: ConfigScope }
+  | { type: "revealApiKey"; var: string }
   | { type: "setEditor"; key: keyof EditorSettings; value: ConfigValue }
   | { type: "toggleMcp"; name: string; disabled: boolean }
   | { type: "openConfigFile"; scope: ConfigScope }
@@ -233,6 +251,8 @@ export type SettingsToHost =
 /** Messages the extension host sends to the settings webview. */
 export type SettingsToWebview =
   | { type: "settings"; snapshot: SettingsSnapshot }
+  /** A revealed key value, shown until hidden; never part of the snapshot. */
+  | { type: "apiKeyValue"; var: string; value: string | null }
   /** A write failed; `key` anchors the message to the row that caused it. */
   | { type: "settingsError"; key?: string; message: string };
 
@@ -320,8 +340,15 @@ export type ToWebview =
     }
   | { type: "chatEvent"; id: string; event: ChatStreamEvent }
   | { type: "chatError"; id: string; message: string }
-  /** Authoritative run state, broadcast to every surface. */
-  | { type: "runState"; review: boolean; chat: boolean }
+  /** Authoritative run state, broadcast to every surface. A chat blocked on
+   *  a prompt re-sends it, so a reloaded surface still gets the card. */
+  | {
+      type: "runState";
+      review: boolean;
+      chat: boolean;
+      id?: string;
+      pending?: ChatStreamEvent;
+    }
   | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "sessionLoaded"; id: string; turns: TranscriptTurn[] }
   /** Start a fresh conversation, from the command palette or a keybinding. */

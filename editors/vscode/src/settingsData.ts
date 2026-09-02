@@ -24,6 +24,7 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
   const binaryOk = await checkBinary(cliConfig().binary);
   const base: SettingsSnapshot = {
     keys: [],
+    apiKeys: [],
     paths: null,
     editor: editorSettings(),
     servers: [],
@@ -37,8 +38,9 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
   }
 
   const cwd = root ?? process.cwd();
-  const [keys, paths, servers, providers] = await Promise.all([
+  const [keys, apiKeys, paths, servers, providers] = await Promise.all([
     config.list(cwd).catch((err: unknown) => err as Error),
+    info.apiKeys(cwd).catch(() => []),
     config.paths(cwd).catch(() => null),
     info.mcpServers(cwd).catch(() => []),
     info.providers(cwd).catch(() => []),
@@ -50,6 +52,7 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
   return {
     ...base,
     keys: Array.isArray(keys) ? keys : [],
+    apiKeys,
     paths,
     servers,
     providers,

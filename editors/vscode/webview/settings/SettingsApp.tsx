@@ -6,6 +6,7 @@ import type {
   SettingsSnapshot,
 } from "../../src/protocol";
 import { EditorSection } from "./EditorSection";
+import { KeysSection } from "./KeysSection";
 import { McpSection } from "./McpSection";
 import { SettingRow } from "./SettingRow";
 import { SettingsNav } from "./SettingsNav";
@@ -22,6 +23,7 @@ export function SettingsApp() {
   const [scope, setScope] = useState<ConfigScope>("global");
   const [query, setQuery] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [revealed, setRevealed] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const off = onHostMessage((message) => {
@@ -30,6 +32,11 @@ export function SettingsApp() {
         // A snapshot only arrives after a write succeeded or the page reloaded,
         // so whatever failed last time no longer describes what is on screen.
         setErrors({});
+        setRevealed({});
+      } else if (message.type === "apiKeyValue") {
+        if (message.value !== null) {
+          setRevealed((prev) => ({ ...prev, [message.var]: message.value as string }));
+        }
       } else if (message.type === "settingsError") {
         setErrors((prev) => ({ ...prev, [message.key ?? "*"]: message.message }));
       }
@@ -139,6 +146,22 @@ export function SettingsApp() {
             </p>
             <EditorSection editor={snapshot.editor} onSet={setEditor} />
           </>
+        ) : section.id === "keys" ? (
+          <KeysSection
+            apiKeys={snapshot.apiKeys ?? []}
+            errors={errors}
+            revealed={revealed}
+            onSet={(name, value) => post({ type: "setApiKey", var: name, value, scope })}
+            onUnset={(name) => post({ type: "unsetApiKey", var: name, scope })}
+            onReveal={(name) => post({ type: "revealApiKey", var: name })}
+            onHide={(name) =>
+              setRevealed((prev) => {
+                const next = { ...prev };
+                delete next[name];
+                return next;
+              })
+            }
+          />
         ) : (
           <div className="set-card">{rows.map(rowFor)}</div>
         )}

@@ -19,6 +19,11 @@ export const SECTIONS: Section[] = [
     group: "Model and provider",
   },
   {
+    id: "keys",
+    label: "API keys",
+    blurb: "Every key Aster reads, stored in .env files",
+  },
+  {
     id: "permissions",
     label: "Permissions",
     blurb: "What the agent may edit, read, and run",

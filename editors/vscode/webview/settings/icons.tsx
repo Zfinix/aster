@@ -39,6 +39,16 @@ export function SearchIcon() {
   );
 }
 
+export function EyeIcon({ off }: { off?: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M1.8 8C3.3 5 5.5 3.5 8 3.5S12.7 5 14.2 8C12.7 11 10.5 12.5 8 12.5S3.3 11 1.8 8Z" {...stroke} />
+      <circle cx="8" cy="8" r="1.9" {...stroke} />
+      {off && <path d="M3.2 12.8 12.8 3.2" {...stroke} />}
+    </svg>
+  );
+}
+
 export function WarnIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">

@@ -354,6 +354,29 @@ body {
   justify-content: flex-start;
 }
 
+.set-key-control {
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* Unlike the reset, the eye stays visible: a stored key's row should say it
+   can be revealed without needing a hover to find out. */
+.set-eye {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.set-eye:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
 .mono {
   font-family: var(--mono);
 }

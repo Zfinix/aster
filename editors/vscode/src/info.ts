@@ -1,20 +1,29 @@
 import { exec } from "child_process";
 import { runCli } from "./asterCli";
-import { ChatMessage, InfoRow, McpServer, Provider, TranscriptTurn } from "./protocol";
+import { ApiKey, ChatMessage, InfoRow, McpServer, Provider, TranscriptTurn } from "./protocol";
 
 /** `aster <args> --json`, parsed. Throws with the CLI's own error when it fails,
- *  since `--json` turns those into `{ok: false, error}` rather than stderr. */
-async function json<T>(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<T> {
-  const { stdout, stderr, code } = await runCli([...args, "--json"], cwd, undefined, env);
+ *  since `--json` turns those into `{ok: false, error}` rather than stderr.
+ *  Only the command and subcommand go into the fallback message: later args can
+ *  hold values that must not be echoed into the UI. */
+async function json<T>(
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+  stdin?: string
+): Promise<T> {
+  const { stdout, stderr, code } = await runCli([...args, "--json"], cwd, stdin, env);
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    throw new Error(stderr.trim() || `aster ${args.join(" ")} failed (exit ${code})`);
+    throw new Error(
+      stderr.trim() || `aster ${args.slice(0, 2).join(" ")} failed (exit ${code})`
+    );
   }
   const failure = parsed as { ok?: boolean; error?: string };
   if (failure.ok === false) {
-    throw new Error(failure.error ?? `aster ${args.join(" ")} failed`);
+    throw new Error(failure.error ?? `aster ${args.slice(0, 2).join(" ")} failed`);
   }
   return parsed as T;
 }
@@ -113,6 +122,39 @@ export async function currentModel(cwd: string): Promise<string | null> {
 export async function hasKey(cwd: string): Promise<boolean> {
   const parsed = await json<{ vars?: { var: string; source: string }[] }>(["config", "key"], cwd);
   return (parsed.vars ?? []).some((v) => v.source !== "unset");
+}
+
+/** Every key Aster reads, set or not, masked. Values never travel here. */
+export async function apiKeys(cwd: string): Promise<ApiKey[]> {
+  const parsed = await json<{ keys?: ApiKey[] }>(["key", "list", "--all"], cwd);
+  return parsed.keys ?? [];
+}
+
+/** The value travels on stdin, never argv, so it stays off the process list
+ *  and out of any error the CLI reports. */
+export async function setApiKey(
+  cwd: string,
+  name: string,
+  value: string,
+  scope: "global" | "local"
+): Promise<void> {
+  const args = ["key", "set", name, "--stdin"];
+  if (scope === "local") args.push("--local");
+  await json(args, cwd, undefined, value);
+}
+
+export async function unsetApiKey(
+  cwd: string,
+  name: string,
+  scope: "global" | "local"
+): Promise<void> {
+  await json(["key", "unset", name, `--${scope}`], cwd);
+}
+
+/** The live value, for the settings page's reveal button. */
+export async function revealApiKey(cwd: string, name: string): Promise<string | null> {
+  const parsed = await json<{ value?: string | null }>(["key", "get", name], cwd);
+  return parsed.value ?? null;
 }
 
 /** The endpoint's catalog. A provider that will not answer is not fatal: the

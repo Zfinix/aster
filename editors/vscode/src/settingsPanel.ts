@@ -60,6 +60,29 @@ export class SettingsPanel {
         );
         break;
 
+      case "setApiKey":
+        await this.write(message.var, () =>
+          info.setApiKey(this.root(), message.var, message.value, message.scope)
+        );
+        break;
+
+      case "unsetApiKey":
+        await this.write(message.var, () =>
+          info.unsetApiKey(this.root(), message.var, message.scope)
+        );
+        break;
+
+      // Reveals never touch the snapshot: the value goes straight to the row
+      // that asked and lives only as long as it is shown.
+      case "revealApiKey":
+        try {
+          const value = await info.revealApiKey(this.root(), message.var);
+          this.post({ type: "apiKeyValue", var: message.var, value });
+        } catch (err) {
+          this.post({ type: "settingsError", key: message.var, message: describe(err) });
+        }
+        break;
+
       case "setEditor":
         await this.write(message.key, async () => {
           await vscode.workspace
