@@ -185,8 +185,6 @@ export function Composer({
     }
   }, [openMenu, onMenuOpened]);
 
-  // The folder disambiguates two files of the same name; a file at the root has
-  // none, and repeating its name under itself said nothing twice.
   const suggestions: Suggestion[] = useMemo(
     () =>
       trigger
@@ -238,8 +236,6 @@ export function Composer({
       post({ type: "dropFiles", uris });
       return;
     }
-    // Chromium does not put an OS-dragged file's path in the transfer data, so
-    // the file arrives as bytes in `files`; sending it as a paste still names it.
     const files = Array.from(e.dataTransfer.files);
     if (files.length) {
       sendPasted(files);

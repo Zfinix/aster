@@ -57,7 +57,6 @@ fn nesting_stops_before_it_can_run_away() {
     for _ in 0..12 {
         script = format!("bash -c \"{}\"", script.replace('"', "'"));
     }
-    // Bounded work, and the outer line is always present.
     let out = lines("bash", &["-lc", &script]);
     assert!(out.len() <= 8, "{}", out.len());
 }

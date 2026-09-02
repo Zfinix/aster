@@ -74,7 +74,8 @@ pub struct Review {
     pub astgrep_rules: Option<String>,
     /// Defect classes to bias the hypothesis pass toward.
     pub focus_areas: Vec<String>,
-    /// Reasoning budget for thinking models: off, low, medium, or high.
+    /// Reasoning budget for thinking models: off, low, medium, high, xhigh,
+    /// max, or ultra.
     pub effort: Option<aster_ai::Effort>,
     /// Enable OpenRouter web search: the agent gets a server tool, review
     /// stages get the `web` plugin. No effect on non-OpenRouter endpoints.

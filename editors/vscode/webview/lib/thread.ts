@@ -459,8 +459,6 @@ export function stopUnfinished(turns: Turn[]): Turn[] {
         approval: undefined,
         question: undefined,
         stopped: true,
-        // A cancelled turn leaves its in-flight tool calls without a result, so
-        // they would keep spinning as "running…" forever. Mark them stopped.
         blocks: turn.blocks.map((block) =>
           block.kind === "tools"
             ? {
@@ -502,8 +500,6 @@ const HISTORY_LIMIT = 12;
  * findings, so "why is finding 2 critical?" has the findings in context.
  */
 export function buildMessages(turns: Turn[], limit = HISTORY_LIMIT): ChatMessage[] {
-  // A seam replaces everything above it: the summary plus the tail the CLI kept
-  // verbatim. Those go in ahead of the limit, never sliced off by it.
   const seam = turns.reduce((at, turn, i) => (turn.role === "compaction" ? i : at), -1);
   const folded = seam === -1 ? [] : (turns[seam] as CompactionTurn).messages;
   const messages: ChatMessage[] = [];

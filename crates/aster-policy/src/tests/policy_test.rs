@@ -72,7 +72,6 @@ fn a_user_allow_rule_beats_a_built_in() {
         p.evaluate(&edit(".github/workflows/ci.yml")),
         Decision::Allow
     );
-    // Everything else the built-ins cover is untouched.
     assert!(is_prompt(&p.evaluate(&edit(".git/hooks/pre-commit"))));
 }
 
@@ -195,7 +194,6 @@ fn plan_mode_runs_nothing() {
     let p = policy(c);
     assert!(is_deny(&p.evaluate(&exec("cargo", &["test"]))));
     assert!(is_deny(&p.evaluate(&edit("src/lib.rs"))));
-    // Reading is how plan mode does its job.
     assert_eq!(
         p.evaluate(&Action::Read { path: "src/lib.rs" }),
         Decision::Allow
@@ -268,8 +266,6 @@ fn promote_loosens_and_demote_tightens() {
     assert_eq!(p.mode(), Mode::Plan);
 }
 
-// Neither is a way around the configured ceiling: promote refuses to loosen
-// past it, and demote only ever tightens.
 #[test]
 fn neither_move_goes_the_wrong_way() {
     let mut c = cfg();

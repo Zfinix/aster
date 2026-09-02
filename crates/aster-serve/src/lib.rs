@@ -42,7 +42,6 @@ pub struct ServeConfig {
     /// `None` scans from [`DEFAULT_PORT`]; a port asked for by name is taken
     /// as meant, and a busy one is an error rather than a silent move.
     pub port: Option<u16>,
-    /// The repo every turn runs in: where the server was started.
     pub repo_root: PathBuf,
 }
 

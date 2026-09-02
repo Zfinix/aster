@@ -176,7 +176,6 @@ fn pins_sees_only_a_key_the_review_block_sets_itself() {
     assert!(pins(sets, "review", "base_url"));
     assert!(!pins(sets, "review", "effort"));
 
-    // A key of the same name under another block is not a review override.
     let elsewhere = "review:\n  effort: high\npermissions:\n  model: no\n";
     assert!(!pins(elsewhere, "review", "model"));
     assert!(!pins("", "review", "model"));

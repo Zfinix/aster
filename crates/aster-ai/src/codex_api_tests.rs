@@ -144,7 +144,6 @@ fn stream_translator_tool_fragments_share_an_index() {
         .expect("index present") as usize;
     assert_eq!(args_index, done_index);
 
-    // A second call gets its own slot.
     let second = translator
         .event(
             r#"{"type":"response.output_item.done","item":{"id":"fc_2","type":"function_call","call_id":"call_2","name":"read","arguments":""}}"#,

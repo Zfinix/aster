@@ -83,8 +83,6 @@ pub async fn post_review(
         return Ok(());
     }
 
-    // 422 means a comment referenced a line outside the diff and GitHub rejected the
-    // whole review; fall back to one summary review carrying every finding in its body.
     if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
         let fallback = json!({
             "event": "COMMENT",

@@ -59,13 +59,9 @@ export function ModelPicker({
     const q = typed.toLowerCase();
     // The label is humanized, so the exact id is what the second line is for.
     const toRow = (id: string) => ({ id, label: modelShort(id), detail: id });
-    // Matching the id as well as the readable name means "sonnet", "anthropic",
-    // and "claude-sonnet-5" all land on the same row.
     const matches = (r: Row) =>
       !q || r.id.toLowerCase().includes(q) || r.label.toLowerCase().includes(q);
 
-    // Ordered by the vetted list, not by however the endpoint returned its
-    // catalog, so the strongest coding model stays the first thing offered.
     const top = recommended.filter((id) => models.includes(id)).map(toRow).filter(matches);
     // Picked before, minus what Recommended already shows, so no id appears twice.
     const recents = recent

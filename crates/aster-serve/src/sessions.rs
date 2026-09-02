@@ -66,8 +66,6 @@ fn turns(session: &Value) -> Value {
             Some("assistant") => {
                 let calls = tool_calls(&event["tool_calls"], &results);
                 let reasoning = reasoning(&event["reasoning"]);
-                // A round can be tool calls with no commentary, or thinking
-                // alone. Only a turn carrying none of the three is empty.
                 if content.trim().is_empty() && calls.is_empty() && reasoning.is_none() {
                     continue;
                 }

@@ -1520,8 +1520,6 @@ fn resolve_headless_session(
         return Ok((Some(recorder(writer)), Vec::new()));
     }
 
-    // `--session` names a session to append to and creates it when it is not
-    // there yet. Only `--resume` insists the session already exists.
     if let Some(id) = &args.session {
         let prior = store
             .resume(repo_root, id)
@@ -2260,9 +2258,6 @@ async fn agent_loop(
         }
     }
 
-    // The round cap tripped, or the model kept gathering after being told to
-    // act. Either way force a final plain answer out of what it did collect.
-    // Logged rather than shown; the answer itself says what was not finished.
     tracing::warn!(
         round_cap,
         "stopped without a final answer of the model's own; forcing one"
@@ -4342,8 +4337,6 @@ async fn edit_file(
     };
     let verb = if creating { "create" } else { "edit" };
 
-    // The policy's globs are repo-relative, so they say nothing about a path
-    // outside it. There the user's approval is the whole gate.
     if matches!(scope, edits::Scope::Outside) {
         approve_outside_write(repo_root, approver, ctx, &resolved, verb).await?;
     } else {

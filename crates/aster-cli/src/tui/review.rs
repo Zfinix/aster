@@ -513,7 +513,6 @@ impl App {
                 Style::default().fg(theme::get().faint),
             ));
         }
-        // Continuously climbing meter so a long call visibly progresses. ~4 chars/token.
         if !self.finished && self.total_stream_chars > 0 {
             spans.push(Span::styled(
                 format!("  ▸ {} tokens", human_count(self.total_stream_chars / 4)),

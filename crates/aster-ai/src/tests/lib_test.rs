@@ -93,10 +93,8 @@ fn reasoning_fragments_without_index_merge_into_last_block() {
         index,
     };
 
-    // A normal indexed block
     merge_reasoning(&mut out, kind("first block ", Some(0)));
 
-    // Two fragments without an index — they should merge into one
     merge_reasoning(&mut out, kind("fragment a ", None));
     merge_reasoning(&mut out, kind("fragment b", None));
 

@@ -86,8 +86,6 @@ pub fn render_eval(cases: &[Case], model: Option<&str>) -> String {
          import { setupAgent } from \"ori/eval\";\n\n",
     );
     out.push_str(&format!("const agent = {setup};\n\n"));
-    // `run.toolCalls` carries plain names, not objects. Reading `.name` off a
-    // string silently counts zero and every ceiling passes vacuously.
     out.push_str(
         "const count = (run: { toolCalls: readonly unknown[] }, tool: string) =>\n  \
          run.toolCalls.filter((c) => (typeof c === \"string\" ? c : (c as any)?.name) === tool)\n    \

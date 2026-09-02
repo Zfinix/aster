@@ -138,8 +138,6 @@ impl SandboxProfile {
         let mut paths = vec![self.repo_root.clone()];
         paths.extend(self.writable_dirs.clone());
         paths.extend(["/tmp", "/var/folders", "/var/tmp"].map(PathBuf::from));
-        // Build caches, without which cargo, npm, and friends fail on their
-        // first fetch. Everything else under $HOME stays read-only.
         if let Some(home) = dirs::home_dir() {
             paths.extend(
                 [

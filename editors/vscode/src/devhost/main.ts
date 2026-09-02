@@ -18,8 +18,6 @@ const port = Number(arg("port", "4123"));
 
 setRoot(root);
 
-// Installed before the sources load: they `require("vscode")` at the top, and
-// outside an editor there is no such module to resolve.
 type Loader = {
   _load(request: string, parent: unknown, isMain: boolean): unknown;
 };

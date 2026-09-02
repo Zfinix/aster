@@ -19,8 +19,6 @@ pub async fn guard(
     next: Next,
 ) -> Response {
     let headers = request.headers().clone();
-    // A page navigation gets a page back; an API call gets text a fetch() can
-    // surface. The stream and every command live under /api.
     let for_page = !request.uri().path().starts_with("/api/");
     if !host_allowed(
         &state,

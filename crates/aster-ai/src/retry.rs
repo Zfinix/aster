@@ -79,9 +79,6 @@ fn is_retryable(resp: &Response) -> bool {
     if status.as_u16() == 408 || status.is_server_error() {
         return true;
     }
-    // 429 and 403 (GitHub's secondary limit) are retryable only with a hint header.
-    // A bare 429 is a permanent condition dressed as a rate limit (e.g. OpenAI
-    // `insufficient_quota`) that never succeeds on retry.
     matches!(
         status,
         StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
@@ -114,9 +111,6 @@ fn header_delay(headers: &HeaderMap) -> Option<Duration> {
     reset_delay(reset, now)
 }
 
-/// Providers disagree on the unit of `x-ratelimit-reset`: epoch milliseconds,
-/// epoch seconds, or plain seconds-from-now. Reading milliseconds as seconds asks
-/// for a wait of millennia, which the cap then turns into a full-minute stall.
 fn reset_delay(reset: u64, now: u64) -> Option<Duration> {
     // Anything an order of magnitude past "now" is a finer unit, not the year 55000.
     let reset_secs = if reset > now.saturating_mul(10) {

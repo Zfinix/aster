@@ -1,7 +1,5 @@
 import { highlight } from "sugar-high";
 
-// Highlighting the same source repeatedly (every typing-animation frame, every
-// diff re-render) is wasteful, so memo by source string.
 const cache = new Map<string, string>();
 
 export function highlightCached(code: string): string {

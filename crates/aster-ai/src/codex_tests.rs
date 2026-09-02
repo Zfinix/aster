@@ -57,11 +57,9 @@ fn load_prefers_aster_store_over_codex_cli() {
     )
     .unwrap();
 
-    // Nothing of our own yet: the CLI store is imported.
     let imported = load(home.path()).expect("imported");
     assert_eq!(imported.tokens.unwrap().access_token, "cli-at");
 
-    // Once we save our own, it wins.
     let own = CodexAuth {
         tokens: Some(TokenSet {
             id_token: "own-id".into(),

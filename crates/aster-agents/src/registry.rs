@@ -57,7 +57,6 @@ impl AgentRegistry {
         self.agents.iter()
     }
 
-    // Returns a markdown index of agents, grouped by category, or None if empty.
     pub fn render_index(&self) -> Option<String> {
         if self.agents.is_empty() {
             return None;

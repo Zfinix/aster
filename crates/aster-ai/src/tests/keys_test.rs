@@ -51,8 +51,6 @@ fn no_vendor_var_is_reachable_from_another_vendors_endpoint() {
     }
 }
 
-// Switching providers must not mean re-entering a key, so every endpoint that
-// takes one names the var it lives in. Local servers take none.
 #[test]
 fn every_catalog_endpoint_that_takes_a_key_names_its_var() {
     let catalog: Catalog = serde_json::from_str(PROVIDERS_JSON).unwrap();
@@ -89,8 +87,6 @@ fn a_templated_host_matches_a_filled_in_one() {
     );
 }
 
-// Azure and OpenAI share a suffix; the more specific host must not be swallowed
-// by the plainer one, in either direction.
 #[test]
 fn azure_and_openai_do_not_collide() {
     assert_eq!(

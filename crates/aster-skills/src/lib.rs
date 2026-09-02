@@ -125,7 +125,6 @@ pub fn mark_default_removed(dest_root: &Path, name: &str) -> bool {
 }
 
 /// Materialize a bundled optional skill into `dest_root/<name>/SKILL.md`.
-/// Returns the installed directory.
 pub fn install_bundled(name: &str, dest_root: &Path, overwrite: bool) -> Result<PathBuf> {
     let skill = optional_skills()
         .into_iter()

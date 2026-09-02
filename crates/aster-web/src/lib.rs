@@ -274,8 +274,6 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     if backend.exa.is_some() {
         candidates.push(exa::extract_tool());
     }
-    // Firecrawl's keyless tier needs no key and covers scrape and search, so it
-    // leads the keyless providers. It cannot crawl, which stays keyed-only.
     if !backend.firecrawl.is_keyed() {
         candidates.push(firecrawl::scrape_tool());
         candidates.push(firecrawl::search_tool());

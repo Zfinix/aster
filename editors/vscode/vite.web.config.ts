@@ -5,8 +5,6 @@ import { defineConfig } from "vite";
 
 const out = fileURLToPath(new URL("../../crates/aster-serve/ui", import.meta.url));
 
-// The same webview, built as a page for `aster serve` to hand a browser. It is
-// staged straight into the crate that embeds it, so `cargo build` picks it up.
 export default defineConfig({
   root: fileURLToPath(new URL("./webview", import.meta.url)),
   plugins: [

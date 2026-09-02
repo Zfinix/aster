@@ -72,7 +72,6 @@ pub enum TurnEvent {
     },
 }
 
-/// The finished turn: the reply text and any files the agent edited.
 pub struct TurnOutcome {
     pub reply: String,
     pub edits: Vec<String>,

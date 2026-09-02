@@ -480,14 +480,12 @@ switch:
         let mut resolver = Resolver::new(&catalog, all_access, false);
         let mut engine = engine(ABSTRACT_FILE);
 
-        // Turn 1: nothing special -> start-with.
         engine.begin_turn(1);
         let s = engine.evaluate(&quiet(), &mut resolver).unwrap();
         assert_eq!(s.entry, "everyday");
         assert_eq!(s.record.as_ref().map(|r| &r.fired), Some(&Fired::StartWith));
         let everyday_model = s.model.clone();
 
-        // Turn 2: plan mode -> planning matches, hold set.
         engine.begin_turn(2);
         let signals = Signals {
             planning_mode: Some("plan".into()),
@@ -497,7 +495,6 @@ switch:
         assert_eq!(s.entry, "thinker");
         assert_eq!(s.record.as_ref().map(|r| &r.fired), Some(&Fired::Rule(0)));
 
-        // Turns 3-4: no match, thinker held.
         for turn in 3..=4 {
             engine.begin_turn(turn);
             let s = engine.evaluate(&quiet(), &mut resolver).unwrap();
@@ -505,13 +502,11 @@ switch:
             assert!(s.record.is_none());
         }
 
-        // Turn 5: hold expired -> everyday.
         engine.begin_turn(5);
         let s = engine.evaluate(&quiet(), &mut resolver).unwrap();
         assert_eq!(s.entry, "everyday");
         assert_eq!(s.model, everyday_model);
 
-        // Turn 9: three failed steps -> stuck matches.
         engine.begin_turn(9);
         let signals = Signals {
             failed_steps: 3,
@@ -521,14 +516,12 @@ switch:
         assert_eq!(s.entry, "thinker");
         assert_eq!(s.record.as_ref().map(|r| &r.fired), Some(&Fired::Rule(1)));
 
-        // Turn 12: recovered, hold expired -> everyday.
         for turn in 10..=12 {
             engine.begin_turn(turn);
             engine.evaluate(&quiet(), &mut resolver).unwrap();
         }
         assert_eq!(engine.current_entry(), Some("everyday"));
 
-        // Turn 20: $5.20 spent -> spending rule matches, already there.
         engine.begin_turn(20);
         let spent = Signals {
             spent_usd: Some(5.2),
@@ -538,7 +531,6 @@ switch:
         assert_eq!(s.entry, "everyday");
         assert!(s.record.is_none());
 
-        // Turn 21: stuck matches first; order decides.
         engine.begin_turn(21);
         let signals = Signals {
             failed_steps: 3,
@@ -581,7 +573,6 @@ switch:
         let s = engine.evaluate(&spent, &mut resolver).unwrap();
         assert_eq!(s.entry, "everyday");
 
-        // Turn 21: stuck also matches, but the spending rule is first.
         engine.begin_turn(21);
         let signals = Signals {
             failed_steps: 3,
@@ -591,7 +582,6 @@ switch:
         let s = engine.evaluate(&signals, &mut resolver).unwrap();
         assert_eq!(s.entry, "everyday", "order decides for non-emergencies");
 
-        // Turn 22: looping is an emergency, walked first.
         engine.begin_turn(22);
         let signals = Signals {
             looping: true,
@@ -624,7 +614,6 @@ switch:
             ..quiet()
         };
         engine.evaluate(&planning, &mut resolver).unwrap();
-        // Third change within the same turn is refused; the choice stands.
         let stuck = Signals {
             failed_steps: 3,
             ..quiet()
@@ -640,13 +629,11 @@ switch:
         let mut engine = engine(SPEND_FIRST);
         engine.begin_turn(1);
         engine.evaluate(&quiet(), &mut resolver).unwrap();
-        // A stuck signal mid-turn is not an emergency; nothing switches.
         let stuck = Signals {
             failed_steps: 3,
             ..quiet()
         };
         assert!(engine.evaluate_emergency(&stuck, &mut resolver).is_none());
-        // Looping mid-turn is.
         let looping = Signals {
             looping: true,
             ..quiet()
@@ -664,7 +651,6 @@ switch:
         let first = engine.evaluate(&quiet(), &mut resolver).unwrap();
         let everyday_model = first.model;
 
-        // Two stuck switches away from the same everyday model.
         for turn in [2u64, 10] {
             engine.begin_turn(turn);
             let stuck = Signals {
@@ -672,7 +658,6 @@ switch:
                 ..quiet()
             };
             engine.evaluate(&stuck, &mut resolver).unwrap();
-            // Fall back to everyday by letting the hold expire.
             for t in turn + 1..turn + 5 {
                 engine.begin_turn(t);
                 engine.evaluate(&quiet(), &mut resolver).unwrap();
@@ -738,7 +723,6 @@ switch:
         assert_eq!(s.entry, "thinker");
         assert!(matches!(s.record.unwrap().fired, Fired::Router));
 
-        // The pick holds like a rule switch; no re-consultation meanwhile.
         for turn in 2..=3 {
             engine.begin_turn(turn);
             let s = engine.evaluate(&quiet(), &mut resolver).unwrap();
@@ -746,7 +730,6 @@ switch:
             assert!(!engine.router_wanted());
         }
 
-        // Hold expired: back to start-with, router consulted again.
         engine.begin_turn(4);
         let s = engine.evaluate(&quiet(), &mut resolver).unwrap();
         assert_eq!(s.entry, "everyday");
@@ -767,7 +750,6 @@ switch:
                 .is_none()
         );
 
-        // A pick landing after a rule matched is refused.
         engine.begin_turn(2);
         let planning = Signals {
             planning_mode: Some("plan".into()),
@@ -804,7 +786,6 @@ switch:
         let s = engine.evaluate(&quiet(), &mut resolver).unwrap();
         let small_window = catalog.find(&s.model).unwrap().window;
 
-        // Fill past 70% of the small model's window: rule matches.
         engine.begin_turn(2);
         let full = Signals {
             conversation_tokens: small_window * 8 / 10,
@@ -813,8 +794,6 @@ switch:
         let s = engine.evaluate(&full, &mut resolver).unwrap();
         assert_eq!(s.entry, "marathon");
 
-        // Still full next turn: the counterfactual pick is still small, so
-        // the rule keeps matching and the session stays on marathon.
         engine.begin_turn(3);
         let s = engine.evaluate(&full, &mut resolver).unwrap();
         assert_eq!(s.entry, "marathon", "no flap back to the small model");

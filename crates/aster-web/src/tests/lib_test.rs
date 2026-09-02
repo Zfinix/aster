@@ -233,7 +233,6 @@ fn perplexity_serves_search_when_exa_is_absent() {
     };
     assert!(described(perplexity).contains("Perplexity"));
 
-    // Exa remains the lead search provider when both are configured.
     let both_desc = described(Configured {
         exa: true,
         perplexity: true,
@@ -252,7 +251,6 @@ fn a_keyed_provider_wins_the_search_name_from_keyless_firecrawl() {
             .expect("search is always offered")
             .description
     };
-    // With no keys at all, Firecrawl's keyless tier leads search over DuckDuckGo.
     let keyless = described(Configured::default());
     assert!(keyless.contains("Firecrawl"), "{keyless}");
     assert!(!keyless.contains("DuckDuckGo"), "{keyless}");

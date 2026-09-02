@@ -62,8 +62,6 @@ function titleCase(segment: string): string {
 export function humanize(name: string): string {
   const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
   const tool = parts.pop() ?? name;
-  // A plugin server is keyed `<plugin>/<server>`, which repeats a name as often
-  // as not, so only the innermost distinct one is the server here.
   const server = parts.filter((part, i) => part !== parts[i - 1]).pop();
 
   const named = TOOL_NAMES[name] ?? (server && TOOL_NAMES[`${server}/${tool}`]);
@@ -115,10 +113,6 @@ function salientArg(values: Record<string, unknown>): string | undefined {
     const found = strings(key);
     if (found) return asLabel(found);
   }
-  // Nothing named itself, so what is left has to earn the header. A script or a
-  // paragraph is not a name for what ran, and smeared across the row it buries
-  // the tool that did run; the humanized tool name reads better than either. An
-  // unbroken value is still likely an identifier, so only a payload is refused.
   const spare = Object.keys(values).map(strings).find(Boolean);
   if (!spare || spare.includes("\n") || spare.length > PAYLOAD_MIN) return undefined;
   return asLabel(spare);
@@ -387,8 +381,6 @@ const RUN_NOUNS: Record<string, [string, string]> = {
   read_file: ["file", "files"],
   edit_file: ["file", "files"],
   list_files: ["directory", "directories"],
-  // Not "searches": the verb is already Find/Search, and "Search 3 searches"
-  // says one word twice. The noun names what was passed, not the act.
   find_files: ["pattern", "patterns"],
   search_files: ["query", "queries"],
   run_command: ["command", "commands"],

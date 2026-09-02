@@ -42,7 +42,6 @@ fn a_credential_grant_is_scoped_to_one_command() {
     grants.grant("gh", gh_config.clone());
 
     assert!(grants.allows("gh", &gh_config));
-    // The whole point: approving gh does not hand the token to anything else.
     assert!(!grants.allows("cat", &gh_config));
     assert!(!grants.allows("curl", &gh_config));
 }

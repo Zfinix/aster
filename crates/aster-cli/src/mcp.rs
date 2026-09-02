@@ -643,8 +643,6 @@ impl Connection {
         let Wire::Stdio(wire) = &mut self.wire else {
             return remote_reason(&name, error);
         };
-        // Stderr EOF means the child is gone and its last words are in the
-        // tail. A server that is still alive times out here instead.
         let _ = timeout(SHUTDOWN_GRACE, &mut wire.stderr_task).await;
         let status = match timeout(SHUTDOWN_GRACE, wire.child.wait()).await {
             Ok(Ok(status)) => Some(status),
@@ -1115,8 +1113,6 @@ pub fn render_result(result: &Value) -> ToolOutput {
             None => {}
         }
     }
-    // A tool with an `outputSchema` returns `structuredContent` and *should*
-    // repeat it as text. When it does not, that field is the whole answer.
     if out.is_empty()
         && images.is_empty()
         && let Some(structured) = result.get("structuredContent")

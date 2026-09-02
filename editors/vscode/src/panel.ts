@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli } from "./asterCli";
+import { checkBinary, cliConfig, ProviderOverride, runCli } from "./asterCli";
 import * as info from "./info";
 import { ChatRunner } from "./chatRunner";
 import { IGNORED, searchFiles, skillCommands } from "./commands";

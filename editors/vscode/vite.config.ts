@@ -1,11 +1,6 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// Each webview bundle is loaded from disk by the extension under a strict CSP,
-// so everything must be inlined into one JS file and one CSS file with stable
-// names that the host can reference. The chat panel and the settings tab are
-// separate pages, and a shared vendor chunk is a second script neither page's
-// nonce covers, so they are built one at a time rather than as two entries.
 export default defineConfig(({ mode }) => {
   const settings = mode === "settings";
   const name = settings ? "settings" : "index";

@@ -93,7 +93,6 @@ struct ChatState {
     effort: Option<String>,
     /// Saved settings are read from disk the first time a chat is touched.
     loaded: bool,
-    /// A drafted commit message awaiting confirmation.
     pending_commit: Option<PendingCommit>,
 }
 
@@ -510,7 +509,7 @@ async fn handle_command(
 }
 
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
-const EFFORTS: &[&str] = &["off", "low", "medium", "high"];
+const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// Models shown per page of the /model picker.
 const MODEL_PAGE: usize = 8;

@@ -50,9 +50,6 @@ export function Thread({
     }
   }, [turns.length, atBottom]);
 
-  // Your own message always brings you back down, wherever you had scrolled to.
-  // Following only what you were already following is right for the agent's
-  // output, but reading back and then sending should not leave you up there.
   const sent = useRef(turns.filter(isUser).length);
   useEffect(() => {
     const count = turns.filter(isUser).length;

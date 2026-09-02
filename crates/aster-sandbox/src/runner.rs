@@ -91,9 +91,8 @@ const INHERITED_ENV: &[&str] = &[
     "PATHEXT",
 ];
 
-/// Run a command inside the sandbox. The command is specified as a binary
-/// path and a list of arguments. The working directory is set to the repo
-/// root. On timeout the child is killed and `timed_out` is set on the output.
+/// The working directory is the repo root. On timeout the child is killed and
+/// `timed_out` is set on the output.
 pub async fn run_command(
     config: &SandboxConfig,
     binary: &str,
@@ -111,7 +110,6 @@ pub async fn run_command(
         }
     };
 
-    // Set the working directory to the repo root.
     cmd.current_dir(&config.profile.repo_root);
 
     // Filter environment: drop secrets and explicitly unset vars.
@@ -157,11 +155,6 @@ pub async fn run_command(
         // and the readers only finish once the pipes close.
         kill_process_group(pid);
     }
-    // Bounded join: a grandchild that inherited the pipes can keep them open
-    // after the child exits, so never wait on the readers indefinitely. What
-    // the child wrote before that is already captured, and the grandchild is
-    // left alone: a command that backgrounds a server meant it to outlive the
-    // call, and dropping the read end would take the server down with it.
     let readers = async { tokio::join!(stdout_task, stderr_task) };
     let _ = tokio::time::timeout(READER_GRACE, readers).await;
     let (stdout, stderr) = (snapshot(&out_buf), snapshot(&err_buf));
@@ -200,7 +193,6 @@ fn captured() -> Captured {
     Arc::new(Mutex::new((Vec::new(), false)))
 }
 
-/// The bytes read so far, as the caller renders them.
 fn snapshot(captured: &Captured) -> String {
     let (buf, truncated) = &*captured.lock().unwrap_or_else(|e| e.into_inner());
     let mut out = String::from_utf8_lossy(buf).into_owned();

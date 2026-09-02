@@ -97,7 +97,6 @@ fn only_the_tools_that_need_a_credential_dir_ask_for_one() {
 #[test]
 fn git_asks_only_when_it_reaches_a_remote() {
     let sub = |s: &str| vec![s.to_string()];
-    // Local plumbing never needs a key.
     assert!(credentials_for("git", &sub("status")).is_empty());
     assert!(credentials_for("git", &sub("diff")).is_empty());
     assert!(credentials_for("git", &sub("log")).is_empty());

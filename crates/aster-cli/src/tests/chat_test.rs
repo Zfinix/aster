@@ -304,8 +304,6 @@ fn a_binary_left_in_args_becomes_the_command() {
     );
 }
 
-// A leading flag is not a binary, so it is treated as a flag for a shell and
-// the rest of the argv becomes the line that shell runs.
 #[test]
 fn a_leading_flag_runs_through_a_shell() {
     assert_eq!(
@@ -317,7 +315,6 @@ fn a_leading_flag_runs_through_a_shell() {
     );
 }
 
-// A whole shell line left in `command` runs instead of erroring.
 #[test]
 fn a_shell_line_in_command_runs_through_bash() {
     assert_eq!(
@@ -1910,9 +1907,6 @@ fn user(text: &str) -> ChatMessage {
     }
 }
 
-// A first prompt that already states the task is the whole topic. Waiting for
-// a second turn left the session showing its opening line in the picker while
-// the user was still working in it.
 #[test]
 fn an_opening_message_that_states_the_task_names_the_session_on_turn_one() {
     for opener in [
@@ -1932,8 +1926,6 @@ fn a_thin_opener_still_waits_for_the_turn_that_says_what_it_is_about() {
     }
 }
 
-// The greeting list matches a bare opener, not a prefix: a message that starts
-// with "hi there" and then says what it wants is still nameable.
 #[test]
 fn a_greeting_followed_by_the_actual_task_names_the_session() {
     assert_eq!(
@@ -2071,8 +2063,6 @@ fn an_empty_history_cannot_be_folded() {
     assert!(!can_compact(&[]));
 }
 
-// The TUI, the VS Code panel, and the desktop app all render this arg in place
-// of the command line. It went unasked for, so all three fell back forever.
 #[test]
 fn run_command_asks_for_the_description_every_surface_renders() {
     let tools = tool_defs(true, true);

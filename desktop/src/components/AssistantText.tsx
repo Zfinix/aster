@@ -34,8 +34,6 @@ export function AssistantText({
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   const animate = !error && !reduceMotion && !typedTurns.has(id);
 
-  // Drive the caret + deferred highlighting only for the reveal window, then
-  // settle into a static render. Duration scales with length, clamped readable.
   const [animating, setAnimating] = useState(animate);
   const timer = useRef<number>(0);
 

@@ -69,8 +69,7 @@ impl Default for WebDefaults {
 }
 
 impl WebConfig {
-    /// Read only the parts that come from environment variables.
-    /// Callers may layer `aster.yaml` values on top afterward.
+    /// Callers may layer `aster.yaml` values on top of these afterward.
     pub fn from_env() -> Self {
         Self::default()
     }

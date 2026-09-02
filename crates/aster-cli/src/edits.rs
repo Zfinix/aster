@@ -192,7 +192,6 @@ pub fn exists_anywhere(repo_root: &Path, path: &str) -> bool {
 
 /// `~` and `~/rest` become the home directory. A bare `~user` is left alone;
 /// resolving another account's home is not something the agent should guess at.
-/// A path with the home directory written back as `~`, for prompts and errors.
 pub fn display_home(path: &Path) -> String {
     let shown = path.display().to_string();
     match dirs::home_dir() {

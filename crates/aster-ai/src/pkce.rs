@@ -15,7 +15,6 @@ pub fn random_urlsafe() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// A fresh verifier and its S256 challenge.
 pub fn pkce() -> Pkce {
     let verifier = random_urlsafe();
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
