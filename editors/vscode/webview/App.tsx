@@ -118,13 +118,8 @@ export function App() {
   // The in-flight request id, so a stale event after a cancel is ignored.
   const activeRef = useRef<string | null>(null);
   const fileRequestRef = useRef<string>("");
-  // The open approval's kind. A plan approval promotes the CLI's mode for the
-  // rest of the turn, and the mode is a launch flag, so the next turn has to
-  // start in `edit` or the approved plan is unrunnable again.
   const planApprovalRef = useRef(false);
 
-  // The model the panel last knew, kept out of state so the message handler can
-  // compare without reading a stale `init`.
   const modelRef = useRef<string | null>(null);
   /** Drop a divider the first time the model changes mid-conversation; a run of
    *  switches with no message between them collapses to the last one. */
@@ -279,6 +274,18 @@ export function App() {
       case "runState": {
         const running = message.review || message.chat;
         setBusy(running);
+        if (message.id) activeRef.current = message.id;
+        // A surface that loaded mid-prompt never saw the original event, so
+        // the host re-sends whatever the turn is blocked on.
+        if (message.pending && message.id) {
+          const event = message.pending;
+          const open = [...turnsRef.current]
+            .reverse()
+            .find((turn) => turn.role === "assistant" && turn.pending);
+          const target = open?.id ?? nextId();
+          if (!open) setTurns((prev) => [...prev, newTurn(target)]);
+          reapplyPending(target, event);
+        }
         if (!running) {
           activeRef.current = null;
           // Nothing is in flight, so any turn still spinning never will be:
@@ -361,6 +368,32 @@ export function App() {
         break;
     }
   }, []);
+
+  /** Re-render a prompt the surface missed because it loaded mid-turn. Only
+   *  the two blocking events are ever re-sent. */
+  const reapplyPending = (id: string, event: ChatStreamEvent) => {
+    if (event.type === "approval_request") {
+      planApprovalRef.current = event.kind === "plan";
+      patchAssistant(id, (turn) => ({
+        ...turn,
+        approval: {
+          preview: event.preview,
+          markdown: event.markdown,
+          scope: event.scope,
+          kind: event.kind,
+        },
+      }));
+    } else if (event.type === "question") {
+      patchAssistant(id, (turn) => ({
+        ...turn,
+        question: {
+          header: event.header,
+          question: event.question,
+          options: event.options,
+        },
+      }));
+    }
+  };
 
   const applyChatEvent = (id: string, event: ChatStreamEvent) => {
     switch (event.type) {
@@ -464,8 +497,6 @@ export function App() {
         activeRef.current = null;
         setBusy(false);
         patchAssistant(id, (turn) => ({
-          // Streaming already built the full answer; appending it again would
-          // double it. Without deltas, `reply` is the only copy of the answer.
           ...(turn.streamed ? turn : appendText(turn, event.reply, "\n\n")),
           edits: event.edits,
           usage: event.usage,
@@ -514,9 +545,6 @@ export function App() {
     }
   };
 
-  // Answered in the plan's tab. It deliberately does not reply to the CLI
-  // itself: the reply belongs to the tab holding the session, which is also the
-  // one that has to promote the mode.
   useEffect(
     () =>
       onPlanAnswer((answer) => {

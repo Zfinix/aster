@@ -51,11 +51,20 @@ impl AppState {
     }
 
     /// Tell every tab what is running, so none is left stuck busy or falsely
-    /// idle after a reload.
+    /// idle after a reload. A chat blocked on a prompt says which one, so a
+    /// tab that loads mid-prompt still gets the approval card.
     pub async fn post_run_state(&self) {
-        let chat = self.chat.lock().await.is_some();
+        let chat = self.chat.lock().await;
         let review = self.review.lock().await.is_some();
-        self.post(json!({ "type": "runState", "chat": chat, "review": review }));
+        let mut message = json!({ "type": "runState", "chat": chat.is_some(), "review": review });
+        if let Some(run) = chat.as_ref() {
+            message["id"] = json!(run.id);
+            if let Some(event) = run.blocked_on() {
+                message["pending"] = event;
+            }
+        }
+        drop(chat);
+        self.post(message);
     }
 
     /// Answer the running turn: an approval, a question, or a message queued
@@ -63,6 +72,9 @@ impl AppState {
     pub async fn answer(&self, line: Value) -> Result<(), String> {
         let mut slot = self.chat.lock().await;
         let run = slot.as_mut().ok_or("no turn is running")?;
-        run.write(&line.to_string()).await
+        run.write(&line.to_string()).await?;
+        // The prompt is settled; a tab loading now must not be shown it again.
+        run.clear_pending();
+        Ok(())
     }
 }

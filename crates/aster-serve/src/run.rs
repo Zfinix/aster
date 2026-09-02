@@ -15,6 +15,13 @@ use crate::state::AppState;
 pub struct Run {
     stdin: Option<tokio::process::ChildStdin>,
     cancel: Option<oneshot::Sender<()>>,
+    /// The id the browser started this run under, so a reloaded tab can be
+    /// told which turn is still going.
+    pub(crate) id: String,
+    /// The prompt the child is currently blocked on, so a tab that missed the
+    /// original event still gets the approval card. Shared with the stream
+    /// task, which sets it as events arrive.
+    pending: Arc<std::sync::Mutex<Option<Value>>>,
 }
 
 impl Run {
@@ -24,6 +31,17 @@ impl Run {
             .write_all(format!("{line}\n").as_bytes())
             .await
             .map_err(|e| format!("could not answer the prompt: {e}"))
+    }
+
+    /// The event the child is waiting on, if any.
+    pub fn blocked_on(&self) -> Option<Value> {
+        self.pending.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    pub(crate) fn clear_pending(&self) {
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = None;
+        }
     }
 }
 
@@ -74,21 +92,45 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
         .map_err(|e| format!("could not launch aster: {e}"))?;
 
     // The messages go in as a single line; stdin then stays open, because that
-    // is the channel the CLI reads approval replies from.
-    let mut stdin = child.stdin.take().ok_or("aster chat has no stdin")?;
+    // is the channel the CLI reads approval replies from. Any failure before
+    // the slot is claimed must take the child with it.
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill().await;
+            return Err("aster chat has no stdin".into());
+        }
+    };
     let messages = message
         .get("messages")
         .cloned()
         .unwrap_or_else(|| json!([]));
-    stdin
-        .write_all(format!("{messages}\n").as_bytes())
-        .await
-        .map_err(|e| format!("could not send messages to aster: {e}"))?;
+    if let Err(e) = stdin.write_all(format!("{messages}\n").as_bytes()).await {
+        let _ = child.kill().await;
+        return Err(format!("could not send messages to aster: {e}"));
+    }
 
     log(child.stderr.take());
+    let pending = Arc::new(std::sync::Mutex::new(None));
     let terminal = stream(state, child.stdout.take(), {
         let id = id.clone();
+        let pending = pending.clone();
         move |event| {
+            match event.get("type").and_then(Value::as_str) {
+                // Remember what the child is blocked on, so a tab that loads
+                // later can be handed the prompt it never saw.
+                Some("approval_request" | "question") => {
+                    if let Ok(mut slot) = pending.lock() {
+                        *slot = Some(event.clone());
+                    }
+                }
+                Some("done" | "error") => {
+                    if let Ok(mut slot) = pending.lock() {
+                        *slot = None;
+                    }
+                }
+                _ => {}
+            }
             let terminal = matches!(
                 event.get("type").and_then(Value::as_str),
                 Some("done" | "error")
@@ -104,6 +146,8 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
     *slot = Some(Run {
         stdin: Some(stdin),
         cancel: Some(cancel),
+        id: id.clone(),
+        pending,
     });
     drop(slot);
 
@@ -170,6 +214,8 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
     *slot = Some(Run {
         stdin: None,
         cancel: Some(cancel),
+        id: id.clone(),
+        pending: Arc::new(std::sync::Mutex::new(None)),
     });
     drop(slot);
 
