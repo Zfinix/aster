@@ -107,14 +107,14 @@ agent:
 agents:
   # Cheap model for collector agents. Falls back to the session model.
   # collector_model: deepseek/deepseek-v4-flash
+  max_concurrent: 8         # sub-agents running at once
+  max_per_turn: 24          # `agent` tasks accepted in one turn
+  agent_timeout_secs: 300   # seconds a single sub-agent may run
 
 # What chat prints on its own. `/welcome` inside a chat toggles this and saves.
 ui:
   # Print the session header (model, provider, skills) when chat starts.
   welcome: true
-  max_concurrent: 8         # sub-agents running at once
-  max_per_turn: 24          # `agent` tasks accepted in one turn
-  agent_timeout_secs: 300   # seconds a single sub-agent may run
 
 # MCP servers that give the agent extra tools. `aster mcp list` shows what they
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.
