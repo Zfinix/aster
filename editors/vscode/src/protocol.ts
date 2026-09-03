@@ -68,7 +68,9 @@ export type ChatStreamEvent =
     }
   /** `ask_user`: the turn blocks until a `{"choice"}` line goes back. */
   | { type: "question"; header: string; question: string; options: string[] }
-  | { type: "done"; reply: string; edits: string[]; usage?: UsageSummary }
+  | { type: "done"; reply: string; edits: string[]; usage?: UsageSummary; title?: string | null }
+  /** The session earned a name mid-turn, from its first substantive message. */
+  | { type: "title"; title: string }
   /** Something the harness did to the turn, e.g. stopping at the round cap. */
   | { type: "notice"; message: string }
   /** A queued user message the running turn absorbed at a round boundary. */
@@ -350,7 +352,7 @@ export type ToWebview =
       pending?: ChatStreamEvent;
     }
   | { type: "sessions"; sessions: SessionSummary[] }
-  | { type: "sessionLoaded"; id: string; turns: TranscriptTurn[] }
+  | { type: "sessionLoaded"; id: string; title: string | null; turns: TranscriptTurn[] }
   /** Start a fresh conversation, from the command palette or a keybinding. */
   | { type: "newConversation" }
   /** Drop an editor selection into the composer as a mention. */

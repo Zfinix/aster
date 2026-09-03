@@ -23,6 +23,7 @@ members = [
     "crates/aster-shortcuts",
     "crates/aster-serve",
     "crates/aster-remote",
+    "crates/aster-lsp",
     "crates/aster-cli",
 ]
 

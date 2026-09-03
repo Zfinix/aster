@@ -150,6 +150,26 @@ export function mcpTarget(call: ToolCall): string | undefined {
     : undefined;
 }
 
+/** Web tools whose result is prose in Markdown: a fetched page or a search's
+ *  hits. The card reads those as text rather than showing the markup as
+ *  source. JSON results (a search that returned structured data) stay code. */
+const PROSE_TOOLS = new Set([
+  "web/search",
+  "web/extract",
+  "web/fetch_content",
+  "web/crawl",
+  "websearch/search",
+  "websearch/fetch_content",
+]);
+
+export function rendersAsMarkdown(call: ToolCall): boolean {
+  const target = mcpTarget(call);
+  if (!target || !PROSE_TOOLS.has(target)) return false;
+  const raw = call.result?.trim();
+  if (!raw || raw.startsWith("{") || raw.startsWith("[")) return false;
+  return true;
+}
+
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "fish"]);
 
 /** The command as the user would type it: shell wrappers (`bash -lc`) elided. */

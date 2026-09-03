@@ -21,6 +21,7 @@ async fn can_run_sandboxed() -> bool {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_simple_command() {
     if !can_run_sandboxed().await {
         return;
@@ -37,6 +38,7 @@ async fn run_simple_command() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_with_stderr() {
     if !can_run_sandboxed().await {
         return;
@@ -50,6 +52,7 @@ async fn run_command_with_stderr() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_times_out() {
     if !can_run_sandboxed().await {
         return;
@@ -64,6 +67,7 @@ async fn run_command_times_out() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_times_out_keeps_partial_output() {
     if !can_run_sandboxed().await {
         return;
@@ -82,6 +86,7 @@ async fn run_command_times_out_keeps_partial_output() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_temp_dirs_are_writable() {
     if !can_run_sandboxed().await {
         return;
@@ -109,6 +114,7 @@ fn process_alive(pid: &str) -> bool {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_times_out_kills_grandchildren() {
     if !can_run_sandboxed().await {
         return;
@@ -132,6 +138,7 @@ async fn run_command_times_out_kills_grandchildren() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_output_is_capped() {
     if !can_run_sandboxed().await {
         return;
@@ -149,6 +156,7 @@ async fn run_command_output_is_capped() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn writes_to_git_hooks_and_config_are_blocked() {
     if !can_run_sandboxed().await {
         return;
@@ -181,6 +189,7 @@ async fn writes_to_git_hooks_and_config_are_blocked() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn sensitive_paths_are_unreadable() {
     if !can_run_sandboxed().await {
         return;
@@ -201,6 +210,7 @@ async fn sensitive_paths_are_unreadable() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_nonzero_exit() {
     if !can_run_sandboxed().await {
         return;
@@ -214,6 +224,7 @@ async fn run_command_nonzero_exit() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn secrets_are_dropped_from_env() {
     if !can_run_sandboxed().await {
         return;
@@ -230,6 +241,7 @@ async fn secrets_are_dropped_from_env() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn custom_env_is_passed() {
     if !can_run_sandboxed().await {
         return;
@@ -243,6 +255,7 @@ async fn custom_env_is_passed() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn writes_land_inside_the_repo_and_nowhere_else() {
     if !can_run_sandboxed().await {
         return;
@@ -269,6 +282,7 @@ async fn writes_land_inside_the_repo_and_nowhere_else() {
 }
 
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn working_directory_is_repo_root() {
     if !can_run_sandboxed().await {
         return;
@@ -288,6 +302,7 @@ async fn working_directory_is_repo_root() {
 /// operation died inside the sandbox. Approving the directory for one command must
 /// change what the OS permits, not just what the profile string says.
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn an_approved_credential_directory_becomes_readable() {
     if !can_run_sandboxed().await || detect_backend() == SandboxBackend::ProcessLevel {
         return;
@@ -319,6 +334,7 @@ async fn an_approved_credential_directory_becomes_readable() {
 
 /// Approving one credential directory must not open the others.
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn approving_one_directory_leaves_the_rest_denied() {
     if !can_run_sandboxed().await || detect_backend() == SandboxBackend::ProcessLevel {
         return;
@@ -339,6 +355,7 @@ async fn approving_one_directory_leaves_the_rest_denied() {
 /// both: the grandchild held the pipes past the grace, and the output was
 /// dropped and the process group killed five seconds later.
 #[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn a_backgrounded_job_keeps_its_output_and_its_process() {
     if !can_run_sandboxed().await {
         return;

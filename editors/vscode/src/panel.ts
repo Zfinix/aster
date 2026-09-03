@@ -11,6 +11,7 @@ import { FindingsTreeProvider, openFinding } from "./findingsTree";
 import { OutputContentProvider } from "./outputProvider";
 import {
   ChatMessage,
+  ChatStreamEvent,
   Effort,
   PastedFile,
   PermissionMode,
@@ -109,6 +110,21 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     if (this.active === webview) {
       this.active = this.surfaces.values().next().value;
     }
+  }
+
+  /** VS Code calls this on a window reload to bring back an editor tab that was
+   *  open. The webview's own `setState`/`getState` carries the thread and the
+   *  session id, so re-attaching the webview is enough to restore the
+   *  conversation; the panel itself is re-created by the host. */
+  deserializeWebviewPanel(panel: vscode.WebviewPanel): void {
+    panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "aster.svg");
+    this.tabs.add(panel);
+    panel.onDidDispose(() => {
+      this.tabs.delete(panel);
+      this.detach(panel.webview);
+    });
+    this.attach(panel.webview);
+    this.active = panel.webview;
   }
 
   /**
@@ -351,7 +367,12 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     // Reopening a session abandons whatever turn is in flight on the active
     // surface; stop it so the loaded session starts clean.
     this.cancelRuns(this.active);
-    this.post({ type: "sessionLoaded", id: picked.id, turns: await loadSession(root, picked.id) });
+    this.post({ type: "sessionLoaded", id: picked.id, title: picked.label, turns: await loadSession(root, picked.id) });
+    // The tab that owns this webview shows the session the user just reopened,
+    // so it takes the saved name immediately rather than waiting for a turn.
+    if (this.active) {
+      this.nameTab(this.active, { type: "title", title: picked.label });
+    }
   }
 
   private post(message: ToWebview): void {
@@ -361,6 +382,26 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   /** Send to the surface that started the run, so its state always resolves. */
   private postTo(target: vscode.Webview | undefined, message: ToWebview): void {
     void (target ?? this.active)?.postMessage(message);
+  }
+
+  /** Rename the editor tab that owns this webview once the session earns a
+   *  name. The title event arrives the moment the CLI names it, mid-turn; the
+   *  `done` event carries the same name so a tab reopened or reloaded late
+   *  still catches up. */
+  private nameTab(origin: vscode.Webview, event: ChatStreamEvent): void {
+    const title =
+      event.type === "title"
+        ? event.title
+        : event.type === "done"
+          ? event.title
+          : undefined;
+    if (!title) return;
+    for (const tab of this.tabs) {
+      if (tab.webview === origin) {
+        tab.title = title;
+        return;
+      }
+    }
   }
 
   /** Tell every surface its own run state, so none can be stuck busy or falsely
@@ -605,11 +646,19 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           // Switching sessions abandons the turn in flight on the active
           // surface; stop it so the loaded session starts clean.
           this.cancelRuns(this.active);
+          const title = (await listSessions(root)).find((s) => s.id === message.id)?.title ?? null;
           this.post({
             type: "sessionLoaded",
             id: message.id,
+            title,
             turns: await loadSession(root, message.id),
           });
+          // The tab that owns this webview shows the session the user just
+          // loaded, so it takes the saved name immediately rather than waiting
+          // for a turn.
+          if (title) {
+            this.nameTab(origin, { type: "title", title });
+          }
         } catch (err) {
           void vscode.window.showErrorMessage(
             `Aster: ${err instanceof Error ? err.message : String(err)}`
@@ -628,6 +677,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
             await deleteSession(root, message.id);
           } else {
             await renameSession(root, message.id, message.title);
+            // The tab that owns this webview shows the session the user just
+            // named, so it takes the new name immediately rather than waiting
+            // for the next turn's title event.
+            this.nameTab(origin, { type: "title", title: message.title });
           }
         } catch (err) {
           void vscode.window.showErrorMessage(`Aster: ${describe(err)}`);
@@ -803,6 +856,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           if (event.type === "done" && event.edits.length > 0) {
             this.output.appendLine(`[edits] ${event.edits.join(", ")}`);
           }
+          this.nameTab(origin, event);
           origin.postMessage({ type: "chatEvent", id: message.id, event });
         },
         onStderr: (line) => this.output.appendLine(line),

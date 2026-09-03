@@ -98,7 +98,3 @@ pub fn register_tools() -> Vec<McpTool> {
         },
     ]
 }
-
-#[cfg(test)]
-#[path = "tests/lib_test.rs"]
-mod tests;

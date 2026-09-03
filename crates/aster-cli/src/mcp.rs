@@ -93,7 +93,7 @@ pub enum Transport {
 }
 
 impl Transport {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Transport::Stdio => "stdio",
             Transport::StreamableHttp => "streamable-http",
@@ -206,6 +206,33 @@ impl McpSettings {
             max_search_limit: default.max_search_limit,
         }
     }
+}
+
+/// Front-ends inject session-scoped servers via ASTER_MCP_EXTRA, a JSON map
+/// of server configs; the bridge uses it for its telegram tools.
+fn extra_servers(problems: &mut Vec<String>) -> BTreeMap<String, ServerConfig> {
+    match std::env::var("ASTER_MCP_EXTRA") {
+        Ok(raw) => match serde_json::from_str::<BTreeMap<String, ServerConfig>>(&raw) {
+            Ok(extra) => extra,
+            Err(e) => {
+                problems.push(format!("ASTER_MCP_EXTRA is not valid: {e}"));
+                BTreeMap::new()
+            }
+        },
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+fn disabled_servers_of(settings: &McpSettings) -> Vec<DisabledServer> {
+    settings
+        .servers
+        .iter()
+        .filter(|(_, config)| config.disabled)
+        .map(|(name, _)| DisabledServer {
+            name: name.clone(),
+            description: describe_disabled_server(name),
+        })
+        .collect()
 }
 
 struct Connection {
@@ -341,6 +368,15 @@ impl StdioWire {
 }
 
 impl Connection {
+    fn cached_era(&self) -> crate::mcp_cache::CachedEra {
+        match &self.era {
+            Era::Modern { version } => crate::mcp_cache::CachedEra::Modern {
+                version: version.clone(),
+            },
+            Era::Legacy => crate::mcp_cache::CachedEra::Legacy,
+        }
+    }
+
     async fn spawn(name: &str, config: &ServerConfig) -> Result<Self> {
         let mut command = Command::new(&config.command);
         if let Some(cwd) = &config.cwd {
@@ -818,24 +854,30 @@ pub struct DisabledServer {
     pub description: String,
 }
 
+type AssembledCatalog = (Option<(Arc<Injector>, Vec<String>)>, Vec<String>);
+
 impl McpRuntime {
     /// Connect every enabled server. A server that fails to start is reported
     /// and skipped, so one broken entry cannot block the session.
     pub async fn connect(settings: &McpSettings) -> (Option<Self>, Vec<String>) {
-        // Front-ends inject session-scoped servers via ASTER_MCP_EXTRA, a JSON
-        // map of server configs; the bridge uses it for its telegram tools.
         let mut problems = Vec::new();
-        let extra = match std::env::var("ASTER_MCP_EXTRA") {
-            Ok(raw) => match serde_json::from_str::<BTreeMap<String, ServerConfig>>(&raw) {
-                Ok(extra) => extra,
-                Err(e) => {
-                    problems.push(format!("ASTER_MCP_EXTRA is not valid: {e}"));
-                    BTreeMap::new()
-                }
-            },
-            Err(_) => BTreeMap::new(),
-        };
-        let (runtime, mut extra_problems) = Self::connect_with(settings, &extra).await;
+        let extra = extra_servers(&mut problems);
+        let (runtime, mut extra_problems) = Self::connect_with_rooted(settings, &extra, None).await;
+        problems.append(&mut extra_problems);
+        (runtime, problems)
+    }
+
+    /// Connect every enabled server, seeded by and refreshing the per-folder
+    /// tool cache: cached eras skip the legacy probe, and the listings that
+    /// come back replace what was cached.
+    pub async fn connect_at(
+        settings: &McpSettings,
+        repo_root: &std::path::Path,
+    ) -> (Option<Self>, Vec<String>) {
+        let mut problems = Vec::new();
+        let extra = extra_servers(&mut problems);
+        let (runtime, mut extra_problems) =
+            Self::connect_with_rooted(settings, &extra, Some(repo_root)).await;
         problems.append(&mut extra_problems);
         (runtime, problems)
     }
@@ -843,9 +885,106 @@ impl McpRuntime {
     /// Connect every enabled server plus an explicit set of session-scoped
     /// extras. Tests pass an empty map so an ambient `ASTER_MCP_EXTRA` in the
     /// environment cannot change the catalog they assert on.
+    #[cfg(test)]
     pub async fn connect_with(
         settings: &McpSettings,
         extra: &BTreeMap<String, ServerConfig>,
+    ) -> (Option<Self>, Vec<String>) {
+        Self::connect_with_rooted(settings, extra, None).await
+    }
+
+    /// A runtime built from the cached tool listings, before any server has
+    /// connected. The first prompt goes out with these tools and the live
+    /// connect replaces the runtime when it lands; until then a call to a
+    /// cached tool fails with "not connected", same as a dead server.
+    pub fn from_cache(settings: &McpSettings, repo_root: &std::path::Path) -> Option<Self> {
+        Self::from_cache_hit(settings, crate::mcp_cache::load(repo_root, settings)?)
+    }
+
+    fn from_cache_hit(settings: &McpSettings, hit: crate::mcp_cache::CacheHit) -> Option<Self> {
+        let mut tools = hit.tools;
+        if tools.is_empty() {
+            return None;
+        }
+        let (web_connection, shortcuts_connection) = Self::in_process_tools(&mut tools);
+        let disabled_servers = disabled_servers_of(settings);
+        let (assembled, _) = Self::assemble(settings, tools, Vec::new(), &disabled_servers);
+        assembled.map(|(injector, filtered_tools)| Self {
+            injector,
+            connections: Arc::new(Mutex::new(BTreeMap::new())),
+            web_connection,
+            shortcuts_connection,
+            webmcp_connection: None,
+            disabled_servers,
+            filtered_tools,
+        })
+    }
+
+    /// The `web` and `shortcuts` servers run in-process, so they register
+    /// synchronously in every runtime, cached or live.
+    fn in_process_tools(
+        tools: &mut Vec<McpTool>,
+    ) -> (Option<Arc<WebConnection>>, Option<Arc<ShortcutsConnection>>) {
+        let config = aster_web::WebConfig::from_env();
+        let backend = aster_web::WebBackend::from_env(&config);
+        tools.extend(aster_web::register_tools(&backend));
+        let shortcuts_backend = aster_shortcuts::ShortcutsBackend::new();
+        tools.extend(aster_shortcuts::register_tools());
+        (
+            Some(Arc::new(WebConnection { backend })),
+            Some(Arc::new(ShortcutsConnection {
+                backend: shortcuts_backend,
+            })),
+        )
+    }
+
+    /// Apply `mcp.tools` and build the injector. Shared by the live connect
+    /// and the cache-built runtime so the two catalogs cannot drift.
+    fn assemble(
+        settings: &McpSettings,
+        mut tools: Vec<McpTool>,
+        mut problems: Vec<String>,
+        disabled_servers: &[DisabledServer],
+    ) -> AssembledCatalog {
+        let mut filtered_tools = Vec::new();
+        if !settings.tools.is_empty() {
+            match settings.tools.compile() {
+                Ok(matcher) => tools.retain(|tool| {
+                    let id = tool.id();
+                    let keep = matcher.allows(&id);
+                    if !keep {
+                        filtered_tools.push(id);
+                    }
+                    keep
+                }),
+                // A typo should cost that rule, not the session's whole catalog.
+                Err(e) => problems.push(format!("mcp.tools ignored: {e}")),
+            }
+        }
+
+        if tools.is_empty() && disabled_servers.is_empty() {
+            return (None, problems);
+        }
+        let injector = match McpCatalog::new(tools) {
+            Ok(catalog) => match Injector::new(catalog, settings.progressive()) {
+                Ok(injector) => injector,
+                Err(e) => {
+                    problems.push(format!("MCP injector rejected: {e}"));
+                    return (None, problems);
+                }
+            },
+            Err(e) => {
+                problems.push(format!("MCP catalog rejected: {e}"));
+                return (None, problems);
+            }
+        };
+        (Some((Arc::new(injector), filtered_tools)), problems)
+    }
+
+    async fn connect_with_rooted(
+        settings: &McpSettings,
+        extra: &BTreeMap<String, ServerConfig>,
+        repo_root: Option<&std::path::Path>,
     ) -> (Option<Self>, Vec<String>) {
         let mut connections = BTreeMap::new();
         let mut tools = Vec::new();
@@ -855,16 +994,7 @@ impl McpRuntime {
         let mut servers = settings.servers.clone();
         servers.extend(extra.clone());
 
-        let config = aster_web::WebConfig::from_env();
-        let backend = aster_web::WebBackend::from_env(&config);
-        tools.extend(aster_web::register_tools(&backend));
-        let web_connection = Some(Arc::new(WebConnection { backend }));
-
-        let shortcuts_backend = aster_shortcuts::ShortcutsBackend::new();
-        tools.extend(aster_shortcuts::register_tools());
-        let shortcuts_connection = Some(Arc::new(ShortcutsConnection {
-            backend: shortcuts_backend,
-        }));
+        let (web_connection, shortcuts_connection) = Self::in_process_tools(&mut tools);
 
         // The WebMCP bridge attaches to the user's browser, so it is opt-in
         // and its failure is a problem line, never a session failure.
@@ -889,14 +1019,25 @@ impl McpRuntime {
             None
         };
 
+        let cached_eras = repo_root
+            .and_then(|root| crate::mcp_cache::load(root, settings))
+            .map(|hit| hit.eras)
+            .unwrap_or_default();
+
         // Servers start concurrently: each costs a process spawn and a probe,
         // and serially that is the whole session's startup budget.
         let starting: Vec<_> = servers
             .iter()
             .filter(|(_, config)| !config.disabled && config.transport().is_some())
-            .map(
-                |(name, config)| async move { (name.clone(), Self::start_one(name, config).await) },
-            )
+            .map(|(name, config)| {
+                let cached_era = cached_eras.get(name).cloned();
+                async move {
+                    (
+                        name.clone(),
+                        Self::start_one(name, config, cached_era).await,
+                    )
+                }
+            })
             .collect();
         for (name, config) in &servers {
             if config.disabled {
@@ -916,42 +1057,29 @@ impl McpRuntime {
             }
         }
 
-        // Filtering here, after every server has listed, is what makes one
-        // switch cover the in-process servers and the spawned ones alike.
-        let mut filtered_tools = Vec::new();
-        if !settings.tools.is_empty() {
-            match settings.tools.compile() {
-                Ok(matcher) => tools.retain(|tool| {
-                    let id = tool.id();
-                    let keep = matcher.allows(&id);
-                    if !keep {
-                        filtered_tools.push(id);
-                    }
-                    keep
-                }),
-                // A typo should cost that rule, not the session's whole catalog.
-                Err(e) => problems.push(format!("mcp.tools ignored: {e:#}")),
-            }
+        // The cache holds only configured servers' tools: the in-process ones
+        // re-register live, and session-scoped extras do not outlive the
+        // session that injected them.
+        if let Some(root) = repo_root {
+            let eras = connections
+                .iter()
+                .map(|(name, connection)| (name.clone(), connection.cached_era()))
+                .collect();
+            let cached: Vec<McpTool> = tools
+                .iter()
+                .filter(|tool| settings.servers.contains_key(&tool.server))
+                .cloned()
+                .collect();
+            crate::mcp_cache::save(root, settings, cached, eras);
         }
 
-        if tools.is_empty() && disabled_servers.is_empty() {
-            return (None, problems);
-        }
-        let injector = match McpCatalog::new(tools) {
-            Ok(catalog) => match Injector::new(catalog, settings.progressive()) {
-                Ok(injector) => injector,
-                Err(e) => {
-                    problems.push(format!("MCP injector rejected: {e:#}"));
-                    return (None, problems);
-                }
-            },
-            Err(e) => {
-                problems.push(format!("MCP catalog rejected: {e:#}"));
-                return (None, problems);
-            }
+        let (assembled, problems) = Self::assemble(settings, tools, problems, &disabled_servers);
+        let (injector, filtered_tools) = match assembled {
+            Some(parts) => parts,
+            None => return (None, problems),
         };
         let runtime = Self {
-            injector: Arc::new(injector),
+            injector,
             connections: Arc::new(Mutex::new(connections)),
             web_connection,
             shortcuts_connection,
@@ -962,7 +1090,11 @@ impl McpRuntime {
         (Some(runtime), problems)
     }
 
-    async fn start_one(name: &str, config: &ServerConfig) -> Result<(Connection, Vec<McpTool>)> {
+    async fn start_one(
+        name: &str,
+        config: &ServerConfig,
+        cached_era: Option<crate::mcp_cache::CachedEra>,
+    ) -> Result<(Connection, Vec<McpTool>)> {
         let transport = config
             .transport()
             .context("names neither a command nor a url")?;
@@ -974,9 +1106,17 @@ impl McpRuntime {
                 .await
                 .map_err(|e| remote_reason(name, e))?,
         };
-        let error = match connection.start().await {
-            Ok(tools) => return Ok((connection, tools)),
-            Err(error) => error,
+        // A cached legacy era skips the probe: pre-2026 servers pay its full
+        // budget every session, and the answer does not change between runs.
+        let error = match cached_era {
+            Some(crate::mcp_cache::CachedEra::Legacy) => match connection.start_legacy().await {
+                Ok(tools) => return Ok((connection, tools)),
+                Err(error) => error,
+            },
+            _ => match connection.start().await {
+                Ok(tools) => return Ok((connection, tools)),
+                Err(error) => error,
+            },
         };
         // A strict legacy server treats the modern probe itself as fatal and
         // exits. When the child is dead, one respawn straight into the legacy

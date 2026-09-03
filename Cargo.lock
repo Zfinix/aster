@@ -239,6 +239,7 @@ dependencies = [
  "aster-models",
  "serde",
  "serde_json",
+ "tempfile",
  "which",
 ]
 
@@ -250,8 +251,10 @@ dependencies = [
  "anyhow",
  "aster-agents",
  "aster-ai",
+ "aster-analyzers",
  "aster-eval",
  "aster-harness",
+ "aster-lsp",
  "aster-mcp",
  "aster-models",
  "aster-mom",
@@ -347,6 +350,16 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "aster-lsp"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tempfile",
+ "which",
 ]
 
 [[package]]

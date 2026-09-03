@@ -294,7 +294,8 @@ export function start(root: string, port: number): void {
         break;
       case "loadSession":
         try {
-          post({ type: "sessionLoaded", id: message.id, turns: await loadSession(root, message.id) });
+          const title = (await listSessions(root)).find((s) => s.id === message.id)?.title ?? null;
+          post({ type: "sessionLoaded", id: message.id, title, turns: await loadSession(root, message.id) });
         } catch (err) {
           post({ type: "log", line: describe(err) });
         }

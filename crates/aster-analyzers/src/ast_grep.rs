@@ -85,7 +85,7 @@ impl AstGrep {
     }
 }
 
-fn lang_of(path: &Path) -> Option<SupportLang> {
+pub(crate) fn lang_of(path: &Path) -> Option<SupportLang> {
     Some(match Language::from_path(path)? {
         Language::Rust => SupportLang::Rust,
         Language::Python => SupportLang::Python,
@@ -105,7 +105,7 @@ fn lang_of(path: &Path) -> Option<SupportLang> {
     })
 }
 
-fn source_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn source_files(root: &Path) -> Vec<PathBuf> {
     fn skip_dir(name: &str) -> bool {
         aster_models::SKIP_DIRS.contains(&name) || name.starts_with('.')
     }

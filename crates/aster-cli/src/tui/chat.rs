@@ -141,6 +141,7 @@ pub async fn run_chat(
     seed: Option<String>,
     resume: Resume,
     mcp: tokio::task::JoinHandle<(Option<crate::mcp::McpRuntime>, Vec<String>)>,
+    cached: Option<crate::mcp::McpRuntime>,
     limits: crate::chat::Limits,
     swarm: crate::chat::SwarmLimits,
     agents: std::sync::Arc<aster_agents::AgentRegistry>,
@@ -199,7 +200,10 @@ pub async fn run_chat(
     app.width = tui.width() as usize;
     app.markdown.set_width(app.width);
     app.instructions = sync::Arc::new(crate::instructions::discover(&repo_root));
-    app.mcp_pending = true;
+    // A cached catalog means the first submit can run now; without one it
+    // waits for the connect like before.
+    app.mcp = cached;
+    app.mcp_pending = app.mcp.is_none();
     app.limits = limits;
     app.swarm = swarm;
     app.agents = agents;
@@ -428,6 +432,14 @@ pub async fn run_chat(
                     }
                     Err(e) => app.fail_turn(&format!("chat failed: {e}")),
                 }
+                // A message queued in the turn's last moments never joined it;
+                // it opens the next turn rather than silently vanishing.
+                if turn.is_none() {
+                    let unsent = app.take_unsent();
+                    if !unsent.is_empty() {
+                        turn = app.submit_or_hold(&unsent.join("\n\n"), &[], &mut client, &repo_root);
+                    }
+                }
                 pane.set_task_running(turn.is_some());
                 frames.schedule_now();
             }
@@ -646,6 +658,11 @@ fn on_key(
             app.handle_command(&cmd, client, pane);
         }
         InputResult::Busy { text, refs } => {
+            // The message joins the running turn between rounds; only a turn
+            // with no queue to join falls back to interrupt-and-resend.
+            if turn.is_some() && app.queue_mid_turn(&text, &refs) {
+                return Flow::Continue;
+            }
             abort(app, turn, pane);
             // The aborted turn's user message was never answered; drop it so
             // the new message does not stack a duplicate user turn.
@@ -698,6 +715,13 @@ fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<A
     app.end_message();
     app.running.clear();
     pane.set_task_running(false);
+    // A queued message the turn never reached goes back to the composer
+    // instead of vanishing with the turn.
+    let unsent = app.take_unsent();
+    if !unsent.is_empty() {
+        pane.composer.insert_str(&unsent.join("\n\n"));
+        app.flash = Some("queued message returned to the input".into());
+    }
     let width = app.width;
     app.emit(history::notice("turn stopped", width));
 }
@@ -789,6 +813,9 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
         "reasoning_done" => Some(TurnEvent::ReasoningDone),
         "notice" => Some(TurnEvent::Notice(
             event.get("message")?.as_str()?.to_string(),
+        )),
+        "injected" => Some(TurnEvent::Injected(
+            event.get("content")?.as_str()?.to_string(),
         )),
         "title" => Some(TurnEvent::Notice(format!(
             "session named: {}",
@@ -932,6 +959,8 @@ enum TurnEvent {
     /// Something the harness did that the user has to know about, e.g. the
     /// turn being cut short at the tool-round cap.
     Notice(String),
+    /// A queued mid-turn message the engine just folded into the turn.
+    Injected(String),
     /// The mom router picked an entry for this turn; the app records the
     /// switch so later turns hold it.
     MomRouted(String),
@@ -1027,7 +1056,7 @@ fn is_edit_note(msg: &ChatMessage) -> bool {
 /// Keys the composer answers to. None of them are visible on screen, so
 /// `/help` is where they get said.
 const KEY_HELP: &[(&str, &str)] = &[
-    ("enter", "send · interrupts a running turn if needed"),
+    ("enter", "send · queues into a running turn"),
     ("esc esc", "quit (twice, so a stray press does not)"),
     ("shift+tab", "step to the next mode"),
     (
@@ -1208,6 +1237,9 @@ struct ChatApp {
     mcp_pending: bool,
     /// A submit that beat the connect, replayed once the servers answer.
     held_submit: Option<(String, Vec<(String, String)>)>,
+    /// The running turn's mid-turn queue: a submit while busy joins the turn
+    /// between rounds instead of cutting it short.
+    turn_injected: Option<sync::Arc<sync::Mutex<Vec<String>>>>,
     limits: crate::chat::Limits,
     /// The endpoint in use, so `/provider` can mark the current row.
     provider_base_url: String,
@@ -1280,6 +1312,7 @@ impl ChatApp {
             mcp: None,
             mcp_pending: false,
             held_submit: None,
+            turn_injected: None,
             limits: crate::chat::Limits::default(),
             provider_base_url: String::new(),
             quit_armed: None,
@@ -1354,6 +1387,18 @@ impl ChatApp {
                 self.end_message();
                 self.end_explored();
                 self.note(&message);
+            }
+            // The engine records it, so only the scrollback and the local
+            // history need the message here.
+            TurnEvent::Injected(content) => {
+                self.end_message();
+                self.end_explored();
+                let block = history::user(&content, self.width);
+                self.emit(block);
+                self.history.push(ChatMessage {
+                    role: "user".into(),
+                    content: crate::images::attach(&content, &self.repo_root),
+                });
             }
             TurnEvent::AgentStatus {
                 call_id,
@@ -1518,6 +1563,39 @@ impl ChatApp {
         self.exploring = false;
     }
 
+    /// Queue a message into the running turn; it joins between rounds and the
+    /// scrollback shows it once the engine picks it up. `false` means there is
+    /// nothing to join and the caller should submit normally.
+    fn queue_mid_turn(&mut self, text: &str, refs: &[(String, String)]) -> bool {
+        let Some(injected) = &self.turn_injected else {
+            return false;
+        };
+        let asked = if text.starts_with('/') {
+            let skills = crate::chat::discover_skills(&self.repo_root);
+            crate::chat::expand_skill(text, &skills)
+        } else {
+            text.to_string()
+        };
+        let content = render_user_content(&asked, refs);
+        let Ok(mut queue) = injected.lock() else {
+            return false;
+        };
+        queue.push(content);
+        self.flash = Some("message queued · joins the turn at its next step".into());
+        true
+    }
+
+    /// Messages still queued when the turn ended; they never joined it.
+    fn take_unsent(&mut self) -> Vec<String> {
+        let Some(injected) = self.turn_injected.take() else {
+            return Vec::new();
+        };
+        match injected.lock() {
+            Ok(mut queue) => queue.drain(..).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Turns carry the MCP tool list, so a submit that beats the connect is
     /// held and replayed rather than run without the servers' tools.
     fn submit_or_hold(
@@ -1586,6 +1664,8 @@ impl ChatApp {
         let grants = self.perms.grants.clone();
         let approver = Some(self.approval_tx.clone());
         let events_tx = self.events_tx.clone();
+        let injected: sync::Arc<sync::Mutex<Vec<String>>> = sync::Arc::default();
+        self.turn_injected = Some(injected.clone());
         let ctx = SessionCtx {
             recorder: self.recorder.clone(),
             store: self.store.clone(),
@@ -1602,7 +1682,7 @@ impl ChatApp {
             reads: Default::default(),
             previews: Default::default(),
             lookups: Default::default(),
-            injected: Default::default(),
+            injected,
             agents: self.agents.clone(),
             sub_agent: None,
             swarm: self.swarm.clone(),

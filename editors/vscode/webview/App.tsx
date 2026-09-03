@@ -76,6 +76,9 @@ export function App() {
   const [effort, setEffort] = useState<Effort | null>(null);
   const [turns, setTurns] = useState<Turn[]>(() => hydrate(saved?.turns));
   const [session, setSession] = useState(saved?.session ?? newSessionId());
+  /** The saved name of the loaded session, shown in the toolbar until a turn
+   *  earns a new one. */
+  const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [pendingMention, setPendingMention] = useState<string | null>(null);
@@ -235,6 +238,7 @@ export function App() {
         setTurns([]);
         setQueued([]);
         setSession(newSessionId());
+        setSessionTitle(null);
         break;
 
       case "sessionLoaded":
@@ -242,6 +246,7 @@ export function App() {
         setBusy(false);
         setQueued([]);
         setSession(message.id);
+        setSessionTitle(message.title);
         setTurns(
           message.turns.map((turn) =>
             turn.role === "user"
@@ -493,6 +498,9 @@ export function App() {
         patchAssistant(id, (turn) => appendInjected(turn, content));
         break;
       }
+      case "title":
+        setSessionTitle(event.title);
+        break;
       case "done":
         activeRef.current = null;
         setBusy(false);
@@ -686,9 +694,10 @@ export function App() {
   );
 
   const title = useMemo(() => {
+    if (sessionTitle) return sessionTitle;
     const first = turns.find((t) => t.role === "user");
     return first ? first.text.slice(0, 45).replace(/\s+$/, "") : "Aster";
-  }, [turns]);
+  }, [turns, sessionTitle]);
 
   return (
     <div className="app">

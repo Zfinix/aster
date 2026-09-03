@@ -1719,11 +1719,13 @@ export function KeyboardIcon() {
   );
 }
 
+/** Face-on mallet: a diagonal head narrow enough to read as a hammer closes
+ *  below the 3-unit gap and smudges at 14px. */
 export function HammerIcon() {
   return (
     <svg {...base}>
-      <path d="M9.1 1.5l5.2 5.2-1.8 1.8-5.2-5.2 1.8-1.8z" />
-      <path d="M9.9 5.9L2.8 13" />
+      <rect x="2.6" y="2.2" width="10.8" height="4" rx="1.3" />
+      <path d="M6.5 6.2v6.8a1.5 1.5 0 003 0V6.2" />
     </svg>
   );
 }

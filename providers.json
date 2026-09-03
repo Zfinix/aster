@@ -284,6 +284,16 @@
       "auth": "Bearer"
     },
     {
+      "id": "meta_ai",
+      "name": "Meta AI",
+      "base_url": "https://api.meta.ai/v1",
+      "example_model": "muse-spark-1.3",
+      "key_env": [
+        "META_AI_API_KEY"
+      ],
+      "auth": "Bearer"
+    },
+    {
       "id": "nvidia_nim",
       "name": "NVIDIA NIM",
       "base_url": "https://integrate.api.nvidia.com/v1",

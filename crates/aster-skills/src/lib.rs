@@ -58,6 +58,9 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/security-hygiene/SKILL.md"),
     include_str!("../builtins/security-review/SKILL.md"),
     include_str!("../builtins/web-research/SKILL.md"),
+    include_str!("../builtins/structural-edits/SKILL.md"),
+    include_str!("../builtins/lsp-navigation/SKILL.md"),
+    include_str!("../builtins/security-scan/SKILL.md"),
 ];
 
 /// Bundled from `optional-skills/` but not indexed: task-class packs a user opts into with

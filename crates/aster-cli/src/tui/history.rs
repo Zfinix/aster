@@ -529,7 +529,7 @@ const TIPS: &[&str] = &[
     "/yolo drops the guardrails; the theme turns red while it is on",
     "ctrl+j adds a newline without sending the message",
     "↑ walks back through your past messages once the cursor is at the top",
-    "enter during a running turn interrupts it and sends your message",
+    "enter during a running turn queues your message into it; esc stops the turn",
     "aster mcp import copies MCP servers from Claude Code, Codex, or Cursor",
     "/provider switches the endpoint Aster talks to, then picks a model",
     "/clear wipes the conversation and starts fresh",

@@ -1,0 +1,17 @@
+[package]
+name = "aster-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "aster_lsp"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+which = "7"
+
+[dev-dependencies]
+tempfile = "3"

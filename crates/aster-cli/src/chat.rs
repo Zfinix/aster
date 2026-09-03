@@ -928,13 +928,22 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     if args.is_interactive() {
         // Every server costs a process spawn, and `npx` ones a registry round
         // trip, so waiting here would leave the terminal blank for seconds.
-        // The TUI draws first and adopts the tools when the connect lands.
-        // `--no-mcp` resolves the same handle immediately.
+        // The TUI draws first, and a cached catalog lets the first prompt go
+        // out before any server has connected; the live connect replaces it
+        // when it lands. `--no-mcp` resolves the same handle immediately.
         let mcp_settings = settings.mcp.clone();
+        let cached = if args.no_mcp {
+            None
+        } else {
+            crate::mcp::McpRuntime::from_cache(&settings.mcp, &repo_root)
+        };
         let mcp = if args.no_mcp {
             tokio::spawn(async { (None, Vec::new()) })
         } else {
-            tokio::spawn(async move { crate::mcp::McpRuntime::connect(&mcp_settings).await })
+            let root = repo_root.clone();
+            tokio::spawn(
+                async move { crate::mcp::McpRuntime::connect_at(&mcp_settings, &root).await },
+            )
         };
         let seed = args.prompt.clone();
         return crate::tui::run_chat(
@@ -945,6 +954,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             seed,
             args.resume_mode(),
             mcp,
+            cached,
             limits,
             swarm,
             agents,
@@ -955,7 +965,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let (mcp, mcp_problems) = if args.no_mcp {
         (None, Vec::new())
     } else {
-        crate::mcp::McpRuntime::connect(&settings.mcp).await
+        crate::mcp::McpRuntime::connect_at(&settings.mcp, &repo_root).await
     };
     for problem in &mcp_problems {
         eprintln!("{}", console::style(format!("✗ {problem}")).red());
@@ -1387,12 +1397,18 @@ async fn run_stream(
     };
 
     // Await before `done`: a title past `done` reads as a turn that never finished.
-    if let Some(naming) = match result.is_ok() {
+    let title = if let Some(naming) = match result.is_ok() {
         true => name_session(&client, &ctx, &history, Some(Arc::new(sink))),
         false => None,
     } {
-        let _ = tokio::time::timeout(TITLE_TIMEOUT, naming).await;
-    }
+        tokio::time::timeout(TITLE_TIMEOUT, naming)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten()
+    } else {
+        None
+    };
 
     let u = client.usage_snapshot();
     match result {
@@ -1401,6 +1417,7 @@ async fn run_stream(
             "reply": reply,
             "edits": edited,
             "usage": usage_json(&u),
+            "title": title,
         })),
         Err(e) => emit_line(&json!({ "type": "error", "message": format!("{e:#}") })),
     }
@@ -2042,6 +2059,36 @@ async fn agent_loop(
                 steer(&mut wire, DANGLING_INTENT_CORRECTION.to_string());
                 continue;
             }
+            // A message the user sent while this reply was forming still
+            // deserves an answer: bank the reply and keep the turn alive
+            // rather than dropping the queue on the floor.
+            let pending: Vec<String> = match ctx.injected.lock() {
+                Ok(mut queue) => queue.drain(..).collect(),
+                Err(_) => Vec::new(),
+            };
+            if !pending.is_empty() {
+                if !msg.annotations.is_empty() {
+                    emit_citations(&msg.annotations, &emit);
+                }
+                ctx.record(
+                    MessageEvent::assistant(Some(reply.clone()), Vec::new())
+                        .with_annotations(msg.annotations.clone())
+                        .with_reasoning(reasoning)
+                        .with_usage(usage),
+                );
+                if streamed {
+                    emit(json!({ "type": "token", "content": "\n\n" }));
+                } else {
+                    emit(json!({ "type": "text", "content": reply.clone() }));
+                }
+                wire.push(json!({ "role": "assistant", "content": reply }));
+                for content in pending {
+                    emit(json!({ "type": "injected", "content": content }));
+                    ctx.record(MessageEvent::user(content.clone()));
+                    wire.push(json!({ "role": "user", "content": content }));
+                }
+                continue;
+            }
             if !msg.annotations.is_empty() {
                 emit_citations(&msg.annotations, &emit);
                 ctx.record(
@@ -2383,7 +2430,7 @@ fn name_session(
     ctx: &SessionCtx,
     history: &[ChatMessage],
     sink: Option<Arc<ChatEventSink>>,
-) -> Option<tokio::task::JoinHandle<()>> {
+) -> Option<tokio::task::JoinHandle<Option<String>>> {
     if ctx.sub_agent.is_some() {
         return None;
     }
@@ -2420,16 +2467,15 @@ fn name_session(
             Ok(reply) => reply,
             Err(e) => {
                 tracing::debug!("could not name the session: {e:#}");
-                return;
+                return None;
             }
         };
-        let Some(title) = clean_title(&reply) else {
-            return;
-        };
+        let title = clean_title(&reply)?;
         ctx.record_title(&title);
         if let Some(sink) = sink {
             sink(json!({ "type": "title", "title": title }));
         }
+        Some(title)
     }))
 }
 
@@ -2778,7 +2824,97 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                 }
             }
         }));
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "ast_edit",
+                "description": "Apply a structural rewrite across many files at once: every match of an ast-grep `pattern` is replaced by `rewrite` (use `$$$VAR` metavariables to capture and reuse). Prefer this over repeated edit_file calls when the same change applies in many places. Returns the changed files and a diff. Requires Allow edits.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "ast-grep pattern to match, e.g. dbg!($X)" },
+                        "rewrite": { "type": "string", "description": "Replacement text; metavariables like $X carry matched text over" },
+                        "language": { "type": "string", "description": "Restrict to one language: rust, python, javascript, typescript, tsx, go, java, c, cpp (optional)" }
+                    },
+                    "required": ["pattern", "rewrite"]
+                }
+            }
+        }));
     }
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "ast_grep",
+            "description": "Search code structurally with an ast-grep pattern (e.g. dbg!($X), fn $NAME($$$ARGS)) instead of plain text, so matches respect syntax. Returns file:line: matched text lines. Use `language` to restrict to one language; without it the language is detected per file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "ast-grep pattern to search for" },
+                    "language": { "type": "string", "description": "Restrict to one language: rust, python, javascript, typescript, tsx, go, java, c, cpp (optional)" }
+                },
+                "required": ["pattern"]
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "security_scan",
+            "description": "Run the available security analyzers (semgrep, ast-grep rules) over the repository, or a subdirectory with `path`, and return findings as severity file:line lines. Backends that are not installed are skipped and named at the end.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Subdirectory to scan instead of the whole repository (optional)" }
+                }
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "lsp_diagnostics",
+            "description": "Get the language server's errors and warnings for one file. Much faster than a full build for checking whether an edit compiles. Requires rust-analyzer (Rust) or typescript-language-server (TS/JS) to be installed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path, repo-relative" }
+                },
+                "required": ["path"]
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "lsp_references",
+            "description": "Find where the symbol at a position is referenced, semantically (not a text search). Positions are 0-based line and character. Requires rust-analyzer or typescript-language-server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path, repo-relative" },
+                    "line": { "type": "integer", "description": "0-based line number" },
+                    "character": { "type": "integer", "description": "0-based character offset in the line" }
+                },
+                "required": ["path", "line", "character"]
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "lsp_definitions",
+            "description": "Find where the symbol at a position is defined, semantically. Positions are 0-based line and character. Requires rust-analyzer or typescript-language-server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path, repo-relative" },
+                    "line": { "type": "integer", "description": "0-based line number" },
+                    "character": { "type": "integer", "description": "0-based character offset in the line" }
+                },
+                "required": ["path", "line", "character"]
+            }
+        }
+    }));
     if has_approver {
         tools.push(json!({
             "type": "function",
@@ -3035,6 +3171,95 @@ async fn exec_tool(
             },
             Err(e) => Err(e),
         },
+        "ast_grep" => match str_arg("pattern").context("ast_grep needs a `pattern`") {
+            Ok(pattern) => aster_analyzers::ast_grep_search(
+                repo_root,
+                &pattern,
+                str_arg("language").as_deref(),
+            ),
+            Err(e) => Err(e),
+        },
+        "ast_edit" if !*allow_edits => Err(anyhow::anyhow!(
+            "editing is disabled for this chat; tell the user to enable Allow edits"
+        )),
+        "ast_edit" => match (
+            str_arg("pattern").context("ast_edit needs a `pattern`"),
+            str_arg("rewrite").context("ast_edit needs a `rewrite`"),
+        ) {
+            (Ok(pattern), Ok(rewrite)) => {
+                let plan = match aster_analyzers::ast_edit_plan(
+                    repo_root,
+                    &pattern,
+                    &rewrite,
+                    str_arg("language").as_deref(),
+                ) {
+                    Ok(plan) => plan,
+                    Err(e) => return ToolOutput::text(format!("error: {e:#}")),
+                };
+                if plan.changes.is_empty() {
+                    Ok("no matches; nothing changed".to_string())
+                } else {
+                    // Same gate per file as edit_file: policy first, one
+                    // approval prompt for the whole batch when any file asks.
+                    let mut needs_approval = false;
+                    let mut denied = None;
+                    for (file, _) in &plan.changes {
+                        let relative = file.strip_prefix(repo_root).unwrap_or(file);
+                        match policy.evaluate(&Action::Edit {
+                            path: &relative.to_string_lossy(),
+                        }) {
+                            Decision::Allow => {}
+                            Decision::Deny { reason } => {
+                                denied = Some(reason);
+                                break;
+                            }
+                            Decision::Prompt { .. } => needs_approval = true,
+                        }
+                    }
+                    if let Some(reason) = denied {
+                        Err(anyhow::anyhow!("edit blocked by policy: {reason}"))
+                    } else if needs_approval
+                        && !request_approval(
+                            approver,
+                            plan.preview(),
+                            None,
+                        )
+                        .await
+                        .allowed()
+                    {
+                        Err(anyhow::anyhow!(
+                            "ast_edit needs user approval (permissions mode is `ask`); \
+                             it was rejected or no interactive approver is available"
+                        ))
+                    } else {
+                    for (file, _) in &plan.changes {
+                        let path = file
+                            .strip_prefix(repo_root)
+                            .unwrap_or(file)
+                            .to_string_lossy()
+                            .into_owned();
+                        if !edited.contains(&path) {
+                            edited.push(path);
+                        }
+                    }
+                    aster_analyzers::ast_edit_commit(&plan)
+                    }
+                }
+            }
+            (pattern, rewrite) => pattern.and(rewrite),
+        },
+        "security_scan" => {
+            aster_analyzers::security_scan(
+                repo_root,
+                str_arg("path").as_deref().map(std::path::Path::new),
+            )
+        }
+        "lsp_diagnostics" => match str_arg("path").context("lsp_diagnostics needs a `path`") {
+            Ok(path) => crate::lsp_tools::diagnostics(repo_root, &path),
+            Err(e) => Err(e),
+        },
+        "lsp_references" => crate::lsp_tools::nav_from_args(repo_root, &args, crate::lsp_tools::Query::References),
+        "lsp_definitions" => crate::lsp_tools::nav_from_args(repo_root, &args, crate::lsp_tools::Query::Definitions),
         "edit_file" if !*allow_edits => Err(anyhow::anyhow!(
             "editing is disabled for this chat; tell the user to enable Allow edits"
         )),

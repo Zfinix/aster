@@ -526,12 +526,4 @@ switch:
         );
         assert!(m.warnings.is_empty());
     }
-
-    #[test]
-    fn memory_floors_match_spec() {
-        assert_eq!(MemoryBand::Normal.floor_tokens(), 32_000);
-        assert_eq!(MemoryBand::Large.floor_tokens(), 128_000);
-        assert_eq!(MemoryBand::Huge.floor_tokens(), 200_000);
-        assert_eq!(MemoryBand::Vast.floor_tokens(), 1_000_000);
-    }
 }

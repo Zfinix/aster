@@ -4,12 +4,20 @@ pub mod models;
 
 mod ast_grep;
 mod semgrep;
+mod tools;
 
 use std::path::Path;
 
 pub use ast_grep::AstGrep;
 pub use models::{Finding, Severity};
 pub use semgrep::Semgrep;
+pub use tools::{
+    AstEditPlan, ast_edit_apply, ast_edit_commit, ast_edit_plan, ast_grep_search, security_scan,
+};
+
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tools_tests;
 
 pub trait Analyzer: Send + Sync {
     fn name(&self) -> &'static str;

@@ -23,3 +23,8 @@ description: Working with GitHub pull requests, issues, and the API through the 
    pushes, will not help.
 6. **PR bodies: summary plus test plan.** Short paragraphs over prose walls.
    No attribution footers unless asked.
+7. **Know which subcommands write.** Reads (`view`, `list`, `diff`, `checks`,
+   `api` GET, `search`) run freely; writes (`create`, `edit`, `merge`, `close`,
+   `comment`, `review`, any `--method POST/PATCH/PUT/DELETE`, `pr checkout`,
+   `release create`) change state and will ask the user for approval. Batch
+   reads first, then propose the writes as one step instead of interleaving.

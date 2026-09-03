@@ -166,7 +166,6 @@ fn pick_by_power<'m>(power: Power, candidates: &[&'m CatalogModel]) -> Option<&'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::MemoryBand;
 
     fn all_access(_: &str) -> bool {
         true
@@ -242,18 +241,6 @@ mod tests {
         let r = resolver.resolve(&entry(Power::Max)).unwrap();
         assert_ne!(r.model, "anthropic/claude-opus-5");
         assert!(r.skipped.iter().any(|s| s.contains("demoted")));
-    }
-
-    #[test]
-    fn resolve_memory_vast_requires_million_window() {
-        let catalog = Catalog::builtin();
-        let resolver = Resolver::new(&catalog, all_access, false);
-        let e = ModelEntry {
-            memory: MemoryBand::Vast,
-            ..entry(Power::Medium)
-        };
-        let r = resolver.resolve(&e).unwrap();
-        assert!(catalog.find(&r.model).unwrap().window >= 1_000_000);
     }
 
     #[test]

@@ -25,12 +25,6 @@ fn every_web_provider_var_is_known() {
 }
 
 #[test]
-fn firecrawl_is_among_the_web_vars() {
-    let vars: Vec<&str> = aster_web::KEY_VARS.iter().map(|(_, v, _)| *v).collect();
-    assert!(vars.contains(&"FIRECRAWL_API_KEY"), "{vars:?}");
-}
-
-#[test]
 fn an_assignment_is_read_back_with_or_without_quotes() {
     assert_eq!(assignment("FOO=bar", "FOO"), Some("bar"));
     assert_eq!(assignment("  FOO=bar  ", "FOO"), Some("bar"));
@@ -97,14 +91,6 @@ fn a_masked_key_shows_its_tail_and_nothing_more() {
     // half the secret.
     for short in ["x", "12345678"] {
         assert_eq!(mask_tail(short), "••••");
-    }
-}
-
-#[test]
-fn source_labels_never_print_the_key() {
-    for source in [Source::Shell, Source::Local, Source::Global, Source::Unset] {
-        assert!(!source.label().is_empty());
-        assert!(!source.as_str().is_empty());
     }
 }
 

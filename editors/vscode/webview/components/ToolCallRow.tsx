@@ -8,6 +8,7 @@ import {
   mcpMatches,
   mcpTarget,
   outputTitle,
+  rendersAsMarkdown,
   resultHint,
   toolInput,
   toolPath,
@@ -15,6 +16,7 @@ import {
 import { Disclosure } from "../interior/disclosure";
 import { Code } from "./Code";
 import { CopyButton } from "./CopyButton";
+import { Markdown } from "./Markdown";
 import { McpMatches } from "./McpMatches";
 import { ToolOutput } from "./ToolOutput";
 import {
@@ -95,6 +97,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const { verb, detail, code } = describeTool(call);
   const matches = mcpMatches(call);
   const path = toolPath(call);
+  const prose = rendersAsMarkdown(call);
   const card = Boolean(output || input);
   const open = card && (expanded || call.error === true);
 
@@ -117,7 +120,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
     if (path) {
       post({ type: "openFile", path });
     } else if (output) {
-      post({ type: "openUntitled", content: output, title: outputTitle(call) });
+      post({ type: "openUntitled", content: output, title: outputTitle(call), doc: prose });
     }
   };
 
@@ -183,6 +186,8 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
               >
                 {matches ? (
                   <McpMatches matches={matches} />
+                ) : prose ? (
+                  <Markdown text={output} />
                 ) : (
                   <ToolOutput output={output} lang={languageFromPath(path)} />
                 )}

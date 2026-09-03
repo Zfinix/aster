@@ -820,3 +820,58 @@ async fn a_submit_after_mcp_connects_runs_straight_away() {
     );
     turn.unwrap().abort();
 }
+
+#[tokio::test]
+async fn a_message_typed_mid_turn_queues_into_the_running_turn() {
+    let mut client = AiClient::new("http://localhost", "k", "m1");
+    let mut app = chat_app(client.model.clone());
+    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
+    assert!(turn.is_some());
+
+    assert!(app.queue_mid_turn("and this too", &[]));
+
+    let queued: Vec<String> = app
+        .turn_injected
+        .as_ref()
+        .map(|q| q.lock().unwrap().clone())
+        .unwrap_or_default();
+    assert_eq!(queued, vec!["and this too".to_string()]);
+    // The scrollback and history wait for the engine's injected event.
+    assert_eq!(app.history.iter().filter(|m| m.role == "user").count(), 1);
+    turn.unwrap().abort();
+}
+
+#[test]
+fn queueing_without_a_running_turn_falls_back_to_a_submit() {
+    let mut app = chat_app("m1".into());
+    assert!(!app.queue_mid_turn("hello", &[]));
+}
+
+#[test]
+fn an_injected_event_lands_in_scrollback_and_history() {
+    let mut app = chat_app("m1".into());
+
+    app.on_turn_event(TurnEvent::Injected("mid-turn note".into()));
+
+    assert!(
+        app.history
+            .iter()
+            .any(|m| m.role == "user" && m.content.text() == "mid-turn note")
+    );
+    assert!(!app.queue.is_empty());
+}
+
+#[tokio::test]
+async fn unsent_queued_messages_are_reclaimed_when_the_turn_ends() {
+    let mut client = AiClient::new("http://localhost", "k", "m1");
+    let mut app = chat_app(client.model.clone());
+    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
+    assert!(app.queue_mid_turn("late arrival", &[]));
+
+    let unsent = app.take_unsent();
+
+    assert_eq!(unsent, vec!["late arrival".to_string()]);
+    assert!(app.turn_injected.is_none());
+    assert!(app.take_unsent().is_empty());
+    turn.unwrap().abort();
+}

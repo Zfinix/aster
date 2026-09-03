@@ -142,13 +142,54 @@ fn activity_sink(tx: tokio::sync::mpsc::UnboundedSender<String>) -> crate::chat:
     })
 }
 
+/// Injected when a task nears its time limit, so the child lands a report
+/// with what it has instead of dying mid-research.
+const WRAP_UP: &str = "Your time limit is nearly up. Stop calling tools and \
+write your final report now from what you have gathered, noting what you did \
+not get to.";
+
+/// Activity lines kept for the salvage report a timed-out task returns.
+const SALVAGE_LINES: usize = 40;
+
+fn push_salvage(log: &std::sync::Mutex<Vec<String>>, line: &str) {
+    if let Ok(mut log) = log.lock() {
+        if log.len() == SALVAGE_LINES {
+            log.remove(0);
+        }
+        log.push(line.to_string());
+    }
+}
+
+/// The partial report a timed-out task hands back: its recent activity, so the
+/// parent can finish from where it stopped instead of restarting blind.
+fn salvage_report(timeout_secs: u64, trail: &str) -> Option<String> {
+    if trail.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "No final report: the task hit its {timeout_secs}s time limit. \
+         What it did before the cutoff:\n{trail}"
+    ))
+}
+
+/// Extra time a task gets past its deadline once the wrap-up nudge fires:
+/// enough for one more model round, scaled to the budget but bounded.
+fn wrap_up_grace(timeout: std::time::Duration) -> std::time::Duration {
+    (timeout / 5).clamp(
+        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(60),
+    )
+}
+
 /// Run a single sub-agent, returning its final text answer. Live activity
-/// lines go out through `activity` as the child works.
+/// lines go out through `activity` as the child works, and `injected` feeds
+/// mid-turn messages into it.
 async fn run_agent(
     def: &aster_agents::AgentDef,
     task: &str,
     deps: &AgentDeps,
     activity: tokio::sync::mpsc::UnboundedSender<String>,
+    injected: Arc<std::sync::Mutex<Vec<String>>>,
 ) -> anyhow::Result<String> {
     let model = def
         .model
@@ -200,7 +241,7 @@ async fn run_agent(
         reads: Default::default(),
         previews: Default::default(),
         lookups: Default::default(),
-        injected: Default::default(),
+        injected,
         agents: deps.session_registry.clone(),
         sub_agent: Some(overrides),
         swarm: deps.swarm.clone(),
@@ -299,18 +340,36 @@ where
                 // Forward activity lines while the run is in flight; the
                 // channel keeps the child's 'static sink free of borrows.
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                let result = tokio::time::timeout(timeout, async {
-                    let run = run_agent(&def, &task.task, &deps, tx);
+                let injected: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+                let salvage = std::sync::Mutex::new(Vec::new());
+                // At the deadline the task is told to wrap up, and the hard
+                // kill waits one grace period more so the report can land.
+                let grace = wrap_up_grace(timeout);
+                let result = tokio::time::timeout(timeout + grace, async {
+                    let run = run_agent(&def, &task.task, &deps, tx, injected.clone());
                     tokio::pin!(run);
+                    let nudge = tokio::time::sleep(timeout);
+                    tokio::pin!(nudge);
+                    let mut nudged = false;
                     loop {
                         tokio::select! {
                             r = &mut run => {
                                 while let Ok(line) = rx.try_recv() {
+                                    push_salvage(&salvage, &line);
                                     on_activity(&task.agent, &task.task, line);
                                 }
                                 break r;
                             }
-                            Some(line) = rx.recv() => on_activity(&task.agent, &task.task, line),
+                            Some(line) = rx.recv() => {
+                                push_salvage(&salvage, &line);
+                                on_activity(&task.agent, &task.task, line);
+                            }
+                            _ = &mut nudge, if !nudged => {
+                                nudged = true;
+                                if let Ok(mut queue) = injected.lock() {
+                                    queue.push(WRAP_UP.to_string());
+                                }
+                            }
                         }
                     }
                 })
@@ -343,14 +402,16 @@ where
                         )
                     }
                     Err(_elapsed) => {
-                        let err = format!("timed out after {}s", timeout.as_secs());
+                        let total = (timeout + grace).as_secs();
+                        let err = format!("timed out after {total}s, wrap-up extension included");
+                        let trail = salvage.lock().map(|log| log.join("\n")).unwrap_or_default();
                         progress(ProgressStatus::Failed, None, Some(err.clone()));
                         (
                             i,
                             TaskReport {
                                 agent: task.agent,
                                 task: task.task,
-                                report: None,
+                                report: salvage_report(total, &trail),
                                 error: Some(err),
                             },
                         )
@@ -366,3 +427,7 @@ where
     ordered.sort_by_key(|(i, _)| *i);
     ordered.into_iter().map(|(_, r)| r).collect()
 }
+
+#[cfg(test)]
+#[path = "tests/agents_test.rs"]
+mod tests;
