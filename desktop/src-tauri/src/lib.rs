@@ -580,6 +580,50 @@ async fn set_model(model: String) -> Result<(), String> {
     cli_json(&["model", "use", &model]).await.map(|_| ())
 }
 
+/// Review and provider settings read through the CLI so the desktop, the
+/// terminal, and the editors all resolve the same `aster.yaml` afterwards.
+#[tauri::command]
+async fn config_list(repo_path: Option<String>) -> Result<serde_json::Value, String> {
+    run_aster_json(
+        &["config", "list", "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn config_set(
+    key: String,
+    value: String,
+    repo_path: Option<String>,
+    global: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let mut args: Vec<String> = vec!["config".into(), "set".into(), key, value];
+    if global.unwrap_or(false) {
+        args.push("--global".into());
+    }
+    args.push("--json".into());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_aster_json(&refs, repo_path.as_deref(), None, Vec::new()).await
+}
+
+#[tauri::command]
+async fn config_unset(
+    key: String,
+    repo_path: Option<String>,
+    global: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let mut args: Vec<String> = vec!["config".into(), "unset".into(), key];
+    if global.unwrap_or(false) {
+        args.push("--global".into());
+    }
+    args.push("--json".into());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_aster_json(&refs, repo_path.as_deref(), None, Vec::new()).await
+}
+
 /// `ASTER_BIN` always wins. A dev build runs the workspace CLI (never the sidecar,
 /// which dev doesn't stage); a release build uses the bundled sidecar, then PATH.
 fn resolve_bin() -> String {
@@ -869,6 +913,9 @@ pub fn run() {
             auth_status,
             save_provider,
             set_model,
+            config_list,
+            config_set,
+            config_unset,
             chat,
             answer_approval,
             cancel_chat,

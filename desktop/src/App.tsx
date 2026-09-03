@@ -1055,6 +1055,7 @@ function App() {
         onAddModel={onAddModel}
         analyzers={opts.analyzers}
         onToggleAnalyzer={onToggleAnalyzer}
+        repoPath={opts.repoPath}
         auth={auth}
         onSaveProvider={onSaveProvider}
       />

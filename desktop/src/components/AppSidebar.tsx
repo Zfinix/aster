@@ -9,6 +9,7 @@ import { checkForUpdate, installUpdate, type UpdateStage } from "../lib/updater"
 import type { Update } from "@tauri-apps/plugin-updater";
 import { Mark } from "./Mark";
 import { ReviewRow } from "./ReviewRow";
+import { ReviewSettings } from "./ReviewSettings";
 import { ChatIcon, ChevronIcon, CloseIcon, EditIcon, FolderIcon, GearIcon, MoonIcon, SidebarIcon, SunIcon } from "./icons";
 
 const CONFIDENCE_STEPS = [0, 0.25, 0.5, 0.75] as const;
@@ -36,6 +37,7 @@ interface Props {
   onAddModel: (value: string) => void;
   analyzers: string[];
   onToggleAnalyzer: (name: string, on: boolean) => void;
+  repoPath: string;
   auth: AuthStatus | null;
   onSaveProvider: (fields: {
     apiKey?: string;
@@ -148,6 +150,7 @@ export function AppSidebar(props: Props) {
         onAddModel={props.onAddModel}
         analyzers={props.analyzers}
         onToggleAnalyzer={props.onToggleAnalyzer}
+        repoPath={props.repoPath}
         auth={props.auth}
         onSaveProvider={props.onSaveProvider}
       />
@@ -168,6 +171,7 @@ function SettingsFoot({
   onAddModel,
   analyzers,
   onToggleAnalyzer,
+  repoPath,
   auth,
   onSaveProvider,
 }: {
@@ -183,6 +187,7 @@ function SettingsFoot({
   onAddModel: (value: string) => void;
   analyzers: string[];
   onToggleAnalyzer: (name: string, on: boolean) => void;
+  repoPath: string;
   auth: AuthStatus | null;
   onSaveProvider: (fields: {
     apiKey?: string;
@@ -272,7 +277,7 @@ function SettingsFoot({
               <div className="settings-title-text">
                 <span className="settings-title-name">Settings</span>
                 <span className="settings-title-sub">
-                  Provider, appearance &amp; analyzers
+                  Provider, appearance, analyzers &amp; code review
                 </span>
               </div>
             </div>
@@ -430,6 +435,7 @@ function SettingsFoot({
               </Switch>
             </div>
           </div>
+          <ReviewSettings repoPath={repoPath || null} />
           </div>
           </div>
           <div className="settings-foot">

@@ -193,6 +193,49 @@ export function persistModel(model: string): Promise<void> {
   return invoke("set_model", { model });
 }
 
+/** A resolved `aster config` value: YAML scalars keep their type, lists stay
+ *  arrays, and unset keys resolve to null. */
+export type ConfigValue = string | number | boolean | string[] | null;
+
+export interface ConfigEntry {
+  key: string;
+  value: ConfigValue;
+  source: string;
+  default?: ConfigValue;
+  kind?: string;
+}
+
+/** Every `aster config` key with its resolved value. Backs the settings UI. */
+export async function configList(
+  repoPath?: string | null,
+): Promise<ConfigEntry[]> {
+  const res = await invoke<{ ok: boolean; keys: ConfigEntry[] }>("config_list", {
+    repoPath: repoPath ?? null,
+  });
+  return res.keys ?? [];
+}
+
+/** Write one `aster.yaml` value. Empty clears the key back to its default. */
+export function configSet(
+  key: string,
+  value: string,
+  opts?: { repoPath?: string | null; global?: boolean },
+): Promise<unknown> {
+  if (!value.trim()) {
+    return invoke("config_unset", {
+      key,
+      repoPath: opts?.repoPath ?? null,
+      global: opts?.global ?? null,
+    });
+  }
+  return invoke("config_set", {
+    key,
+    value,
+    repoPath: opts?.repoPath ?? null,
+    global: opts?.global ?? null,
+  });
+}
+
 interface RunHandlers {
   onEvent: (event: StreamEvent) => void;
   onLog: (line: string) => void;
