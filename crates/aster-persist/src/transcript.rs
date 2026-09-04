@@ -33,6 +33,9 @@ pub struct SessionMeta {
     pub aster_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The schedule that started this session, when it was not a human.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
 }
 
 fn default_version() -> u32 {

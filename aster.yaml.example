@@ -12,6 +12,11 @@
 review:
   # Models (any OpenAI-compatible provider). `model` is the fallback used for a
   # stage that has no explicit override.
+  # Set `model: auto` to pick from OpenRouter's live benchmark rankings
+  # instead of a pinned id (OpenRouter endpoints only). The tier comes from
+  # ASTER_ROUTER_TIER (cheap | balanced | strong, default balanced); picks are
+  # cached for a day in ~/.aster/model-rankings.json. `aster model router`
+  # shows what each tier resolves to.
   model: openai/gpt-4o-mini
   # ChatGPT subscription instead of a key: `aster login codex`, then
   #   base_url: https://chatgpt.com/backend-api/codex
@@ -167,3 +172,15 @@ mcp:
       # loop inside one tool call.
       - "browser/browser_extract_content"
       - "browser/retry_with_browser_use_agent"
+
+# Scheduled agent runs, installed with `aster cron install` into the OS
+# scheduler (launchd on macOS, cron on Linux). Names are lowercase-hyphen and
+# unique; cron is a five-field expression in local time. `notify: true` posts
+# a native notification when the run finishes. One-shot reminders are simpler:
+# `aster remind "stand up" "in 30m"`.
+# schedules:
+#   - name: nightly-review
+#     cron: "0 9 * * *"
+#     agent: sentinel
+#     task: "review yesterday's commits on main"
+#     notify: true

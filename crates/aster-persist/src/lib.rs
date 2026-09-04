@@ -5,7 +5,9 @@ mod memory;
 mod transcript;
 
 pub use grants::GrantStore;
-pub use memory::{MemoryMeta, MemoryStore, PROJECT_MEMORY_FILE};
+pub use memory::{
+    MAX_INDEX_ENTRIES, MemoryJournalEntry, MemoryMeta, MemoryOp, MemoryStore, PROJECT_MEMORY_FILE,
+};
 pub use transcript::{
     EventUsage, EvictionEvent, MessageEvent, ReasoningRecord, SessionMeta, SessionTranscript,
     SessionWriter, SummaryEvent, TRANSCRIPT_VERSION, TitleEvent, TranscriptEvent,
@@ -86,6 +88,18 @@ impl Store {
         cwd: &Path,
         model: Option<String>,
     ) -> Result<SessionWriter> {
+        self.new_session_with_schedule(repo_root, cwd, model, None)
+    }
+
+    /// Like [`Self::new_session`], but tags the session with the schedule that
+    /// started it, so `aster sessions list` answers "what ran last night".
+    pub fn new_session_with_schedule(
+        &self,
+        repo_root: &Path,
+        cwd: &Path,
+        model: Option<String>,
+        schedule: Option<&str>,
+    ) -> Result<SessionWriter> {
         let id = Ulid::new().to_string();
         let meta = SessionMeta {
             id: id.clone(),
@@ -96,6 +110,7 @@ impl Store {
             model,
             aster_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             title: None,
+            schedule: schedule.map(str::to_string),
         };
         let path = self.sessions_dir(repo_root).join(format!("{id}.jsonl"));
         SessionWriter::create(path, meta)
@@ -128,6 +143,7 @@ impl Store {
             model,
             aster_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             title: None,
+            schedule: None,
         };
         SessionWriter::create(path, meta)
     }

@@ -10,6 +10,7 @@ fn writer(dir: &Path) -> SessionWriter {
         model: None,
         aster_version: None,
         title: None,
+        schedule: None,
     };
     SessionWriter::create(dir.join("s1.jsonl"), meta).unwrap()
 }

@@ -252,10 +252,12 @@ dependencies = [
  "aster-agents",
  "aster-ai",
  "aster-analyzers",
+ "aster-cron",
  "aster-eval",
  "aster-harness",
  "aster-lsp",
  "aster-mcp",
+ "aster-memory",
  "aster-models",
  "aster-mom",
  "aster-persist",
@@ -301,8 +303,20 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "unicode-width 0.2.0",
  "wiremock",
+]
+
+[[package]]
+name = "aster-cron"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]
@@ -369,6 +383,21 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "aster-memory"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "aster-ai",
+ "aster-persist",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
