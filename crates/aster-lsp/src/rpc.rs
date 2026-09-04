@@ -76,19 +76,24 @@ impl Transport {
         }
     }
 
-    /// The latest publishDiagnostics payload for `uri` once one arrives, or
-    /// None after `wait`.
+    /// The latest publishDiagnostics payload for `uri`, preferring a non-empty
+    /// batch: servers publish an empty one before analysis finishes. Falls
+    /// back to the latest batch at `wait` expiry, or None if nothing arrived.
     pub fn wait_diagnostics(&self, uri: &str, wait: Duration) -> Option<Value> {
         let deadline = Instant::now() + wait;
         loop {
             let inbox = self.inbox.lock().expect("inbox");
             if let Some((_, payload)) = inbox.diagnostics.iter().rev().find(|(u, _)| u == uri) {
-                return Some(payload.clone());
-            }
-            drop(inbox);
-            if Instant::now() > deadline {
+                let empty = payload["diagnostics"]
+                    .as_array()
+                    .is_none_or(|a| a.is_empty());
+                if !empty || Instant::now() > deadline {
+                    return Some(payload.clone());
+                }
+            } else if Instant::now() > deadline {
                 return None;
             }
+            drop(inbox);
             std::thread::sleep(POLL);
         }
     }
