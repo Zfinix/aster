@@ -1,6 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import type { McpServer } from "../../src/protocol";
-import { useDismiss } from "../lib/dismiss";
 import { post } from "../lib/host";
 import { redactSecrets } from "../lib/redact";
 
@@ -12,15 +11,10 @@ import { redactSecrets } from "../lib/redact";
 export function McpPicker({
   servers,
   onToggle,
-  onClose,
 }: {
   servers: McpServer[];
   onToggle: (name: string, disabled: boolean) => void;
-  onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDismiss(ref, onClose);
-
   // The config can change under us between openings, so the list is re-read
   // rather than cached from whenever the panel last loaded.
   useEffect(() => {
@@ -28,7 +22,7 @@ export function McpPicker({
   }, []);
 
   return (
-    <div className="picker" ref={ref} role="dialog" aria-label="MCP servers">
+    <div className="picker" role="dialog" aria-label="MCP servers">
       <div className="picker-head">MCP servers</div>
       {servers.length === 0 && (
         <div className="picker-empty">

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { Question } from "../lib/thread";
+import { Modal } from "./Modal";
 
 const letter = (index: number) => String.fromCharCode(65 + index);
 
@@ -37,8 +38,7 @@ export function QuestionPrompt({
   }, [question, onAnswer]);
 
   return (
-    <div className="question-overlay" role="dialog" aria-modal="true" aria-label={question.header}>
-      <div className="question">
+    <Modal label={question.header} className="question" align="bottom">
         <div className="question-head">{question.header}</div>
         <div className="question-body">{question.question}</div>
         <div className="question-options">
@@ -52,7 +52,6 @@ export function QuestionPrompt({
         <button className="link question-skip" onClick={() => onAnswer(null)}>
           Skip and let Aster decide
         </button>
-      </div>
-    </div>
+    </Modal>
   );
 }

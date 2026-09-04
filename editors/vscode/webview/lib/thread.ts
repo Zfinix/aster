@@ -1,5 +1,5 @@
 import type { Finding, UsageSummary } from "../../src/types";
-import type { ChatMessage, InfoRow } from "../../src/protocol";
+import type { ChatMessage, InfoRow, SetupInfo } from "../../src/protocol";
 
 export interface ToolCall {
   id: string;
@@ -142,6 +142,8 @@ export interface AssistantTurn {
   error?: boolean;
   /** Kept apart from `text` so a failure never erases the output that preceded it. */
   errorMsg?: string;
+  /** The turn never started: the endpoint needs a login or a key first. */
+  setup?: SetupInfo;
   /** Cancelled by the user, or abandoned because the host went idle mid-turn. */
   stopped?: boolean;
   edits?: string[];

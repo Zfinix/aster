@@ -109,6 +109,10 @@ function runCommand(command: string): void {
     dispatch({ type: "newConversation" });
     return;
   }
+  if (command === "aster.openSettings") {
+    void send({ type: "openSettings" });
+    return;
+  }
   const kind = command === "aster.reviewRange" ? "range" : command === "aster.reviewPr" ? "pr" : null;
   if (!kind) return;
   const value = window.prompt(

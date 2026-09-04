@@ -108,10 +108,10 @@ body {
 }
 
 /* The panel's spacing was set for a crowded editor sidebar. A page has room,
-   so rows, menus, and pickers breathe a little more. Doubled :root outranks
-   the panel's own tokens regardless of bundle order. */
+   so rows breathe a little more. The shell's own inset stays the panel's, since
+   the row radius is cut from it and must stay concentric with the corner.
+   Doubled :root outranks the panel's own tokens regardless of bundle order. */
 :root:root {
-  --pop-pad: 10px;
   --pop-row-pad: 6px 10px;
   --pop-row-pad-x: 10px;
   --pop-row-pad-y: 6px;

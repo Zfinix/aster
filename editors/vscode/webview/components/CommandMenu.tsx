@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useDismiss } from "../lib/dismiss";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useListNav } from "../lib/listnav";
 import { ChoiceSlider } from "./ChoiceSlider";
 
 /** One step of an inline dial, e.g. an effort level. */
@@ -39,6 +39,15 @@ export type MenuItem =
       options: MenuOption[];
       icon?: ReactNode;
       onSelect: (value: string) => void;
+    }
+  /** On or off, flipped in place like a choice. */
+  | {
+      kind: "toggle";
+      id: string;
+      label: string;
+      on: boolean;
+      icon?: ReactNode;
+      onToggle: (on: boolean) => void;
     };
 
 export interface MenuSection {
@@ -48,7 +57,7 @@ export interface MenuSection {
   limit?: number;
 }
 
-const KEYS = ["Escape", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter", "Tab"];
+const KEYS = ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter", "Tab"];
 
 /**
  * The panel's command surface: everything it can do, ranked against a query.
@@ -59,90 +68,77 @@ export function CommandMenu({
   sections,
   query,
   onRun,
-  onClose,
 }: {
   sections: MenuSection[];
   /** Non-null while the composer's own `/name` is the filter. */
   query: string | null;
   /** `complete` asks for the name in the box rather than the action run. */
   onRun: (item: MenuItem, complete: boolean) => void;
-  onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const activeRef = useRef<HTMLDivElement>(null);
   const [typed, setTyped] = useState("");
-  const [active, setActive] = useState(0);
   const driven = query !== null;
   const text = driven ? query : typed;
-  useDismiss(ref, onClose);
 
   useEffect(() => {
     if (!driven) inputRef.current?.focus();
   }, [driven]);
-  useEffect(() => setActive(0), [text]);
 
   const filtered = useMemo(() => rank(sections, text), [sections, text]);
   const flat = useMemo(() => filtered.flatMap((s) => s.items), [filtered]);
+
+  /** Enter on a choice steps to its next option and on a toggle flips it, so
+   *  the row is a control rather than a dead end; every other row runs. */
+  const { active, setActive, leave, onKey: navKey, seat } = useListNav<HTMLDivElement>({
+    count: flat.length,
+    resetOn: text,
+    tabCompletes: true,
+    onPick: (index, complete) => {
+      const item = flat[index];
+      if (item.kind === "choice") step(item, 1);
+      else if (item.kind === "toggle") item.onToggle(!item.on);
+      else onRun(item, complete);
+    },
+  });
   const current = flat[active];
 
-  useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: "nearest" });
-  }, [active]);
-
-  /** Enter on a choice steps to its next option, so the row is a control
-   *  rather than a dead end; every other row runs and closes. */
   const step = (item: Extract<MenuItem, { kind: "choice" }>, by: number) => {
     const at = item.options.findIndex((o) => o.value === item.value);
     const next = item.options[(at + by + item.options.length) % item.options.length];
     item.onSelect(next.value);
   };
 
-  const onKey = useCallback(
-    (e: KeyboardEvent | React.KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-        return;
-      }
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const by = e.key === "ArrowDown" ? 1 : -1;
-        setActive((i) => (flat.length ? (i + by + flat.length) % flat.length : 0));
-        return;
-      }
-      if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && current?.kind === "choice") {
-        e.preventDefault();
-        step(current, e.key === "ArrowRight" ? 1 : -1);
-        return;
-      }
-      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && current) {
-        e.preventDefault();
-        if (current.kind === "choice") {
-          step(current, 1);
-        } else {
-          onRun(current, e.key === "Tab");
-        }
-      }
-    },
-    [flat, current, onRun, onClose]
-  );
+  const onKey = (e: KeyboardEvent | React.KeyboardEvent) => {
+    if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && current?.kind === "choice") {
+      e.preventDefault();
+      step(current, e.key === "ArrowRight" ? 1 : -1);
+      return;
+    }
+    if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && current?.kind === "toggle") {
+      e.preventDefault();
+      current.onToggle(e.key === "ArrowRight");
+      return;
+    }
+    navKey(e);
+  };
 
   // Driven from the composer, the keyboard never leaves it: the menu reads the
   // keys it owns off the document before the textarea acts on them.
+  const keyRef = useRef(onKey);
+  keyRef.current = onKey;
   useEffect(() => {
     if (!driven) return;
     const handler = (e: KeyboardEvent) => {
-      if (KEYS.includes(e.key)) onKey(e);
+      if (KEYS.includes(e.key)) keyRef.current(e);
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
-  }, [driven, onKey]);
+  }, [driven]);
 
   let index = -1;
 
   return (
-    <div className="cmd" ref={ref} role="dialog" aria-label="Commands">
+    <div className="cmd" role="dialog" aria-label="Commands">
       {!driven && (
         <input
           ref={inputRef}
@@ -155,7 +151,7 @@ export function CommandMenu({
         />
       )}
 
-      <div className="cmd-list" role="listbox">
+      <div className="cmd-list" role="listbox" onMouseLeave={leave}>
         {flat.length === 0 && <div className="cmd-empty">No matching commands.</div>}
         {filtered.map((section) => (
           <div key={section.title ?? "top"} className="cmd-section">
@@ -163,17 +159,21 @@ export function CommandMenu({
             {section.items.map((item) => {
               index += 1;
               const at = index;
-              const seat = at === active ? activeRef : undefined;
               return item.kind === "choice" ? (
                 <div
                   key={item.id}
-                  ref={seat}
+                  ref={seat(at)}
                   className="cmd-row cmd-row-choice"
                   data-active={at === active}
                   onMouseEnter={() => setActive(at)}
                 >
                   <span className="cmd-icon">{item.icon}</span>
-                  <span className="cmd-label">{item.label}</span>
+                  <span className="cmd-body">
+                    <span className="cmd-label">{item.label}</span>
+                    <span className="cmd-detail">
+                      ({item.options.find((o) => o.value === item.value)?.label ?? item.value})
+                    </span>
+                  </span>
                   <ChoiceSlider
                     label={item.label}
                     options={item.options}
@@ -181,10 +181,28 @@ export function CommandMenu({
                     onSelect={item.onSelect}
                   />
                 </div>
+              ) : item.kind === "toggle" ? (
+                <div
+                  key={item.id}
+                  ref={seat(at)}
+                  className="cmd-row cmd-row-choice"
+                  data-active={at === active}
+                  onMouseEnter={() => setActive(at)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    item.onToggle(!item.on);
+                  }}
+                >
+                  <span className="cmd-icon">{item.icon}</span>
+                  <span className="cmd-label">{item.label}</span>
+                  <span className="switch" role="switch" aria-checked={item.on} aria-label={item.label}>
+                    <span className="switch-knob" />
+                  </span>
+                </div>
               ) : (
                 <div
                   key={item.id}
-                  ref={seat}
+                  ref={seat(at)}
                   className="cmd-row"
                   role="option"
                   aria-selected={at === active}

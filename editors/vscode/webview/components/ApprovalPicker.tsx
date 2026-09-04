@@ -1,13 +1,12 @@
-import { useRef, type ReactNode } from "react";
-import { useDismiss } from "../lib/dismiss";
+import type { ReactNode } from "react";
 import type { PermissionMode } from "../../src/protocol";
 import {
+  BoltIcon,
+  FireIcon,
   ListOrderedIcon,
   PencilIcon,
   ReviewIcon,
-  ShieldCheckIcon,
   ShieldIcon,
-  WarningIcon,
 } from "./icons";
 
 /**
@@ -39,7 +38,7 @@ const MODES: {
     mode: "auto",
     label: "Auto",
     detail: "Apply what passes the safety check, pause for anything risky",
-    icon: <ShieldCheckIcon />,
+    icon: <BoltIcon />,
   },
   {
     mode: "edit",
@@ -51,7 +50,7 @@ const MODES: {
     mode: "yolo",
     label: "Yolo",
     detail: "Unrestricted access to the internet and every file on this machine",
-    icon: <WarningIcon />,
+    icon: <FireIcon />,
     danger: true,
   },
 ];
@@ -67,11 +66,8 @@ export function ApprovalPicker({
   onClose: () => void;
   onReview: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDismiss(ref, onClose);
-
   return (
-    <div className="picker picker-modes" ref={ref} role="dialog" aria-label="Mode">
+    <div className="picker picker-modes" role="dialog" aria-label="Mode">
       <div className="picker-head">How should Aster&apos;s actions be approved?</div>
       {MODES.map((m) => (
         <button

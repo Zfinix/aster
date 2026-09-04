@@ -9,42 +9,48 @@ import type {
 } from "../../src/protocol";
 import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
 import { post } from "../lib/host";
+import { useListNav } from "../lib/listnav";
 import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
-import { modelShort } from "../lib/model";
-import { AddMenu } from "./AddMenu";
+import { modelChip, modelShort } from "../lib/model";
 import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicker";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
 import { McpPicker } from "./McpPicker";
 import { ModelMenu } from "./ModelMenu";
+import { Popover } from "./Popover";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
 import {
   ActivityIcon,
   AtIcon,
   BookIcon,
   BrainIcon,
-  CaretUpIcon,
   CloudIcon,
   CommandIcon,
   CubeIcon,
   DiffIcon,
+  FileIcon,
   GaugeIcon,
+  GearIcon,
   GitCommitIcon,
   GitPullRequestIcon,
   HistoryIcon,
+  ImageIcon,
   MinimizeIcon,
   NewChatIcon,
   PlugIcon,
+  PlusIcon,
   ReviewIcon,
   ShieldIcon,
   TrashIcon,
+  UploadIcon,
+  XIcon,
 } from "./icons";
 
 const MAX_ROWS = 10;
 
 /** Only one popup can occupy the slot above the composer. */
-type Menu = "none" | "commands" | "permission" | "settings" | "model" | "provider" | "mcp";
+type Menu = "none" | "add" | "commands" | "permission" | "settings" | "model" | "provider" | "mcp";
 
 /** Unfiltered, the skills list would bury every other action; the filter is one
  *  keystroke away, and the note says so. */
@@ -61,16 +67,31 @@ const ICONS: Record<string, ReactElement> = {
   effort: <GaugeIcon />,
   mode: <ShieldIcon />,
   review: <ReviewIcon />,
+  settings: <GearIcon />,
   "review-range": <GitCommitIcon />,
   "review-pr": <GitPullRequestIcon />,
   diff: <DiffIcon />,
   status: <ActivityIcon />,
   memory: <BrainIcon />,
+  thinking: <BrainIcon />,
   mcp: <PlugIcon />,
   skill: <BookIcon />,
 };
 
 const SKILLS_SHOWN = 5;
+
+const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+
+/** Past this a thumbnail is not worth holding in memory for a chip. */
+const MAX_THUMB_BYTES = 4 * 1024 * 1024;
+
+/** An image attached to the message: shown as a chip above the box rather
+ *  than as a mention in it, and sent as the mention the host handed back. */
+interface Attachment {
+  mention: string;
+  name: string;
+  thumb?: string;
+}
 
 export function Composer({
   busy,
@@ -140,17 +161,26 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  /** Bytes seen at paste time, by file name, so the chip the host's mention
+   *  produces can show the picture it stands for. */
+  const thumbs = useRef(new Map<string, string>());
   const [menu, setMenu] = useState<Menu>("none");
   /** Escape on a typed `/name` puts the menu away without taking the text with
    *  it; it comes back when the caret next lands on a fresh one. */
   const [dismissed, setDismissed] = useState(false);
-  const [active, setActive] = useState(0);
   /** True while a drag hovers the composer, so it reads as a drop target. */
   const [dropping, setDropping] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
+  const chipRef = useRef<HTMLButtonElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   /** `@basename` shown in the box -> `@full/path` actually sent. */
   const mentions = useRef(new Map<string, string>());
+  /** The level in force before thinking was switched off, so switching it back
+   *  on lands where it was rather than on the default. */
+  const lastEffort = useRef<Effort | null>(null);
+  if (effort !== "off") lastEffort.current = effort;
 
   /** The mirror paints the text, so it must follow the textarea's scroll or
    *  everything past the visible rows types blind. */
@@ -170,8 +200,6 @@ export function Composer({
   useEffect(() => {
     if (trigger) onSearchFiles(trigger.query);
   }, [trigger?.query]);
-
-  useEffect(() => setActive(0), [trigger?.query]);
 
   const typingCommand = triggers.command !== null;
   useEffect(() => {
@@ -198,9 +226,34 @@ export function Composer({
     [trigger, fileResults]
   );
 
+  const files = useListNav<HTMLButtonElement>({
+    count: suggestions.length,
+    resetOn: trigger?.query,
+    tabCompletes: true,
+    onPick: (index) => pick(suggestions[index]),
+  });
+
+  // Images go above the box as chips; everything else lands in the text as a
+  // mention, the way it always has.
   useEffect(() => {
     if (!insertText) return;
-    setText((prev) => (prev && !prev.endsWith(" ") ? `${prev} ${insertText} ` : `${prev}${insertText} `));
+    const words: string[] = [];
+    const pictures: Attachment[] = [];
+    for (const token of insertText.split(" ")) {
+      const picture = attachmentFor(token, thumbs.current);
+      if (picture) pictures.push(picture);
+      else if (token) words.push(token);
+    }
+    if (pictures.length) {
+      setAttachments((prev) => [
+        ...prev,
+        ...pictures.filter((p) => !prev.some((a) => a.mention === p.mention)),
+      ]);
+    }
+    if (words.length) {
+      const joined = words.join(" ");
+      setText((prev) => (prev && !prev.endsWith(" ") ? `${prev} ${joined} ` : `${prev}${joined} `));
+    }
     onInserted();
     requestAnimationFrame(() => areaRef.current?.focus());
   }, [insertText, onInserted]);
@@ -224,9 +277,14 @@ export function Composer({
    *  gives up bytes and a name, so it goes through the paste pipeline: the host
    *  matches it back to the workspace or writes it to storage. */
   const sendPasted = (files: File[]) =>
-    void Promise.all(files.map(readPasted)).then((pasted) =>
-      post({ type: "pasteFiles", files: pasted })
-    );
+    void Promise.all(files.map(readPasted)).then((pasted) => {
+      for (const file of pasted) {
+        if (file.data && file.type.startsWith("image/") && file.size <= MAX_THUMB_BYTES) {
+          thumbs.current.set(file.name, `data:${file.type};base64,${file.data}`);
+        }
+      }
+      post({ type: "pasteFiles", files: pasted.map(({ type: _type, ...rest }) => rest) });
+    });
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -286,11 +344,15 @@ export function Composer({
   // Sending while busy is allowed: App queues it and flushes when the run ends.
   const send = () => {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    onSend(expandMentions(trimmed, mentions.current));
+    if (!trimmed && attachments.length === 0) return;
+    const pictures = attachments.map((a) => a.mention).join(" ");
+    onSend([expandMentions(trimmed, mentions.current), pictures].filter(Boolean).join(" "));
     setText("");
     setCaret(0);
+    setAttachments([]);
   };
+
+  const canSend = text.trim().length > 0 || attachments.length > 0;
 
   const focusInput = (at?: number) =>
     requestAnimationFrame(() => {
@@ -392,6 +454,13 @@ export function Composer({
             icon: ICONS.mention,
             run: (rest: string) => compose("@", rest),
           },
+          {
+            kind: "action" as const,
+            id: "settings",
+            label: "Settings",
+            icon: ICONS.settings,
+            run: () => post({ type: "runCommand", command: "aster.openSettings" }),
+          },
         ],
       },
       {
@@ -407,6 +476,14 @@ export function Composer({
             value: effort ?? "",
             options: EFFORT_OPTIONS,
             onSelect: (value: string) => onEffort((value || null) as Effort | null),
+          },
+          {
+            kind: "toggle" as const,
+            id: "thinking",
+            label: "Thinking",
+            icon: ICONS.thinking,
+            on: effort !== "off",
+            onToggle: (on: boolean) => onEffort(on ? lastEffort.current : "off"),
           },
           opens("mode", "Mode…", "permission", permissionLabel(permissionMode)),
         ],
@@ -451,76 +528,89 @@ export function Composer({
     // The command menu reads its own keys off the document, ahead of this, so
     // Enter on a highlighted row must not also send the line.
     if (command) return;
-    if (suggestions.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActive((i) => (i + 1) % suggestions.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActive((i) => (i - 1 + suggestions.length) % suggestions.length);
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        pick(suggestions[active]);
-        return;
-      }
-    }
+    if (suggestions.length > 0 && files.onKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
     }
   };
 
+  /** One popup at a time, and one place that says which. */
+  const popup = menuOpen ? (
+    <CommandMenu sections={sections} query={command ? command.query : null} onRun={runItem} />
+  ) : menu === "add" ? (
+    <div className="picker" role="menu" aria-label="Add a file">
+      <button
+        className="picker-row"
+        role="menuitem"
+        onClick={() => {
+          closeMenu();
+          post({ type: "attachFiles" });
+        }}
+      >
+        <UploadIcon />
+        <span className="picker-body">
+          <span className="picker-label">Upload from this computer</span>
+        </span>
+      </button>
+      <button
+        className="picker-row"
+        role="menuitem"
+        onClick={() => {
+          setMenu("none");
+          compose("@");
+        }}
+      >
+        <FileIcon />
+        <span className="picker-body">
+          <span className="picker-label">Mention a file in this repo</span>
+        </span>
+      </button>
+    </div>
+  ) : menu === "permission" ? (
+    <ApprovalPicker
+      mode={permissionMode}
+      onSelect={onPermissionMode}
+      onClose={closeMenu}
+      onReview={onReview}
+    />
+  ) : menu === "settings" || menu === "model" || menu === "provider" ? (
+    <ModelMenu
+      pane={menu === "settings" ? null : menu}
+      model={model}
+      models={models}
+      recommended={recommended}
+      recent={recent}
+      loading={modelsLoading}
+      error={modelsError}
+      effort={effort}
+      providers={providers}
+      onSelect={onModel}
+      onRefresh={onRefreshModels}
+      onEffort={onEffort}
+      onProvider={onProvider}
+      onClose={closeMenu}
+    />
+  ) : menu === "mcp" ? (
+    <McpPicker servers={mcpServers} onToggle={onToggleMcp} />
+  ) : null;
+
+  const anchor =
+    menu === "add"
+      ? addRef
+      : menu === "settings" || menu === "model" || menu === "provider"
+        ? chipRef
+        : undefined;
+
   return (
     <div className="composer-wrap">
-      {/* A click meant for "put that away" should not also hit whatever was
-          under the popup, so it lands here instead. */}
-      {(menuOpen || menu !== "none") && <div className="scrim" onMouseDown={closeMenu} />}
-      {menu === "permission" && (
-        <ApprovalPicker
-          mode={permissionMode}
-          onSelect={onPermissionMode}
-          onClose={closeMenu}
-          onReview={onReview}
-        />
+      {popup ? (
+        <Popover onClose={closeMenu} anchor={anchor}>
+          {popup}
+        </Popover>
+      ) : (
+        <Autocomplete items={suggestions} active={files.active} onPick={pick} />
       )}
-      {(menu === "settings" || menu === "model" || menu === "provider") && (
-        <ModelMenu
-          pane={menu === "settings" ? null : menu}
-          model={model}
-          models={models}
-          recommended={recommended}
-          recent={recent}
-          loading={modelsLoading}
-          error={modelsError}
-          effort={effort}
-          providers={providers}
-          onSelect={onModel}
-          onRefresh={onRefreshModels}
-          onEffort={onEffort}
-          onProvider={onProvider}
-          onClose={closeMenu}
-        />
-      )}
-      {menuOpen && (
-        <CommandMenu
-          sections={sections}
-          query={command ? command.query : null}
-          onRun={runItem}
-          onClose={closeMenu}
-        />
-      )}
-      {menu === "mcp" && (
-        <McpPicker
-          servers={mcpServers}
-          onToggle={onToggleMcp}
-          onClose={closeMenu}
-        />
-      )}
-      {menu === "none" && <Autocomplete items={suggestions} active={active} onPick={pick} />}
 
       <div
         className="composer"
@@ -539,6 +629,32 @@ export function Composer({
         }}
         onDrop={onDrop}
       >
+        {attachments.length > 0 && (
+          <div className="composer-files">
+            {attachments.map((file) => (
+              <span key={file.mention} className="file-chip" title={file.mention}>
+                {file.thumb ? (
+                  <img className="file-chip-thumb" src={file.thumb} alt="" />
+                ) : (
+                  <span className="file-chip-glyph">
+                    <ImageIcon />
+                  </span>
+                )}
+                <span className="file-chip-name">{file.name}</span>
+                <button
+                  className="ghost file-chip-remove"
+                  onClick={() =>
+                    setAttachments((prev) => prev.filter((a) => a.mention !== file.mention))
+                  }
+                  title="Remove"
+                  aria-label={`Remove ${file.name}`}
+                >
+                  <XIcon />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="input-wrap">
           <div className="input-mirror" aria-hidden="true" ref={mirrorRef}>
             {renderMentions(text)}
@@ -560,7 +676,17 @@ export function Composer({
           />
         </div>
         <div className="composer-foot">
-          <AddMenu onUpload={() => post({ type: "attachFiles" })} onMention={() => compose("@")} />
+          <button
+            ref={addRef}
+            className="ghost foot-btn"
+            onMouseDown={toggle("add")}
+            title="Add a file"
+            aria-label="Add a file"
+            aria-haspopup="menu"
+            aria-expanded={menu === "add"}
+          >
+            <PlusIcon />
+          </button>
 
           <button
             className="ghost foot-btn"
@@ -573,12 +699,24 @@ export function Composer({
             <CommandIcon />
           </button>
 
+          <button
+            ref={chipRef}
+            className="ghost model-btn"
+            onMouseDown={toggle("settings")}
+            title={effort ? `${model ?? "Model"} · ${effort} effort` : (model ?? "Model")}
+            aria-haspopup="menu"
+            aria-expanded={menu === "settings"}
+          >
+            <span className="model-label">{modelChip(model)}</span>
+            {effort && <span className="model-effort">{effortShort(effort)}</span>}
+          </button>
+
           <ContextMeter used={contextUsed} budget={contextBudget} onCompact={() => onCommand("compact")} />
 
           <span className="grow" />
 
           <button
-            className="ghost"
+            className="ghost mode-btn"
             onMouseDown={toggle("permission")}
             title="Mode"
             aria-expanded={menu === "permission"}
@@ -587,28 +725,13 @@ export function Composer({
             {permissionLabel(permissionMode)}
           </button>
 
-          <button
-            className="ghost model-btn"
-            onMouseDown={toggle("settings")}
-            // The chip is a hover target, not a hunt: pointing at it opens the
-            // menu, the way the mode rows open their lists.
-            onMouseEnter={() => menu === "none" && !menuOpen && setMenu("settings")}
-            title={effort ? `${model ?? "Model"} · ${effort} effort` : (model ?? "Model")}
-            aria-haspopup="menu"
-            aria-expanded={menu === "settings"}
-          >
-            <span className="model-label">{modelShort(model)}</span>
-            {effort && <span className="model-effort">{effortShort(effort)}</span>}
-            <CaretUpIcon open={menu === "settings"} />
-          </button>
-
           {/* One button whose glyph morphs between send and stop, so the swap
               reads as the same control changing job rather than a re-render.
               Queueing a follow-up mid-run stays on Enter. */}
           <button
             className={busy ? "send stop" : "send"}
             onClick={busy ? onCancel : send}
-            disabled={!busy && !text.trim()}
+            disabled={!busy && !canSend}
             title={busy ? "Stop" : "Send"}
             aria-label={busy ? "Stop" : "Send"}
           >
@@ -667,9 +790,22 @@ function fileUris(data: DataTransfer): string[] {
  *  host still gets the name and can match it against the workspace. */
 const MAX_PASTE_BYTES = 10 * 1024 * 1024;
 
-async function readPasted(file: File): Promise<PastedFile> {
+/**
+ * A pasted image comes back from the host as `@<stamp>-<name>` (or a repo
+ * path when it matched a file there). Both become a chip named for the file,
+ * with the pasted bytes as its picture when they were seen on the way out.
+ */
+function attachmentFor(token: string, thumbs: Map<string, string>): Attachment | null {
+  if (!token.startsWith("@") || token.includes("#") || !IMAGE.test(token)) return null;
+  const base = basename(token.slice(1));
+  const unstamped = base.replace(/^[0-9a-z]{6,10}-/, "");
+  const name = thumbs.has(unstamped) ? unstamped : base;
+  return { mention: token, name, thumb: thumbs.get(name) };
+}
+
+async function readPasted(file: File): Promise<PastedFile & { type: string }> {
   if (file.size > MAX_PASTE_BYTES) {
-    return { name: file.name, size: file.size };
+    return { name: file.name, size: file.size, type: file.type };
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
@@ -677,7 +813,7 @@ async function readPasted(file: File): Promise<PastedFile> {
   for (let at = 0; at < bytes.length; at += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   }
-  return { name: file.name, data: btoa(binary), size: file.size };
+  return { name: file.name, data: btoa(binary), size: file.size, type: file.type };
 }
 
 function basename(path: string): string {

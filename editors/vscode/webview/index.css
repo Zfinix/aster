@@ -20,14 +20,16 @@
   /* One geometry for everything that opens over the panel: the command menu,
      every picker, and the modals. Spacing that is merely similar drifts, so
      these are the only values those surfaces are allowed to use. */
-  --pop-pad: var(--s2);
+  --pop-pad: var(--s1);
   --pop-row-pad: 4px var(--s2);
   /* Split, for the rows that pad an inner button instead of themselves. */
   --pop-row-pad-x: var(--s2);
   --pop-row-pad-y: 4px;
   --pop-row-gap: 2px;
   --pop-section-gap: var(--s3);
-  --pop-radius: var(--radius-lg);
+  /* Concentric with the shell: its radius less the padding between them, so
+     a highlighted row's corner runs parallel to the corner around it. */
+  --pop-radius: calc(var(--radius-xl) - var(--pop-pad));
   /* The header or search strip a dialog wears above its list. */
   --pop-head-pad: var(--s2) var(--s3);
 }
@@ -711,6 +713,51 @@ code {
   font-size: var(--mono-size);
   color: var(--fg-dim);
   line-height: 1.45;
+}
+
+/* The turn never started: no key and no login for the endpoint. */
+.setup-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  max-width: 100%;
+  text-align: left;
+}
+
+.setup-card-title {
+  font-weight: 600;
+}
+
+.setup-card-body,
+.setup-card-hint {
+  color: var(--fg);
+  line-height: 1.45;
+}
+
+.setup-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.setup-card-log {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.setup-card-ok {
+  color: var(--fg);
+}
+
+.setup-card-failed {
+  color: var(--sev-critical);
 }
 
 .turn-stopped {
@@ -2135,29 +2182,49 @@ code {
 }
 
 /* Modal to the turn: dims the thread and pins the card just above the composer. */
-.question-overlay {
+/* Modals */
+
+/* One ground for everything that covers the thread. Dropped from the top for
+   something typed into, centred for something read, and at the foot for a
+   question over the turn that asked it. */
+.modal-overlay {
   position: absolute;
   inset: 0;
   z-index: 100;
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: center;
+  padding: 10vh var(--s2) var(--s2);
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.modal-overlay[data-align="center"] {
+  align-items: center;
+  padding: var(--s4) var(--s3);
+}
+
+.modal-overlay[data-align="bottom"] {
+  align-items: flex-end;
   padding: var(--s4) var(--s4) var(--s2);
-  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--vscode-editorWidget-background, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
 }
 
 .question {
-  display: flex;
-  flex-direction: column;
   gap: var(--s3);
   width: min(560px, 100%);
   max-height: 80vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--s4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
 
 .question-head {
@@ -2912,15 +2979,27 @@ code {
 
 /*
  * The focus ring carries the permission mode, so the box you type into tells
- * you what it is allowed to do: neutral for plan/manual, red while edits apply
- * unattended, dimmed when the repo's policy denies them outright.
+ * you what it is allowed to do: the theme's own border for plan/manual, green
+ * while the turn runs on its own, red while edits apply unattended.
  */
 .composer {
-  --ring: var(--vscode-focusBorder);
+  --ring: var(--border);
   --send: var(--vscode-button-background);
 }
 
-.composer[data-permission-mode="auto"],
+.composer[data-permission-mode="auto"] {
+  --ring: var(--mode-auto);
+  --send: var(--mode-auto);
+}
+
+.composer[data-permission-mode="auto"] .mode-btn {
+  color: var(--mode-auto);
+}
+
+.composer[data-permission-mode="auto"] .send {
+  color: #0b1f14;
+}
+
 .composer[data-permission-mode="edit"] {
   --ring: var(--sev-critical);
   --send: var(--sev-critical);
@@ -2938,7 +3017,7 @@ code {
 }
 
 .composer[data-permission-mode="plan"] {
-  --ring: var(--fg-dim);
+  --ring: var(--border);
 }
 
 .composer:focus-within {
@@ -2948,11 +3027,69 @@ code {
     0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
+/* Pictures attached to the message sit above the text as chips, so the box
+   holds words and the chips hold files, and neither crowds the other. */
+.composer-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin: var(--s3) var(--s3) 0;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  height: 26px;
+  max-width: 100%;
+  padding: 0 2px 0 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg);
+  font-size: 0.9em;
+}
+
+.file-chip-thumb,
+.file-chip-glyph {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius);
+  object-fit: cover;
+}
+
+.file-chip-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+}
+
+.file-chip-name {
+  min-width: 0;
+  padding-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  justify-content: center;
+}
+
+.file-chip-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
 /* Margin, not padding: the mirror is inset against this box, so anything that
    moves its edges moves the painted text off the caret. */
 .input-wrap {
   position: relative;
-  margin: var(--s2) var(--s2) 0;
+  margin: var(--s3) var(--s3) 0;
 }
 
 /*
@@ -3022,10 +3159,9 @@ code {
 .composer-foot {
   display: flex;
   align-items: center;
-  gap: 2px;
-  margin-top: var(--s2);
-  padding: var(--s1);
-  border-top: 1px solid var(--border);
+  gap: var(--s1);
+  margin-top: var(--s3);
+  padding: 0 var(--s2) var(--s2);
   min-width: 0;
 }
 
@@ -3034,58 +3170,39 @@ code {
 .foot-btn {
   flex: none;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   padding: 0;
 }
 
-.add {
-  position: relative;
-  flex: none;
+/* Pressed means pressed: the control gives a little under the pointer. */
+.foot-btn,
+.model-btn,
+.mode-btn {
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.add-menu {
-  position: absolute;
-  bottom: calc(100% + var(--s1));
-  left: 0;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  min-width: 210px;
-  gap: var(--pop-row-gap);
-  padding: var(--pop-pad);
-  border: 1px solid var(--vscode-menu-border, var(--border));
-  border-radius: var(--radius-lg);
-  background: var(--vscode-menu-background, var(--surface));
-  color: var(--vscode-menu-foreground, var(--fg));
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
-  animation: popupIn 0.12s ease-out;
+.foot-btn:active,
+.model-btn:active,
+.mode-btn:active,
+.send:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
-.add-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  width: 100%;
-  padding: var(--pop-row-pad);
-  font: inherit;
-  text-align: left;
-  white-space: nowrap;
-  color: inherit;
-  background: none;
-  border: none;
-  border-radius: var(--pop-radius);
-  cursor: pointer;
-}
-
-.add-row:hover {
-  background: var(--vscode-menu-selectionBackground, var(--list-hover));
-  color: var(--vscode-menu-selectionForeground, var(--fg));
-}
-
+/* A chip, not a button: the model reads as a fact about the message, filled
+   so it sits apart from the glyph buttons beside it. */
 .model-btn {
+  flex: none;
   max-width: 45%;
-  font-size: 0.9em;
+  height: 24px;
+  padding: 0 var(--s3);
+  border-radius: 999px;
+  color: var(--fg);
+  background: var(--code-bg-strong);
+}
+
+.model-btn:hover:not(:disabled) {
+  background: var(--hover);
 }
 
 .model-label {
@@ -3096,7 +3213,27 @@ code {
 
 .model-effort {
   flex: none;
-  opacity: 0.6;
+  color: var(--fg-dim);
+}
+
+.mode-btn {
+  flex: none;
+  height: 28px;
+  padding: 0 var(--s2);
+}
+
+/* Set with the text it sits beside, at the glyph size the thread uses. */
+.mode-btn svg {
+  width: var(--glyph);
+  height: var(--glyph);
+}
+
+/* The foot's glyph buttons answer a hover by brightening, never by a fill:
+   the chip beside them is the one thing on the row that carries a fill. */
+.foot-btn:hover:not(:disabled),
+.mode-btn:hover:not(:disabled) {
+  background: none;
+  color: var(--fg);
 }
 
 /* A dial rather than a number: the exact figure only matters near the end, and
@@ -3216,14 +3353,16 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--pop-radius);
   cursor: pointer;
   color: var(--vscode-button-foreground);
   background: var(--send, var(--vscode-button-background));
-  transition: filter 0.15s ease;
+  transition:
+    filter 0.15s ease,
+    transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .send:hover:not(:disabled) {
@@ -3239,20 +3378,45 @@ code {
   background: var(--vscode-errorForeground);
 }
 
-/* Approval picker */
+/* Popups */
 
-/* Popups grow out of the composer they belong to, so they rise from its edge
-   rather than appearing whole, and stand off it rather than sitting on it. */
+/* The one slot above the composer. Popups grow out of the box they belong to,
+   so they rise from its edge rather than appearing whole. Anchored, a panel
+   hangs off the button that opened it and keeps its own width. */
+.pop {
+  position: absolute;
+  bottom: 100%;
+  left: var(--s3);
+  right: var(--s3);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  animation: popupIn 0.12s ease-out;
+}
+
+.pop[data-anchored="true"] {
+  align-items: flex-start;
+}
+
+.pop > * {
+  transform-origin: bottom center;
+}
+
+.pop[data-anchored="true"] > * {
+  transform-origin: bottom left;
+}
+
+/* Grows from the edge it hangs off, never from nothing. */
 @keyframes popupIn {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(4px) scale(0.98);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .picker,
-  .cmd {
+  .pop {
     animation: none;
   }
 }
@@ -3260,23 +3424,18 @@ code {
 /* One menu that changes shape: the chip opens three rows, and the row under
    the pointer slides its list out beside them. */
 .model-menu {
-  position: absolute;
-  bottom: 100%;
-  right: var(--s3);
-  z-index: 10;
   display: flex;
   align-items: flex-end;
   gap: var(--s2);
   /* Sized to the rows and the list beside them, not to the composer: this is a
      menu hanging off the chip, not a sheet. */
-  width: min(518px, calc(100% - 2 * var(--s3)));
+  width: 528px;
+  max-width: 100%;
 }
 
 .model-menu > .model-root {
-  position: static;
   flex: 0 0 auto;
-  width: 230px;
-  animation: popupIn 0.12s ease-out;
+  width: 240px;
 }
 
 /* The label names the row and always fits; it is the value beside it that
@@ -3299,11 +3458,13 @@ code {
    the icon at the size the mode picker settled on. Centered, unlike the
    generic picker row, so the Effort row's taller slider cannot pin its glyph
    to the top while the text-height rows centre theirs. */
-.model-row {
+.picker-row.model-row {
   align-items: center;
 }
 
-.model-row > svg {
+/* Doubled to outweigh the generic row's top margin, which is set for glyphs
+   that hang off a two-line body; here the glyph is centred on one line. */
+.picker-row.model-row > svg {
   margin-top: 0;
   width: 16px;
   height: 16px;
@@ -3318,7 +3479,7 @@ code {
   min-width: 0;
   overflow: hidden;
   opacity: 0;
-  transform: translateX(6px);
+  transform: translateX(-6px);
   pointer-events: none;
   transition:
     height 0.18s cubic-bezier(0.2, 0.8, 0.2, 1),
@@ -3342,7 +3503,6 @@ code {
 
 .model-flyout-inner > .picker,
 .model-flyout-inner > .cmd {
-  position: static;
   width: 100%;
   max-height: 300px;
 }
@@ -3370,20 +3530,15 @@ code {
 }
 
 .picker {
-  position: absolute;
   display: flex;
   flex-direction: column;
   gap: var(--pop-row-gap);
-  bottom: 100%;
-  left: var(--s3);
-  right: var(--s3);
-  z-index: 10;
-  animation: popupIn 0.12s ease-out;
   max-height: 320px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--pop-pad);
   border: 1px solid var(--vscode-menu-border, var(--border));
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--vscode-menu-background, var(--surface));
   color: var(--vscode-menu-foreground, var(--fg));
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
@@ -3564,17 +3719,11 @@ code {
    shell with the pickers, but owns its own rows because they carry a current
    value and, for a setting, the control that changes it. */
 .cmd {
-  position: absolute;
-  bottom: 100%;
-  left: var(--s3);
-  right: var(--s3);
-  z-index: 10;
   display: flex;
   flex-direction: column;
-  animation: popupIn 0.12s ease-out;
   max-height: min(45vh, 320px);
   border: 1px solid var(--vscode-menu-border, var(--border));
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--vscode-menu-background, var(--surface));
   color: var(--vscode-menu-foreground, var(--fg));
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
@@ -3594,6 +3743,7 @@ code {
 
 .cmd-list {
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--pop-pad);
 }
 
@@ -3688,76 +3838,149 @@ code {
   cursor: default;
 }
 
-/* A ladder as a row of dots in a track: the setting reads as a position, so
-   the eye lands on where it sits rather than on five words to compare. */
+/* A knob on a track of stops: the setting reads as a position, and moving it
+   is a slide rather than a swap, so the eye follows the value across. */
 .slider {
+  --slider-step: 13px;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--s2);
   flex: none;
   height: 18px;
-  padding: 0 var(--s2);
+  padding: 0 var(--s1);
   border-radius: 999px;
   background: var(--code-bg);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
 }
 
-.slider-dot {
+.slider-stop {
+  position: relative;
   flex: none;
-  width: 5px;
-  height: 5px;
+  width: var(--slider-step);
+  height: 100%;
   padding: 0;
   border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.slider-stop::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--fg-dim);
   opacity: 0.55;
-  cursor: pointer;
-  transition:
-    width 0.14s cubic-bezier(0.2, 0.8, 0.2, 1),
-    height 0.14s cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 0.14s ease-out;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.14s ease-out;
 }
 
-.slider-dot:hover {
+.slider-stop:hover::before {
   opacity: 1;
 }
 
 /* The far end of the dial carries its own color, so the most expensive step is
    marked before it is chosen. */
-.slider-dot[data-top="true"] {
+.slider-stop[data-top="true"]::before {
   background: var(--vscode-charts-purple, #c586c0);
   opacity: 0.8;
 }
 
-.slider-dot[data-on="true"] {
-  width: 12px;
-  height: 12px;
-  background: var(--fg);
-  opacity: 1;
+.slider-stop[data-on="true"]::before {
+  opacity: 0;
 }
 
-.slider-dot[data-on="true"][data-top="true"] {
-  background: var(--vscode-charts-purple, #c586c0);
+.slider-stop:focus-visible {
+  outline: none;
 }
 
-.slider-dot:focus-visible {
+.slider:has(.slider-stop:focus-visible) .slider-knob {
   outline: 1px solid var(--vscode-focusBorder, var(--fg));
   outline-offset: 2px;
 }
 
+.slider-knob {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--s1) + var(--at) * var(--slider-step) + var(--slider-step) / 2);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: left 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.16s ease-out;
+}
+
+.slider-knob[data-top="true"] {
+  background: var(--vscode-charts-purple, #c586c0);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .slider-dot {
+  .slider-stop::before,
+  .slider-knob {
     transition: none;
   }
 }
 
-.cmd-row-choice .slider {
+.cmd-row-choice .slider,
+.cmd-row-choice .switch {
   margin-left: auto;
+}
+
+/* On or off in one glance: the knob's side says it before the colour does. */
+.switch {
+  flex: none;
+  display: block;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg-strong);
+  transition: background 120ms ease;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--vscode-button-background, var(--vscode-focusBorder));
+  border-color: transparent;
+}
+
+.switch-knob {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg);
+  transition: transform 120ms ease;
+}
+
+.switch[aria-checked="true"] .switch-knob {
+  background: var(--vscode-button-foreground, #fff);
+  transform: translateX(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch,
+  .switch-knob {
+    transition: none;
+  }
 }
 
 /* The effort dial sits on its row in the model menu, the way choice rows do
    in the command menu: no pane of its own. */
-.model-row-choice {
+/* The dial's row is a label, not a control: no highlight, since nothing on
+   the row but the dial answers a click. */
+.picker-row.model-row-choice,
+.picker-row.model-row-choice:hover {
   cursor: default;
+  background: none;
+  color: inherit;
 }
 
 .model-row-choice .slider {
@@ -3778,7 +4001,7 @@ code {
   font: inherit;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-focusBorder, var(--border));
+  border: 1px solid var(--border);
   border-radius: var(--pop-radius);
 }
 
@@ -3816,51 +4039,25 @@ body.vscode-high-contrast-light .sh {
 
 /* History panel */
 
-.history-overlay,
-.info-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 10vh var(--s2) var(--s2);
-  background: rgba(0, 0, 0, 0.4);
-}
-
-/* Centred, not dropped from the top like the palette: this one is read, not
-   typed into. */
-.info-overlay {
-  align-items: center;
-  padding: var(--s4) var(--s3);
-}
-
 /* A question about the session, answered over it: the thread stays where it
    was, and closing the modal leaves no record of the detour. */
 .info-modal {
   width: min(560px, 100%);
   max-height: 72vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--vscode-editorWidget-background, var(--bg));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
 }
 
-.info-modal[data-error="true"] {
+.info-modal-error {
   border-color: var(--sev-critical);
 }
 
 /* A document is read top to bottom rather than glanced at, so it gets a wider
    column and more of the screen than a card's worth of output needs. */
-.info-modal[data-doc="true"] {
+.info-modal-doc {
   width: min(760px, 100%);
   max-height: 84vh;
 }
 
-.info-modal[data-doc="true"] .info-modal-body {
+.info-modal-doc .info-modal-body {
   padding: 0 var(--s5) var(--s5);
 }
 
@@ -3876,18 +4073,19 @@ body.vscode-high-contrast-light .sh {
   gap: var(--s2);
   padding: 0 var(--s3) var(--s3);
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .history-panel {
   width: min(460px, 100%);
   max-height: 68vh;
+}
+
+/* The key listener's box, which must not break the panel's column. */
+.history-keys {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  background: var(--vscode-editorWidget-background, var(--bg));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
+  min-height: 0;
 }
 
 /* One line a row, so the eye runs down titles instead of stepping over a
@@ -3930,6 +4128,7 @@ body.vscode-high-contrast-light .sh {
   flex-direction: column;
   gap: var(--pop-row-gap);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--pop-pad);
 }
 
@@ -4025,7 +4224,7 @@ body.vscode-high-contrast-light .sh {
   font: inherit;
   color: var(--fg);
   background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-focusBorder);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   outline: none;
 }

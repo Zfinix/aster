@@ -1,6 +1,6 @@
 import { exec } from "child_process";
 import { runCli } from "./asterCli";
-import { ApiKey, ChatMessage, InfoRow, McpServer, Provider, TranscriptTurn } from "./protocol";
+import { ApiKey, ChatMessage, InfoRow, McpServer, Provider, SetupInfo, TranscriptTurn } from "./protocol";
 
 /** `aster <args> --json`, parsed. Throws with the CLI's own error when it fails,
  *  since `--json` turns those into `{ok: false, error}` rather than stderr.
@@ -118,10 +118,24 @@ export async function currentModel(cwd: string): Promise<string | null> {
   return parsed.model ?? null;
 }
 
-/** Whether any var that could hold the current endpoint's key is set. */
-export async function hasKey(cwd: string): Promise<boolean> {
-  const parsed = await json<{ vars?: { var: string; source: string }[] }>(["config", "key"], cwd);
+interface KeyStatus {
+  configured?: boolean;
+  setup?: SetupInfo | null;
+  vars?: { var: string; source: string }[];
+}
+
+/** Whether the current endpoint has a key or a login. Older CLIs report only
+ *  the vars, which misses a ChatGPT login; the newer `configured` flag wins. */
+export async function hasKey(cwd: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
+  const parsed = await json<KeyStatus>(["config", "key"], cwd, env);
+  if (typeof parsed.configured === "boolean") return parsed.configured;
   return (parsed.vars ?? []).some((v) => v.source !== "unset");
+}
+
+/** The login or key the endpoint still needs; null once it has one. */
+export async function setupNeeded(cwd: string, env?: NodeJS.ProcessEnv): Promise<SetupInfo | null> {
+  const parsed = await json<KeyStatus>(["config", "key"], cwd, env);
+  return parsed.setup ?? null;
 }
 
 /** Every key Aster reads, set or not, masked. Values never travel here. */

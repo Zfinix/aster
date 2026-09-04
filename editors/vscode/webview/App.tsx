@@ -8,6 +8,7 @@ import type {
   Provider,
   ReviewSource,
   SessionSummary,
+  SetupInfo,
   SkillCommand,
   ToWebview,
 } from "../src/protocol";
@@ -18,6 +19,7 @@ import { InfoModal } from "./components/InfoModal";
 import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { onHostMessage, persist, post, restore } from "./lib/host";
+import { type LoginState, loginLine } from "./lib/login";
 import { modelShort } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
 import {
@@ -67,11 +69,13 @@ interface Init {
   contextBudget: number;
   binaryOk: boolean;
   skills: SkillCommand[];
+  setup: SetupInfo | null;
 }
 
 export function App() {
   const saved = restore<Persisted>();
   const [init, setInit] = useState<Init | null>(null);
+  const [login, setLogin] = useState<LoginState | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("edit");
   const [effort, setEffort] = useState<Effort | null>(null);
   const [turns, setTurns] = useState<Turn[]>(() => hydrate(saved?.turns));
@@ -171,6 +175,7 @@ export function App() {
           contextBudget: message.contextBudget,
           binaryOk: message.binaryOk,
           skills: message.skills,
+          setup: message.setup ?? null,
         });
         setPermissionMode(message.permissionMode);
         setEffort(message.effort);
@@ -180,6 +185,14 @@ export function App() {
       case "chatEvent":
         if (activeRef.current !== message.id) break;
         applyChatEvent(message.id, message.event);
+        break;
+
+      case "loginOutput":
+        setLogin((prev) => loginLine(prev, message.line));
+        break;
+
+      case "loginDone":
+        setLogin((prev) => ({ ...(prev ?? { lines: [] }), done: true, ok: message.ok, message: message.message }));
         break;
 
       case "chatError":
@@ -516,9 +529,13 @@ export function App() {
       case "error":
         activeRef.current = null;
         setBusy(false);
+        if (event.setup) {
+          setLogin(null);
+        }
         patchAssistant(id, (turn) => ({
           ...turn,
           errorMsg: event.message,
+          setup: event.setup,
           pending: false,
           error: true,
           approval: undefined,
@@ -714,11 +731,14 @@ export function App() {
           repoName={init?.repoName ?? null}
           branch={init?.branch ?? null}
           binaryOk={init?.binaryOk ?? true}
+          setup={init?.setup ?? null}
+          login={login}
         />
       ) : (
         <Thread
           turns={turns}
           queued={queued}
+          login={login}
           onApproval={answerApproval}
           onRedirect={redirectApproval}
           onAnswer={(choice) => {

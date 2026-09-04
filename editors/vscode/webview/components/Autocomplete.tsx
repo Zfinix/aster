@@ -23,7 +23,8 @@ export function Autocomplete({
     return null;
   }
   return (
-    <div className="picker" role="listbox">
+    <div className="pop">
+      <div className="picker" role="listbox">
       {items.map((item, i) => (
         <button
           key={item.value}
@@ -44,6 +45,7 @@ export function Autocomplete({
           </span>
         </button>
       ))}
+      </div>
     </div>
   );
 }

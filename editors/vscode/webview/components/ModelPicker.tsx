@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useDismiss } from "../lib/dismiss";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useListNav } from "../lib/listnav";
 import { modelShort } from "../lib/model";
 
 interface Row {
@@ -25,7 +25,6 @@ export function ModelPicker({
   onSelect,
   onRefresh,
   onClose,
-  boundary,
 }: {
   model: string | null;
   models: string[];
@@ -36,22 +35,14 @@ export function ModelPicker({
   onSelect: (model: string) => void;
   onRefresh: () => void;
   onClose: () => void;
-  /** What counts as "inside" for a click: the pane this picker shares with the
-   *  effort and provider rail, when it has one. */
-  boundary?: RefObject<HTMLElement | null>;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
-  useDismiss(boundary ?? ref, onClose);
 
   useEffect(() => {
     inputRef.current?.focus();
     onRefresh();
   }, []);
-
-  useEffect(() => setActive(0), [query]);
 
   const typed = query.trim();
 
@@ -93,18 +84,11 @@ export function ModelPicker({
     onClose();
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const by = e.key === "ArrowDown" ? 1 : -1;
-      setActive((i) => (i + by + options.length) % options.length);
-      return;
-    }
-    if (e.key === "Enter" && options[active] !== undefined) {
-      e.preventDefault();
-      choose(options[active]);
-    }
-  };
+  const { active, setActive, leave, onKey, seat } = useListNav<HTMLButtonElement>({
+    count: options.length,
+    resetOn: query,
+    onPick: (index) => choose(options[index]),
+  });
 
   // Rows are numbered as they render, so the arrow keys walk what the eye sees
   // rather than a list assembled somewhere else.
@@ -118,6 +102,7 @@ export function ModelPicker({
     return (
       <button
         key={key}
+        ref={seat(at)}
         className="picker-row"
         role="menuitemradio"
         aria-checked={checked}
@@ -147,7 +132,7 @@ export function ModelPicker({
   };
 
   return (
-    <div className="cmd" ref={ref} role="dialog" aria-label="Model">
+    <div className="cmd" role="dialog" aria-label="Model">
       <input
         ref={inputRef}
         className="cmd-filter"
@@ -155,10 +140,10 @@ export function ModelPicker({
         spellCheck={false}
         value={query}
         onChange={(e) => setQuery(e.currentTarget.value)}
-        onKeyDown={onKeyDown}
+        onKeyDown={onKey}
       />
 
-      <div className="cmd-list" role="listbox">
+      <div className="cmd-list" role="listbox" onMouseLeave={leave}>
         {error && <div className="cmd-note">{error}</div>}
 
         {!typed && <div className="cmd-section">{row(null, "default")}</div>}

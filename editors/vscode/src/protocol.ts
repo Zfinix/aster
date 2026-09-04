@@ -18,6 +18,15 @@ export type ReviewSource =
   | { kind: "range"; value: string }
   | { kind: "pr"; value: string };
 
+/** What the CLI needs before it can answer: a browser login for the endpoint
+ *  when one exists, else an API key in one of `key_vars`. */
+export interface SetupInfo {
+  provider: string;
+  base_url: string;
+  login: "codex" | "openrouter" | "zai" | null;
+  key_vars: string[];
+}
+
 /** One line of `aster chat --stream` output. */
 export type ChatStreamEvent =
   /** One streamed content delta, appended as it arrives. */
@@ -75,7 +84,8 @@ export type ChatStreamEvent =
   | { type: "notice"; message: string }
   /** A queued user message the running turn absorbed at a round boundary. */
   | { type: "injected"; content: string }
-  | { type: "error"; message: string };
+  /** `setup` is present when the turn never started for lack of credentials. */
+  | { type: "error"; message: string; setup?: SetupInfo };
 
 export interface SessionSummary {
   id: string;
@@ -281,6 +291,8 @@ export type ToHost =
   | { type: "cancelReview" }
   | { type: "openFinding"; finding: Finding }
   | { type: "openFile"; path: string }
+  /** Open the config file; the browser page has no settings panel to show. */
+  | { type: "openSettings" }
   /** Follow a link the agent printed: a preview URL, a doc, a rendered file.
    *  Goes through the host so remote workspaces forward the port. */
   | { type: "openExternal"; url: string }
@@ -317,6 +329,8 @@ export type ToHost =
   | { type: "listProviders" }
   /** Repoint the endpoint and adopt one of its models, as the TUI's `/provider` does. */
   | { type: "setProvider"; baseUrl: string; model: string }
+  /** Run `aster login <target>` and report its progress as `loginOutput`. */
+  | { type: "login"; target: string }
   | { type: "compact"; id: string; messages: ChatMessage[] };
 
 /** Messages the extension host sends to the webview. */
@@ -339,9 +353,14 @@ export type ToWebview =
       effort: Effort | null;
       binaryOk: boolean;
       skills: SkillCommand[];
+      /** Set when the endpoint in use has no key and no login yet. */
+      setup?: SetupInfo | null;
     }
   | { type: "chatEvent"; id: string; event: ChatStreamEvent }
   | { type: "chatError"; id: string; message: string }
+  /** One line the login printed, shown while the browser flow runs. */
+  | { type: "loginOutput"; line: string }
+  | { type: "loginDone"; ok: boolean; message: string }
   /** Authoritative run state, broadcast to every surface. A chat blocked on
    *  a prompt re-sends it, so a reloaded surface still gets the card. */
   | {

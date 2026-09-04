@@ -1,4 +1,7 @@
+import type { SetupInfo } from "../../src/protocol";
+import type { LoginState } from "../lib/login";
 import { Mark } from "./Mark";
+import { SetupCard } from "./SetupCard";
 import { Tip } from "./Tip";
 import { OPENERS, TIPS, useRotation } from "../lib/greeting";
 
@@ -12,10 +15,14 @@ export function EmptyState({
   repoName,
   branch,
   binaryOk,
+  setup,
+  login,
 }: {
   repoName: string | null;
   branch: string | null;
   binaryOk: boolean;
+  setup: SetupInfo | null;
+  login: LoginState | null;
 }) {
   const opener = useRotation(OPENERS);
   const tip = useRotation(TIPS, TIP_MS);
@@ -34,6 +41,15 @@ export function EmptyState({
         <p className="empty-hint">
           Installed elsewhere? Set <code>aster.binaryPath</code>.
         </p>
+      </div>
+    );
+  }
+
+  if (setup) {
+    return (
+      <div className="empty">
+        <Mark px={2.6} />
+        <SetupCard setup={setup} login={login} />
       </div>
     );
   }

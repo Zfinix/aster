@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { post } from "../lib/host";
+import type { LoginState } from "../lib/login";
 import type { Turn } from "../lib/thread";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import { NewItemsPill } from "../interior/new-items-pill";
@@ -12,6 +13,7 @@ import { QueuedTurn } from "./QueuedTurn";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { ReviewTurn } from "./ReviewTurn";
+import { SetupCard } from "./SetupCard";
 import { StatusLine } from "./StatusLine";
 import { AgentGroup } from "./AgentGroup";
 import { GoalCard } from "./GoalCard";
@@ -22,6 +24,7 @@ const isUser = (turn: Turn) => turn.role === "user";
 export function Thread({
   turns,
   queued,
+  login,
   onApproval,
   onRedirect,
   onAnswer,
@@ -29,6 +32,7 @@ export function Thread({
 }: {
   turns: Turn[];
   queued: string[];
+  login: LoginState | null;
   onApproval: (allow: boolean, always?: boolean) => void;
   onRedirect: (instead: string) => void;
   onAnswer: (choice: string | null) => void;
@@ -147,7 +151,11 @@ export function Thread({
                   <QuestionPrompt question={turn.question} onAnswer={onAnswer} />
                 )}
 
-                {turn.errorMsg && <ErrorBox message={turn.errorMsg} />}
+                {turn.setup ? (
+                  <SetupCard setup={turn.setup} login={login} />
+                ) : (
+                  turn.errorMsg && <ErrorBox message={turn.errorMsg} />
+                )}
 
                 {/* Stays up for the whole turn, including the gap between the last
                     tool result and the reply, which otherwise reads as a hang. */}

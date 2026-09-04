@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type { SessionSummary } from "../../src/protocol";
-import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
+import { useListNav } from "../lib/listnav";
 import { filterSessions, relativeTime } from "../lib/history";
+import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
+import { Modal } from "./Modal";
 
 /**
  * Session history, as a command-palette popup: type to filter, arrows to move,
@@ -26,15 +28,21 @@ export function HistoryPanel({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
   /** The row being renamed, if any: its id and the name typed so far. */
   const [editing, setEditing] = useState<{ id: string; title: string }>();
-  const listRef = useRef<HTMLDivElement>(null);
 
   const rows = useMemo(() => filterSessions(sessions, query), [sessions, query]);
 
-  // A shorter result set must never leave the cursor pointing past the end.
-  useEffect(() => setCursor(0), [query]);
+  const open = (id: string) => {
+    onPick(id);
+    onClose();
+  };
+
+  const { active: cursor, setActive: setCursor, leave, onKey, seat } = useListNav<HTMLDivElement>({
+    count: rows.length,
+    resetOn: query,
+    onPick: (index) => open(rows[index].id),
+  });
 
   const commit = () => {
     if (editing && editing.title.trim()) {
@@ -43,45 +51,17 @@ export function HistoryPanel({
     setEditing(undefined);
   };
 
-  useEffect(() => {
-    // While a name is being typed, the list's own keys belong to the input.
-    if (editing) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        setCursor((c) => {
-          if (rows.length === 0) return 0;
-          const next = e.key === "ArrowDown" ? c + 1 : c - 1;
-          return (next + rows.length) % rows.length;
-        });
-        return;
-      }
-      if (e.key === "Enter" && rows[cursor]) {
-        e.preventDefault();
-        onPick(rows[cursor].id);
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, onPick, rows, cursor, editing]);
-
-  useEffect(() => {
-    listRef.current
-      ?.querySelector<HTMLElement>('[data-cursor="true"]')
-      ?.scrollIntoView({ block: "nearest" });
-  }, [cursor]);
-
   return (
-    <div
-      className="history-overlay"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="history-panel" role="dialog" aria-label="Session history">
+    <Modal label="Session history" className="history-panel" onClose={onClose}>
+      {/* Keys are read off the whole panel, so the arrows work from the search
+          box and from a row's buttons alike. While a name is being typed they
+          belong to that input. */}
+      <div
+        className="history-keys"
+        onKeyDown={(e) => {
+          if (!editing) onKey(e);
+        }}
+      >
         <div className="history-search">
           <SearchIcon />
           <input
@@ -94,7 +74,7 @@ export function HistoryPanel({
           />
         </div>
 
-        <div className="history-list" ref={listRef} role="listbox">
+        <div className="history-list" role="listbox" onMouseLeave={leave}>
           {rows.length === 0 ? (
             <div className="history-empty">
               {sessions.length === 0
@@ -105,13 +85,14 @@ export function HistoryPanel({
             rows.map((s, at) => (
               <div
                 key={s.id}
+                ref={seat(at)}
                 className="history-row"
                 role="option"
                 aria-selected={s.id === activeId}
                 data-cursor={at === cursor}
                 data-active={s.id === activeId}
                 data-editing={editing?.id === s.id}
-                onMouseMove={() => setCursor(at)}
+                onMouseEnter={() => setCursor(at)}
               >
                 {editing?.id === s.id ? (
                   <input
@@ -140,10 +121,7 @@ export function HistoryPanel({
                       className="history-open"
                       // What the row no longer spends a second line on.
                       title={`${s.turns} turn${s.turns === 1 ? "" : "s"}${s.model ? ` · ${s.model}` : ""}`}
-                      onClick={() => {
-                        onPick(s.id);
-                        onClose();
-                      }}
+                      onClick={() => open(s.id)}
                     >
                       <span className="history-row-title">{s.title || "Untitled session"}</span>
                     </button>
@@ -173,6 +151,6 @@ export function HistoryPanel({
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

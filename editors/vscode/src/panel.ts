@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { checkBinary, cliConfig, ProviderOverride, runCli } from "./asterCli";
+import { checkBinary, cliConfig, LoginRun, ProviderOverride, runCli, runLogin } from "./asterCli";
 import * as info from "./info";
 import { ChatRunner } from "./chatRunner";
 import { IGNORED, searchFiles, skillCommands } from "./commands";
@@ -45,6 +45,8 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   private readonly surfaces = new Set<vscode.Webview>();
   private readonly chatRunners = new Map<vscode.Webview, ChatRunner>();
   private readonly reviewRunners = new Map<vscode.Webview, ReviewRunner>();
+  /** At most one `aster login` at a time; a new request replaces it. */
+  private login: LoginRun | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -280,9 +282,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       .filter(Boolean)
       .map((fsPath) => {
         if (root && fsPath.startsWith(`${root}/`)) return fsPath.slice(root.length + 1);
-        // Pasted files written to extension storage carry a stamped absolute
-        // path; the composer only needs the basename to render a clean pill.
-        if (storage && fsPath.startsWith(`${storage}/`)) return path.basename(fsPath);
+        // Pasted files live in extension storage, outside the workspace, so
+        // the CLI could never resolve a bare basename against the repo root.
+        // The full path is required; the chip derives its label from it.
+        if (storage && fsPath.startsWith(`${storage}/`)) return fsPath;
         return fsPath;
       })
       .map((p) => `@${p}`);
@@ -716,6 +719,46 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           await vscode.commands.executeCommand(message.command);
         }
         break;
+      case "login":
+        await this.runLogin(message.target, origin);
+        break;
+    }
+  }
+
+  /** Drive `aster login <target>` from the panel, relaying its progress so the
+   *  user can follow the browser flow without a terminal. */
+  private async runLogin(target: string, origin: vscode.Webview): Promise<void> {
+    const root = workspaceRoot();
+    if (!root) {
+      this.postTo(origin, { type: "loginDone", ok: false, message: "Open a folder first." });
+      return;
+    }
+    this.login?.cancel();
+    let last = "";
+    let run: LoginRun;
+    try {
+      run = runLogin(target, root, this.env(), (line) => {
+        last = line;
+        this.output.appendLine(`[login] ${line}`);
+        this.postTo(origin, { type: "loginOutput", line });
+      });
+    } catch (err) {
+      this.postTo(origin, { type: "loginDone", ok: false, message: describe(err) });
+      return;
+    }
+    this.login = run;
+    try {
+      const code = await run.done;
+      if (this.login !== run) return;
+      this.postTo(origin, {
+        type: "loginDone",
+        ok: code === 0,
+        message: code === 0 ? "Signed in." : last || `aster login exited with code ${code}.`,
+      });
+    } catch (err) {
+      this.postTo(origin, { type: "loginDone", ok: false, message: describe(err) });
+    } finally {
+      if (this.login === run) this.login = undefined;
     }
   }
 
@@ -777,7 +820,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
     await this.context.globalState.update(MODEL_KEY, model);
 
-    if (!(await info.hasKey(root).catch(() => true))) {
+    if (!(await info.hasKey(root, this.env()).catch(() => true))) {
       void vscode.window.showWarningMessage(
         `Aster: no key found for ${chosen?.name ?? baseUrl}. Add one in Aster Settings, under API keys.`
       );
@@ -824,6 +867,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       effort: this.effort(),
       binaryOk: await checkBinary(cliConfig().binary),
       skills: await skillCommands(root),
+      setup: root ? await info.setupNeeded(root, this.env()).catch(() => null) : null,
     });
   }
 

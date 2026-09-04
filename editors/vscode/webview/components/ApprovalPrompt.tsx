@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ApprovalAsk } from "../lib/thread";
+import { useLayer } from "../lib/layer";
 import { languageFromPath } from "../lib/highlight";
 import { inEditor, post } from "../lib/host";
 import { DiffView } from "./DiffView";
@@ -34,7 +35,6 @@ export function ApprovalPrompt({
   onRedirect: (instead: string) => void;
 }) {
   const [instead, setInstead] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
   const isPlan = ask.kind === "plan" && !!ask.markdown;
   const [editingPlan, setEditingPlan] = useState(false);
   const [planDraft, setPlanDraft] = useState(ask.markdown ?? "");
@@ -68,15 +68,16 @@ export function ApprovalPrompt({
     { label: "No", run: () => onRespond(false) },
   ];
 
+  // Not while the reader is writing an alternative: "3" and Escape belong to
+  // the box. A menu open above the card takes Escape first.
+  const typing = () => document.activeElement?.tagName === "TEXTAREA";
+  useLayer(() => {
+    if (!typing()) onRespond(false);
+  });
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Not while the reader is writing an alternative: "3" belongs in the box.
-      if (document.activeElement?.tagName === "TEXTAREA") return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onRespond(false);
-        return;
-      }
+      if (typing()) return;
       const n = Number(e.key);
       if (Number.isInteger(n) && n >= 1 && n <= options.length) {
         e.preventDefault();
@@ -102,7 +103,7 @@ export function ApprovalPrompt({
   };
 
   return (
-    <div className="approval" ref={ref}>
+    <div className="approval">
       <div className="approval-head">{question(ask)}</div>
       {isPlan && editingPlan && (
         <textarea

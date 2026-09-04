@@ -1208,10 +1208,12 @@ export function CoinIcon() {
   );
 }
 
+/** Fills the grid's height like the mode glyphs beside it, with one inner
+ *  tongue so the shape still reads as a flame at 14px. */
 export function FireIcon() {
   return (
     <svg {...base}>
-      <path d="M8 1.5 S3.9 4.9 3.9 9 a4.1 4.1 0 0 0 8.1 0 c0 -1.5 -0.7 -2.9 -1.7 -3.9 c-0.4 1.1 -1.1 1.8 -1.8 1.8 c0.7 -2.3 -0.5 -5.3 -0.5 -5.3 z" />
+      <path d="M5.7 9.7 A1.7 1.7 0 0 0 7.3 8 c0 -0.9 -0.3 -1.3 -0.7 -2 c-0.7 -1.4 -0.1 -2.7 1.3 -4 c0.3 1.7 1.3 3.3 2.7 4.3 c1.3 1.1 2 2.3 2 3.7 a4.7 4.7 0 1 1 -9.3 0 c0 -0.8 0.3 -1.5 0.7 -2 a1.7 1.7 0 0 0 1.7 1.7 z" />
     </svg>
   );
 }

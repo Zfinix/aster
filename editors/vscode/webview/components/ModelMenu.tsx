@@ -1,9 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Effort, Provider } from "../../src/protocol";
-import { useDismiss } from "../lib/dismiss";
 import { post } from "../lib/host";
 import { EFFORT_OPTIONS } from "../lib/effort";
-import { modelShort } from "../lib/model";
+import { modelChip } from "../lib/model";
 import { ChoiceList } from "./ChoiceList";
 import { ChoiceSlider } from "./ChoiceSlider";
 import { CloudIcon, CubeIcon, GaugeIcon } from "./icons";
@@ -12,9 +11,10 @@ import { ModelPicker } from "./ModelPicker";
 type Pane = "model" | "provider";
 
 /**
- * The model chip's menu: three rows, each opening its list beside them on
- * hover. One list is out at a time, so the panel reads as one surface changing
- * shape rather than every setting shouting at once.
+ * The model chip's menu: three rows, each opening its list beside them under
+ * the pointer. The chip itself opens on a tap; once inside, the lists follow
+ * the hover, and one is out at a time so the panel reads as one surface
+ * changing shape rather than every setting shouting at once.
  */
 export function ModelMenu({
   pane: initial,
@@ -49,13 +49,11 @@ export function ModelMenu({
   onProvider: (provider: Provider) => void;
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const [pane, setPane] = useState<Pane | null>(initial);
   // The open pane's height, so the box travels between lists instead of
   // blinking out and back at a new size.
   const [height, setHeight] = useState(0);
-  useDismiss(ref, onClose);
 
   useEffect(() => {
     post({ type: "listProviders" });
@@ -64,20 +62,21 @@ export function ModelMenu({
   useLayoutEffect(() => {
     const box = inner.current;
     if (!box) return;
-    const observer = new ResizeObserver(([entry]) => setHeight(entry.contentRect.height));
+    const observer = new ResizeObserver(([entry]) =>
+      setHeight(entry.contentRect.height),
+    );
     observer.observe(box);
     return () => observer.disconnect();
   }, [pane]);
 
   const current = providers.find((p) => p.current);
 
-  const cycleEffort = () => {
-    const at = EFFORT_OPTIONS.findIndex((o) => o.value === (effort ?? ""));
-    const next = EFFORT_OPTIONS[(at + 1) % EFFORT_OPTIONS.length];
-    onEffort((next.value || null) as Effort | null);
-  };
-
-  const row = (id: Pane, icon: React.ReactNode, label: string, value: string) => (
+  const row = (
+    id: Pane,
+    icon: React.ReactNode,
+    label: string,
+    value: string,
+  ) => (
     <button
       className="picker-row model-row"
       data-active={pane === id}
@@ -98,10 +97,33 @@ export function ModelMenu({
   return (
     // Leaving the menu puts the list away; leaving a row does not, or the
     // pointer could never travel from the row into the list it opened.
-    <div className="model-menu" ref={ref} onMouseLeave={() => setPane(null)}>
+    <div className="model-menu" onMouseLeave={() => setPane(null)}>
+      <div className="picker model-root" role="menu" aria-label="Turn settings">
+        {row("model", <CubeIcon />, "Model", modelChip(model))}
+        {row("provider", <CloudIcon />, "Provider", current?.name ?? "")}
+        {/* Effort is set on its slider, inline; the row around it is only a
+            label and takes no hover or click of its own. */}
+        <div className="picker-row model-row model-row-choice">
+          <GaugeIcon />
+          <span className="picker-body">
+            <span className="picker-label">Effort</span>
+          </span>
+          <ChoiceSlider
+            label="Effort"
+            options={EFFORT_OPTIONS}
+            value={effort ?? ""}
+            onSelect={(value) => onEffort((value || null) as Effort | null)}
+          />
+        </div>
+      </div>
+
       {/* One box that resizes between the lists: the content cross-fades
           inside it, so switching rows reads as the panel changing shape. */}
-      <div className="model-flyout" data-open={pane !== null} style={{ height: pane ? height : 0 }}>
+      <div
+        className="model-flyout"
+        data-open={pane !== null}
+        style={{ height: pane ? height : 0 }}
+      >
         <div className="model-flyout-inner" key={pane ?? "none"} ref={inner}>
           {pane === "model" && (
             <ModelPicker
@@ -114,7 +136,6 @@ export function ModelMenu({
               onSelect={onSelect}
               onRefresh={onRefresh}
               onClose={onClose}
-              boundary={ref}
             />
           )}
 
@@ -135,43 +156,6 @@ export function ModelMenu({
             />
           )}
         </div>
-      </div>
-
-      <div className="picker model-root" role="menu" aria-label="Turn settings">
-        {row("model", <CubeIcon />, "Model", modelShort(model))}
-        {/* Effort cycles inline rather than opening a pane. A div, not a
-            button: the slider's dots are buttons and cannot nest in one. */}
-        <div
-          className="picker-row model-row model-row-choice"
-          role="button"
-          tabIndex={0}
-          aria-label="Effort"
-          onMouseDown={(e) => {
-            // A click on a dot picks that dot; only the rest of the row cycles.
-            if ((e.target as HTMLElement).closest(".slider")) return;
-            e.preventDefault();
-            cycleEffort();
-          }}
-          onKeyDown={(e) => {
-            if ((e.target as HTMLElement).closest(".slider")) return;
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              cycleEffort();
-            }
-          }}
-        >
-          <GaugeIcon />
-          <span className="picker-body">
-            <span className="picker-label">Effort</span>
-          </span>
-          <ChoiceSlider
-            label="Effort"
-            options={EFFORT_OPTIONS}
-            value={effort ?? ""}
-            onSelect={(value) => onEffort((value || null) as Effort | null)}
-          />
-        </div>
-        {row("provider", <CloudIcon />, "Provider", current?.name ?? "")}
       </div>
     </div>
   );

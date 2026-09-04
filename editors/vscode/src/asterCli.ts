@@ -58,6 +58,39 @@ export interface ProviderOverride {
   keyEnv: string[];
 }
 
+export interface LoginRun {
+  done: Promise<number>;
+  cancel: () => void;
+}
+
+/** Run `aster login <target>`, relaying every line it prints as it goes so
+ *  the panel can show the browser flow's progress. */
+export function runLogin(
+  target: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  onLine: (line: string) => void
+): LoginRun {
+  const { binary } = cliConfig();
+  const child = spawn(binary, ["login", target], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  const relay = (chunk: string) => {
+    for (const line of chunk.split("\n")) {
+      if (line.trim()) onLine(line);
+    }
+  };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", relay);
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", relay);
+  const done = new Promise<number>((resolve, reject) => {
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      reject(new Error(err.code === "ENOENT" ? missingBinaryMessage(binary) : String(err)));
+    });
+    child.on("close", (code) => resolve(code ?? 1));
+  });
+  return { done, cancel: () => child.kill() };
+}
+
 /** Run the CLI to completion, optionally writing `stdin` first. */
 export function runCli(
   args: string[],

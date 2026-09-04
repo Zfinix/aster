@@ -47,12 +47,13 @@ describe("parseError", () => {
   });
 
   it("explains a bare exit-code failure without plumbing", () => {
-    const { label, hint } = parseError(
+    const { label, hint, detail } = parseError(
       "aster chat exited with code 1. See the Aster output channel."
     );
     expect(label).toBe("Aster stopped unexpectedly");
-    expect(hint).toContain("output channel");
+    expect(hint).toContain("Send your message again");
     expect(hint).not.toContain("engine");
+    expect(detail).toBe("");
   });
 
   it("does not mistake a panic's line number for an HTTP status", () => {
@@ -73,5 +74,29 @@ describe("parseError", () => {
     const { label, hint } = parseError("bad gateway (502): upstream reset");
     expect(label).toBe("Provider trouble");
     expect(hint).toContain("Send again");
+  });
+
+  it("explains a DNS failure as an unreachable provider", () => {
+    const { label, hint, detail } = parseError(
+      "chat request failed: error sending request for url (https://api.deepseek.com/v1/chat/completions): client error (Connect): dns error: failed to lookup address information: nodename nor servname provided, or not known"
+    );
+    expect(label).toBe("Can't reach the provider");
+    expect(hint).toContain("internet connection");
+    expect(detail).toContain("dns error");
+  });
+});
+
+describe("parseError credentials", () => {
+  it("says the endpoint needs a sign-in when the CLI found no key", () => {
+    const { label, hint } = parseError(
+      "aster chat exited with code 1: no API key found for DeepSeek. Run `aster init` to set one up globally"
+    );
+    expect(label).toBe("Not signed in");
+    expect(hint).toContain("Sign in");
+  });
+
+  it("recognises a missing ChatGPT login", () => {
+    const { label } = parseError("not signed in to ChatGPT. Run `aster login codex` to link your subscription");
+    expect(label).toBe("Not signed in");
   });
 });
