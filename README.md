@@ -145,6 +145,10 @@ can reach the port could otherwise drive the agent.
 The [VS Code extension](./editors/vscode) puts the same panel in the sidebar, an
 editor tab, or its own window, with review findings wired into the Problems pane.
 
+In [Zed](./editors/zed), `aster acp` serves the agent over the Agent Client
+Protocol, so Aster appears in the External Agents menu with streamed replies,
+diffs, permission prompts, and the mode picker. A slash command covers review.
+
 ### As an app
 
 The [desktop app](./desktop) is a standalone window around the same CLI, for
@@ -543,6 +547,7 @@ crates/
   aster-models/      shared domain types
 desktop/             the desktop app (Tauri)
 editors/vscode/      the VS Code extension, and the panel `aster serve` hands a browser
+editors/zed/         the Zed extension; `aster acp` is the Zed agent itself
 web/                 withaster.dev, including the install script
 docs/                config, architecture, algorithm, memory, MCP, plugins, roadmap
 ```

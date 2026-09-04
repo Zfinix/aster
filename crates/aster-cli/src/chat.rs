@@ -209,7 +209,7 @@ fn plan_unfinished(snapshot: &Option<Vec<(String, PlanStepStatus)>>) -> bool {
 }
 
 impl SessionCtx {
-    fn record(&self, event: MessageEvent) {
+    pub(crate) fn record(&self, event: MessageEvent) {
         let Some(recorder) = &self.recorder else {
             return;
         };
@@ -406,7 +406,9 @@ fn package_scripts(manifest: &Path) -> Option<Vec<String>> {
     if scripts.is_empty() {
         return None;
     }
-    let mut names: Vec<String> = scripts.keys().take(MAX_SCRIPT_NAMES).cloned().collect();
+    let mut names: Vec<String> = scripts.keys().cloned().collect();
+    names.sort();
+    names.truncate(MAX_SCRIPT_NAMES);
     if scripts.len() > MAX_SCRIPT_NAMES {
         names.push(format!("... {} more", scripts.len() - MAX_SCRIPT_NAMES));
     }
@@ -1485,7 +1487,7 @@ async fn run_stream(
 /// Spell out every `/skill-name` in the conversation, so a front-end shows the
 /// command the user typed and the model is still told what it meant. Every turn:
 /// a replayed history would otherwise carry a slash it cannot read.
-fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
+pub(crate) fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
     let asks = |m: &ChatMessage| m.role == "user" && m.content.text().starts_with('/');
     if !turns.iter().any(asks) {
         return;
@@ -1892,7 +1894,7 @@ fn round_signature(round: &[(String, String, String)]) -> u64 {
     skip_all,
     fields(rounds = tracing::field::Empty, calls = tracing::field::Empty)
 )]
-async fn agent_loop(
+pub(crate) async fn agent_loop(
     client: &AiClient,
     repo_root: &Path,
     history: &[ChatMessage],
@@ -2509,7 +2511,7 @@ const TITLE_MAX_CHARS: usize = 60;
 /// Name the session once it has shape: after the first turn when the opening
 /// message carries the topic, after the second otherwise. Runs in the background,
 /// so a caller whose process exits at turn end MUST await the handle.
-fn name_session(
+pub(crate) fn name_session(
     client: &AiClient,
     ctx: &SessionCtx,
     history: &[ChatMessage],
@@ -3491,11 +3493,35 @@ fn is_repeat_lookup(ctx: &SessionCtx, name: &str, arguments: &str) -> bool {
         lookups.clear();
         return false;
     }
-    // Re-serialized so whitespace and key order cannot disguise a repeat.
     let arguments = serde_json::from_str::<Value>(arguments)
-        .map(|v| v.to_string())
+        .map(|v| canonical_json(&v))
         .unwrap_or_else(|_| arguments.to_string());
     !lookups.insert(format!("{name}:{arguments}"))
+}
+
+/// Re-serialized with sorted keys so whitespace and key order cannot disguise
+/// a repeat. Sorting is explicit: a dependency enables `preserve_order`, so
+/// `Value` itself keeps whatever order the model sent.
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let fields: Vec<String> = keys
+                .into_iter()
+                .map(|key| {
+                    let value = map.get(key).unwrap_or(&Value::Null);
+                    format!("{}:{}", Value::String(key.clone()), canonical_json(value))
+                })
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
+    }
 }
 
 /// Fan a batch of lookups out in one round. Every step goes through

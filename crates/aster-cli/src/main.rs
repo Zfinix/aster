@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod acp;
 mod agents;
 mod auth;
 use auth::LoginArgs;
@@ -149,6 +150,8 @@ enum Command {
     Remind(remind::RemindArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
     Serve(serve::ServeArgs),
+    /// Serve the agent over the Agent Client Protocol on stdio, for editors like Zed.
+    Acp(acp::AcpArgs),
     /// Download the latest released aster binary and swap it in place.
     #[command(alias = "update")]
     Upgrade(upgrade::UpgradeArgs),
@@ -200,7 +203,7 @@ async fn main() -> Result<()> {
     let sessions_tui = matches!(&command, Command::Sessions(a) if a.is_interactive());
     let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui || sessions_tui;
     let stream_mode = matches!(&command, Command::Review(a) if a.stream)
-        || matches!(&command, Command::Fix(_))
+        || matches!(&command, Command::Fix(_) | Command::Acp(_))
         || matches!(&command, Command::Chat(a) if !a.is_interactive());
     let telemetry = init_tracing(tui_mode, stream_mode);
 
@@ -232,6 +235,7 @@ async fn main() -> Result<()> {
         Command::Cron(args) => cron::run(args),
         Command::Remind(args) => remind::run(args),
         Command::Serve(args) => serve::run(args).await,
+        Command::Acp(args) => acp::run(args).await,
         Command::Upgrade(args) => upgrade::run(args).await,
     };
 

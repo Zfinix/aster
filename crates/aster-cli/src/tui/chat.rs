@@ -851,7 +851,7 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
 }
 
 /// Friendly one-line label for a tool call, matching the desktop's stepLabel.
-fn step_label(name: &str, args: &str) -> String {
+pub(crate) fn step_label(name: &str, args: &str) -> String {
     let parsed: Value = serde_json::from_str(args).unwrap_or(Value::Null);
     let s = |key: &str| parsed.get(key).and_then(Value::as_str).unwrap_or("");
     match name {

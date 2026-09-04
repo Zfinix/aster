@@ -1,0 +1,53 @@
+{
+  "id": "aster",
+  "name": "Aster",
+  "version": "0.5.0",
+  "description": "Self-hostable coding agent with sandboxed tools, memory, and reviews; runs on any OpenAI-compatible provider",
+  "repository": "https://github.com/Zfinix/aster",
+  "website": "https://withaster.dev",
+  "authors": [
+    "Chiziaruhoma Ogbonda"
+  ],
+  "license": "Apache-2.0",
+  "license_url": "https://github.com/Zfinix/aster/blob/main/LICENSE",
+  "icon": "./icon.svg",
+  "distribution": {
+    "binary": {
+      "darwin-aarch64": {
+        "archive": "https://github.com/Zfinix/aster/releases/download/cli-v0.5.0/aster-0.5.0-aarch64-apple-darwin.tar.gz",
+        "cmd": "./aster-0.5.0-aarch64-apple-darwin/aster",
+        "args": [
+          "acp"
+        ]
+      },
+      "darwin-x86_64": {
+        "archive": "https://github.com/Zfinix/aster/releases/download/cli-v0.5.0/aster-0.5.0-x86_64-apple-darwin.tar.gz",
+        "cmd": "./aster-0.5.0-x86_64-apple-darwin/aster",
+        "args": [
+          "acp"
+        ]
+      },
+      "linux-aarch64": {
+        "archive": "https://github.com/Zfinix/aster/releases/download/cli-v0.5.0/aster-0.5.0-aarch64-unknown-linux-gnu.tar.gz",
+        "cmd": "./aster-0.5.0-aarch64-unknown-linux-gnu/aster",
+        "args": [
+          "acp"
+        ]
+      },
+      "linux-x86_64": {
+        "archive": "https://github.com/Zfinix/aster/releases/download/cli-v0.5.0/aster-0.5.0-x86_64-unknown-linux-gnu.tar.gz",
+        "cmd": "./aster-0.5.0-x86_64-unknown-linux-gnu/aster",
+        "args": [
+          "acp"
+        ]
+      },
+      "windows-x86_64": {
+        "archive": "https://github.com/Zfinix/aster/releases/download/cli-v0.5.0/aster-0.5.0-x86_64-pc-windows-msvc.zip",
+        "cmd": "./aster-0.5.0-x86_64-pc-windows-msvc/aster.exe",
+        "args": [
+          "acp"
+        ]
+      }
+    }
+  }
+}

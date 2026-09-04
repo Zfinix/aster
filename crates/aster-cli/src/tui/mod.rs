@@ -17,6 +17,7 @@ pub(crate) mod theme;
 mod wrap;
 
 pub use chat::run_chat;
+pub(crate) use chat::step_label;
 pub(crate) use helpers::mark_ansi;
 pub use review::run;
 

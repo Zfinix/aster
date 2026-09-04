@@ -99,7 +99,9 @@ fn token_fields(raw: &serde_json::Value) -> String {
 
 fn field_names(value: &serde_json::Value) -> Option<String> {
     let map = value.as_object()?;
-    (!map.is_empty()).then(|| map.keys().cloned().collect::<Vec<_>>().join(", "))
+    let mut names: Vec<&str> = map.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    (!names.is_empty()).then(|| names.join(", "))
 }
 
 /// Re-mint the key when the stored sign-in has aged out.

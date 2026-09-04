@@ -9,6 +9,7 @@ name = "aster"
 path = "src/main.rs"
 
 [dependencies]
+agent-client-protocol = "2.1"
 anydoc = { workspace = true }
 anyhow = { workspace = true }
 aster-agents = { path = "../aster-agents" }
