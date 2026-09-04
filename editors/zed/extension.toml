@@ -1,0 +1,10 @@
+id = "aster"
+name = "Aster"
+version = "0.1.0"
+schema_version = 1
+authors = ["chiziaruhoma"]
+description = "Run Aster reviews from the Zed assistant panel."
+
+[slash_commands.aster-review]
+description = "Run an Aster review of the current changes and insert the findings."
+requires_argument = false
