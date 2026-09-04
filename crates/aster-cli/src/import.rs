@@ -518,6 +518,7 @@ fn write_session(
         model: session.model.clone(),
         aster_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
         title: session.title.clone(),
+        schedule: None,
     };
     let Some(mut writer) = store.import_session(repo_root, meta)? else {
         return Ok(false);

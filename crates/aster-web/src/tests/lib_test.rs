@@ -365,6 +365,34 @@ fn the_highest_priority_provider_describes_a_shared_tool() {
     );
 }
 
+#[tokio::test]
+async fn dispatch_returns_the_first_successful_attempt() {
+    let attempts: Vec<Attempt<'_, u32>> = vec![
+        ("first", Box::pin(async { anyhow::bail!("down") })),
+        ("second", Box::pin(async { Ok(2) })),
+        ("third", Box::pin(async { Ok(3) })),
+    ];
+    assert_eq!(first_success("search", attempts).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn dispatch_error_names_every_failed_provider() {
+    let attempts: Vec<Attempt<'_, u32>> = vec![
+        ("Exa", Box::pin(async { anyhow::bail!("dns error") })),
+        (
+            "DuckDuckGo",
+            Box::pin(async { anyhow::bail!("rate limited") }),
+        ),
+    ];
+    let err = first_success("search", attempts)
+        .await
+        .expect_err("all attempts failed");
+    let msg = err.to_string();
+    assert!(msg.contains("every search provider failed"), "{msg}");
+    assert!(msg.contains("Exa: dns error"), "{msg}");
+    assert!(msg.contains("DuckDuckGo: rate limited"), "{msg}");
+}
+
 #[test]
 fn config_defaults_are_reasonable() {
     let config = WebConfig::default();

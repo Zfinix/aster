@@ -94,14 +94,16 @@ Shipped (via `include_str!` in
 [builtins/](../crates/aster-skills/builtins/)) as two tiers, because the index
 is a standing context cost:
 
-**Core, always in the index (11):** git-workflow, gh-pr-workflow,
-verify-before-done, build-triage, batched-bash, cli-toolbox, context-economy,
-correction-protocol, security-hygiene, security-review, web-research. The bar: earns its place on a routine
+**Core, always in the index (16):** git-workflow, gh-pr-workflow,
+verify-before-done, plan-and-present, build-triage, batched-bash, cli-toolbox,
+context-economy, correction-protocol, security-hygiene, security-review,
+security-scan, web-research, structural-edits, lsp-navigation, skill-creator.
+The bar: earns its place on a routine
 coding turn. An installed skill with the same name shadows its built-in.
 
-**Optional, bundled but not indexed (10):** package-managers,
+**Optional, bundled but not indexed (9):** package-managers,
 supply-chain-safety, dependency-upgrade, debug-systematically, refactor-safely,
-write-tests, background-processes, i-have-adhd, skill-creator, macos-harness.
+write-tests, background-processes, i-have-adhd, macos-harness.
 `aster skills bundled` lists them; `aster skills bundled <name>` materializes
 one into a skills root, after which discovery treats it like any installed
 skill. On macOS, macos-harness is a platform default: session start installs it

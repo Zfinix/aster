@@ -19,6 +19,10 @@ pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const CALLBACK_PORT: u16 = 1455;
 const SCOPES: &str = "openid profile email offline_access";
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+const NOT_LOGGED_IN: &str =
+    "no ChatGPT/Codex login found. Run `aster login codex`, or sign in once with the Codex CLI";
+pub const LOGIN_EXPIRED: &str =
+    "your ChatGPT login has expired; run `aster login codex` to sign in again";
 
 /// Same shape as `~/.codex/auth.json`, so a file written by either tool reads
 /// back in the other.
@@ -40,10 +44,29 @@ pub struct TokenSet {
     pub account_id: Option<String>,
 }
 
-/// Where Aster keeps its own copy. A separate path from the Codex CLI's file so
-/// a Codex upgrade never races a write from this side.
+/// Where Aster keeps its own copy, in the XDG data dir alongside its other
+/// credentials. A separate path from the Codex CLI's file so a Codex upgrade
+/// never races a write from this side.
 pub fn store_path(home: &Path) -> PathBuf {
-    home.join(".aster").join("codex.json")
+    data_dir(home).join("codex.json")
+}
+
+/// `$XDG_DATA_HOME/aster` or `~/.local/share/aster`, the CLI's own data root.
+fn data_dir(home: &Path) -> PathBuf {
+    let root = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => home.join(".local").join("share"),
+    };
+    root.join("aster")
+}
+
+/// Where older builds put the store: `~/.aster`, and a nested `.aster` under
+/// the data dir from a login that was handed the data dir as home.
+fn legacy_store_paths(home: &Path) -> [PathBuf; 2] {
+    [
+        data_dir(home).join(".aster").join("codex.json"),
+        home.join(".aster").join("codex.json"),
+    ]
 }
 
 /// The Codex CLI's own store, imported read-only when Aster has none of its own.
@@ -52,19 +75,28 @@ pub fn codex_cli_path(home: &Path) -> PathBuf {
 }
 
 /// Load Aster's store, falling back to the Codex CLI's. Returns None when
-/// neither exists; the caller prompts a login.
+/// neither exists; the caller prompts a login. A store found at a legacy path
+/// moves to the current one so every later read and refresh agree on it.
 pub fn load(home: &Path) -> Option<CodexAuth> {
-    for path in [store_path(home), codex_cli_path(home)] {
-        let Ok(bytes) = fs::read(&path) else {
+    if let Some(auth) = read_store(&store_path(home)) {
+        return Some(auth);
+    }
+    for legacy in legacy_store_paths(home) {
+        let Some(auth) = read_store(&legacy) else {
             continue;
         };
-        if let Ok(auth) = serde_json::from_slice::<CodexAuth>(&bytes)
-            && auth.tokens.is_some()
-        {
-            return Some(auth);
+        if save(home, &auth).is_ok() {
+            let _ = fs::remove_file(&legacy);
         }
+        return Some(auth);
     }
-    None
+    read_store(&codex_cli_path(home))
+}
+
+fn read_store(path: &Path) -> Option<CodexAuth> {
+    let bytes = fs::read(path).ok()?;
+    let auth = serde_json::from_slice::<CodexAuth>(&bytes).ok()?;
+    auth.tokens.is_some().then_some(auth)
 }
 
 /// Persist to Aster's own store, created 0o600 so the tokens are never briefly
@@ -78,7 +110,11 @@ pub fn save(home: &Path, auth: &CodexAuth) -> Result<()> {
 }
 
 pub fn clear(home: &Path) -> bool {
-    fs::remove_file(store_path(home)).is_ok()
+    let mut removed = fs::remove_file(store_path(home)).is_ok();
+    for legacy in legacy_store_paths(home) {
+        removed |= fs::remove_file(legacy).is_ok();
+    }
+    removed
 }
 
 #[cfg(unix)]
@@ -108,15 +144,28 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 /// already resolved it do not pay for it twice.
 pub async fn ensure_access_token(home: &Path) -> Result<String> {
     let Some(mut auth) = load(home) else {
-        bail!(
-            "no ChatGPT/Codex login found. Run `aster login codex`, or sign in once with the Codex CLI"
-        );
+        bail!(NOT_LOGGED_IN);
     };
     let tokens = auth.tokens.as_ref().expect("load only returns some tokens");
     if !expired(&tokens.access_token) {
         return Ok(tokens.access_token.clone());
     }
-    refresh(home, &mut auth).await?;
+    refresh_with(TOKEN_URL, home, &mut auth).await?;
+    current_access_token(&auth)
+}
+
+/// Refresh unconditionally and return the new bearer. For the 401 the backend
+/// sends when it has expired a token ahead of the JWT's own `exp` claim, which
+/// [`ensure_access_token`] cannot see coming.
+pub async fn refresh_access_token(home: &Path) -> Result<String> {
+    let Some(mut auth) = load(home) else {
+        bail!(NOT_LOGGED_IN);
+    };
+    refresh_with(TOKEN_URL, home, &mut auth).await?;
+    current_access_token(&auth)
+}
+
+fn current_access_token(auth: &CodexAuth) -> Result<String> {
     auth.tokens
         .as_ref()
         .map(|t| t.access_token.clone())
@@ -148,13 +197,14 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-async fn refresh(home: &Path, auth: &mut CodexAuth) -> Result<()> {
+/// `token_url` is a parameter so tests can point it at a local server.
+async fn refresh_with(token_url: &str, home: &Path, auth: &mut CodexAuth) -> Result<()> {
     let Some(tokens) = &auth.tokens else {
         bail!("no tokens to refresh");
     };
     let client = reqwest::Client::new();
     let resp = client
-        .post(TOKEN_URL)
+        .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", tokens.refresh_token.as_str()),
@@ -168,7 +218,8 @@ async fn refresh(home: &Path, auth: &mut CodexAuth) -> Result<()> {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        bail!("token refresh failed ({status}); run `aster login codex` again. {body}");
+        tracing::debug!(%status, body, "codex token refresh failed");
+        bail!("{LOGIN_EXPIRED} ({status})");
     }
     let refreshed: TokenResponse = resp.json().await.context("decoding token response")?;
     auth.tokens = Some(TokenSet {

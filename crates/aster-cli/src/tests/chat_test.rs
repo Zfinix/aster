@@ -264,6 +264,21 @@ fn a_backslash_outside_a_string_is_still_a_syntax_error() {
 }
 
 #[test]
+fn a_raw_newline_in_a_string_becomes_an_escape() {
+    let raw = "{\"task\": \"line one\nline two\ttabbed\"}";
+    let parsed = parse_arguments(raw).unwrap();
+    assert_eq!(parsed["task"], "line one\nline two\ttabbed");
+}
+
+#[test]
+fn trailing_junk_after_a_complete_value_is_dropped() {
+    let parsed = parse_arguments(r#"{"cmd": "ls"}}"#).unwrap();
+    assert_eq!(parsed["cmd"], "ls");
+    let parsed = parse_arguments(r#"{"cmd": "ls"} {"cmd": "pwd"}"#).unwrap();
+    assert_eq!(parsed["cmd"], "ls");
+}
+
+#[test]
 fn an_unrepairable_error_reports_what_the_model_sent() {
     let error = parse_arguments(r#"{"a": "b""#).unwrap_err().to_string();
     assert!(error.contains("EOF"), "{error}");
@@ -1648,6 +1663,21 @@ fn a_repeat_lookup_is_answered_with_a_pointer() {
 }
 
 #[test]
+fn whitespace_and_key_order_do_not_disguise_a_repeat() {
+    let ctx = SessionCtx::default();
+    assert!(!is_repeat_lookup(
+        &ctx,
+        "search_files",
+        r#"{"query": "emit", "dir": "src"}"#
+    ));
+    assert!(is_repeat_lookup(
+        &ctx,
+        "search_files",
+        r#"{"dir":"src","query":"emit"}"#
+    ));
+}
+
+#[test]
 fn different_arguments_are_not_a_repeat() {
     let ctx = SessionCtx::default();
     assert!(!is_repeat_lookup(&ctx, "search_files", r#"{"query":"a"}"#));
@@ -2151,4 +2181,39 @@ async fn a_model_that_stays_silent_ends_the_turn_without_an_error() {
 
     let reply = turn_against(&server).await.unwrap();
     assert!(reply.contains("returned nothing"), "{reply}");
+}
+
+#[test]
+fn a_plan_mode_denial_points_at_exit_plan_mode_when_the_run_can_ask() {
+    let reason = "permissions mode is `plan`, so command execution is off".to_string();
+    let hinted = plan_mode_hint(reason.clone(), true);
+    assert!(hinted.contains("exit_plan_mode"), "{hinted}");
+    assert_eq!(plan_mode_hint(reason.clone(), false), reason);
+}
+
+#[test]
+fn a_deny_rule_refusal_gets_no_plan_mode_hint() {
+    let reason = "`rm -rf /` matches the deny rule `rm`".to_string();
+    assert_eq!(plan_mode_hint(reason.clone(), true), reason);
+}
+
+#[test]
+fn agent_task_batch_passes_the_tasks_array_through() {
+    let args = json!({"tasks": [{"agent": "scout", "task": "a"}, {"agent": "prism", "task": "b"}]});
+    assert_eq!(agent_task_batch(&args).map(|t| t.len()), Some(2));
+}
+
+#[test]
+fn agent_task_batch_folds_a_flat_call_into_a_batch_of_one() {
+    let args = json!({"agent": "scout", "task": "map the repo"});
+    let batch = agent_task_batch(&args).unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0]["agent"], "scout");
+    assert_eq!(batch[0]["task"], "map the repo");
+}
+
+#[test]
+fn agent_task_batch_rejects_a_call_naming_neither_shape() {
+    assert!(agent_task_batch(&json!({"agent": "scout"})).is_none());
+    assert!(agent_task_batch(&json!({})).is_none());
 }

@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
+use crate::config::provider::MissingCredentials;
 use crate::edits::{self, EditBlock};
 use crate::mcp::ToolOutput;
 use crate::persist::Recorder;
@@ -220,6 +221,14 @@ impl SessionCtx {
             }
             Err(e) => tracing::warn!("transcript writer lock poisoned: {e}"),
         }
+    }
+
+    /// The live session's transcript id, when one is being recorded. Memory
+    /// writes use it as provenance so a fact can be traced back to the session
+    /// that produced it.
+    pub(crate) fn session_id(&self) -> Option<String> {
+        let recorder = self.recorder.as_ref()?;
+        recorder.lock().ok().map(|writer| writer.id().to_string())
     }
 
     pub(crate) fn record_summary(&self, content: &str, replaces_through: usize) {
@@ -680,6 +689,11 @@ A path that does not exist is a wrong guess, not a failure: take the nearby \
 paths the tool offers and try again. \
 `edit_file` also creates files: omit `search` and pass the whole contents as \
 `replace`. \
+`ast_grep` searches by syntax pattern (e.g. `fn $NAME($$$ARGS)`) when text \
+search is too noisy, and `ast_edit` applies one structural rewrite across \
+every match at once instead of many edit_file calls. After an edit, \
+`lsp_diagnostics` checks one file far faster than a build; `lsp_references` \
+and `lsp_definitions` follow a symbol semantically instead of by name. \
 `run_command` runs a CLI tool or build command. Filesystem writes are \
 restricted to the repo and temp directories, and secrets are dropped from \
 the environment. Use it for builds, tests, and linters. It can also reach \
@@ -851,6 +865,33 @@ fn ask_needs_front_end(mode: aster_policy::Mode, allow_edits: bool, can_prompt: 
     allow_edits && mode == aster_policy::Mode::Manual && !can_prompt
 }
 
+/// Run the memory consolidation pass for a finished session, best-effort.
+/// Headless callers await it because their process exits at turn end; the TUI
+/// spawns it detached because the process outlives the call. A failed pass is
+/// a warning, never a user-visible error, and the startup sweep retries any
+/// session this cannot reach.
+pub(crate) async fn consolidate_finished_session(
+    client: &AiClient,
+    store: Option<&Store>,
+    repo_root: &Path,
+    session_id: &str,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let Ok(transcript) = store.resume(repo_root, session_id) else {
+        return;
+    };
+    let memory = store.memory();
+    let min_turns = aster_memory::consolidate::DEFAULT_MIN_TURNS;
+    if let Err(err) =
+        aster_memory::consolidate::consolidate_session(client, &memory, &transcript, min_turns)
+            .await
+    {
+        tracing::warn!("memory consolidation failed: {err:#}");
+    }
+}
+
 pub async fn run(args: ChatArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = crate::settings::Settings::load(Some(&repo_root))?;
@@ -858,6 +899,18 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     {
         Ok(client) => client,
         Err(err) => {
+            // A front-end reading the stream gets the setup it needs as an
+            // event; a bare exit would leave it with only an exit code.
+            if args.stream
+                && let Some(missing) = err.downcast_ref::<MissingCredentials>()
+            {
+                emit_line(&json!({
+                    "type": "error",
+                    "message": missing.to_string(),
+                    "setup": missing.0,
+                }));
+                return Ok(());
+            }
             if crate::openrouter_auth::offer_sign_in(&err.to_string()).await? {
                 crate::config::provider::resolve_client(&settings, args.model.as_deref())?
             } else {
@@ -1054,6 +1107,11 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     }
     if let Some(naming) = naming {
         let _ = tokio::time::timeout(TITLE_TIMEOUT, naming).await;
+    }
+    // Learn from this session before the process exits: headless has no later
+    // chance, and the startup sweep covers whatever this cannot reach.
+    if let Some(session_id) = ctx.session_id() {
+        consolidate_finished_session(&client, ctx.store.as_ref(), &repo_root, &session_id).await;
     }
     Ok(())
 }
@@ -1666,6 +1724,19 @@ fn barren_correction(rounds: usize) -> String {
     )
 }
 
+/// Consecutive one-lookup rounds before the model is told to batch.
+const SINGLE_LOOKUP_ROUNDS: usize = 4;
+
+/// Injected once per turn when every recent round carried a single lookup.
+fn batch_correction(rounds: usize) -> String {
+    format!(
+        "Your last {rounds} rounds each carried a single lookup, and every \
+         round costs a full model round-trip. Decide everything you still \
+         need to see and request it in one round: several tool calls in one \
+         reply, or one `explore` with all the steps."
+    )
+}
+
 /// Injected once when a reply ends the turn promising work instead of doing
 /// it. The turn continues so the promise becomes tool calls, not a report.
 const DANGLING_INTENT_CORRECTION: &str = "You ended your reply promising work \
@@ -1887,6 +1958,9 @@ async fn agent_loop(
     // The dangling-intent steer fires at most twice a turn, then the reply
     // stands rather than burning rounds on a model that will not act.
     let mut promised = 0usize;
+    // Consecutive one-lookup rounds; the batching steer fires once per turn.
+    let mut single_lookups = 0usize;
+    let mut batch_nudged = false;
     for round in 0.. {
         if round >= round_cap {
             let now = plan_snapshot(ctx);
@@ -2272,13 +2346,23 @@ async fn agent_loop(
                 wire.push(image_turn(&call.function.name, &images));
             }
         }
+        single_lookups = match round_sig.as_slice() {
+            [(name, _, _)] if PARALLEL_READ_TOOLS.contains(&name.as_str()) => single_lookups + 1,
+            _ => 0,
+        };
         let verdict = no_progress.feed(
             round_signature(&round_sig),
             round_all_errors,
             is_productive_round(&round_sig) || round_found_something(&round_sig),
         );
         match verdict {
-            RoundVerdict::Continue => {}
+            RoundVerdict::Continue => {
+                if !batch_nudged && single_lookups >= SINGLE_LOOKUP_ROUNDS {
+                    batch_nudged = true;
+                    tracing::debug!(single_lookups, "model is not batching; telling it once");
+                    steer(&mut wire, batch_correction(single_lookups));
+                }
+            }
             RoundVerdict::Correct => {
                 tracing::warn!("model looped on tool calls; injecting one correction");
                 steer(&mut wire, LOOP_CORRECTION.to_string());
@@ -2996,20 +3080,30 @@ const JSON_ESCAPES: &str = "\"\\/bfnrtu";
 fn parse_arguments(raw: &str) -> Result<Value> {
     match serde_json::from_str(raw) {
         Ok(value) => Ok(value),
-        Err(original) => match serde_json::from_str(&repair_escapes(raw)) {
-            Ok(value) => {
+        Err(original) => {
+            let repaired = repair_escapes(raw);
+            if let Ok(value) = serde_json::from_str(&repaired) {
                 tracing::debug!("repaired an invalid escape in tool arguments");
-                Ok(value)
+                return Ok(value);
             }
-            // Report what the model actually sent, not the repair attempt.
-            Err(_) => Err(anyhow::anyhow!("{original}")),
-        },
+            // A complete value followed by junk is taken as the value: models
+            // sometimes append a second object or prose after the arguments.
+            if let Some(Ok(value)) = serde_json::Deserializer::from_str(&repaired)
+                .into_iter::<Value>()
+                .next()
+            {
+                tracing::debug!("dropped trailing characters from tool arguments");
+                return Ok(value);
+            }
+            // Report what the model actually sent, not the repair attempts.
+            Err(anyhow::anyhow!("{original}"))
+        }
     }
 }
 
 /// `\s` and `\.` come from regexes, where the backslash was meant literally,
 /// so it is doubled. `\'` comes from shell quoting, where it was not meant at
-/// all, so it is dropped.
+/// all, so it is dropped. Raw control characters in strings become escapes.
 fn repair_escapes(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len() + 8);
     let mut chars = raw.chars();
@@ -3018,6 +3112,15 @@ fn repair_escapes(raw: &str) -> String {
         if c == '"' {
             in_string = !in_string;
             out.push(c);
+            continue;
+        }
+        if in_string && c.is_control() {
+            match c {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                other => out.push_str(&format!("\\u{:04x}", other as u32)),
+            }
             continue;
         }
         if c != '\\' || !in_string {
@@ -3217,7 +3320,10 @@ async fn exec_tool(
                         }
                     }
                     if let Some(reason) = denied {
-                        Err(anyhow::anyhow!("edit blocked by policy: {reason}"))
+                        Err(anyhow::anyhow!(
+                            "edit blocked by policy: {}",
+                            plan_mode_hint(reason, approver.is_some())
+                        ))
                     } else if needs_approval
                         && !request_approval(
                             approver,
@@ -3368,6 +3474,10 @@ fn is_repeat_lookup(ctx: &SessionCtx, name: &str, arguments: &str) -> bool {
         lookups.clear();
         return false;
     }
+    // Re-serialized so whitespace and key order cannot disguise a repeat.
+    let arguments = serde_json::from_str::<Value>(arguments)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| arguments.to_string());
     !lookups.insert(format!("{name}:{arguments}"))
 }
 
@@ -3871,7 +3981,7 @@ async fn mcp_bridge(
         args: &[&id],
     }) {
         Decision::Allow => {}
-        Decision::Deny { reason } => bail!("{reason}"),
+        Decision::Deny { reason } => bail!("{}", plan_mode_hint(reason, approver.is_some())),
         Decision::Prompt { .. } => {
             let preview = format!("call MCP tool {id}:\n{call_args:#}");
             if !request_approval(approver, preview, None).await.allowed() {
@@ -3954,6 +4064,18 @@ struct RunOpts {
     timeout_secs: u64,
 }
 
+/// A plan-mode refusal with the way out appended when this run can ask: the
+/// model should present its plan instead of retrying the blocked call.
+fn plan_mode_hint(reason: String, can_ask: bool) -> String {
+    match can_ask && reason.contains("mode is `plan`") {
+        true => format!(
+            "{reason}. Present your plan with `exit_plan_mode` and ask the user \
+             to approve leaving plan mode; do not retry this call until they do"
+        ),
+        false => reason,
+    }
+}
+
 /// Every execution goes through the same `Decision` path as edits: deny rules
 /// override the mode, ask-style modes prompt, headless runs without an
 /// approver deny.
@@ -3964,7 +4086,7 @@ async fn authorize_exec(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Res
         args: &arg_refs,
     }) {
         Decision::Allow => Ok::<(), anyhow::Error>(()),
-        Decision::Deny { reason } => bail!("{reason}"),
+        Decision::Deny { reason } => bail!("{}", plan_mode_hint(reason, env.approver.is_some())),
         Decision::Prompt { preview } => {
             if !request_approval(env.approver, preview, None)
                 .await
@@ -4232,13 +4354,22 @@ fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String>
         .as_ref()
         .context("memory is unavailable; no store is open")?;
     let memory = store.memory();
+    let source_session = ctx.session_id();
     match title.map(str::trim).filter(|t| !t.is_empty()) {
         Some(title) => {
-            memory.remember(title, note, note)?;
+            let path = match source_session {
+                Some(sid) => memory.remember_sourced(title, note, note, &sid)?,
+                None => memory.remember(title, note, note)?,
+            };
+            let _ = path;
             Ok(format!("remembered under \"{title}\""))
         }
         None => {
-            memory.append_project(note)?;
+            let fact = note.trim().chars().take(500).collect::<String>();
+            match source_session {
+                Some(sid) => memory.append_project_sourced(&fact, &sid)?,
+                None => memory.append_project(&fact)?,
+            }
             Ok("remembered in project memory".to_string())
         }
     }
@@ -4502,7 +4633,11 @@ fn read_numbered(target: &Path, start: Option<usize>, end: Option<usize>) -> Res
 }
 
 fn list_files(probe: &bash_tools::ToolProbe, base: &Path) -> Result<String> {
-    bash_tools::list(probe, base, MAX_LIST_ENTRIES)
+    let entries = bash_tools::list(probe, base, MAX_LIST_ENTRIES)?;
+    Ok(match entries.trim().is_empty() {
+        true => "directory exists but is empty".into(),
+        false => entries,
+    })
 }
 
 /// Search via the best available tool, then strip any paths the policy
@@ -4524,10 +4659,36 @@ fn search_files(
             )
         })
         .collect();
+    if filtered.is_empty()
+        && let Some(hint) = path_shaped_query_hint(repo_root, query)
+    {
+        return Ok(hint);
+    }
     Ok(bash_tools::render(
         repo_root,
         &filtered,
         SEARCH_CONTEXT_LINES,
+    ))
+}
+
+/// A path-shaped query is usually a file lookup sent to the wrong tool.
+fn path_shaped_query_hint(repo_root: &Path, query: &str) -> Option<String> {
+    let looks_like_path = !query.contains(char::is_whitespace)
+        && (query.contains('/') || Path::new(query).extension().is_some());
+    if !looks_like_path {
+        return None;
+    }
+    let nearby = bash_tools::suggest(repo_root, query, MAX_PATH_SUGGESTIONS);
+    if nearby.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "no content matches for `{query}`. If you meant the file itself, paths with similar names:\n{}",
+        nearby
+            .iter()
+            .map(|p| format!("  {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     ))
 }
 
@@ -4573,7 +4734,10 @@ async fn edit_file(
             path: &relative.to_string_lossy(),
         }) {
             Decision::Allow => {}
-            Decision::Deny { reason } => bail!("edit blocked by policy: {reason}"),
+            Decision::Deny { reason } => bail!(
+                "edit blocked by policy: {}",
+                plan_mode_hint(reason, approver.is_some())
+            ),
             Decision::Prompt { .. } => {
                 let preview = format!("{verb} {path}:\n{}", edits::preview(&block));
                 if !request_approval(approver, preview, None).await.allowed() {
@@ -4730,6 +4894,16 @@ fn agent_tool_schema() -> Value {
     })
 }
 
+/// The tasks an `agent` call carries: the `tasks` batch array, or a flat
+/// single `{agent, task}` call folded into a batch of one. Models fanning out
+/// often send one task per parallel call, so the flat shape must spawn too.
+fn agent_task_batch(args: &Value) -> Option<Vec<Value>> {
+    if let Some(tasks) = args.get("tasks").and_then(Value::as_array) {
+        return Some(tasks.clone());
+    }
+    (args.get("agent").is_some() && args.get("task").is_some()).then(|| vec![args.clone()])
+}
+
 /// Dispatch one `agent` tool call: run the swarm, cap reports, return JSON.
 /// Streams `agent_status` events so the UIs can render live per-agent progress.
 #[allow(clippy::too_many_arguments)]
@@ -4747,7 +4921,7 @@ async fn dispatch_agent_tool(
         Ok(v) => v,
         Err(e) => return format!("error: agent arguments were not valid JSON: {e}"),
     };
-    let Some(tasks_val) = args.get("tasks").and_then(Value::as_array) else {
+    let Some(tasks_val) = agent_task_batch(&args) else {
         return "error: agent tool requires a `tasks` array".to_string();
     };
     let mut tasks: Vec<crate::agents::AgentTask> = Vec::new();

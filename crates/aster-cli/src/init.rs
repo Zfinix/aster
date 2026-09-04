@@ -591,10 +591,11 @@ pub(crate) async fn provider_setup(
     };
 
     let key_var = key_var_for(&base_url);
-    let prompt = match (key_status(&base_url), provider.needs_key()) {
-        (Some(var), _) => format!("API key ({var} is set · enter to keep it)"),
-        (None, true) => format!("API key, stored as {key_var} (enter to add later)"),
-        (None, false) => "API key (usually none · enter to skip)".to_string(),
+    let has_key = key_status(&base_url).is_some();
+    let prompt = match (has_key, provider.needs_key()) {
+        (true, _) => format!("API key ({key_var} is set · enter to keep it)"),
+        (false, true) => format!("API key, stored as {key_var} (enter to add later)"),
+        (false, false) => "API key (usually none · enter to skip)".to_string(),
     };
     // Escaping the key prompt keeps the provider already chosen.
     let api_key = or_cancel(password(prompt).mask('•').allow_empty().interact())?

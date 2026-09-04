@@ -346,7 +346,7 @@ agent rewrites its own harness inputs during a session.
 carries lineage. The round cap and the index text matching the registered tool
 are already in.
 
-## Phase 9: Scheduled runs
+## Phase 9: Scheduled runs (shipped)
 
 **Gap.** Nothing in Aster can run without a human at the keyboard.
 
@@ -359,20 +359,29 @@ schedules:
     cron: "0 9 * * *"
     agent: sentinel
     task: "review yesterday's commits on main"
+    notify: true
 ```
 
 `aster cron install | list | remove | run <name>`: install generates launchd
 plists on macOS and crontab entries on Linux. Each entry invokes `aster run
-<agent> "<task>" --json`. `run` executes one immediately for testing. Every
-scheduled run records its own session tagged with the schedule name in
-`SessionMeta`, subject to Phase 1 retention. Headless semantics apply
+<agent> "<task>" --json --schedule <name>`. `run` executes one immediately for
+testing. Every scheduled run records its own session tagged with the schedule
+name in `SessionMeta`, subject to Phase 1 retention. Headless semantics apply
 unchanged: no approver means prompts deny and `ask_user` declines, so a
 scheduled agent is read-only unless its policy says otherwise.
 
-One-shot deferral rides the same machinery: `aster defer "18:00" "<task>"`
-(or `"+45m"`) installs a self-removing entry that fires once, runs the task
-as a tagged session, and uninstalls itself. Deferring is scheduling with a
-count of one, not a second subsystem.
+The scheduling logic lives in the `aster-cron` crate, not `aster-cli`: schedule
+validation, cron-to-launchd translation, plist and crontab rendering, and the
+native notification wrapper are all terminal-free and unit-tested standalone.
+Cron steps (`*/5`) and ranges (`1-5`) are rejected rather than silently
+misfiring, because launchd has no equivalent.
+
+One-shot reminders ride the same machinery: `aster remind "stand up" "in 30m"`
+(or `"at 18:00"`) installs a self-removing entry that posts a native
+notification (`osascript` on macOS, `notify-send` on Linux, no new
+dependency) and uninstalls itself. A reminder is scheduling with a count of
+one, not a second subsystem. `notify: true` on a schedule posts the same
+notification when a run finishes.
 
 **Done when.** `install` produces a valid plist or crontab entry. `run`
 records a tagged session. A scheduled reviewer completes end to end with zero

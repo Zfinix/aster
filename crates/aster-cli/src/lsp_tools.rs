@@ -44,7 +44,10 @@ fn with_client<T>(
 
 pub fn diagnostics(root: &Path, path: &str) -> Result<String> {
     let file = resolve(root, path)?;
-    let kind = server_for(&file)?;
+    let kind = match server_for(&file) {
+        Ok(kind) => kind,
+        Err(unavailable) => return Ok(unavailable),
+    };
     let lines = with_client(root, kind, |c| c.diagnostics(&file))?;
     Ok(if lines.is_empty() {
         "no diagnostics".to_string()
@@ -61,7 +64,10 @@ pub fn locations(
     query: Query,
 ) -> Result<String> {
     let file = resolve(root, path)?;
-    let kind = server_for(&file)?;
+    let kind = match server_for(&file) {
+        Ok(kind) => kind,
+        Err(unavailable) => return Ok(unavailable),
+    };
     let hits = with_client(root, kind, |c| match query {
         Query::References => c.references(&file, line, character),
         Query::Definitions => c.definitions(&file, line, character),
@@ -97,10 +103,15 @@ fn resolve(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(file)
 }
 
-fn server_for(file: &Path) -> Result<ServerKind> {
+/// A missing server is not a failure: the Err carries the plain message the
+/// tool returns so the model falls back to text search or a build.
+fn server_for(file: &Path) -> std::result::Result<ServerKind, String> {
     match supported(file) {
         Some(kind) if aster_lsp::installed(kind) => Ok(kind),
-        Some(kind) => bail!("{} is not installed", kind.binary()),
-        None => bail!("no language server for {}", file.display()),
+        Some(kind) => Err(format!(
+            "{} is not installed, so there are no language server checks for this file",
+            kind.binary()
+        )),
+        None => Err(format!("no language server for {}", file.display())),
     }
 }

@@ -191,13 +191,22 @@ async fn run_agent(
     activity: tokio::sync::mpsc::UnboundedSender<String>,
     injected: Arc<std::sync::Mutex<Vec<String>>>,
 ) -> anyhow::Result<String> {
-    let model = def
+    let mut child_client = deps.client.clone();
+    // An overridden model may belong to another provider than the parent's
+    // endpoint, so it is re-paired with an endpoint that serves it.
+    if let Some(model) = def
         .model
         .clone()
         .or_else(|| deps.swarm.collector_model.clone())
-        .unwrap_or_else(|| deps.client.model.clone());
-    let mut child_client = deps.client.clone();
-    child_client.model = model;
+    {
+        match crate::mom::target_for_model(&model, deps.client.base_url()) {
+            Some(target) => {
+                child_client.set_endpoint(&target.base_url, target.key);
+                child_client.model = target.model_param;
+            }
+            None => child_client.model = model,
+        }
+    }
 
     let tool_allowlist: HashSet<String> = def
         .tools

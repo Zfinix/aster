@@ -7,6 +7,7 @@ mod budget;
 mod chat;
 mod config;
 mod credentials;
+mod cron;
 mod edits;
 mod fix;
 mod git;
@@ -27,8 +28,10 @@ mod plugins;
 mod preview;
 mod project;
 mod redact;
+mod remind;
 mod remote;
 mod review;
+mod run;
 mod serve;
 mod sessions;
 mod settings;
@@ -138,6 +141,12 @@ enum Command {
     Models(config::models::ModelsArgs),
     /// Drive the agent remotely from a messaging channel (Telegram).
     Remote(remote::RemoteArgs),
+    /// Run one agent on one task with no terminal attached.
+    Run(run::RunArgs),
+    /// Install, list, and remove scheduled agent runs from aster.yaml.
+    Cron(cron::CronArgs),
+    /// Set a one-shot native notification: `aster remind "text" "in 30m"`.
+    Remind(remind::RemindArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
     Serve(serve::ServeArgs),
     /// Download the latest released aster binary and swap it in place.
@@ -219,6 +228,9 @@ async fn main() -> Result<()> {
         Command::Provider(args) => config::provider::run(args),
         Command::Models(args) => config::models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
+        Command::Run(args) => run::run(args).await,
+        Command::Cron(args) => cron::run(args),
+        Command::Remind(args) => remind::run(args),
         Command::Serve(args) => serve::run(args).await,
         Command::Upgrade(args) => upgrade::run(args).await,
     };

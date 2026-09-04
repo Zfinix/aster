@@ -15,6 +15,7 @@ pub struct Settings {
     pub agent: Agent,
     pub agents: Agents,
     pub ui: Ui,
+    pub schedules: Vec<aster_cron::Schedule>,
 }
 
 /// Terminal presentation choices.
@@ -160,6 +161,19 @@ impl Settings {
             },
             ui: Ui {
                 welcome: project.ui.welcome.or(self.ui.welcome),
+            },
+            // Schedules merge by name, the project's definition winning, so a
+            // repo can override a global cadence without dropping the rest.
+            schedules: {
+                let mut merged = self.schedules;
+                for s in project.schedules {
+                    if let Some(existing) = merged.iter_mut().find(|e| e.name == s.name) {
+                        *existing = s;
+                    } else {
+                        merged.push(s);
+                    }
+                }
+                merged
             },
         }
     }

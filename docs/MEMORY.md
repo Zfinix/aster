@@ -269,6 +269,51 @@ recorded as an `eviction` event, so the transcript shows what was dropped.
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the review engine, and the crate
 source in [`crates/aster-persist`](../crates/aster-persist) for the types.
 
+## Memory as a learning system
+
+Memory becomes a learning system when durable knowledge is automatically
+distilled from real sessions, audited, and decayed when it goes stale. This is
+informed by the agent-memory literature: episodic-to-semantic consolidation
+(MemGPT), reflection over trajectories (Reflexion, Generative Agents), learning
+from experience (ExpeL), and progressive disclosure with relevance-based
+retrieval (MemGPT/CoALA). The arXiv anchors are in the papers below.
+
+Implemented incrementally; each stage lands independently:
+
+### Stage 1: provenance, journal, archive, bounded index
+
+- **Provenance.** A block written from a live session records
+  `source_session` in its frontmatter, so any fact can be audited back to the
+  transcript turn that produced it.
+- **Journal.** Every memory write, delete, archive, and recall appends one JSON
+  line to `journal.jsonl`. It is the audit trail behind consolidation: decay,
+  merges, and archives can be explained and reverted from it.
+- **Archive.** `archive()` moves a block to `.archive/`, out of the prompt
+  index but recoverable and journaled. This is how decay and supersession
+  retire stale facts without silently losing them.
+- **Bounded index.** The block index rendered into the prompt is capped at
+  `MAX_INDEX_ENTRIES` (60), ordered most-recent-first, with a truncation notice.
+  Model-visible memory cannot grow without bound.
+
+### Stage 2 (next): consolidation
+
+A model-backed consolidation pass, run on turn/session boundaries, distills
+durable semantic memory from the episodic transcript: propose new blocks,
+merge duplicates, drop contradictions, archive stale facts. Bounded and
+budgeted per AGENTS.md; never dumps the full transcript into context.
+
+### Stage 3 (next): retrieval
+
+Relevance-gated retrieval over blocks instead of the flat always-on index, with
+recency as a feature. The rebuildable SQLite/FTS5 index in `aster-index` is the
+pattern.
+
+### Stage 4 (next): memory evals
+
+A harness fixture suite that proves cross-session learning: a preference taught
+in session A is applied in a fresh session B; a superseded convention stops
+being applied; decay archives correctly. Wired into CI as a gate.
+
 ## References
 
 Prior art and the principles this design draws on:

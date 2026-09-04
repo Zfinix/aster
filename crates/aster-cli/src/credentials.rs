@@ -103,7 +103,7 @@ fn save(stored: &Stored) -> Result<()> {
 /// and the OpenRouter key `aster login openrouter` stored in `~/.aster/.env`.
 /// A key exported in the shell stays the shell's business.
 pub fn logout_all() -> Result<()> {
-    let codex_removed = aster_ai::codex::clear(&aster_dir()?);
+    let codex_removed = aster_ai::codex::clear(&aster_ai::home_dir()?);
     let keys_removed = match crate::persist::global_env_path() {
         Some(path) => {
             let openrouter = crate::init::remove_env_key(&path, crate::openrouter_auth::KEY_VAR)?;

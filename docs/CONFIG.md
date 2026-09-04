@@ -139,7 +139,7 @@ until `--all`.
 
 One endpoint needs no key at all: `https://chatgpt.com/backend-api/codex` runs
 on a ChatGPT subscription. Run `aster login codex` once; Aster stores the tokens
-in `~/.aster/codex.json`, refreshes them before they expire, and imports an
+in `~/.local/share/aster/codex.json`, refreshes them before they expire, and imports an
 existing `~/.codex/auth.json` from the Codex CLI if it finds one. That endpoint
 speaks OpenAI's Responses API rather than `/chat/completions`; Aster translates
 both directions, so models and tools work as they do anywhere else.
@@ -174,7 +174,7 @@ marked "review only" are limited to the review pipeline.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `model` | string | `openai/gpt-4o-mini` | Fallback for any stage without its own override. Env `ASTER_MODEL`, flag `--model`. |
+| `model` | string | `openai/gpt-4o-mini` | Fallback for any stage without its own override. Env `ASTER_MODEL`, flag `--model`. The value `auto` picks from OpenRouter's live benchmark rankings instead (OpenRouter endpoints only); the tier comes from `ASTER_ROUTER_TIER` (`cheap` \| `balanced` \| `strong`, default `balanced`), picks are cached for a day in `~/.aster/model-rankings.json`, and `aster model router` shows what each tier resolves to. |
 | `base_url` | string | `https://openrouter.ai/api/v1` | Any OpenAI-compatible endpoint. Env `ASTER_BASE_URL`. |
 | `effort` | `off` \| `low` \| `medium` \| `high` | `low` | Reasoning budget for thinking models. Env `ASTER_EFFORT` or `ASTER_REASONING_EFFORT`, flag `--effort`. |
 | `web_search` | bool | `false` | OpenRouter web search: the agent gets a server tool it calls when it needs one, review stages get the `web` plugin, which searches on every request whether or not the diff calls for it. No effect on other endpoints. Env `ASTER_WEB_SEARCH` (`1`, `true`, `yes`, `on`). |

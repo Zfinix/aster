@@ -164,6 +164,10 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             }));
         }
         "setProvider" => switch_provider(state, message).await?,
+        "login" => {
+            let target = message["target"].as_str().unwrap_or_default();
+            run::login(state, target).await?;
+        }
         "compact" => {
             let model = message["model"].as_str().filter(|m| !m.is_empty());
             match info::compact(&state.cli, &message["messages"], model).await {
@@ -223,6 +227,9 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             state,
             message["finding"]["file_path"].as_str().unwrap_or_default(),
         ),
+        // No settings panel in a browser, so settings is the config file
+        // itself, opened the way `openFile` opens a repo file.
+        "openSettings" => open_settings(state),
         // The page answers `openExternal`, `openUntitled` and `runCommand`
         // itself, since all three are things a browser already does.
         _ => {}
@@ -270,6 +277,7 @@ async fn init(state: &Arc<AppState>) -> Value {
         // The server is the binary, so there is nothing to go missing.
         "binaryOk": true,
         "skills": info::skills(&state.cli).await,
+        "setup": info::setup(&state.cli).await,
     })
 }
 
@@ -412,6 +420,22 @@ fn mention_paths(state: &Arc<AppState>, uris: &Value) {
         .collect();
     if !mentions.is_empty() {
         state.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+    }
+}
+
+/// Settings in a browser is the config file itself: the repo's `aster.yaml`
+/// when there is one, the global one otherwise.
+fn open_settings(state: &Arc<AppState>) {
+    let repo = state.cli.root.join("aster.yaml");
+    let target = if repo.exists() {
+        repo
+    } else if let Some(home) = dirs::home_dir() {
+        home.join(".aster").join("aster.yaml")
+    } else {
+        repo
+    };
+    if let Err(e) = open::that_detached(&target) {
+        tracing::warn!("could not open {}: {e}", target.display());
     }
 }
 

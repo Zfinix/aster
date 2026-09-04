@@ -44,10 +44,10 @@ pub async fn run(args: LoginArgs) -> Result<()> {
     }
 }
 
-/// ChatGPT subscription OAuth. Tokens land in ~/.aster/codex.json and draw
-/// against the plan, not API credits.
+/// ChatGPT subscription OAuth. Tokens land in the data dir's codex.json and
+/// draw against the plan, not API credits.
 async fn login_codex() -> Result<()> {
-    let home = credentials::aster_dir()?;
+    let home = aster_ai::home_dir()?;
     let auth = aster_ai::codex::login(&home).await?;
     println!(
         "Codex login stored in {}.",

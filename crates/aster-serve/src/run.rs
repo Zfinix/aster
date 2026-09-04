@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::oneshot;
 
@@ -236,6 +236,67 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
         state.post_run_state().await;
     });
     Ok(())
+}
+
+/// Start `aster login <target>` and relay what it prints as `loginOutput`, so
+/// the browser can follow the sign-in it asked for. The flow opens a browser
+/// on this machine, so it serves the local case; the ending arrives as
+/// `loginDone`. A login already running is replaced.
+pub async fn login(state: &Arc<AppState>, target: &str) -> Result<(), String> {
+    if target.is_empty() {
+        return Err("no login target given".into());
+    }
+    let mut child = state
+        .cli
+        .command(&["login", target])
+        .spawn()
+        .map_err(|e| format!("could not launch aster login: {e}"))?;
+    drop(child.stdin.take());
+    let last = Arc::new(std::sync::Mutex::new(String::new()));
+    relay(state, child.stdout.take(), last.clone());
+    relay(state, child.stderr.take(), last.clone());
+
+    let (cancel, cancelled) = oneshot::channel();
+    if let Some(previous) = state.login.lock().await.replace(cancel) {
+        let _ = previous.send(());
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let Some(code) = wait(child, cancelled).await else {
+            return;
+        };
+        let last = last.lock().map(|l| l.clone()).unwrap_or_default();
+        let message = match (code, last.is_empty()) {
+            (0, _) => "Signed in.".to_string(),
+            (_, false) => last,
+            (code, true) => format!("aster login exited with code {code}."),
+        };
+        state.post(json!({ "type": "loginDone", "ok": code == 0, "message": message }));
+    });
+    Ok(())
+}
+
+/// Forward a login's output line by line, remembering the last one as the
+/// reason when the flow fails.
+fn relay<R>(state: &Arc<AppState>, pipe: Option<R>, last: Arc<std::sync::Mutex<String>>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let Some(pipe) = pipe else { return };
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(pipe).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(mut slot) = last.lock() {
+                *slot = line.to_string();
+            }
+            state.post(json!({ "type": "loginOutput", "line": line }));
+        }
+    });
 }
 
 /// Stop a run. The waiter frees the slot and reports what happened.

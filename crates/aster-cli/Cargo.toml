@@ -13,12 +13,14 @@ anydoc = { workspace = true }
 anyhow = { workspace = true }
 aster-agents = { path = "../aster-agents" }
 aster-analyzers = { path = "../aster-analyzers" }
+aster-cron = { path = "../aster-cron" }
 aster-lsp = { path = "../aster-lsp" }
 aster-ai = { path = "../aster-ai" }
 aster-mom = { path = "../aster-mom" }
 aster-eval = { path = "../aster-eval" }
 aster-harness = { path = "../aster-harness" }
 aster-mcp = { path = "../aster-mcp" }
+aster-memory = { path = "../aster-memory" }
 aster-models = { path = "../aster-models" }
 aster-plugins = { path = "../aster-plugins" }
 aster-policy = { path = "../aster-policy" }
@@ -74,6 +76,7 @@ toml = "0.8"
 tracing = { workspace = true }
 tracing-subscriber = { features = ["env-filter"], version = "0.3" }
 unicode-width = "0.2"
+ulid = "1"
 
 [dev-dependencies]
 wiremock = "0.6"

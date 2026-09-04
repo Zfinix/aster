@@ -58,8 +58,9 @@ fn command_model_switches_client_and_app() {
     let mut app = chat_app(client.model.clone());
     let (mut p, _rx) = pane();
     app.handle_command("model anthropic/claude-sonnet-5", &mut client, &mut p);
-    assert_eq!(client.model, "anthropic/claude-sonnet-5");
-    assert_eq!(app.model, "anthropic/claude-sonnet-5");
+    // Native (non-aggregator) routing strips the provider prefix.
+    assert_eq!(client.model, "claude-sonnet-5");
+    assert_eq!(app.model, "claude-sonnet-5");
 }
 
 #[test]

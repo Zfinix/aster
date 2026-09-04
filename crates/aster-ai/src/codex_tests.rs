@@ -168,3 +168,90 @@ fn pkce_challenge_is_verifier_sha256() {
         .encode(Sha256::digest(pair.verifier.as_bytes()));
     assert_eq!(pair.challenge, expected);
 }
+
+fn tokens(access: &str, refresh: &str) -> CodexAuth {
+    CodexAuth {
+        tokens: Some(TokenSet {
+            id_token: "id".into(),
+            access_token: access.into(),
+            refresh_token: refresh.into(),
+            account_id: Some("acc".into()),
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn store_lives_in_the_data_dir() {
+    let home = temp_home();
+    assert_eq!(
+        store_path(home.path()),
+        home.path().join(".local/share/aster/codex.json")
+    );
+}
+
+#[test]
+fn load_moves_a_legacy_store_to_the_current_path() {
+    let home = temp_home();
+    let misplaced = home.path().join(".local/share/aster/.aster/codex.json");
+    fs::create_dir_all(misplaced.parent().unwrap()).unwrap();
+    fs::write(
+        &misplaced,
+        serde_json::to_vec(&tokens("old-at", "old-rt")).unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load(home.path()).expect("loaded");
+    assert_eq!(loaded.tokens.unwrap().access_token, "old-at");
+    assert!(store_path(home.path()).exists());
+    assert!(!misplaced.exists());
+}
+
+#[tokio::test]
+async fn refresh_stores_the_new_tokens_and_keeps_the_old_refresh_token() {
+    use wiremock::matchers::{body_string_contains, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains("refresh_token=old-rt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "new-at",
+            "id_token": "new-id",
+        })))
+        .mount(&server)
+        .await;
+
+    let home = temp_home();
+    let mut auth = tokens("old-at", "old-rt");
+    refresh_with(&server.uri(), home.path(), &mut auth)
+        .await
+        .expect("refresh");
+
+    let stored = load(home.path()).expect("stored").tokens.unwrap();
+    assert_eq!(stored.access_token, "new-at");
+    assert_eq!(stored.id_token, "new-id");
+    assert_eq!(stored.refresh_token, "old-rt");
+    assert_eq!(stored.account_id.as_deref(), Some("acc"));
+}
+
+#[tokio::test]
+async fn refresh_rejection_asks_for_a_new_login() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant"))
+        .mount(&server)
+        .await;
+
+    let home = temp_home();
+    let mut auth = tokens("old-at", "old-rt");
+    let err = refresh_with(&server.uri(), home.path(), &mut auth)
+        .await
+        .expect_err("rejected");
+    assert!(err.to_string().contains("aster login codex"), "{err}");
+    assert!(load(home.path()).is_none());
+}

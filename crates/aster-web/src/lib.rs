@@ -42,8 +42,35 @@ pub trait WebCrawl: Send + Sync {
     async fn crawl(&self, url: &str, opts: &CrawlOptions) -> anyhow::Result<CrawlResult>;
 }
 
-/// Composite backend that holds every configured web provider. Methods dispatch
-/// to the best available backend in priority order.
+/// One provider's pending attempt at a request: its display name and the
+/// not-yet-awaited call, so dispatch can try providers lazily in order.
+type Attempt<'a, T> = (
+    &'static str,
+    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<T>> + Send + 'a>>,
+);
+
+/// Await attempts in priority order and return the first success. A failed
+/// provider is logged and skipped; only when every attempt fails does the
+/// call error, naming what each provider reported.
+async fn first_success<T>(what: &str, attempts: Vec<Attempt<'_, T>>) -> anyhow::Result<T> {
+    let mut failures = Vec::new();
+    for (provider, attempt) in attempts {
+        match attempt.await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                tracing::warn!(
+                    provider,
+                    "web {what} provider failed, trying the next: {err:#}"
+                );
+                failures.push(format!("{provider}: {err:#}"));
+            }
+        }
+    }
+    anyhow::bail!("every {what} provider failed:\n  {}", failures.join("\n  "))
+}
+
+/// Composite backend that holds every configured web provider. Methods try
+/// providers in priority order and fall through to the next one on failure.
 #[derive(Clone)]
 pub struct WebBackend {
     /// Search-first, so it leads `search` and sits mid-table for `extract`.
@@ -99,48 +126,48 @@ impl WebBackend {
     }
 
     pub async fn extract(&self, url: &str) -> anyhow::Result<ExtractedPage> {
+        let mut attempts: Vec<Attempt<'_, ExtractedPage>> = Vec::new();
         if let Some(ref c) = self.context_dev {
-            return c.extract(url).await;
+            attempts.push(("Context.dev", Box::pin(c.extract(url))));
         }
         if self.firecrawl.is_keyed() {
-            return self.firecrawl.extract(url).await;
+            attempts.push(("Firecrawl", Box::pin(self.firecrawl.extract(url))));
         }
         if let Some(ref c) = self.cloudflare {
-            return c.extract(url).await;
+            attempts.push(("Cloudflare", Box::pin(c.extract(url))));
         }
         if let Some(ref c) = self.browserbase {
-            return c.fetch(url).await;
+            attempts.push(("Browserbase", Box::pin(c.fetch(url))));
         }
         if let Some(ref c) = self.exa {
-            return c.extract(url).await;
+            attempts.push(("Exa", Box::pin(c.extract(url))));
         }
-        // Keyless Firecrawl is rate-limited per IP, so a refusal falls through
-        // to the other keyless providers rather than failing the call.
-        if let Ok(page) = self.firecrawl.extract(url).await {
-            return Ok(page);
+        if !self.firecrawl.is_keyed() {
+            attempts.push(("Firecrawl (keyless)", Box::pin(self.firecrawl.extract(url))));
         }
-        if let Ok(page) = self.jina.extract(url).await {
-            return Ok(page);
-        }
-        if let Ok(page) = self.duckduckgo.extract(url).await {
-            return Ok(page);
-        }
-        self.plain_http.extract(url).await
+        attempts.push(("Jina", Box::pin(self.jina.extract(url))));
+        attempts.push(("DuckDuckGo", Box::pin(self.duckduckgo.extract(url))));
+        attempts.push(("plain HTTP", Box::pin(self.plain_http.extract(url))));
+        first_success("extract", attempts).await
     }
 
     pub async fn crawl(&self, url: &str, opts: &CrawlOptions) -> anyhow::Result<CrawlResult> {
+        let mut attempts: Vec<Attempt<'_, CrawlResult>> = Vec::new();
         if let Some(ref c) = self.context_dev {
-            return c.crawl(url, opts).await;
+            attempts.push(("Context.dev", Box::pin(c.crawl(url, opts))));
         }
         if self.firecrawl.is_keyed() {
-            return self.firecrawl.crawl(url, opts).await;
+            attempts.push(("Firecrawl", Box::pin(self.firecrawl.crawl(url, opts))));
         }
         if let Some(ref c) = self.cloudflare {
-            return c.crawl(url, opts).await;
+            attempts.push(("Cloudflare", Box::pin(c.crawl(url, opts))));
         }
-        anyhow::bail!(
-            "crawl requires a configured provider (set CONTEXT_DEV_API_KEY, FIRECRAWL_API_KEY, or both CLOUDFLARE_BR_ACCOUNT_ID and CLOUDFLARE_BR_API_TOKEN)"
-        )
+        if attempts.is_empty() {
+            anyhow::bail!(
+                "crawl requires a configured provider (set CONTEXT_DEV_API_KEY, FIRECRAWL_API_KEY, or both CLOUDFLARE_BR_ACCOUNT_ID and CLOUDFLARE_BR_API_TOKEN)"
+            )
+        }
+        first_success("crawl", attempts).await
     }
 
     pub async fn search(
@@ -148,25 +175,33 @@ impl WebBackend {
         query: &str,
         opts: &SearchOptions,
     ) -> anyhow::Result<Vec<ExtractedPage>> {
+        let mut attempts: Vec<Attempt<'_, Vec<ExtractedPage>>> = Vec::new();
         if let Some(ref c) = self.exa {
-            return c.search(query, opts).await;
+            attempts.push(("Exa", Box::pin(c.search(query, opts))));
         }
         if let Some(ref c) = self.perplexity {
-            return c.search(query, opts).await;
+            attempts.push(("Perplexity", Box::pin(c.search(query, opts))));
         }
         if let Some(ref c) = self.context_dev {
-            return c.search(query, opts.limit).await;
+            attempts.push(("Context.dev", Box::pin(c.search(query, opts.limit))));
         }
         if self.firecrawl.is_keyed() {
-            return self.firecrawl.search(query, opts.limit).await;
+            attempts.push((
+                "Firecrawl",
+                Box::pin(self.firecrawl.search(query, opts.limit)),
+            ));
         }
         if let Some(ref c) = self.browserbase {
-            return c.search(query, opts.limit).await;
+            attempts.push(("Browserbase", Box::pin(c.search(query, opts.limit))));
         }
-        if let Ok(hits) = self.firecrawl.search(query, opts.limit).await {
-            return Ok(hits);
+        if !self.firecrawl.is_keyed() {
+            attempts.push((
+                "Firecrawl (keyless)",
+                Box::pin(self.firecrawl.search(query, opts.limit)),
+            ));
         }
-        self.duckduckgo.search(query, opts).await
+        attempts.push(("DuckDuckGo", Box::pin(self.duckduckgo.search(query, opts))));
+        first_success("search", attempts).await
     }
 
     pub async fn sitemap(

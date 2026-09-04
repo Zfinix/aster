@@ -1982,8 +1982,10 @@ impl ChatApp {
                 };
                 ctx.record_summary(&summary, replaces_through);
                 self.history = history;
+                // The last usage snapshot reflects the pre-compact request;
+                // drop it so the meter reads empty until the next turn.
+                self.usage = None;
                 self.flash = None;
-                self.note("compacted earlier turns to save context");
             }
             AppEvent::CompactFailed(e) => {
                 self.flash = None;
@@ -2398,6 +2400,30 @@ impl ChatApp {
         self.model = model;
     }
 
+    /// `/model <id>` may name another provider's model; re-pair the endpoint
+    /// and wire format first, so the id is not sent to an endpoint that cannot
+    /// serve it. Picker choices skip this: they came from the endpoint itself.
+    fn set_model_typed(&mut self, model: String, client: &mut AiClient) {
+        let Some(target) = crate::mom::target_for_model(&model, &self.provider_base_url) else {
+            return self.set_model(model, client);
+        };
+        if target.base_url.trim_end_matches('/') != self.provider_base_url.trim_end_matches('/') {
+            client.set_endpoint(&target.base_url, target.key);
+            self.provider_base_url = target.base_url.clone();
+            if let Err(e) = crate::settings::persist_user_review(
+                Some(&self.repo_root),
+                &[("base_url", &target.base_url)],
+            ) {
+                self.note(&format!("could not save the provider choice: {e:#}"));
+            }
+            self.note(&format!(
+                "{model} runs on {}",
+                crate::init::provider_label(&target.base_url)
+            ));
+        }
+        self.set_model(target.model_param, client);
+    }
+
     /// A model change takes effect next turn, since each turn clones the client.
     fn set_model(&mut self, model: String, client: &mut AiClient) {
         if model == self.model {
@@ -2551,7 +2577,7 @@ impl ChatApp {
         let arg = parts.next().map(str::trim).filter(|s| !s.is_empty());
         match name {
             "model" | "m" => match arg {
-                Some(model) => self.set_model(model.to_string(), client),
+                Some(model) => self.set_model_typed(model.to_string(), client),
                 None => {
                     let tx = pane.sender();
                     self.request_models(client, tx);
@@ -2600,10 +2626,28 @@ impl ChatApp {
                 _ => self.confirm_yolo(pane),
             },
             "clear" | "c" => {
+                let finished = self.session_id();
                 self.history.clear();
                 self.start_new_session();
                 self.queue.clear();
                 self.clear_requested = true;
+                // Learn from the session /clear just closed. Detached: the TUI
+                // outlives the turn, so the pass never blocks the composer.
+                if let Some(id) = finished
+                    && let Some(store) = self.store.clone()
+                {
+                    let client = client.clone();
+                    let repo_root = self.repo_root.clone();
+                    tokio::spawn(async move {
+                        crate::chat::consolidate_finished_session(
+                            &client,
+                            Some(&store),
+                            &repo_root,
+                            &id,
+                        )
+                        .await;
+                    });
+                }
                 let welcome = self.welcome_block();
                 self.emit(welcome);
             }

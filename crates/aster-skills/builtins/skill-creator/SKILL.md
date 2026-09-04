@@ -34,3 +34,26 @@ description: Turning a workflow this session learned into a reusable skill. Use 
 9. **Corrections are skill fuel.** When the user corrects the same thing a
    second time, that is the signal: offer to fold it into a skill or a
    `remember` note so they never repeat it again.
+
+## Loader rules and tooling
+
+Validation enforced by aster's loader: the file must open with a `---`
+frontmatter fence; `description` is required, non-empty, max 1024 characters;
+`name` is optional (falls back to the directory name) but when present must be
+lowercase letters, digits, and hyphens, max 64 characters.
+
+Scaffold and lint from the CLI:
+
+```sh
+aster skills init my-skill      # scaffold my-skill/SKILL.md
+aster skills add ./my-skill -l  # validate: listed if it parses, warns if not
+aster skills add ./my-skill     # install into .aster/skills to try it
+```
+
+`add -l` against a local path is the fastest check: a skill that does not
+appear in the listing failed frontmatter validation.
+
+To publish a skills repo, host one subdirectory per skill under `skills/`
+(`skills/my-skill/SKILL.md`); consumers install with
+`aster skills add owner/repo`. Names must be unique within a repo; on
+collision the first found wins.

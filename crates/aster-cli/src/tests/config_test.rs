@@ -298,3 +298,39 @@ fn each_scope_keeps_its_own_value() {
     assert_eq!(effort["global"], json!("low"));
     assert!(effort["local"].is_null());
 }
+
+#[test]
+fn setup_names_the_browser_login_for_endpoints_that_have_one() {
+    let codex = provider::Setup::for_endpoint("https://chatgpt.com/backend-api/codex");
+    assert_eq!(codex.login, Some("codex"));
+    assert!(codex.key_vars.is_empty());
+
+    let openrouter = provider::Setup::for_endpoint("https://openrouter.ai/api/v1");
+    assert_eq!(openrouter.login, Some("openrouter"));
+    assert_eq!(openrouter.key_vars.first(), Some(&"OPEN_ROUTER_API_KEY"));
+
+    let deepseek = provider::Setup::for_endpoint("https://api.deepseek.com");
+    assert_eq!(deepseek.login, None);
+    assert!(deepseek.key_vars.contains(&"ASTER_API_KEY"));
+}
+
+#[test]
+fn missing_credentials_message_points_at_the_fix() {
+    let codex = provider::MissingCredentials(provider::Setup::for_endpoint(
+        "https://chatgpt.com/backend-api/codex",
+    ));
+    assert!(codex.to_string().contains("aster login codex"));
+
+    let openrouter = provider::MissingCredentials(provider::Setup::for_endpoint(
+        "https://openrouter.ai/api/v1",
+    ));
+    let text = openrouter.to_string();
+    assert!(text.contains("no API key"), "{text}");
+    assert!(text.contains("aster login openrouter"), "{text}");
+
+    let deepseek =
+        provider::MissingCredentials(provider::Setup::for_endpoint("https://api.deepseek.com"));
+    let text = deepseek.to_string();
+    assert!(text.contains("DEEPSEEK_API_KEY"), "{text}");
+    assert!(!text.contains("aster login"), "{text}");
+}

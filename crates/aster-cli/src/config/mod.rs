@@ -218,9 +218,16 @@ fn key_status(repo_root: &Path) -> Result<()> {
             .iter()
             .map(|(v, s)| json!({ "var": v, "source": s.as_str() }))
             .collect();
+        let setup = provider::Setup::needed(&base_url);
         println!(
             "{}",
-            json!({ "ok": true, "base_url": base_url, "vars": rows })
+            json!({
+                "ok": true,
+                "base_url": base_url,
+                "vars": rows,
+                "configured": setup.is_none(),
+                "setup": setup,
+            })
         );
         return Ok(());
     }

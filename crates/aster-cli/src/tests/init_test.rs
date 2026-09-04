@@ -111,8 +111,10 @@ fn find_provider_refuses_endpoints_with_an_unfilled_placeholder() {
 
 #[test]
 fn recommended_falls_back_to_the_example_model() {
+    // OpenRouter's shortlist is live now (the benchmark router), so the
+    // catalog only carries its example model.
     let openrouter = provider_recommended("https://openrouter.ai/api/v1");
-    assert!(openrouter.len() > 1);
+    assert_eq!(openrouter, ["deepseek/deepseek-v4-pro"]);
     // No shortlist of its own: the example model is the whole answer.
     assert_eq!(provider_recommended("https://api.x.ai/v1"), ["grok-4"]);
     assert!(provider_recommended("https://nobody.example/v1").is_empty());

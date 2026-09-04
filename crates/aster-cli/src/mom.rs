@@ -66,6 +66,51 @@ fn openrouter_slug(model_id: &str) -> String {
     format!("{mapped}/{rest}")
 }
 
+/// Where an explicitly named model should run, given the endpoint currently in
+/// use: an endpoint that serves the id and the id in that endpoint's wire
+/// format. `None` means keep the current endpoint and the id as written.
+pub(crate) fn target_for_model(model_id: &str, current_base_url: &str) -> Option<RouterTarget> {
+    let urls: BTreeMap<String, String> = crate::init::provider_base_urls().into_iter().collect();
+    let served = aster_ai::keys::catalog_models(current_base_url)
+        .iter()
+        .any(|m| m == model_id);
+    let has_key = |url: &str| aster_ai::keys::resolve_key(url).is_some();
+    let (base_url, model_param) =
+        pick_model_endpoint(model_id, current_base_url, &urls, served, &has_key)?;
+    let (key, _) = aster_ai::keys::resolve_key(&base_url)?;
+    Some(RouterTarget {
+        base_url,
+        key,
+        model_param,
+    })
+}
+
+/// The endpoint-picking rule behind [`target_for_model`], pure so tests can
+/// drive it: OpenRouter serves any prefixed id, the current endpoint keeps ids
+/// it lists, and otherwise the prefix names the provider to switch to.
+fn pick_model_endpoint(
+    model_id: &str,
+    current_base_url: &str,
+    urls: &BTreeMap<String, String>,
+    served_by_current: bool,
+    has_key: &dyn Fn(&str) -> bool,
+) -> Option<(String, String)> {
+    if current_base_url.contains("openrouter") {
+        return Some((current_base_url.to_string(), openrouter_slug(model_id)));
+    }
+    if served_by_current {
+        return None;
+    }
+    let (prefix, rest) = model_id.split_once('/')?;
+    if let Some(url) = urls.get(provider_id(prefix))
+        && has_key(url)
+    {
+        return Some((url.clone(), rest.to_string()));
+    }
+    let openrouter = urls.get("openrouter").filter(|url| has_key(url))?;
+    Some((openrouter.clone(), openrouter_slug(model_id)))
+}
+
 impl MomSession {
     pub fn load(repo_root: &Path) -> Option<Self> {
         let home = dirs::home_dir().map(|h| h.join(".aster"));
@@ -516,3 +561,7 @@ fn check() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/mom_test.rs"]
+mod tests;

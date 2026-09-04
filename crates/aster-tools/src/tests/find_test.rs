@@ -44,6 +44,39 @@ fn find_reports_no_matches() {
 }
 
 #[test]
+fn find_matches_a_directory_by_name() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    let out = find(repo.path(), repo.path(), "src", 10).unwrap();
+    assert_eq!(out, "crates/aster-cli/src/");
+}
+
+#[test]
+fn find_matches_a_directory_by_glob() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    let out = find(repo.path(), repo.path(), "*cli*", 10).unwrap();
+    assert!(out.lines().any(|l| l == "crates/aster-cli/"), "{out}");
+}
+
+#[test]
+fn find_suggests_near_misses_for_a_wrong_name() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    let out = find(repo.path(), repo.path(), "chat.js", 10).unwrap();
+    assert!(out.starts_with("no files matched `chat.js`"), "{out}");
+    assert!(out.contains("crates/aster-cli/src/chat.rs"), "{out}");
+}
+
+#[test]
+fn find_strips_glob_syntax_before_suggesting() {
+    let repo = tempdir().unwrap();
+    tree(repo.path());
+    let out = find(repo.path(), repo.path(), "docs/*chat*", 10).unwrap();
+    assert!(out.contains("crates/aster-cli/src/chat.rs"), "{out}");
+}
+
+#[test]
 fn find_empty_pattern_errors() {
     let repo = tempdir().unwrap();
     assert!(find(repo.path(), repo.path(), "  ", 10).is_err());

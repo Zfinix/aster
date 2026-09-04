@@ -3,7 +3,7 @@
 
 use std::env;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
 use crate::settings::Settings;
@@ -48,6 +48,16 @@ enum ModelCmd {
     /// The catalog's shortlist for the endpoint in use, for a picker to show
     /// before the endpoint has been asked.
     Recommended,
+    /// What the live benchmark router would pick per tier (cheap, balanced,
+    /// strong) from OpenRouter's rankings. This is what `model: auto` uses.
+    Router(RouterArgs),
+}
+
+#[derive(Args)]
+pub struct RouterArgs {
+    /// Only show one tier's pick: cheap, balanced, or strong.
+    #[arg(long, value_name = "TIER")]
+    pub(crate) tier: Option<String>,
 }
 
 #[derive(Args)]
@@ -62,7 +72,56 @@ pub async fn run_model(args: ModelArgs) -> Result<()> {
         ModelCmd::List(args) => run(args).await,
         ModelCmd::Use(args) => use_model(args),
         ModelCmd::Recommended => recommended(),
+        ModelCmd::Router(args) => router_command(args),
     }
+}
+
+/// Live picks from OpenRouter's benchmark data, the same resolution
+/// `model: auto` runs. One fetch serves every tier and warms the cache.
+fn router_command(args: RouterArgs) -> Result<()> {
+    use aster_ai::router::{self, Tier};
+    let repo_root = env::current_dir().context("could not determine the current directory")?;
+    let settings = Settings::load(Some(&repo_root))?;
+    let (base_url, _) = super::provider::resolve_endpoint(&settings.review, None);
+    if !super::provider::is_openrouter(&base_url) {
+        bail!(
+            "the model router reads OpenRouter's rankings; point base_url at OpenRouter to use it"
+        );
+    }
+    let Some((api_key, _)) = aster_ai::keys::resolve_key(&base_url) else {
+        bail!("no OpenRouter key found. Run `aster login openrouter`, then try again");
+    };
+    let cache = match aster_ai::home_dir() {
+        Ok(home) => router::cache_path(&home),
+        Err(_) => std::env::temp_dir().join("aster-model-rankings.json"),
+    };
+    let picks = router::recommend(&api_key, &cache)?;
+    let wanted: Option<Tier> = args.tier.as_deref().and_then(Tier::parse);
+    if args.tier.is_some() && wanted.is_none() {
+        bail!(
+            "unknown tier {:?}; expected cheap, balanced, or strong",
+            args.tier
+        );
+    }
+    if crate::json_mode() {
+        let shown: Vec<_> = picks
+            .iter()
+            .filter(|p| wanted.is_none_or(|t| p.tier == t))
+            .collect();
+        println!("{}", serde_json::to_string(&shown)?);
+        return Ok(());
+    }
+    for pick in picks.iter().filter(|p| wanted.is_none_or(|t| p.tier == t)) {
+        println!(
+            "{:<9} {}  coding {}  agentic {}  ${:.2}/M",
+            pick.tier.as_str(),
+            pick.model,
+            pick.coding_index,
+            pick.agentic_index,
+            pick.blended_price_per_m
+        );
+    }
+    Ok(())
 }
 
 /// Write the choice where every surface reads it, then report what the next
@@ -73,12 +132,17 @@ pub(crate) fn use_model(args: UseModelArgs) -> Result<()> {
     super::provider::report(&repo_root, &saved, &["ASTER_MODEL"])
 }
 
-/// Catalog-backed, so it costs nothing and stays right when the endpoint moves.
+/// OpenRouter answers from the live benchmark router, so the shortlist tracks
+/// the rankings instead of a hand-written snapshot. Other endpoints keep the
+/// catalog's shortlist, which costs nothing and stays right when they move.
 fn recommended() -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
     let (base_url, _) = super::provider::resolve_endpoint(&settings.review, None);
-    let models = crate::init::provider_recommended(&base_url);
+    let models = match router_recommended(&base_url) {
+        Some(models) => models,
+        None => crate::init::provider_recommended(&base_url),
+    };
     if crate::json_mode() {
         println!("{}", serde_json::to_string(&models)?);
         return Ok(());
@@ -87,6 +151,23 @@ fn recommended() -> Result<()> {
         println!("{m}");
     }
     Ok(())
+}
+
+/// The router's picks for `base_url`, or `None` when the endpoint is not
+/// OpenRouter, no key is set, or the rankings cannot be fetched: callers fall
+/// back to the catalog rather than failing the command.
+fn router_recommended(base_url: &str) -> Option<Vec<String>> {
+    use aster_ai::router;
+    if !super::provider::is_openrouter(base_url) {
+        return None;
+    }
+    let (api_key, _) = aster_ai::keys::resolve_key(base_url)?;
+    let cache = match aster_ai::home_dir() {
+        Ok(home) => router::cache_path(&home),
+        Err(_) => std::env::temp_dir().join("aster-model-rankings.json"),
+    };
+    let picks = router::recommend(&api_key, &cache).ok()?;
+    Some(picks.into_iter().map(|p| p.model).collect())
 }
 
 /// `aster provider list`, sharing this module's renderer so the two spellings

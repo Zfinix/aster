@@ -119,6 +119,28 @@ fn a_metric_that_did_not_move_is_neither_better_nor_worse() {
 }
 
 #[test]
+fn model_spellings_fold_into_one_row() {
+    for spelling in [
+        "deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash",
+        "~deepseek/deepseek-v4-flash",
+        "DeepSeek-V4-Flash",
+    ] {
+        assert_eq!(canonical_model(spelling), "deepseek-v4-flash");
+    }
+    assert_eq!(canonical_model("z-ai/glm-5.2:free"), "glm-5.2:free");
+}
+
+#[test]
+fn a_model_with_no_tool_rounds_is_left_off_the_table() {
+    let report = report(&[
+        user("2026-08-03T09:00:00Z", "go"),
+        reply("2026-08-03T09:00:03Z", "answer"),
+    ]);
+    assert!(report.models.is_empty(), "{:?}", report.models);
+}
+
+#[test]
 fn render_reports_every_headline() {
     let report = report(&[
         user("2026-08-03T09:00:00Z", "go"),

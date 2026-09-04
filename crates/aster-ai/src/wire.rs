@@ -101,6 +101,62 @@ pub(crate) fn strip_image_parts(messages: &mut [Value]) {
     }
 }
 
+/// Anthropic and Gemini via OpenRouter need explicit cache breakpoints;
+/// everyone else caches implicitly. `ASTER_PROMPT_CACHE=off` disables it.
+pub(crate) fn wants_cache_control(base_url: &str, model: &str) -> bool {
+    if matches!(
+        std::env::var("ASTER_PROMPT_CACHE").ok().as_deref(),
+        Some("0") | Some("off") | Some("false")
+    ) {
+        return false;
+    }
+    let model = model.to_ascii_lowercase();
+    base_url.contains("openrouter") && (model.contains("claude") || model.contains("gemini"))
+}
+
+/// Mark the system prompt and the newest message as cache breakpoints; the
+/// moving one turns each round's context into the next round's cache hit.
+pub(crate) fn apply_cache_control(messages: &mut [Value]) {
+    if let Some(system) = messages.iter_mut().find(|m| role_of(m) == Some("system")) {
+        mark_cached(system);
+    }
+    for message in messages.iter_mut().rev() {
+        if mark_cached(message) {
+            break;
+        }
+    }
+}
+
+/// False when the message has no text block to mark.
+fn mark_cached(message: &mut Value) -> bool {
+    let Some(content) = message.get_mut("content") else {
+        return false;
+    };
+    if let Some(text) = content.as_str().map(str::to_owned) {
+        if text.is_empty() {
+            return false;
+        }
+        *content = json!([{
+            "type": "text",
+            "text": text,
+            "cache_control": { "type": "ephemeral" },
+        }]);
+        return true;
+    }
+    let Some(parts) = content.as_array_mut() else {
+        return false;
+    };
+    for part in parts.iter_mut().rev() {
+        if part.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(object) = part.as_object_mut()
+        {
+            object.insert("cache_control".into(), json!({ "type": "ephemeral" }));
+            return true;
+        }
+    }
+    false
+}
+
 fn wrap(text: &str) -> String {
     format!("{OPEN}{}{CLOSE}", text.trim())
 }

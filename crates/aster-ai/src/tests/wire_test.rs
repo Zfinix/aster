@@ -212,3 +212,59 @@ fn a_note_folded_into_a_turn_with_an_image_keeps_the_image() {
     assert!(folded[0].content.has_images());
     assert!(folded[0].content.text().contains("<system-note>"));
 }
+
+#[test]
+fn cache_control_marks_the_system_prompt_and_the_newest_message() {
+    let mut messages = vec![
+        json!({ "role": "system", "content": "you are aster" }),
+        json!({ "role": "user", "content": "hello" }),
+        json!({ "role": "assistant", "content": null, "tool_calls": [{}] }),
+        json!({ "role": "tool", "tool_call_id": "a", "content": "file contents" }),
+    ];
+    apply_cache_control(&mut messages);
+    assert_eq!(
+        messages[0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert_eq!(messages[0]["content"][0]["text"], "you are aster");
+    assert!(messages[2]["content"].is_null());
+    assert_eq!(
+        messages[3]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert!(messages[1]["content"].is_string());
+}
+
+#[test]
+fn cache_control_amends_part_form_content_in_place() {
+    let mut messages = vec![json!({ "role": "user", "content": [
+        { "type": "text", "text": "look at this" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } },
+    ] })];
+    apply_cache_control(&mut messages);
+    assert_eq!(
+        messages[0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert!(messages[0]["content"][1].get("cache_control").is_none());
+}
+
+#[test]
+fn cache_control_is_gated_to_openrouter_anthropic_and_gemini() {
+    assert!(wants_cache_control(
+        "https://openrouter.ai/api/v1",
+        "anthropic/claude-sonnet-5"
+    ));
+    assert!(wants_cache_control(
+        "https://openrouter.ai/api/v1",
+        "google/gemini-3-pro"
+    ));
+    assert!(!wants_cache_control(
+        "https://openrouter.ai/api/v1",
+        "deepseek/deepseek-v4-pro"
+    ));
+    assert!(!wants_cache_control(
+        "https://api.example.com/v1",
+        "anthropic/claude-sonnet-5"
+    ));
+}

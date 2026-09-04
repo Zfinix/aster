@@ -98,6 +98,15 @@ pub async fn providers(cli: &Cli) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// The login or key the endpoint in use still needs, from `aster config key`;
+/// null once it has one.
+pub async fn setup(cli: &Cli) -> Value {
+    cli.json(&["config", "key"])
+        .await
+        .map(|parsed| parsed["setup"].clone())
+        .unwrap_or(Value::Null)
+}
+
 /// An endpoint's catalog. One that will not answer is not fatal: the picker
 /// still switched, and a model id can be typed by hand.
 pub async fn models_for(cli: &Cli, model: &str) -> Value {

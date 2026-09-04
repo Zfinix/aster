@@ -61,6 +61,7 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/structural-edits/SKILL.md"),
     include_str!("../builtins/lsp-navigation/SKILL.md"),
     include_str!("../builtins/security-scan/SKILL.md"),
+    include_str!("../builtins/skill-creator/SKILL.md"),
 ];
 
 /// Bundled from `optional-skills/` but not indexed: task-class packs a user opts into with
@@ -75,8 +76,8 @@ const OPTIONAL_SKILLS: &[&str] = &[
     include_str!("../optional-skills/write-tests/SKILL.md"),
     include_str!("../optional-skills/background-processes/SKILL.md"),
     include_str!("../optional-skills/i-have-adhd/SKILL.md"),
-    include_str!("../optional-skills/skill-creator/SKILL.md"),
     include_str!("../optional-skills/macos-harness/SKILL.md"),
+    include_str!("../optional-skills/shortcuts/SKILL.md"),
 ];
 
 /// The bundled optional skills, parsed. Not part of any default index.
@@ -91,7 +92,7 @@ pub fn optional_skills() -> Vec<Skill> {
 /// Platform-gated: a skill that cannot work on this OS is never defaulted here.
 fn default_skill_names() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
-        &["macos-harness"]
+        &["macos-harness", "shortcuts"]
     } else {
         &[]
     }

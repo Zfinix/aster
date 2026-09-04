@@ -3,14 +3,88 @@
 //! defaults. API keys never come from the yaml.
 
 use std::env;
+use std::fmt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use aster_ai::keys::{self, env_non_empty};
 use aster_ai::{AiClient, DEFAULT_BASE_URL, Effort};
 use clap::{Args, Subcommand};
+use serde::Serialize;
 
 use crate::settings::{Review, Saved, Settings};
+
+/// What a front-end needs to get the user signed in: the browser login that
+/// applies, if any, and the env vars a key could go in. Travels as `setup` on
+/// a stream error and in `aster config key --json`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Setup {
+    pub provider: String,
+    pub base_url: String,
+    pub login: Option<&'static str>,
+    pub key_vars: Vec<&'static str>,
+}
+
+impl Setup {
+    pub fn for_endpoint(base_url: &str) -> Self {
+        let codex = aster_ai::codex_api::is_codex(base_url);
+        let login = if codex {
+            Some("codex")
+        } else if is_openrouter(base_url) {
+            Some("openrouter")
+        } else if base_url.contains("z.ai") {
+            Some("zai")
+        } else {
+            None
+        };
+        Self {
+            provider: crate::init::provider_label(base_url),
+            base_url: base_url.to_string(),
+            login,
+            key_vars: if codex {
+                Vec::new()
+            } else {
+                keys::key_vars(base_url)
+            },
+        }
+    }
+
+    /// None when the endpoint already has a key or a login.
+    pub fn needed(base_url: &str) -> Option<Self> {
+        resolve_key(base_url)
+            .is_none()
+            .then(|| Self::for_endpoint(base_url))
+    }
+}
+
+/// No key and no login for the endpoint. Typed so `--stream` can hand the
+/// front-end the setup it needs instead of a bare exit.
+#[derive(Debug)]
+pub struct MissingCredentials(pub Setup);
+
+impl fmt::Display for MissingCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let setup = &self.0;
+        if setup.login == Some("codex") {
+            return write!(
+                f,
+                "not signed in to ChatGPT. Run `aster login codex` to link your subscription, then try again"
+            );
+        }
+        let sign_in = match setup.login {
+            Some(target) => format!(", or run `aster login {target}`"),
+            None => String::new(),
+        };
+        write!(
+            f,
+            "no API key found for {}. Run `aster init` to set one up globally{sign_in}, or set {} in your shell environment",
+            setup.provider,
+            setup.key_vars.join(" or ")
+        )
+    }
+}
+
+impl std::error::Error for MissingCredentials {}
 
 pub struct LlmConfig {
     pub api_key: String,
@@ -37,24 +111,16 @@ pub fn resolve_endpoint(review: &Review, model_flag: Option<&str>) -> (String, S
 }
 
 /// Resolve endpoint, key, and model. `model_flag` wins over env and yaml; empty env counts as unset.
+/// The value `auto` routes through OpenRouter's live benchmark data instead of a pinned id.
 pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
     let (base_url, model) = resolve_endpoint(review, model_flag);
     let Some((api_key, _)) = resolve_key(&base_url) else {
-        if aster_ai::codex_api::is_codex(&base_url) {
-            bail!(
-                "not signed in to ChatGPT. Run `aster login codex` to link your subscription, then try again"
-            );
-        }
-        let sign_in = if base_url.contains("openrouter.ai") {
-            ", or run `aster login openrouter`"
-        } else {
-            ""
-        };
-        bail!(
-            "no API key found for {}. Run `aster init` to set one up globally{sign_in}, or set {} in your shell environment",
-            crate::init::provider_label(&base_url),
-            keys::key_vars(&base_url).join(" or ")
-        );
+        return Err(MissingCredentials(Setup::for_endpoint(&base_url)).into());
+    };
+    let model = if model == aster_ai::router::AUTO_MODEL && is_openrouter(&base_url) {
+        resolve_auto_model(&api_key)
+    } else {
+        model
     };
     Ok(LlmConfig {
         api_key,
@@ -63,6 +129,52 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
         effort: resolve_effort(review),
         web_search: resolve_web_search(review),
     })
+}
+
+/// `auto` resolves through OpenRouter's benchmark rankings. The tier comes from
+/// `ASTER_ROUTER_TIER` (cheap | balanced | strong, default balanced). Any
+/// failure falls back to the built-in default with a note, never a hard error.
+fn resolve_auto_model(api_key: &str) -> String {
+    use aster_ai::router::{self, Tier};
+    let tier = env_or("ASTER_ROUTER_TIER", None)
+        .and_then(|raw| {
+            let parsed = Tier::parse(&raw);
+            if parsed.is_none() {
+                eprintln!(
+                    "note: ignoring ASTER_ROUTER_TIER={raw}; expected cheap, balanced, or strong"
+                );
+            }
+            parsed
+        })
+        .unwrap_or(Tier::Balanced);
+    let cache = match aster_ai::home_dir() {
+        Ok(home) => router::cache_path(&home),
+        Err(_) => std::env::temp_dir().join("aster-model-rankings.json"),
+    };
+    match router::resolve_auto(api_key, tier, &cache, DEFAULT_MODEL) {
+        Ok(pick) if pick.model != DEFAULT_MODEL || pick.from_cache => {
+            eprintln!(
+                "note: router picked {} ({}, coding {}, ${:.2}/M{})",
+                pick.model,
+                tier.as_str(),
+                pick.coding_index,
+                pick.blended_price_per_m,
+                if pick.from_cache { ", cached" } else { "" }
+            );
+            pick.model
+        }
+        Ok(pick) => {
+            eprintln!(
+                "note: model router unavailable, using the default {}; set a pinned model to avoid this",
+                pick.model
+            );
+            pick.model
+        }
+        Err(e) => {
+            eprintln!("note: model router failed ({e:#}); using {DEFAULT_MODEL}");
+            DEFAULT_MODEL.to_string()
+        }
+    }
 }
 
 /// `--effort` wins, then `ASTER_EFFORT`/`ASTER_REASONING_EFFORT`, then
@@ -122,7 +234,7 @@ pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Resu
     Ok(client)
 }
 
-fn is_openrouter(base_url: &str) -> bool {
+pub(crate) fn is_openrouter(base_url: &str) -> bool {
     base_url
         .trim_end_matches('/')
         .split_once("//")

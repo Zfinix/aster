@@ -20,6 +20,7 @@ pub mod codex_api;
 mod error_log;
 pub mod keys;
 pub mod pkce;
+pub mod router;
 
 pub mod retry;
 use retry::RetryWithBackoff;
@@ -34,7 +35,10 @@ mod repetition;
 pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
 
 mod wire;
-use wire::{carries_images, fold_system_chat, fold_system_notes, strip_image_parts};
+use wire::{
+    apply_cache_control, carries_images, fold_system_chat, fold_system_notes, strip_image_parts,
+    wants_cache_control,
+};
 
 mod models;
 pub use models::{
@@ -313,6 +317,11 @@ impl AiClient {
     }
 
     fn reasoning(&self) -> Option<Reasoning> {
+        // `reasoning` is an OpenRouter-only parameter; Codex translates it to
+        // `reasoning_effort`, but every other provider rejects it outright.
+        if !self.base_url.contains("openrouter") && !codex_api::is_codex(&self.base_url) {
+            return None;
+        }
         match self.effort {
             Effort::Off => Some(Reasoning {
                 effort: None,
@@ -477,6 +486,9 @@ impl AiClient {
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
         let images = self.settle_images(&mut messages).await;
+        if wants_cache_control(&self.base_url, model) {
+            apply_cache_control(&mut messages);
+        }
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
         let mut request = ToolChatRequest {
             model: model.to_string(),
@@ -620,6 +632,9 @@ impl AiClient {
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
         let images = self.settle_images(&mut messages).await;
+        if wants_cache_control(&self.base_url, model) {
+            apply_cache_control(&mut messages);
+        }
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
         let mut request = ToolChatRequest {
             model: model.to_string(),
@@ -814,31 +829,21 @@ impl AiClient {
             body["stream"] = serde_json::Value::Bool(true);
         }
 
-        let mut post = self.http.post(&url).bearer_auth(self.bearer().await?);
-        if codex {
-            post = post.header("OpenAI-Beta", "responses=experimental");
-            if let Some(account_id) = self.codex_account_id() {
-                post = post.header("chatgpt-account-id", account_id);
-            }
-        }
-        if !self.attribution_headers.is_empty() {
-            let mut headers = HeaderMap::new();
-            for (name, value) in &self.attribution_headers {
-                let Ok(name) = HeaderName::try_from(name) else {
-                    continue;
-                };
-                let Ok(value) = HeaderValue::from_str(value) else {
-                    continue;
-                };
-                headers.insert(name, value);
-            }
-            post = post.headers(headers);
-        }
-        let response = post
-            .json(&body)
-            .send()
+        let mut bearer = self.bearer().await?;
+        let mut response = self
+            .post_json(&url, &bearer, codex, &body)
             .await
             .with_context(|| format!("{ctx} failed"))?;
+        // The backend can expire a subscription token before its JWT `exp`
+        // says so; one forced refresh and resend covers that.
+        if codex && response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            tracing::info!("codex rejected the access token; refreshing and retrying");
+            bearer = codex::refresh_access_token(&home_dir()?).await?;
+            response = self
+                .post_json(&url, &bearer, codex, &body)
+                .await
+                .with_context(|| format!("{ctx} failed"))?;
+        }
         let status = response.status();
         tracing::Span::current().record("status", status.as_u16());
         if !status.is_success() {
@@ -852,6 +857,9 @@ impl AiClient {
                     &text,
                     &body,
                 );
+            }
+            if codex && status == reqwest::StatusCode::UNAUTHORIZED {
+                anyhow::bail!("{}", codex::LOGIN_EXPIRED);
             }
             anyhow::bail!("{}", format_api_error(status, &text));
         }
@@ -874,6 +882,36 @@ impl AiClient {
             return Ok(reqwest::Response::from(rebuilt));
         }
         Ok(response)
+    }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        bearer: &str,
+        codex: bool,
+        body: &serde_json::Value,
+    ) -> reqwest_middleware::Result<reqwest::Response> {
+        let mut post = self.http.post(url).bearer_auth(bearer);
+        if codex {
+            post = post.header("OpenAI-Beta", "responses=experimental");
+            if let Some(account_id) = self.codex_account_id() {
+                post = post.header("chatgpt-account-id", account_id);
+            }
+        }
+        if !self.attribution_headers.is_empty() {
+            let mut headers = HeaderMap::new();
+            for (name, value) in &self.attribution_headers {
+                let Ok(name) = HeaderName::try_from(name) else {
+                    continue;
+                };
+                let Ok(value) = HeaderValue::from_str(value) else {
+                    continue;
+                };
+                headers.insert(name, value);
+            }
+            post = post.headers(headers);
+        }
+        post.json(body).send().await
     }
 
     /// The bearer token for a request: the client's key off the shelf, or the
@@ -1186,7 +1224,7 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
 /// paths expect, or `None` to skip it.
 type SseAdapter<'a> = Box<dyn FnMut(&str) -> Option<String> + Send + 'a>;
 
-fn home_dir() -> Result<std::path::PathBuf> {
+pub fn home_dir() -> Result<std::path::PathBuf> {
     env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))
         .map(std::path::PathBuf::from)

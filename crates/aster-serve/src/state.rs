@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::cli::Cli;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     pub chat: Mutex<Option<Run>>,
     pub review: Mutex<Option<Run>>,
+    pub login: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl AppState {
@@ -39,6 +41,7 @@ impl AppState {
             settings: Mutex::new(Settings::load()),
             chat: Mutex::new(None),
             review: Mutex::new(None),
+            login: Mutex::new(None),
         }
     }
 

@@ -1,4 +1,4 @@
-//! Glob file lookup: find paths by name instead of by content.
+//! Glob path lookup: find files and directories by name instead of by content.
 
 use std::path::Path;
 
@@ -6,9 +6,10 @@ use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
 
-/// Files under `base` whose repo-relative path or name matches `pattern`, up to
-/// `max_hits`. A `.gitignore` entry hides a path from the fast pass but must not
-/// make it unreachable, so an empty filtered pass is retried without it.
+/// Files and directories under `base` whose repo-relative path or name matches
+/// `pattern`, up to `max_hits`; directories end with `/`. A `.gitignore` entry
+/// hides a path from the fast pass but must not make it unreachable, so an
+/// empty filtered pass is retried without it.
 pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Result<String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
@@ -23,7 +24,7 @@ pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Re
 
     let ignored = walk(repo_root, base, &matchers, max_hits, false);
     if ignored.is_empty() {
-        return Ok("no files matched".into());
+        return Ok(no_match(repo_root, pattern));
     }
     Ok(format!(
         "{}\n\n(ignored by .gitignore; matched only because nothing else did)",
@@ -55,18 +56,52 @@ fn walk(
         if hits.len() >= max_hits {
             break;
         }
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
+        let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+        if entry.depth() == 0 || !(is_dir || entry.file_type().is_some_and(|t| t.is_file())) {
             continue;
         }
         let path = entry.path();
         let rel = path.strip_prefix(repo_root).unwrap_or(path);
         let name = path.file_name().unwrap_or_default();
         if matchers.iter().any(|m| m.is_match(rel) || m.is_match(name)) {
-            hits.push(rel.to_string_lossy().into_owned());
+            let rel = rel.to_string_lossy();
+            hits.push(match is_dir {
+                true => format!("{rel}/"),
+                false => rel.into_owned(),
+            });
         }
     }
     hits.sort();
     hits
+}
+
+const MAX_NO_MATCH_SUGGESTIONS: usize = 5;
+
+/// A wrong glob is usually a near-miss on a real name, so answer with the
+/// closest ones instead of a dead end.
+fn no_match(repo_root: &Path, pattern: &str) -> String {
+    let target: String = pattern
+        .rsplit('/')
+        .next()
+        .unwrap_or(pattern)
+        .chars()
+        .filter(|c| !matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+        .collect();
+    let nearby = match target.len() < 2 {
+        true => Vec::new(),
+        false => crate::suggest(repo_root, &target, MAX_NO_MATCH_SUGGESTIONS),
+    };
+    if nearby.is_empty() {
+        return "no files matched".into();
+    }
+    format!(
+        "no files matched `{pattern}`. Files with similar names:\n{}",
+        nearby
+            .iter()
+            .map(|p| format!("  {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 /// A bare name like `chat.rs` should match at any depth, so every pattern

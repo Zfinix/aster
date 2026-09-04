@@ -197,11 +197,19 @@ fn tool_stats(turns: &[Turn]) -> Vec<ToolStat> {
     stats
 }
 
+/// Fold provider prefixes, the `~` alias marker, and case, so the table
+/// compares models rather than spellings.
+fn canonical_model(model: &str) -> String {
+    let model = model.trim_start_matches('~');
+    let model = model.rsplit('/').next().unwrap_or(model);
+    model.to_ascii_lowercase()
+}
+
 fn model_stats(turns: &[Turn]) -> Vec<ModelStat> {
-    let mut by_model: BTreeMap<&str, Vec<&Turn>> = BTreeMap::new();
+    let mut by_model: BTreeMap<String, Vec<&Turn>> = BTreeMap::new();
     for turn in turns {
         by_model
-            .entry(turn.model.as_deref().unwrap_or("unknown"))
+            .entry(canonical_model(turn.model.as_deref().unwrap_or("unknown")))
             .or_default()
             .push(turn);
     }
@@ -213,7 +221,7 @@ fn model_stats(turns: &[Turn]) -> Vec<ModelStat> {
                 .flat_map(|t| t.batches.iter().copied())
                 .collect();
             ModelStat {
-                model: model.to_string(),
+                model,
                 turns: turns.len(),
                 rounds: batches.len(),
                 calls: batches.iter().sum(),
@@ -227,6 +235,7 @@ fn model_stats(turns: &[Turn]) -> Vec<ModelStat> {
                 ),
             }
         })
+        .filter(|s| s.rounds > 0)
         .collect();
     stats.sort_by(|a, b| b.rounds.cmp(&a.rounds).then(a.model.cmp(&b.model)));
     stats
