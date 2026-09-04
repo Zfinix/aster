@@ -5,11 +5,9 @@ function stripPrefix(path: string): string {
   return path;
 }
 
-/**
- * Parse a unified git diff into files and their line rows. Kept deliberately
- * small: it handles the shapes aster's CLI emits (standard `git diff`, GitHub
- * PR patches) without trying to be a full patch implementation.
- */
+/** Parse a unified git diff into files and their line rows. Kept deliberately
+ *  small: it handles the shapes aster's CLI emits (standard `git diff`, GitHub
+ *  PR patches) without trying to be a full patch implementation. */
 export function parseUnifiedDiff(text: string): DiffFile[] {
   const files: DiffFile[] = [];
   const lines = text.split("\n");

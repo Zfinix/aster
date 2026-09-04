@@ -69,7 +69,6 @@ pub(crate) fn run(args: CronArgs) -> Result<()> {
     Ok(())
 }
 
-/// The aster binary on PATH, or this process when it cannot be found.
 fn current_bin() -> Result<std::path::PathBuf> {
     std::env::current_exe().context("could not locate the aster binary")
 }

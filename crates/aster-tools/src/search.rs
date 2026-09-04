@@ -9,8 +9,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::{SKIP_DIRS, ToolProbe};
 
-/// Matches taken from one file before moving on. Without it a single hot file
-/// spends the whole hit budget and the caller never sees the other matches.
 const PER_FILE: usize = 3;
 
 /// One match: repo-relative path, 1-based line number, and the line's text.
@@ -103,8 +101,6 @@ pub fn render(repo_root: &Path, hits: &[Hit], context: usize) -> String {
     out.trim_end().to_string()
 }
 
-/// Write each match with its surrounding lines, merging windows that overlap
-/// and separating the ones that do not.
 fn render_windows(out: &mut String, source: &[&str], lines: &[usize], context: usize) {
     let mut windows: Vec<(usize, usize)> = Vec::new();
     for &line in lines {
@@ -130,7 +126,6 @@ fn render_windows(out: &mut String, source: &[&str], lines: &[usize], context: u
     }
 }
 
-/// Shell out to `rg`. Respects `.gitignore` natively.
 fn search_with_rg(
     rg: &Path,
     repo_root: &Path,
@@ -189,8 +184,6 @@ fn search_with_rg(
         .collect())
 }
 
-/// Split rg's `path:line:text` at the first `:<digits>:`, so paths containing
-/// a colon do not shift the fields.
 fn parse_rg_line(repo_root: &Path, line: &str) -> Option<Hit> {
     let mut from = 0;
     while let Some(offset) = line[from..].find(':') {
@@ -217,8 +210,6 @@ fn relative(repo_root: &Path, path: &str) -> String {
         .into_owned()
 }
 
-/// Embedded ripgrep via the `grep` and `ignore` crates. Respects
-/// `.gitignore` and walks in parallel.
 fn search_embedded(
     repo_root: &Path,
     base: &Path,
@@ -311,8 +302,6 @@ fn escape_regex(query: &str) -> String {
     out
 }
 
-/// Hand-rolled fallback: `fs::read_dir` + substring match. No regex, no
-/// `.gitignore`, but zero external dependencies beyond `std`.
 #[allow(dead_code)]
 fn search_manual(repo_root: &Path, base: &Path, query: &str, max_hits: usize) -> Result<Vec<Hit>> {
     let needle = query.to_lowercase();

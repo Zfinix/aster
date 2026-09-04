@@ -44,8 +44,6 @@ impl Grants {
         out
     }
 
-    /// A poisoned lock means another thread panicked mid-update. The set is
-    /// still structurally sound, and losing every grant would be worse.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<PathBuf>> {
         self.roots.lock().unwrap_or_else(PoisonError::into_inner)
     }

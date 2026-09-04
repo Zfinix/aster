@@ -1,7 +1,6 @@
-//! The MCP server side: JSON-RPC 2.0 over line-delimited stdio, mirroring
-//! aster-web's server so `aster mcp serve webmcp` lets any MCP client drive a
-//! WebMCP page. Unlike the web server, the tool list is live: `tools/list`
-//! re-reads the page's registry on every request.
+//! The MCP server side: JSON-RPC 2.0 over line-delimited stdio, so
+//! `aster mcp serve webmcp` lets any MCP client drive a WebMCP page. The tool
+//! list is live: `tools/list` re-reads the page's registry every request.
 
 use std::sync::Arc;
 
@@ -84,7 +83,6 @@ async fn dispatch(backend: &Shared, message: &Value, id: Value) -> Value {
     }
 }
 
-/// The attached backend, connecting on first use.
 async fn attach(shared: &Shared) -> Result<WebmcpBackend> {
     let mut guard = shared.lock().await;
     if let Some(backend) = guard.as_ref() {
@@ -116,8 +114,6 @@ fn discovery() -> Value {
     })
 }
 
-/// A tool that fails reports it in the result, not as a JSON-RPC error: the
-/// model should see what went wrong and react, the way the page's user would.
 async fn call(shared: &Shared, params: &Value, id: Value) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return error(id, INTERNAL_ERROR, "`name` is required".into());

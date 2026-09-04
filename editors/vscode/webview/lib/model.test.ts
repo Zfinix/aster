@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelChip, modelShort } from "./model";
+import { modelChip, modelShort, recentsFor } from "./model";
 
 describe("modelChip", () => {
   it("drops the family prefix and joins split version digits", () => {
@@ -19,5 +19,18 @@ describe("modelChip", () => {
   it("falls back like modelShort when there is nothing to pick", () => {
     expect(modelChip(null)).toBe("Default");
     expect(modelShort("claude-fable-5-1")).toBe("Claude Fable 5 1");
+  });
+});
+
+describe("recentsFor", () => {
+  it("drops recents the current endpoint does not serve", () => {
+    const recent = ["anthropic/claude-opus-5", "z-ai/glm-5.3", "openai/gpt-5.6-sol"];
+    expect(recentsFor(recent, ["z-ai/glm-5.3", "z-ai/glm-5.2"])).toEqual(["z-ai/glm-5.3"]);
+  });
+
+  it("keeps every recent while the catalog is unknown", () => {
+    const recent = ["anthropic/claude-opus-5", "z-ai/glm-5.3"];
+    expect(recentsFor(recent, null)).toEqual(recent);
+    expect(recentsFor(recent, [])).toEqual(recent);
   });
 });

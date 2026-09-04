@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Within this many px of the bottom still counts as pinned. */
 const THRESHOLD = 48;
 
 export interface ScrollMetrics {
@@ -9,21 +8,17 @@ export interface ScrollMetrics {
   clientHeight: number;
 }
 
-/**
- * Whether the viewport counts as sitting at the bottom. `null` when its metrics
- * say nothing: a hidden panel reports a zero client height, and treating that as
- * "scrolled away" is what silently switches following off.
- */
+/** Whether the viewport counts as sitting at the bottom. `null` when its metrics
+ *  say nothing: a hidden panel reports a zero client height, and treating that as
+ *  "scrolled away" is what silently switches following off. */
 export function nearBottom(m: ScrollMetrics): boolean | null {
   if (m.clientHeight === 0) return null;
   return m.scrollHeight - m.scrollTop - m.clientHeight <= THRESHOLD;
 }
 
-/**
- * Follows the bottom of a scroll container as content grows, but only while the
- * reader has not scrolled away. Unconditional auto-scroll makes reading back
- * through a long run impossible: every streamed event yanks the view down.
- */
+/** Follows the bottom of a scroll container as content grows, but only while the
+ *  reader has not scrolled away. Unconditional auto-scroll makes reading back
+ *  through a long run impossible: every streamed event yanks the view down. */
 export function useStickToBottom() {
   const viewport = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);

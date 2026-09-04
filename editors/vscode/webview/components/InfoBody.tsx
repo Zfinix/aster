@@ -5,8 +5,6 @@ import { Markdown } from "./Markdown";
 import { StatusLine } from "./StatusLine";
 import { ToolOutput } from "./ToolOutput";
 
-/** Long bodies (a whole `git diff`) stay folded; rows are the whole point of
- *  their card, so they do not. */
 const BODY_PREVIEW_LINES = 24;
 
 /** What a local answer says, without the frame around it: the same rows and

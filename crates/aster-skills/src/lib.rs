@@ -12,7 +12,6 @@ use anyhow::{Context, Result, bail};
 
 pub const SKILL_FILE: &str = "SKILL.md";
 
-/// Spec limits on the frontmatter fields.
 const MAX_NAME_LEN: usize = 64;
 const MAX_DESCRIPTION_LEN: usize = 1024;
 
@@ -21,7 +20,6 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
-    /// Manifest compiled into the binary; `path` is empty for these.
     builtin: Option<&'static str>,
 }
 
@@ -42,9 +40,6 @@ impl Skill {
     }
 }
 
-/// Core skills every session gets. The index is a standing context cost, so only
-/// skills that earn their place on a routine coding turn live here. An installed
-/// skill with the same name shadows its built-in.
 const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/git-workflow/SKILL.md"),
     include_str!("../builtins/gh-pr-workflow/SKILL.md"),
@@ -64,9 +59,6 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/skill-creator/SKILL.md"),
 ];
 
-/// Bundled from `optional-skills/` but not indexed: task-class packs a user opts into with
-/// `aster skills bundled <name>`, which materializes the manifest into a
-/// skills root where discovery then treats it like any installed skill.
 const OPTIONAL_SKILLS: &[&str] = &[
     include_str!("../optional-skills/package-managers/SKILL.md"),
     include_str!("../optional-skills/supply-chain-safety/SKILL.md"),
@@ -88,8 +80,6 @@ pub fn optional_skills() -> Vec<Skill> {
         .collect()
 }
 
-/// Bundled optional skills materialized into the user-global root on first run.
-/// Platform-gated: a skill that cannot work on this OS is never defaulted here.
 fn default_skill_names() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
         &["macos-harness", "shortcuts"]
@@ -147,8 +137,6 @@ pub fn install_bundled(name: &str, dest_root: &Path, overwrite: bool) -> Result<
     Ok(dest)
 }
 
-/// Parse one compiled-in manifest. Its frontmatter must carry `name`; there is
-/// no directory name to fall back on.
 fn builtin_skill(raw: &'static str) -> Result<Skill> {
     let (name, description) = parse_frontmatter(raw, "")?;
     Ok(Skill {
@@ -273,13 +261,8 @@ impl SkillSet {
     }
 }
 
-/// Description budget per skill in the index. The index is re-sent on every
-/// round, so a hundred installed skills otherwise cost more than the rest of
-/// the system prompt combined; `read_skill` still loads the full instructions.
 const INDEX_DESCRIPTION_CHARS: usize = 180;
 
-/// Trim to whole sentences under `max`, falling back to a word boundary. Keeps
-/// the trigger phrasing models match on rather than cutting mid-word.
 fn first_sentences(description: &str, max: usize) -> String {
     let description = description.trim();
     if description.len() <= max {
@@ -295,7 +278,6 @@ fn first_sentences(description: &str, max: usize) -> String {
     }
 }
 
-/// The largest char boundary at or below `max`.
 fn ceil_boundary(text: &str, max: usize) -> usize {
     let mut cut = max.min(text.len());
     while !text.is_char_boundary(cut) {
@@ -306,8 +288,6 @@ fn ceil_boundary(text: &str, max: usize) -> usize {
 
 use aster_models::SKIP_DIRS;
 
-/// How deep to walk a source tree looking for skills. Repos nest skills a few
-/// levels down (`skills/<category>/<name>/SKILL.md`); this bounds the search.
 const MAX_FIND_DEPTH: usize = 6;
 
 /// Every skill under `root`, deduped by name, first found wins. Unlike
@@ -426,8 +406,6 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Read one root's subdirectories into skills. A missing or unreadable root is an
-/// empty result, not an error.
 fn scan_root(root: &Path) -> Vec<Skill> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
@@ -454,8 +432,6 @@ fn scan_root(root: &Path) -> Vec<Skill> {
     skills
 }
 
-/// Parse and validate one `SKILL.md`. `dir_name` is the fallback identity when
-/// the frontmatter omits `name`.
 fn load_skill(manifest: &Path, dir_name: &str) -> Result<Skill> {
     let raw =
         fs::read_to_string(manifest).with_context(|| format!("reading {}", manifest.display()))?;
@@ -468,8 +444,6 @@ fn load_skill(manifest: &Path, dir_name: &str) -> Result<Skill> {
     })
 }
 
-/// Extract `name` and `description` from the leading `---` frontmatter fence and
-/// validate them. `name` falls back to the directory name when absent.
 fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
     let front = frontmatter(raw).context("missing `---` frontmatter fence")?;
 
@@ -510,9 +484,6 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
     Ok((name, description))
 }
 
-/// One scalar: an inline value, a `>`/`|` block, or a value continued on the
-/// indented lines below it. Blocks and continuations fold to a single line, `|`
-/// keeping its newlines. Consumes the continuation lines.
 fn read_value(inline: &str, lines: &mut std::iter::Peekable<std::str::Lines>) -> String {
     let (marker, literal) = match inline {
         ">" | ">-" | ">+" => (true, false),
@@ -540,8 +511,6 @@ fn read_value(inline: &str, lines: &mut std::iter::Peekable<std::str::Lines>) ->
         .to_string()
 }
 
-/// The text between the opening `---` and the next `---` line, if the file opens
-/// with a frontmatter fence.
 fn frontmatter(raw: &str) -> Option<&str> {
     let rest = raw
         .strip_prefix("---\n")
@@ -550,7 +519,6 @@ fn frontmatter(raw: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-/// Everything after the frontmatter fence, or the whole input when there is none.
 fn strip_frontmatter(raw: &str) -> &str {
     let Some(rest) = raw
         .strip_prefix("---\n")
@@ -583,8 +551,6 @@ fn unquote(value: &str) -> &str {
     }
 }
 
-/// Skills in the wild title-case their `name` ("Simplified Technical English
-/// (ASD-STE100)"); fold those to kebab-case rather than rejecting the skill.
 fn slugify(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
@@ -597,9 +563,6 @@ fn slugify(name: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// Structural checks on `name`: kebab-case identity, bounded length. The
-/// Anthropic-platform reserved-word rule is intentionally not enforced here;
-/// aster skills are local and provider-neutral.
 fn validate_name(name: &str) -> Result<()> {
     if name.len() > MAX_NAME_LEN {
         bail!("`name` exceeds {MAX_NAME_LEN} characters");

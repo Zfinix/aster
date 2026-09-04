@@ -1,11 +1,9 @@
 import type { ReactNode } from "react";
 import { useLayer } from "../lib/layer";
 
-/**
- * Anything that covers the thread. Escape and a click on the dimmed ground
- * close it when it can be closed; a prompt that must be answered leaves
- * `onClose` out and keeps both.
- */
+/** Anything that covers the thread. Escape and a click on the dimmed ground
+ *  close it when it can be closed; a prompt that must be answered leaves
+ *  `onClose` out and keeps both. */
 export function Modal({
   label,
   className,
@@ -15,8 +13,6 @@ export function Modal({
 }: {
   label: string;
   className: string;
-  /** Top for something typed into, centre for something read, bottom for a
-   *  question over the turn that asked it. */
   align?: "top" | "center" | "bottom";
   onClose?: () => void;
   children: ReactNode;

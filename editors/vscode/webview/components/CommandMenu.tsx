@@ -9,28 +9,18 @@ export interface MenuOption {
 }
 
 export type MenuItem =
-  /** Runs and closes the menu. A trailing `…` means it opens something. */
   | {
       kind: "action";
       id: string;
       label: string;
       detail?: string;
       hint?: string;
-      /** Drawn in the row's leading column; every row keeps the column whether
-       *  or not it fills it, so labels stay on one line down the list. */
       icon?: ReactNode;
-      /** The `/name` this row completes to when the query was typed into the
-       *  composer. Rows without one always run rather than complete. */
       slash?: string;
-      /** Takes an argument, so Enter leaves the name in the box to type after
-       *  rather than running it on the spot. */
       takesArg?: boolean;
-      /** The row opens another surface, which closing the menu would take away. */
       keepOpen?: boolean;
-      /** Given whatever is left in the composer once the `/name` is taken out. */
       run: (rest: string) => void;
     }
-  /** Set inline, without leaving the menu: the value is the whole control. */
   | {
       kind: "choice";
       id: string;
@@ -40,7 +30,6 @@ export type MenuItem =
       icon?: ReactNode;
       onSelect: (value: string) => void;
     }
-  /** On or off, flipped in place like a choice. */
   | {
       kind: "toggle";
       id: string;
@@ -53,26 +42,21 @@ export type MenuItem =
 export interface MenuSection {
   title?: string;
   items: MenuItem[];
-  /** Rows to show before anything is typed; a query searches all of them. */
   limit?: number;
 }
 
 const KEYS = ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter", "Tab"];
 
-/**
- * The panel's command surface: everything it can do, ranked against a query.
- * Either the composer drives the filter, because the query is a `/name` being
- * typed there, or the menu owns an input of its own.
- */
+/** The panel's command surface: everything it can do, ranked against a query.
+ *  Either the composer drives the filter, because the query is a `/name` being
+ *  typed there, or the menu owns an input of its own. */
 export function CommandMenu({
   sections,
   query,
   onRun,
 }: {
   sections: MenuSection[];
-  /** Non-null while the composer's own `/name` is the filter. */
   query: string | null;
-  /** `complete` asks for the name in the box rather than the action run. */
   onRun: (item: MenuItem, complete: boolean) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -87,8 +71,6 @@ export function CommandMenu({
   const filtered = useMemo(() => rank(sections, text), [sections, text]);
   const flat = useMemo(() => filtered.flatMap((s) => s.items), [filtered]);
 
-  /** Enter on a choice steps to its next option and on a toggle flips it, so
-   *  the row is a control rather than a dead end; every other row runs. */
   const { active, setActive, leave, onKey: navKey, seat } = useListNav<HTMLDivElement>({
     count: flat.length,
     resetOn: text,
@@ -229,11 +211,9 @@ export function CommandMenu({
   );
 }
 
-/**
- * Rank every row against the query and drop the ones that miss. A name beats a
- * description, and a section floats to wherever its best row landed, so `/mod`
- * puts the model rows on top without hiding a skill that also says "model".
- */
+/** Rank every row against the query and drop the ones that miss. A name beats a
+ *  description, and a section floats to wherever its best row landed, so `/mod`
+ *  puts the model rows on top without hiding a skill that also says "model". */
 export function rank(sections: MenuSection[], query: string): MenuSection[] {
   const q = query.trim().replace(/^\//, "").toLowerCase();
   if (!q) return sections.filter((section) => section.items.length > 0).map(capped);
@@ -255,8 +235,6 @@ export function rank(sections: MenuSection[], query: string): MenuSection[] {
     .map(({ title, items }) => ({ title, items }));
 }
 
-/** Unfiltered, a long section would bury every other one. The filter box says
- *  what to do about it, so the cut needs no caption of its own. */
 function capped(section: MenuSection): MenuSection {
   const limit = section.limit;
   if (!limit || section.items.length <= limit) return section;

@@ -7,11 +7,6 @@ import { runCli } from "./asterCli";
 import { registerOutputProvider } from "./outputProvider";
 import { Finding } from "./types";
 
-/**
- * Contributing a view container to the secondary sidebar (the right-hand pane,
- * where Codex and Claude Code live) needs VS Code 1.106. Older hosts fall back
- * to the activity bar container, gated on this context key.
- */
 function supportsSecondarySidebar(): boolean {
   const [major = 0, minor = 0] = vscode.version.split(".").map(Number);
   return major > 1 || (major === 1 && minor >= 106);

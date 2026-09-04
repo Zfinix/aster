@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Model ids picked before, most recent first. Capped so the picker stays short.
 const RECENT_LIMIT: usize = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +15,6 @@ pub struct Settings {
     pub permission_mode: String,
     pub custom_models: Vec<String>,
     pub recent_models: Vec<String>,
-    /// Unset until the user picks a level, so `aster.yaml` keeps deciding.
     pub effort: Option<String>,
 }
 

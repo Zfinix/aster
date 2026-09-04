@@ -6,7 +6,6 @@ import { StreamEvent } from "./types";
 export interface ReviewOptions {
   cwd: string;
   source: ReviewSource;
-  /** Carries the panel's provider override; see `cliEnv`. */
   env: NodeJS.ProcessEnv;
   onEvent: (event: StreamEvent) => void;
   onStderr: (line: string) => void;
@@ -97,12 +96,6 @@ export class ReviewRunner {
     });
   }
 
-  /**
-   * Stop the run and free the slot immediately. `child` is cleared here rather
-   * than waiting for `close`, so a cancel followed by a new run is not rejected
-   * during the window where the process is still winding down. SIGKILL follows
-   * if it ignores the polite signal.
-   */
   cancel(): void {
     const child = this.child;
     if (!child) {

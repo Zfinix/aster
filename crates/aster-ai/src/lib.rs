@@ -50,7 +50,6 @@ use models::{
     ToolChatRequest, ToolChatResponse, Usage,
 };
 
-/// Endpoint used when `ASTER_BASE_URL` is unset.
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -62,8 +61,6 @@ const DEFAULT_DEADLINE_SECS: u64 = 180;
 const DEFAULT_PRICE_PROMPT_PER_M: f64 = 0.15;
 const DEFAULT_PRICE_COMPLETION_PER_M: f64 = 0.60;
 
-/// Running token totals, shared behind an `Arc` so cloned clients report against
-/// the same counters.
 #[derive(Default)]
 struct UsageCounter {
     prompt_tokens: AtomicU64,
@@ -73,7 +70,6 @@ struct UsageCounter {
     estimated: std::sync::atomic::AtomicBool,
 }
 
-/// Rough token estimate from char count (~4 chars/token) when a provider omits usage.
 fn estimate_tokens(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
 }
@@ -84,11 +80,8 @@ pub struct UsageSnapshot {
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub requests: u64,
-    /// Always populated; uses configured pricing when available, else a default.
     pub estimated_cost_usd: Option<f64>,
-    /// True when the cost uses default pricing or estimated tokens.
     pub cost_is_estimate: bool,
-    /// True if any token count was estimated because the provider returned no usage.
     pub estimated: bool,
 }
 
@@ -104,16 +97,8 @@ pub struct AiClient {
     seed: Option<u64>,
     max_tokens: Option<u32>,
     effort: Effort,
-    /// When true, non-tool requests carry the OpenRouter `web` plugin so the
-    /// provider runs a web search once per request. Tool-calling requests use
-    /// the `openrouter:web_search` server tool instead (see `chat.rs`).
     web_search: bool,
-    /// Whether `model` takes image input, asked of the catalog once and only
-    /// when a request actually carries one.
     images: Arc<OnceCell<bool>>,
-    /// Extra headers to attach to every chat-completions request, used for
-    /// provider app attribution (e.g. OpenRouter's `HTTP-Referer` and
-    /// `X-OpenRouter-Title`). Leave empty to send a bare request.
     attribution_headers: Vec<(String, String)>,
 }
 
@@ -334,9 +319,6 @@ impl AiClient {
         }
     }
 
-    /// The OpenRouter `web` plugin: a forced search on every request, so only
-    /// the tool-less paths take it. Tool-calling requests carry the model-invoked
-    /// `openrouter:web_search` server tool instead (see `chat.rs`).
     fn plugins(&self) -> Vec<WebSearchPlugin> {
         if self.web_search {
             vec![WebSearchPlugin {
@@ -914,8 +896,6 @@ impl AiClient {
         post.json(body).send().await
     }
 
-    /// The bearer token for a request: the client's key off the shelf, or the
-    /// stored ChatGPT subscription token, refreshed first when it has expired.
     async fn bearer(&self) -> Result<String> {
         match codex_api::is_codex(&self.base_url) {
             false => Ok(self.api_key.clone()),
@@ -929,8 +909,6 @@ impl AiClient {
             .and_then(|tokens| tokens.account_id)
     }
 
-    /// Per-request SSE adapter: identity everywhere except the Codex backend,
-    /// where each event is translated into a chat-completions chunk.
     fn sse_adapter(&self) -> SseAdapter<'_> {
         if codex_api::is_codex(&self.base_url) {
             let mut translator = codex_api::StreamTranslator::default();
@@ -1002,9 +980,6 @@ impl AiClient {
         Ok(parsed.data.into_iter().map(ModelInfo::from).collect())
     }
 
-    /// Drop images the model has already said it cannot take, and report
-    /// whether any survive — the caller needs that to know whether a later
-    /// rejection is worth retrying without them.
     async fn settle_images(&self, messages: &mut [serde_json::Value]) -> bool {
         if !carries_images(messages) {
             return false;
@@ -1039,9 +1014,6 @@ impl AiClient {
     }
 }
 
-/// An endpoint that refuses an image says so in the error body. Its catalog
-/// declared nothing, or declared wrongly, so the images go and the turn is
-/// tried once more rather than failing outright.
 fn rejected_images(err: &anyhow::Error) -> bool {
     let text = err.to_string().to_lowercase();
     ["image", "vision", "multimodal"]
@@ -1058,8 +1030,6 @@ fn strip_images(messages: &mut [ChatMessage]) {
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,
-    /// `None` when the endpoint declares no modalities, which is not the same
-    /// as declaring text only.
     pub takes_images: Option<bool>,
 }
 
@@ -1076,8 +1046,6 @@ impl From<ModelEntry> for ModelInfo {
     }
 }
 
-/// Model-list entry from `GET /models`. Everything past `id` is OpenRouter's
-/// extension and absent elsewhere, so all of it defaults.
 #[derive(serde::Deserialize)]
 struct ModelEntry {
     id: String,
@@ -1103,9 +1071,6 @@ struct PartialToolCall {
     arguments: String,
 }
 
-/// Merge one streamed tool-call fragment into `partials`. A buggy endpoint reuses
-/// an index across two calls, splicing them into one, so a fragment whose id or
-/// name disagrees with the occupied slot is given a fresh slot.
 fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: ToolCallDelta) {
     let index = match partials.get(&fragment.index) {
         Some(slot) if !same_call(slot, &fragment) => fresh_index(partials),
@@ -1125,9 +1090,6 @@ fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: To
     }
 }
 
-/// Whether `fragment` belongs to `slot`: it must not carry an id or name that
-/// contradicts the identity already in the slot. Empty fields are "no opinion",
-/// so a continuation fragment that omits the id still lands in its own slot.
 fn same_call(slot: &PartialToolCall, fragment: &ToolCallDelta) -> bool {
     let id_matches = fragment
         .id
@@ -1143,15 +1105,10 @@ fn same_call(slot: &PartialToolCall, fragment: &ToolCallDelta) -> bool {
     id_matches && name_matches
 }
 
-/// First index above every slot in use, so a fresh call never lands on a
-/// provider index that has already arrived.
 fn fresh_index(partials: &BTreeMap<usize, PartialToolCall>) -> usize {
     partials.last_key_value().map_or(0, |(&key, _)| key + 1)
 }
 
-/// Feed each SSE `data:` payload to `on_data`, skipping keep-alives and the
-/// terminating `[DONE]`. Lines are split on the byte buffer so a multibyte
-/// codepoint straddling two network chunks is never decoded until whole.
 async fn read_sse(
     response: reqwest::Response,
     mut on_data: impl FnMut(&str) -> bool,
@@ -1220,8 +1177,6 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
     }
 }
 
-/// Per-request SSE adapter: maps one `data:` payload to the chunk the parsing
-/// paths expect, or `None` to skip it.
 type SseAdapter<'a> = Box<dyn FnMut(&str) -> Option<String> + Send + 'a>;
 
 pub fn home_dir() -> Result<std::path::PathBuf> {
@@ -1242,9 +1197,6 @@ fn env_f64(key: &str) -> Option<f64> {
     env::var(key).ok().and_then(|v| v.trim().parse().ok())
 }
 
-/// Rejoin a streamed reasoning fragment with its block: the provider only takes
-/// the sequence back as it emitted it, so fragments of the same kind and index
-/// become one block in arrival order. Indexless ones merge into the last block.
 fn merge_reasoning(out: &mut Vec<ReasoningDetail>, fragment: ReasoningDetail) {
     let existing = out
         .iter_mut()
@@ -1273,7 +1225,6 @@ fn extend(slot: &mut Option<String>, more: Option<String>) {
     }
 }
 
-/// `ASTER_*` env flags: "1", "true", "yes", "on" (case-insensitive) are truthy.
 fn env_truthy(key: &str) -> bool {
     matches!(
         env::var(key).ok().as_deref().map(str::trim),

@@ -5,8 +5,6 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// Values shorter than this are left alone: a short match would blank ordinary
-/// words all over the output.
 const MIN_SECRET_LEN: usize = 8;
 
 const REDACTED: &str = "[redacted]";
@@ -58,9 +56,6 @@ impl Redactor {
     }
 }
 
-/// True when an environment variable's name marks its value as a secret. The
-/// suffixes and keywords are chosen to catch `*_API_KEY` / `*_TOKEN` /
-/// `*_SECRET` / `*_PASSWORD` while leaving ordinary names like `PWD` alone.
 fn is_secret_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper.ends_with("_API_KEY")
@@ -72,9 +67,6 @@ fn is_secret_name(name: &str) -> bool {
         || upper.contains("PRIVATE_KEY")
 }
 
-/// The `.env` files Aster loads at startup: the global one plus the one in the
-/// current directory. The rest of the loaded values are already in the process
-/// environment.
 fn env_files() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(global) = crate::persist::global_env_path() {
@@ -86,8 +78,6 @@ fn env_files() -> Vec<PathBuf> {
     paths
 }
 
-/// Parse one `KEY=VALUE` line, skipping blanks and comments and stripping
-/// matching single or double quotes from the value.
 fn parse_env_line(line: &str) -> Option<(String, String)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {

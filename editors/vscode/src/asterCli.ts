@@ -35,11 +35,9 @@ export interface RunResult {
   code: number;
 }
 
-/**
- * The environment every CLI child gets. A provider chosen in the panel travels
- * as `ASTER_BASE_URL` rather than being written into the user's aster.yaml,
- * so the override belongs to this panel the way its model and effort do.
- */
+/** The environment every CLI child gets. A provider chosen in the panel travels
+ *  as `ASTER_BASE_URL` rather than being written into the user's aster.yaml,
+ *  so the override belongs to this panel the way its model and effort do. */
 export function cliEnv(override?: ProviderOverride): NodeJS.ProcessEnv {
   if (!override) {
     return process.env;
@@ -54,7 +52,6 @@ export function cliEnv(override?: ProviderOverride): NodeJS.ProcessEnv {
 
 export interface ProviderOverride {
   baseUrl: string;
-  /** Env vars holding this endpoint's own key, from `aster models --providers`. */
   keyEnv: string[];
 }
 

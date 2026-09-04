@@ -69,8 +69,6 @@ pub async fn run(args: UpgradeArgs) -> Result<()> {
     Ok(())
 }
 
-/// Download the release asset for this platform, verify its checksum, and
-/// replace the running binary.
 fn install(tag: &str, version: &str) -> Result<()> {
     let fancy = crate::picker::is_tty() && !crate::json_mode();
     let target = target_triple();
@@ -114,9 +112,6 @@ fn install(tag: &str, version: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stream `url` to a temp file with a progress readout. Uses parallel
-/// `Range` requests when the server supports them (GitHub's CDN does), which
-/// is several times faster than a single connection on real-world links.
 fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -219,7 +214,6 @@ fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// Progress state shared between parallel chunk threads.
 struct SharedProgress {
     downloaded: std::sync::atomic::AtomicU64,
     bar: Option<std::sync::Arc<DownloadBar>>,
@@ -235,9 +229,6 @@ impl SharedProgress {
     }
 }
 
-/// A continuous download bar drawn straight to stderr in the Aster orange.
-/// cliclack's bar is segmented and its spinner color is fixed in its template,
-/// so it cannot render this.
 struct DownloadBar {
     term: console::Term,
     total: u64,
@@ -289,8 +280,6 @@ impl DownloadBar {
     }
 }
 
-/// One parallel chunk: counts bytes into [`SharedProgress`] and stops at the
-/// end of its range so a misbehaving server cannot overrun it.
 struct ChunkReader<'a, R: std::io::Read> {
     inner: R,
     remaining: u64,
@@ -315,8 +304,6 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Wraps the response body to drive a progress bar while `io::copy` runs.
-/// Used when the server does not support range requests.
 struct ProgressReader<'a, R: std::io::Read> {
     inner: R,
     progress: &'a SharedProgress,
@@ -339,8 +326,6 @@ fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     Ok(())
 }
 
-/// Extract a downloaded archive file into a temp dir and return the path to
-/// the `aster` binary inside it.
 fn unpack_from_file(
     archive_path: &std::path::Path,
     dir_name: &str,
@@ -361,8 +346,6 @@ fn unpack_from_file(
     find_binary(&dir)
 }
 
-/// Locate the extracted binary. Release tarballs wrap it in a top-level
-/// directory named after the asset, so it is rarely at the archive root.
 fn find_binary(dir: &std::path::Path) -> Result<std::path::PathBuf> {
     let name = bin_name();
     let mut stack = vec![dir.to_path_buf()];
@@ -419,8 +402,6 @@ fn bin_name() -> &'static str {
     if cfg!(windows) { "aster.exe" } else { "aster" }
 }
 
-/// The release target triple for the running binary, matching the matrix in
-/// `.github/workflows/release-cli.yml`.
 fn target_triple() -> &'static str {
     match (std::env::consts::ARCH, std::env::consts::OS) {
         ("aarch64", "macos") => "aarch64-apple-darwin",
@@ -432,7 +413,6 @@ fn target_triple() -> &'static str {
     }
 }
 
-/// Kill every aster process except this one, so the binary swap succeeds.
 fn kill_other_instances() {
     let our_pid = std::process::id();
     let pids = match running_aster_pids() {
@@ -490,7 +470,6 @@ fn running_aster_pids() -> Result<Vec<u32>> {
         .collect())
 }
 
-/// The release tag for a user-supplied version, with the spellings install.sh accepts.
 fn normalize_tag(version: &str) -> String {
     match version {
         v if v.starts_with("cli-v") => v.to_string(),
@@ -499,8 +478,6 @@ fn normalize_tag(version: &str) -> String {
     }
 }
 
-/// The newest `cli-v*` tag, resolved from the `releases/latest` redirect instead
-/// of the GitHub API, which rate-limits unauthenticated requests to 60/hour.
 fn latest_cli_tag() -> Result<String> {
     let latest = format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/latest");
     let final_url = reqwest::blocking::get(latest)?.url().clone();

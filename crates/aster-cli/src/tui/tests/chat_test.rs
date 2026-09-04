@@ -54,11 +54,12 @@ fn rendered(app: &ChatApp) -> String {
 
 #[test]
 fn command_model_switches_client_and_app() {
-    let mut client = AiClient::new("http://localhost", "k", "openai/gpt-4o-mini");
+    let mut client = AiClient::new("http://localhost", "k", "gpt-4o-mini");
     let mut app = chat_app(client.model.clone());
     let (mut p, _rx) = pane();
-    app.handle_command("model anthropic/claude-sonnet-5", &mut client, &mut p);
-    // Native (non-aggregator) routing strips the provider prefix.
+    // A bare id never re-pairs the endpoint, so this stays independent of
+    // whichever provider keys the machine running the test happens to hold.
+    app.handle_command("model claude-sonnet-5", &mut client, &mut p);
     assert_eq!(client.model, "claude-sonnet-5");
     assert_eq!(app.model, "claude-sonnet-5");
 }
@@ -149,8 +150,6 @@ fn a_plan_approval_asks_rather_than_passing_silently() {
     assert!(p.has_active_view(), "the user must see the plan");
 }
 
-/// The turn-local edit gate dies with the turn, so approval has to land on
-/// the session or the next message drops back to plan.
 #[test]
 fn an_approved_plan_promotes_the_session_not_just_the_turn() {
     let mut app = chat_app("m1".into());
@@ -173,8 +172,6 @@ fn an_approved_plan_promotes_the_session_not_just_the_turn() {
     assert!(app.mode.can_edit(), "the next submit() keeps edits on");
 }
 
-/// Yolo answered the plan silently before, so the user was never asked and the
-/// tool came back with nothing to show for it.
 #[test]
 fn an_editable_session_is_asked_and_keeps_its_mode() {
     let mut app = chat_app("m1".into());
@@ -222,7 +219,6 @@ fn a_rejected_plan_leaves_the_session_in_plan() {
     assert_eq!(app.mode, Mode::Plan);
 }
 
-/// A plain edit approval must not promote; only "always" and plans do.
 #[test]
 fn a_one_off_edit_approval_does_not_promote_the_session() {
     let mut app = chat_app("m1".into());
@@ -638,8 +634,6 @@ fn resume_seeds_history_from_prior_session() {
     assert!(rendered(&app).contains("hi there"));
 }
 
-/// A picker cannot be shown before the UI exists, and opening a transcript
-/// early is what leaves the stray empty sessions `--continue` trips over.
 #[test]
 fn pick_opens_no_session_up_front() {
     let home = tempfile::tempdir().unwrap();

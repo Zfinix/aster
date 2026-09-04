@@ -203,8 +203,6 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     Ok(())
 }
 
-/// Comments on a PR are public and cannot be taken back quietly, so show what
-/// is about to be posted and ask. `--yes` and non-terminal runs skip the ask.
 fn confirm_post(findings: &[Finding], owner: &str, repo: &str, pr: u64, yes: bool) -> Result<bool> {
     if findings.is_empty() {
         println!("No findings survived verification; nothing to post.");
@@ -227,7 +225,6 @@ fn confirm_post(findings: &[Finding], owner: &str, repo: &str, pr: u64, yes: boo
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
-/// Emits one NDJSON object per progress event to stdout, then a final `done` event.
 async fn run_stream(job: Job, min_confidence: f32, usage_handle: AiClient) -> Result<()> {
     let mut out = io::stdout();
 
@@ -273,8 +270,6 @@ async fn run_stream(job: Job, min_confidence: f32, usage_handle: AiClient) -> Re
     Ok(())
 }
 
-/// Serialize a progress event as a one-line JSON object. `Done` is dropped here;
-/// `run_stream` emits a richer one with usage.
 fn emit_event(out: &mut impl Write, event: &Progress, min_confidence: f32) {
     let value = match event {
         Progress::Phase(name) => serde_json::json!({ "type": "phase", "name": name }),

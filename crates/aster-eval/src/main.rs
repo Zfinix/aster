@@ -58,8 +58,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// `aster-eval live [--models a,b] [--repo DIR] [--evals DIR]`. Runs the fixed
-/// cases through Ori against each model and prints one row per model.
 fn live(args: Vec<String>) -> Result<()> {
     let mut models: Vec<String> = Vec::new();
     let mut repo = aster_eval::repo_root(&std::env::current_dir()?);

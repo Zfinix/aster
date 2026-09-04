@@ -20,31 +20,22 @@ pub struct PageMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlOptions {
-    /// Maximum pages to crawl (1-500).
     #[serde(default = "default_max_pages")]
     pub max_pages: u32,
-    /// Link depth from the start URL. None = unbounded.
     #[serde(default)]
     pub max_depth: Option<u32>,
-    /// Soft time budget for the entire crawl, in milliseconds.
     #[serde(default = "default_stop_after_ms")]
     pub stop_after_ms: u32,
-    /// Follow subdomain links of the start domain.
     #[serde(default)]
     pub follow_subdomains: bool,
-    /// Whether to parse PDFs encountered during the crawl.
     #[serde(default = "default_true")]
     pub parse_pdfs: bool,
-    /// Regex filter for URLs to follow and scrape.
     #[serde(default)]
     pub url_regex: Option<String>,
-    /// Strip headers, footers, nav, sidebars.
     #[serde(default)]
     pub use_main_content_only: bool,
-    /// Preserve hyperlinks in the Markdown output.
     #[serde(default = "default_true")]
     pub include_links: bool,
-    /// Request timeout in milliseconds.
     #[serde(default)]
     pub timeout_ms: u64,
 }
@@ -79,13 +70,10 @@ impl Default for CrawlOptions {
 /// honours `region` and `safesearch`; the API-backed ones take `limit` alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchOptions {
-    /// Results to return (1-20).
     #[serde(default = "default_limit")]
     pub limit: u32,
-    /// Region/language code such as `us-en`, `de-de`, or `wt-wt` for none.
     #[serde(default)]
     pub region: Option<String>,
-    /// Adult-content filter: `strict`, `moderate`, or `off`.
     #[serde(default)]
     pub safesearch: Option<String>,
 }
@@ -124,9 +112,7 @@ pub struct SitemapResult {
 /// A rendered-page screenshot hosted on the provider's CDN.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Screenshot {
-    /// Public CDN URL of the captured PNG.
     pub url: String,
-    /// "viewport" or "fullPage".
     pub screenshot_type: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,

@@ -60,8 +60,6 @@ type View = "home" | "thread";
 
 const INSTALL_CMD = "cargo install --path crates/aster-cli";
 
-/** How many recent sessions the sidebar rebuilds at launch. Each one is its own
- *  transcript read, so this trades a complete history for a fast start. */
 const RESTORED_SESSIONS = 20;
 
 function InstallPrompt() {
@@ -96,8 +94,6 @@ function InstallPrompt() {
   );
 }
 
-/** A review turn's contribution to the chat context: the actual findings, so
- *  the agent can answer follow-ups about them ("why is finding 2 critical?"). */
 function reviewContext(d: ReviewData): string {
   if (d.status === "error")
     return `A code review was attempted but failed: ${d.errorMsg ?? "unknown error"}.`;
@@ -252,13 +248,11 @@ function App() {
   const chatUnlistenRef = useRef<UnlistenFn | null>(null);
   const activeReviewRef = useRef<{ convoId: string; turnId: string } | null>(null);
   const activeChatRef = useRef<{ convoId: string; turnId: string } | null>(null);
-  /** Set while the CLI blocks on an `ask`-mode edit approval. */
   const [approval, setApproval] = useState<{
     preview: string;
     markdown?: string;
     plan: boolean;
   } | null>(null);
-  /** True while a chat turn is running: the send button becomes Stop. */
   const chatRunning = busy && !reviewing;
 
   useEffect(() => {
@@ -317,9 +311,6 @@ function App() {
         : [...rs, { value: path, label: repoNameOf(path) }],
     );
 
-  /** Rebuild the sidebar from sessions on disk. Without this the app opened on
-   *  "Nothing here yet" every launch, even with saved sessions, because
-   *  conversations only ever lived in memory. */
   const restoreSessions = useCallback(async (repoPath: string) => {
     let summaries;
     try {
@@ -411,9 +402,6 @@ function App() {
     [],
   );
 
-  /* Fold one stream event into the live assistant turn: tokens append to the
-   * text, tool calls become live activity steps, approval requests surface
-   * the diff prompt, and done/error settle the turn. */
   const handleChatEvent = useCallback(
     (ev: ChatStreamEvent) => {
       const ref = activeChatRef.current;
@@ -618,8 +606,6 @@ function App() {
     [patchTurn, toast],
   );
 
-  /** Settle a turn that ended without a terminal stream event (crash or
-   *  cancel). Keeps whatever streamed in and marks it. */
   const settleChat = useCallback(
     (error: string | null, stopped: boolean) => {
       const ref = activeChatRef.current;
@@ -871,8 +857,6 @@ function App() {
     setView("home");
   }, [activeId]);
 
-  /** Opt the thread into persistence: the next turn records into a CLI
-   *  session named after the conversation, and the thread resumes it. */
   const onSaveThread = useCallback(() => {
     if (!activeConvo) return;
     setConversations((cs) =>
@@ -881,7 +865,6 @@ function App() {
     toast("Session saved — this thread now resumes across restarts");
   }, [activeConvo, toast]);
 
-  /** Delete the CLI session transcript; the thread itself stays, ephemeral. */
   const onDeleteSession = useCallback(() => {
     if (!activeConvo?.sessionId) return;
     const { sessionId, repoPath } = activeConvo;
@@ -914,7 +897,6 @@ function App() {
     );
   }, []);
 
-  /** Open a saved thread and remember it as the one to restore next launch. */
   const onOpenSaved = useCallback(
     (id: string) => {
       setActiveId(id);

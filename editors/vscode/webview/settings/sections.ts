@@ -7,7 +7,6 @@ export interface Section {
   id: string;
   label: string;
   blurb: string;
-  /** The `aster config` group this page shows, absent for the synthetic ones. */
   group?: string;
 }
 

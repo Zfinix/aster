@@ -9,24 +9,13 @@ use std::path::Path;
 use ignore::WalkBuilder;
 use serde_json::Value;
 
-/// Package names listed per ecosystem before the rest become a count.
 const MAX_PACKAGE_NAMES: usize = 6;
-/// Ecosystems reported, largest first. Past this it is a build artifact or a
-/// stray config, not what the repo is written in.
 const MAX_STACKS: usize = 4;
-/// A packageless language earns its line at this fraction of the files counted.
 const MIN_STACK_SHARE: usize = 20;
-/// Top-level directories listed before the rest become a count.
 const MAX_TOP_LEVEL: usize = 16;
 const MAX_DOCS: usize = 8;
-/// Characters of description kept. Long enough for the opening claim, short
-/// enough that it does not crowd the instructions that follow it.
 const MAX_ABOUT_CHARS: usize = 320;
-/// How deep to look for manifests. Deeper than this is a package's own vendored
-/// tree more often than a workspace member.
 const MAX_MANIFEST_DEPTH: usize = 3;
-/// Entries the skim will walk. A monorepo of a million files must not hold the
-/// UI up; counts past this are reported as approximate.
 const MAX_WALK_ENTRIES: usize = 20_000;
 
 const MANIFESTS: &[(&str, &str)] = &[
@@ -47,8 +36,6 @@ const MANIFESTS: &[(&str, &str)] = &[
     ("CMakeLists.txt", "C/C++"),
 ];
 
-/// Source extensions and the ecosystem each belongs to. The labels are the ones
-/// [`MANIFESTS`] uses, so a count and its packages land on one line.
 const EXTENSIONS: &[(&str, &str)] = &[
     ("rs", "Rust"),
     ("ts", "JavaScript/TypeScript"),
@@ -77,8 +64,6 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("sql", "SQL"),
 ];
 
-/// Dependency and build directories. A repo that does not ignore them still
-/// should not have them read back as its own layout.
 const NOT_LAYOUT: &[&str] = &[
     "node_modules",
     "target",
@@ -91,8 +76,6 @@ const NOT_LAYOUT: &[&str] = &[
     "Pods",
 ];
 
-/// Manifests that carry a description, and the dotted key holding it. Tried in
-/// order when there is no README, or when the README is all decoration.
 const DESCRIBED_BY: &[(&str, &str)] = &[
     ("Cargo.toml", "package.description"),
     ("Cargo.toml", "workspace.package.description"),
@@ -132,21 +115,15 @@ pub(crate) fn snapshot(repo_root: &Path) -> Option<String> {
     (note.lines().count() > 1).then_some(note)
 }
 
-/// One pass over the tree: how many files each ecosystem has, which directories
-/// declare it, and what sits at the top level.
 #[derive(Default)]
 struct Skim {
     files: BTreeMap<&'static str, usize>,
     packages: BTreeMap<&'static str, Vec<String>>,
     top_level: Vec<String>,
-    /// Set when the walk hit its cap, so the counts read as "600+".
     partial: bool,
 }
 
 impl Skim {
-    /// One line per ecosystem, biggest first: its size, then where its packages
-    /// live. A language with no package of its own has to hold a real share of
-    /// the tree to earn a line; two stray shell scripts do not describe a repo.
     fn stacks(&self) -> Vec<(&'static str, String)> {
         let total: usize = self.files.values().sum();
         let mut stacks: Vec<&&str> = self
@@ -221,9 +198,6 @@ fn skim(repo_root: &Path) -> Skim {
     skim
 }
 
-/// Where an ecosystem's packages live. A workspace collapses to the directory
-/// holding most of it and the member names, which is how someone would describe
-/// it out loud; whatever sits outside that directory is named after it.
 fn packaged(dirs: &[String]) -> Option<String> {
     let members: Vec<&str> = dirs
         .iter()
@@ -265,8 +239,6 @@ fn packaged(dirs: &[String]) -> Option<String> {
     Some(body)
 }
 
-/// The documentation directory and its pages: the fastest read of what a
-/// project explains about itself, and where a turn should look next.
 fn docs(repo_root: &Path) -> Option<(String, Vec<String>)> {
     let dir = DOC_DIRS.iter().find(|dir| repo_root.join(dir).is_dir())?;
     let mut pages: Vec<String> = fs::read_dir(repo_root.join(dir))
@@ -285,14 +257,10 @@ fn docs(repo_root: &Path) -> Option<(String, Vec<String>)> {
     (!pages.is_empty()).then(|| (dir.to_string(), pages))
 }
 
-/// What the project says it does. Not every repo has a README, and not every
-/// README opens with prose, so the manifests answer when it cannot.
 fn about(repo_root: &Path) -> Option<String> {
     readme_about(repo_root).or_else(|| manifest_about(repo_root))
 }
 
-/// The README's opening prose. Headings, badges, and raw HTML are skipped: they
-/// are decoration, and the first real sentence is what says what this is.
 fn readme_about(repo_root: &Path) -> Option<String> {
     let body = readme(repo_root)?;
     let mut about = String::new();
@@ -314,8 +282,6 @@ fn readme_about(repo_root: &Path) -> Option<String> {
     (!about.is_empty()).then(|| truncate(&about, MAX_ABOUT_CHARS))
 }
 
-/// The README, however this repo spells it: the name is capitalized every way
-/// there is, and the extension is sometimes absent.
 fn readme(repo_root: &Path) -> Option<String> {
     let mut names: Vec<_> = fs::read_dir(repo_root)
         .ok()?
@@ -332,7 +298,6 @@ fn readme(repo_root: &Path) -> Option<String> {
         .find_map(|name| fs::read_to_string(repo_root.join(name)).ok())
 }
 
-/// The description field of whichever root manifest declares one.
 fn manifest_about(repo_root: &Path) -> Option<String> {
     DESCRIBED_BY.iter().find_map(|(file, key)| {
         let raw = fs::read_to_string(repo_root.join(file)).ok()?;
@@ -351,8 +316,6 @@ fn manifest_about(repo_root: &Path) -> Option<String> {
     })
 }
 
-/// Whether a README line is prose rather than a heading, badge, table, list,
-/// quote, code fence, or embedded HTML.
 fn prose(line: &str) -> bool {
     !line.is_empty()
         && !line.starts_with(['#', '<', '>', '|', '-', '*', '='])
@@ -361,8 +324,6 @@ fn prose(line: &str) -> bool {
         && !line.starts_with("```")
 }
 
-/// A walk that honors `.gitignore` whether or not this is a git repository, so
-/// a plain folder does not report `target/` or `node_modules/` as its layout.
 fn walk(root: &Path) -> ignore::Walk {
     WalkBuilder::new(root)
         .require_git(false)
@@ -376,7 +337,6 @@ fn walk(root: &Path) -> ignore::Walk {
         .build()
 }
 
-/// `path` relative to the root, with the root itself as `.`.
 fn relative(repo_root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(repo_root).ok()?.to_str()?;
     Some(match rel.is_empty() {
@@ -385,7 +345,6 @@ fn relative(repo_root: &Path, path: &Path) -> Option<String> {
     })
 }
 
-/// `a, b, c, and 4 more`, so a wide monorepo cannot flood the prompt.
 fn listed(items: &[String], cap: usize) -> String {
     let shown = items
         .iter()

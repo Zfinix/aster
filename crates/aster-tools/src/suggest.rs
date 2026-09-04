@@ -4,7 +4,6 @@ use std::path::Path;
 
 use ignore::WalkBuilder;
 
-/// Entries walked before giving up; a suggestion is a courtesy, not a search.
 const WALK_CAP: usize = 20_000;
 
 /// Repo-relative paths that resemble `missing`, best first. Matching is on the
@@ -53,7 +52,6 @@ pub fn suggest(repo_root: &Path, missing: &str, max: usize) -> Vec<String> {
     scored.into_iter().map(|(_, _, path)| path).collect()
 }
 
-/// Lower is closer. `None` means too far apart to be worth suggesting.
 fn score(name: &str, target: &str) -> Option<u8> {
     if name == target {
         return Some(0);

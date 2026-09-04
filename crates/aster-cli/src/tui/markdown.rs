@@ -21,9 +21,7 @@ fn code_chip() -> Style {
 pub(super) struct MarkdownStream {
     buf: String,
     in_fence: bool,
-    /// Rows of an in-flight table, held until the table ends.
     table: Vec<String>,
-    /// Terminal width from the last draw; tables are capped to it.
     width: usize,
 }
 
@@ -182,7 +180,6 @@ fn ordered(line: &str) -> Option<(String, &str)> {
     Some((format!("{}. ", &line[..digits]), rest))
 }
 
-/// Inline markup on one line via pulldown-cmark: emphasis, code, links.
 fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut style = base;
@@ -249,10 +246,6 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
     out
 }
 
-/// Render buffered `|`-rows as an aligned table; pulldown-cmark validates the
-/// header, and a malformed table falls back to plain rows. Cells go through
-/// `inline` so markup renders, and the widest columns shrink with a `…` until
-/// the whole table fits `max` columns instead of wrapping mid-rule.
 fn render_table(rows: &[String], max: usize) -> Vec<Line<'static>> {
     let cells: Vec<Vec<String>> = rows
         .iter()
@@ -355,7 +348,6 @@ fn render_table(rows: &[String], max: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Cut styled spans down to at most `max` columns, ending with `…` when cut.
 fn truncate_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut used = 0usize;

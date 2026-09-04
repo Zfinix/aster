@@ -135,8 +135,6 @@ fn scope_word(scope: Scope) -> &'static str {
     }
 }
 
-/// Where a scope keeps installed packages and their persistent data. The data
-/// root sits beside the packages so an update replaces one and not the other.
 fn scope_roots(scope: Scope, repo_root: Option<&Path>) -> Result<(PathBuf, PathBuf)> {
     let base = match scope {
         Scope::Global => crate::persist::home()?,
@@ -150,9 +148,6 @@ fn scope_roots(scope: Scope, repo_root: Option<&Path>) -> Result<(PathBuf, PathB
     Ok((base.join("plugins"), base.join("plugin-data")))
 }
 
-/// A plugin Aster carries inside its own binary. It is written into the global
-/// plugin root before discovery, so from then on it is an ordinary installed
-/// plugin: listed, disableable, and removable.
 struct Builtin {
     name: &'static str,
     manifest: &'static str,
@@ -161,13 +156,8 @@ struct Builtin {
 
 const BUILTINS: &[Builtin] = &[];
 
-/// Bundled plugins Aster no longer ships. Their directories are removed on
-/// startup: discovery would otherwise keep finding one and spawning a server
-/// whose tools now live in the binary.
 const RETIRED: &[&str] = &["websearch"];
 
-/// Left in a builtin's data directory when the user removes it, so that a later
-/// session does not helpfully put it back.
 const UNINSTALLED: &str = ".uninstalled";
 
 impl Builtin {
@@ -189,9 +179,6 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Materialize the bundled plugins and clear out the retired ones. A failure
-/// here is logged, never fatal: the session still works, it just has fewer
-/// tools.
 fn install_builtins() {
     let Ok((root, data_root)) = scope_roots(Scope::Global, None) else {
         return;
@@ -204,9 +191,6 @@ fn install_builtins() {
     remove_retired(&root);
 }
 
-/// Delete the directories of plugins Aster used to bundle. Only a directory
-/// Aster wrote itself is removed, so a package the user installed under the
-/// same name survives.
 fn remove_retired(root: &Path) {
     for name in RETIRED {
         let dir = root.join(name);
@@ -219,8 +203,6 @@ fn remove_retired(root: &Path) {
     }
 }
 
-/// Record that a bundled plugin was removed on purpose. Written even under
-/// `--purge`, since the alternative is the plugin reappearing next session.
 fn mark_uninstalled(name: &str, data_root: &Path) {
     if !BUILTINS.iter().any(|b| b.name == name) {
         return;
@@ -631,8 +613,6 @@ fn remove(
     Ok(())
 }
 
-/// Author-facing conformance check: the same loader the session uses, with
-/// everything it reported printed instead of logged.
 fn validate(path: Option<PathBuf>) -> Result<()> {
     let root = match path {
         Some(path) => path,
@@ -712,8 +692,6 @@ fn print_plugins(plugins: &[Plugin]) {
     }
 }
 
-/// One line for a picker or a listing: what the plugin contributes, plus its
-/// description when it has one.
 fn summary(plugin: &Plugin) -> String {
     let mut parts = vec![format!(
         "{} skill(s), {} server(s)",

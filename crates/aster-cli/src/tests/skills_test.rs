@@ -50,8 +50,6 @@ fn template_has_valid_frontmatter() {
     assert!(t.contains("description:"));
 }
 
-/// The agent loads both roots every run, so installing once globally is what
-/// makes a skill available everywhere. Project scope is the opt-in.
 #[test]
 fn scope_defaults_to_global() {
     assert!(matches!(scope_of(false), Scope::Global));

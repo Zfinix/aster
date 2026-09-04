@@ -81,7 +81,7 @@ pub fn fire_args(aster_bin: &str, id: &str, text: &str) -> Vec<String> {
         "remind".to_string(),
         "--fire".to_string(),
         id.to_string(),
-        "--text".to_string(),
+        "--text-override".to_string(),
         text.to_string(),
     ]
 }

@@ -7,8 +7,6 @@ import { OPENERS, TIPS, useRotation } from "../lib/greeting";
 
 const INSTALL_CMD = "curl -fsSL https://withaster.dev/install | sh";
 
-/** Long enough that a tip is never gone before it has been read, short enough
- *  that a panel left open shows more than one. */
 const TIP_MS = 11000;
 
 export function EmptyState({

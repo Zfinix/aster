@@ -10,23 +10,12 @@ use crate::decision::Mode;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionsConfig {
-    /// What happens to an action no rule matches.
     pub mode: Mode,
-    /// Runs without asking.
     pub allow: Vec<String>,
-    /// Always confirmed first.
     pub ask: Vec<String>,
-    /// Refused outright.
     pub deny: Vec<String>,
-    /// Skip the built-in rules. Leaves `.git`, CI workflows, risky commands,
-    /// and secret files gated by nothing but the mode.
     pub use_default_rules: bool,
-    /// Directories outside the repository the agent may read without asking.
-    /// Absolute, or `~`-relative. Anything else outside the repo prompts.
     pub additional_directories: Vec<String>,
-    /// Credential directories a command may read inside the sandbox without
-    /// asking, written `<command>:<dir>` (e.g. `gh:~/.config/gh`). Meant for
-    /// headless runs, which have no way to answer a prompt.
     pub allow_credentials: Vec<String>,
 }
 

@@ -17,20 +17,16 @@ pub(crate) struct SelectionItem<E> {
     pub name: String,
     pub description: String,
     pub is_current: bool,
-    /// Sent to the app when this row is accepted.
     pub event: E,
 }
 
 pub(crate) struct ListSelectionView<E> {
     title: String,
     items: Vec<SelectionItem<E>>,
-    /// Typed filter; rows whose name contains it are the ones shown.
     query: String,
-    /// Index into the filtered rows, not `items`.
     selected: usize,
     complete: bool,
     tx: mpsc::UnboundedSender<E>,
-    /// Sent on Esc when set; otherwise the view just closes silently.
     on_dismiss: Option<E>,
 }
 
@@ -81,8 +77,6 @@ impl<E: Clone> ListSelectionView<E> {
         self.selected = 0;
     }
 
-    /// `y`/`n` answer a two-option yes/no list outright, the way a prompt
-    /// expects; on any other list those letters just filter.
     fn yes_no_shortcut(&self, c: char) -> Option<usize> {
         if !self.query.is_empty() || self.items.len() != 2 {
             return None;
@@ -158,8 +152,6 @@ impl<E: Clone> ListSelectionView<E> {
         Inset::new(wrapped(self.lines()), Insets::tlbr(0, 0, 0, 0))
     }
 
-    /// Which item sits on `row` of the rendered view. `lines` puts the title
-    /// on row 0 and a blank on row 1; a typed query adds one more row.
     fn item_at(&self, row: u16) -> Option<usize> {
         let first_row = 2 + u16::from(!self.query.is_empty());
         let offset = row.checked_sub(first_row)? as usize;
@@ -222,7 +214,6 @@ impl<E: Clone> BottomPaneView<E> for ListSelectionView<E> {
         self.complete
     }
 
-    /// One click picks the row outright, the way the number keys do.
     fn handle_click(&mut self, row: u16) -> bool {
         match self.item_at(row) {
             Some(index) => {

@@ -9,11 +9,8 @@ use crate::chat::PlanStepStatus;
 use crate::tui::theme;
 use crate::tui::wrap;
 
-/// Columns reserved for the `• ` / `  ` gutter every cell hangs from.
 const GUTTER: usize = 2;
-/// Output lines shown before the middle is elided.
 const HEAD: usize = 4;
-/// Output lines shown after an elision.
 const TAIL: usize = 4;
 
 #[allow(dead_code)]
@@ -25,7 +22,6 @@ fn body_width(width: usize) -> usize {
     width.saturating_sub(GUTTER + 2).max(8)
 }
 
-/// Prefix `lines` with the cell bullet and hang the rest off a matching indent.
 fn hang(lines: Vec<Line<'static>>, bullet: Span<'static>, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut first = true;
@@ -45,14 +41,10 @@ fn hang(lines: Vec<Line<'static>>, bullet: Span<'static>, width: usize) -> Vec<L
     out
 }
 
-/// Every cell hangs off this bullet; it is quiet on purpose, so the headline
-/// beside it carries the emphasis.
 fn bullet() -> Span<'static> {
     Span::styled("• ", theme::get().dimmer_style())
 }
 
-/// The branch a cell's children hang from: `└ ` on the first row, aligned
-/// blanks after it.
 fn branch(first: bool) -> Span<'static> {
     if first {
         Span::styled("└ ", theme::get().faint_style())
@@ -277,7 +269,6 @@ pub(super) fn plan(steps: &[(PlanStepStatus, String)], width: usize) -> Vec<Line
     prepend_blank(hang(lines, bullet(), width))
 }
 
-/// Done and skipped steps recede; only what is left to do reads at full weight.
 fn step_style(status: PlanStepStatus) -> Style {
     match status {
         PlanStepStatus::Done => theme::get()
@@ -429,8 +420,6 @@ pub(super) fn diff_lines(body: &str, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The mark, then the name and version. Always printed, even when
-/// `/welcome` has turned the rest of the header off.
 fn banner_lines() -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = super::helpers::mark_lines();
     lines.push(Line::from(""));
@@ -516,7 +505,6 @@ pub(super) fn welcome(fields: &[(&str, String)], width: usize) -> Vec<Line<'stat
     prepend_blank(lines)
 }
 
-/// One-line feature reminders; the welcome shows one per session.
 const TIPS: &[&str] = &[
     "aster --resume reopens your last session; /resume picks from a list",
     "@ mentions a file from this repo without typing the whole path",
@@ -540,8 +528,6 @@ const TIPS: &[&str] = &[
     "/effort cycles the reasoning budget when called with no argument",
 ];
 
-/// Seeded off the hasher rather than the clock: system time lands on whole
-/// microseconds, so `nanos % TIPS.len()` collapses to the same tip every launch.
 fn tip() -> &'static str {
     use std::hash::BuildHasher;
     let seed = std::hash::RandomState::new().hash_one(TIPS.len()) as usize;
@@ -566,6 +552,32 @@ pub(super) fn update(info: &crate::update::UpdateInfo, width: usize) -> Vec<Line
             Style::default().fg(theme::get().link_fg),
         )));
     }
+    prepend_blank(hang(
+        lines,
+        Span::styled("✦ ", theme::get().accent_style()),
+        width,
+    ))
+}
+
+/// What's new in this release: one line per announcement, `d` dismisses.
+pub(super) fn announcements(
+    items: &[crate::announce::Announcement],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        "what's new",
+        theme::get().text_style(),
+    ))];
+    for item in items {
+        lines.push(Line::from(Span::styled(
+            item.text.clone(),
+            theme::get().dim_style(),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "press d to dismiss",
+        theme::get().dim_style(),
+    )));
     prepend_blank(hang(
         lines,
         Span::styled("✦ ", theme::get().accent_style()),
@@ -635,7 +647,6 @@ fn prepend_blank(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     lines
 }
 
-/// One entry of an output body after the middle has been dropped.
 enum Elided<'a> {
     Text(&'a str),
     Gap(usize),

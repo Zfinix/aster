@@ -53,9 +53,6 @@ fn an_untitled_session_displays_its_opening_message() {
     assert_eq!(loaded.display_title(), Some("how does naming work"));
 }
 
-/// The agent loop records its own steering as `system` so it stays out of the
-/// replayed conversation: replaying it would re-nag the model about a turn that
-/// already ended, and show the user words they never wrote.
 #[test]
 fn harness_steering_is_recorded_but_never_replayed() {
     let dir = tempfile::tempdir().unwrap();
@@ -87,8 +84,6 @@ fn harness_steering_is_recorded_but_never_replayed() {
     assert_eq!(loaded.user_turn_count(), 1);
 }
 
-/// Every session written before reasoning was recorded has no `reasoning` key.
-/// A strict field would make all of them unreadable, not just reasoning-less.
 #[test]
 fn a_transcript_written_before_reasoning_still_loads() {
     let dir = tempfile::tempdir().unwrap();

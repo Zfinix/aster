@@ -32,39 +32,20 @@ pub(crate) struct SessionCtx {
     pub recorder: Option<Recorder>,
     pub store: Option<Store>,
     pub skills: Arc<aster_skills::SkillSet>,
-    /// `AGENTS.md` and friends, read from the repo at session start.
     pub instructions: Arc<crate::instructions::Instructions>,
     pub probe: Arc<bash_tools::ToolProbe>,
     pub plan: std::sync::Arc<std::sync::Mutex<PlanState>>,
     pub mcp: Option<crate::mcp::McpRuntime>,
     pub limits: Limits,
-    /// Lockfile-derived repo facts, rendered into the system prompt.
     pub environment: Option<String>,
     pub yolo: bool,
-    /// Credential directories approved per command this session. Kept apart
-    /// from the file-read grants: approving `gh` must not widen `read_file`.
     pub credentials: Arc<aster_policy::CommandGrants>,
-    /// Out-of-repo directories approved for writes this session. Kept apart
-    /// from the read grants: approving a read must not hand out a write.
     pub write_grants: Arc<Grants>,
-    /// Ranges already read this turn, keyed by path and range, with the file's
-    /// modification time. A repeat read of an unchanged range is answered with
-    /// a pointer instead of a second full copy in the history.
     pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
-    /// URLs already opened in the browser this session, so a second
-    /// `open_preview` for the same page points at the tab instead of stacking
-    /// another one on top of it.
     pub previews: Arc<Mutex<HashSet<String>>>,
-    /// Lookups already answered this turn, keyed by tool and arguments. A
-    /// repeat is answered with a pointer instead of a second copy in the
-    /// history. Anything that can change the tree clears it.
     pub lookups: Arc<Mutex<HashSet<String>>>,
-    /// User messages sent while the turn runs, absorbed at the next round
-    /// boundary instead of waiting out the whole turn.
     pub injected: Arc<std::sync::Mutex<Vec<String>>>,
     pub agents: Arc<aster_agents::AgentRegistry>,
-    /// Non-None when this is a sub-agent session.  Shapes the system prompt,
-    /// tool schema, and persistence.
     pub sub_agent: Option<Arc<SubAgentOverrides>>,
     pub swarm: SwarmLimits,
 }
@@ -75,8 +56,6 @@ pub(crate) struct SessionCtx {
 pub(crate) struct Limits {
     pub max_tool_rounds: usize,
     pub command_timeout_secs: usize,
-    /// History size (chars) above which older turns are compacted. Lower it
-    /// for small-context models.
     pub compact_budget_chars: usize,
 }
 
@@ -166,8 +145,6 @@ pub(crate) struct SubAgentOverrides {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PlanState {
     pub steps: Vec<PlanStep>,
-    /// Set when the user approves, cleared when the steps are rewritten, so a
-    /// revised plan is presented again instead of riding the old answer.
     pub approved: bool,
 }
 
@@ -189,7 +166,6 @@ pub(crate) enum PlanStepStatus {
     Blocked,
 }
 
-/// The plan as comparable data; `None` when empty or the lock is poisoned.
 fn plan_snapshot(ctx: &SessionCtx) -> Option<Vec<(String, PlanStepStatus)>> {
     let plan = ctx.plan.lock().ok()?;
     (!plan.steps.is_empty()).then(|| {
@@ -261,8 +237,6 @@ impl SessionCtx {
         }
     }
 
-    /// True once this session carries a generated name, so a resumed session
-    /// keeps the one it already has.
     fn is_titled(&self) -> bool {
         self.recorder
             .as_ref()
@@ -367,9 +341,6 @@ pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
 
 const MAX_SCRIPT_NAMES: usize = 12;
 
-/// The project's own verbs: task-runner files and script names, so the model
-/// reaches for `just build` or `bun run check` instead of hand-rolling the
-/// pipeline those already encode.
 fn task_runner_note(repo_root: &Path) -> Option<String> {
     let mut note = String::new();
     // One candidate list per runner: a case-insensitive filesystem would
@@ -417,8 +388,6 @@ fn package_scripts(manifest: &Path) -> Option<Vec<String>> {
 
 const GIT_STATUS_LINES: usize = 15;
 
-/// Branch, working-tree status, and recent commits, labelled as a snapshot so
-/// a later turn does not treat it as live. `None` outside a git repository.
 fn git_snapshot(repo_root: &Path) -> Option<String> {
     let git = |args: &[&str]| -> Option<String> {
         let out = std::process::Command::new("git")
@@ -469,8 +438,6 @@ fn git_snapshot(repo_root: &Path) -> Option<String> {
     Some(note)
 }
 
-/// Which JavaScript package manager each lockfile pins, so the model runs
-/// `bun`/`pnpm`/`yarn` where the repo does instead of defaulting to npm.
 fn package_manager_note(repo_root: &Path) -> Option<String> {
     const LOCKS: &[(&str, &str)] = &[
         ("bun.lock", "bun"),
@@ -598,8 +565,6 @@ pub(crate) type ChatEventSink = Box<dyn Fn(Value) + Send + Sync>;
 /// plan whose approval promotes the session to edit mode, or a question.
 pub(crate) enum UiRequest {
     Approval(ApprovalRequest),
-    /// Approving this outlives the turn, so the front-end must change its own
-    /// mode rather than only unlocking the tool for the rest of this turn.
     PlanApproval(ApprovalRequest),
     Question(QuestionRequest),
 }
@@ -609,8 +574,6 @@ pub(crate) enum UiRequest {
 /// `None` means the front-end offers only yes or no.
 pub(crate) struct ApprovalRequest {
     pub preview: String,
-    /// The same plan as clean markdown, so rich front-ends render it as a
-    /// document instead of diffing plain rows. `None` for action approvals.
     pub markdown: Option<String>,
     pub scope: Option<PathBuf>,
     pub respond: oneshot::Sender<Answer>,
@@ -621,7 +584,6 @@ pub(crate) struct ApprovalRequest {
 pub(crate) enum Answer {
     Yes,
     No,
-    /// Yes, and remember it: persist `scope` so the question stops recurring.
     Always,
 }
 
@@ -634,9 +596,7 @@ impl Answer {
 pub(crate) struct QuestionRequest {
     pub header: String,
     pub question: String,
-    /// 2-4 short options the user can pick from, plus an implicit "Other".
     pub options: Vec<String>,
-    /// Resolves to the selected option text, or `None` when declined / headless.
     pub respond: oneshot::Sender<Option<String>>,
 }
 
@@ -646,39 +606,21 @@ pub(crate) type UiSender = mpsc::Sender<UiRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f64 = 0.4;
-/// Hard stop so a confused model cannot spin forever. High enough that real
-/// multi-file work finishes inside it; `agent.max_tool_rounds` overrides.
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
-/// Caps tool output so one fat file cannot blow the context.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
-/// Lines one open-ended `read_file` returns. A window with a resume hint beats
-/// a whole file cut off mid-line, which costs a blind re-read.
 const READ_WINDOW_LINES: usize = 600;
-/// Caps each of a command's streams, so one noisy build cannot spend the whole
-/// tool-result budget before the combined cap even applies.
 const MAX_STREAM_CHARS: usize = 10_000;
 const MAX_SEARCH_HITS: usize = 80;
-/// Lines shown either side of a hit, so a search usually answers on its own
-/// instead of costing a follow-up `read_file`.
 const SEARCH_CONTEXT_LINES: usize = 3;
 const MAX_LIST_ENTRIES: usize = 200;
 const MAX_FIND_HITS: usize = 100;
-/// Nearby paths offered when a guessed path does not exist.
 const MAX_PATH_SUGGESTIONS: usize = 8;
-/// Naming the shape back is what gets the retry right; the bare complaint got
-/// the same argument-less call again.
 const MISSING_COMMAND: &str = "run_command needs a `command`: the binary to \
     run, with its arguments in `args`. To run a shell line, pass \
     command:`bash` with args [\"-lc\", \"<the line>\"]. Send the call again \
     with `command` set";
-/// Maximum seconds a command may run before it is killed. Builds and test
-/// suites live here, so it is minutes; `agent.command_timeout_secs` overrides.
 const DEFAULT_COMMAND_TIMEOUT_SECS: usize = 300;
-/// Total history size (chars) above which older turns are folded into a
-/// summary. Roughly 48k tokens: roomy for 128k-context models, since every
-/// compaction costs a summarize round-trip and loses detail the agent re-reads.
 const COMPACT_BUDGET_CHARS: usize = 192_000;
-/// Recent turns kept verbatim when compacting; everything older is summarized.
 const COMPACT_KEEP_TAIL: usize = 6;
 
 const TOOLS_PROMPT: &str = "\n\n## Tools\n\n\
@@ -759,9 +701,8 @@ pub struct ChatArgs {
     session: Option<String>,
 
     /// Read a JSON array of {"role","content"} messages from PATH, or `-` for
-    /// stdin. Roles: "user" | "assistant" | "system". For editors and UIs.
-    /// With --stream this must be a single line, since stdin stays open for
-    /// approval replies.
+    /// stdin. With --stream this must be a single line, since stdin stays open
+    /// for approval replies.
     #[arg(long, value_name = "PATH")]
     messages_json: Option<String>,
 
@@ -774,9 +715,8 @@ pub struct ChatArgs {
     allow_edits: bool,
 
     /// How edits and commands are gated, overriding aster.yaml
-    /// `permissions.mode`: plan, manual, auto, edit, or yolo. Anything a rule sends to
-    /// a prompt needs a front-end that can answer: the TUI, or `--stream`.
-    /// Anything but `plan` also enables the edit tool.
+    /// `permissions.mode`: plan, manual, auto, edit, or yolo. Prompts need a
+    /// front-end that can answer: the TUI, or `--stream`.
     #[arg(long, value_name = "MODE", value_enum)]
     permission_mode: Option<PermissionModeArg>,
 
@@ -834,8 +774,6 @@ impl ChatArgs {
         !one_shot && io::stdout().is_terminal() && io::stdin().is_terminal()
     }
 
-    /// Which session this run opens. `--resume <id>` and `--session <id>` name
-    /// one outright; bare `--resume` defers the choice to the user.
     fn resume_mode(&self) -> Resume {
         match (&self.resume, &self.session) {
             (Some(Some(id)), _) | (_, Some(id)) => Resume::Id(id.clone()),
@@ -848,10 +786,8 @@ impl ChatArgs {
 
 pub(crate) enum Resume {
     New,
-    /// This repo's most recent session.
     Latest,
     Id(String),
-    /// Chosen from a list once the UI is up.
     Pick,
 }
 
@@ -861,17 +797,13 @@ struct WireMessage {
     content: String,
 }
 
-/// `manual` needs the TUI or --stream to confirm edits; otherwise the agent is
-/// read-only. `auto` still edits headlessly: only its risky paths would prompt.
 fn ask_needs_front_end(mode: aster_policy::Mode, allow_edits: bool, can_prompt: bool) -> bool {
     allow_edits && mode == aster_policy::Mode::Manual && !can_prompt
 }
 
-/// Run the memory consolidation pass for a finished session, best-effort.
-/// Headless callers await it because their process exits at turn end; the TUI
-/// spawns it detached because the process outlives the call. A failed pass is
-/// a warning, never a user-visible error, and the startup sweep retries any
-/// session this cannot reach.
+/// Best-effort consolidation for a finished session. Headless callers await
+/// it because their process exits at turn end; the TUI spawns it detached. A
+/// failed pass is a warning, and the startup sweep retries it.
 pub(crate) async fn consolidate_finished_session(
     client: &AiClient,
     store: Option<&Store>,
@@ -1168,16 +1100,12 @@ fn prepare_turn(
     Ok((ctx, history))
 }
 
-/// Serialize one NDJSON event to stdout. Every write flushes so the reader sees
-/// events as they happen rather than when the pipe buffer fills.
 fn emit_line(value: &Value) {
     let mut out = io::stdout();
     let _ = writeln!(out, "{value}");
     let _ = out.flush();
 }
 
-/// Emit a `citations` event carrying the web-search source URLs attached to
-/// the assistant message. Consumed by the TUI and the `--stream` front-ends.
 fn emit_citations(annotations: &[Annotation], emit: &impl Fn(Value)) {
     let sources: Vec<Value> = annotations
         .iter()
@@ -1191,15 +1119,10 @@ fn emit_citations(annotations: &[Annotation], emit: &impl Fn(Value)) {
     emit(json!({ "type": "citations", "sources": sources }));
 }
 
-/// Rough token estimate from char count (~4 chars/token), matching the client's
-/// estimate when a provider omits usage.
 fn estimate_reasoning_tokens(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
 }
 
-/// The turn's thinking, as a collapsed block. Sealed blocks carry no readable
-/// text, so a model reasoning under encryption emits nothing rather than an
-/// empty panel. The fallback for endpoints that did not stream deltas.
 fn emit_reasoning(details: &[ReasoningDetail], duration_ms: u64, emit: &impl Fn(Value)) {
     let text = reasoning_text(details);
     if !text.is_empty() {
@@ -1212,8 +1135,6 @@ fn emit_reasoning(details: &[ReasoningDetail], duration_ms: u64, emit: &impl Fn(
     }
 }
 
-/// The readable thinking across a round's blocks. Shared with [`emit_reasoning`]
-/// so what a reopened session shows cannot drift from what was shown live.
 fn reasoning_text(details: &[ReasoningDetail]) -> String {
     details
         .iter()
@@ -1222,8 +1143,6 @@ fn reasoning_text(details: &[ReasoningDetail]) -> String {
         .join("\n\n")
 }
 
-/// The round's thinking as a transcript record, or `None` when the model
-/// reasoned under encryption and left nothing readable behind.
 fn reasoning_record(details: &[ReasoningDetail], duration_ms: u64) -> Option<ReasoningRecord> {
     let text = reasoning_text(details);
     if text.is_empty() {
@@ -1236,14 +1155,10 @@ fn reasoning_record(details: &[ReasoningDetail], duration_ms: u64) -> Option<Rea
     })
 }
 
-/// Close a live reasoning block: the final token count and how long the round
-/// took, so a host flips its label from "Thinking…" to "Thought for Xs".
 fn emit_reasoning_done(tokens: u64, duration_ms: u64, emit: &impl Fn(Value)) {
     emit(json!({ "type": "reasoning_done", "tokens": tokens, "duration_ms": duration_ms }));
 }
 
-/// Read stdin forever, splitting lines by kind: `{"message"}` injections go
-/// into the running turn's queue, everything else is a prompt reply.
 fn spawn_stdin_router(injected: Arc<std::sync::Mutex<Vec<String>>>) -> mpsc::Receiver<Value> {
     let (tx, rx) = mpsc::channel::<Value>(4);
     std::thread::spawn(move || {
@@ -1280,8 +1195,6 @@ fn approval_request_json(kind: &str, req: &ApprovalRequest) -> Value {
     })
 }
 
-/// Bridge prompts to the caller: write an `approval_request` or `question`
-/// line, then block on the next reply from the stdin router.
 fn stdio_approver(mut replies: mpsc::Receiver<Value>) -> UiSender {
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
     tokio::spawn(async move {
@@ -1316,7 +1229,6 @@ fn stdio_approver(mut replies: mpsc::Receiver<Value>) -> UiSender {
     tx
 }
 
-/// A `{"choice": "string"}` reply, or `{"choice": null}` to skip.
 fn parse_question(reply: Value) -> Option<String> {
     reply
         .get("choice")
@@ -1324,8 +1236,6 @@ fn parse_question(reply: Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A `{"allow": bool}` reply, optionally with `"always": true` to persist the
-/// request's scope. A closed pipe or junk denies.
 fn parse_approval(reply: Value) -> Answer {
     if !reply.get("allow").and_then(Value::as_bool).unwrap_or(false) {
         return Answer::No;
@@ -1336,7 +1246,6 @@ fn parse_approval(reply: Value) -> Answer {
     }
 }
 
-/// Run a turn as NDJSON events on stdout, reading approval replies from stdin.
 #[allow(clippy::too_many_arguments)]
 async fn run_stream(
     args: ChatArgs,
@@ -1442,6 +1351,7 @@ async fn run_stream(
             break Ok((reply, compacted));
         }
         if let Some(compacted) = compacted {
+            emit_compacted(&history, &compacted);
             history = compacted;
         }
         history.push(ChatMessage {
@@ -1472,16 +1382,43 @@ async fn run_stream(
 
     let u = client.usage_snapshot();
     match result {
-        Ok((reply, _)) => emit_line(&json!({
-            "type": "done",
-            "reply": reply,
-            "edits": edited,
-            "usage": usage_json(&u),
-            "title": title,
-        })),
+        Ok((reply, compacted_history)) => {
+            if let Some(compacted) = &compacted_history {
+                emit_compacted(&history, compacted);
+            }
+            emit_line(&json!({
+                "type": "done",
+                "reply": reply,
+                "edits": edited,
+                "usage": usage_json(&u),
+                "title": title,
+                // The budget the history may actually spend this session, so a
+                // front-end meter does not count the system prompt's share as free.
+                "context_budget": crate::budget::history_budget(
+                    ctx.limits.compact_budget_chars,
+                    system_prompt(&ctx, true).len(),
+                ),
+            }))
+        }
         Err(e) => emit_line(&json!({ "type": "error", "message": format!("{e:#}") })),
     }
     Ok(())
+}
+
+fn emit_compacted(before: &[ChatMessage], folded: &[ChatMessage]) {
+    let raw = folded.first().map(|m| m.content.text()).unwrap_or_default();
+    let summary = raw
+        .strip_prefix("Summary of earlier conversation:\n")
+        .unwrap_or(&raw);
+    emit_line(&json!({
+        "type": "compacted",
+        "summary": summary,
+        "folded": before.len() - folded.len() + 1,
+        "messages": folded.iter().map(|m| json!({
+            "role": m.role,
+            "content": m.content,
+        })).collect::<Vec<_>>(),
+    }));
 }
 
 /// Spell out every `/skill-name` in the conversation, so a front-end shows the
@@ -1498,16 +1435,12 @@ pub(crate) fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
     }
 }
 
-/// Attach the images the newest question mentions. Only that turn: re-encoding
-/// every image a replayed conversation carried would grow the request without
-/// telling the model anything new.
 fn attach_images(turns: &mut [ChatMessage], repo_root: &Path) {
     if let Some(last) = turns.last_mut().filter(|m| m.role == "user") {
         last.content = crate::images::attach(&last.content.text(), repo_root);
     }
 }
 
-/// The conversation to send, minus the system prompt.
 fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
     if let Some(path) = args.messages_json.as_deref() {
         let raw = if path == "-" && args.stream {
@@ -1573,9 +1506,6 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
     bail!("nothing to ask; pass a prompt (aster \"...\"), pipe one in, or use --messages-json")
 }
 
-/// Resolve the session a headless turn records into, and the prior history to
-/// prepend. Recording is explicit: only `--session`/`--resume <id>` and
-/// `--continue` persist anything; a bare prompt is ephemeral.
 fn resolve_headless_session(
     store: Option<&Store>,
     repo_root: &Path,
@@ -1669,55 +1599,33 @@ pub(crate) async fn agent_turn_streaming(
     Ok((reply, edited, compacted))
 }
 
-/// Verdict for one tool round fed to [`NoProgress`].
 enum RoundVerdict {
-    /// Keep looping.
     Continue,
-    /// The round repeated itself; inject the correction and keep going once.
     Correct,
-    /// Already corrected and it looped again; abort the turn.
     Abort,
-    /// Rounds keep going by without an edit or a command; tell it to act.
-    /// Carries the streak length, which the injected message names.
     Nudge(usize),
-    /// Told to act and it kept gathering; stop the tools and make it answer.
     Wrap,
 }
 
-/// Message injected once when a tool loop is detected. It changes the prompt,
-/// so a fixed-seed retry is not identical to the degenerate rounds.
 const LOOP_CORRECTION: &str = "You repeated the same tool calls with the same \
     results three times in a row. Stop repeating. Re-read the results above and \
     do something different, or give your final answer.";
 
-/// How many extra round allotments the plan-progress extension may grant. The
-/// cap is a backstop, so it cannot stretch indefinitely.
 const MAX_ROUND_EXTENSIONS: usize = 2;
 
-/// Consecutive lookup-only rounds before the model is told to act. Long
-/// investigations are legitimate, so this is high enough to let one finish and
-/// low enough that a wandering turn is caught well before the round cap.
 const BARREN_ROUNDS: usize = 10;
 
-/// Consecutive rounds that come back with neither text nor a tool call before
-/// the turn stops asking. A silent round is usually a provider hiccup or a
-/// reasoning model spending its budget on thinking, and asking again clears it.
 const MAX_EMPTY_ROUNDS: usize = 2;
 
-/// Injected when a round returns nothing at all, in place of failing the turn.
 const EMPTY_CORRECTION: &str = "Your last reply was empty: no text and no tool \
     calls. Continue the work now with a tool call or a final answer. Do not \
     describe what you would do; if something is blocking you, name it in one \
     line.";
 
-/// Stands in for the reply when the model never produces one. The turn ends
-/// clean on this rather than as an error, so the session and its work survive.
 const SILENT_MODEL: &str = "The model returned nothing, twice over and again \
     when asked for a plain answer. Everything above this line still happened and \
     is saved. Send the message again, or switch models if it keeps up.";
 
-/// Injected once when the model gathers without ever acting. [`LOOP_CORRECTION`]
-/// cannot catch this: the calls differ every round, they just go nowhere.
 fn barren_correction(rounds: usize) -> String {
     format!(
         "Your last {rounds} tool rounds were lookups that came back empty. \
@@ -1726,10 +1634,8 @@ fn barren_correction(rounds: usize) -> String {
     )
 }
 
-/// Consecutive one-lookup rounds before the model is told to batch.
 const SINGLE_LOOKUP_ROUNDS: usize = 4;
 
-/// Injected once per turn when every recent round carried a single lookup.
 fn batch_correction(rounds: usize) -> String {
     format!(
         "Your last {rounds} rounds each carried a single lookup, and every \
@@ -1739,22 +1645,16 @@ fn batch_correction(rounds: usize) -> String {
     )
 }
 
-/// Injected once when a reply ends the turn promising work instead of doing
-/// it. The turn continues so the promise becomes tool calls, not a report.
 const DANGLING_INTENT_CORRECTION: &str = "You ended your reply promising work \
     you have not done. Do not narrate intent. If the work was asked for, do it \
     now with your tools and then report what actually changed; if you cannot, \
     name the blocker in one line.";
 
-/// Injected at turn start when the previous reply ended on a promise, so a
-/// session bricked on its own narration acts instead of narrating again.
 const PROMISED_WORK_KICK: &str = "Your previous reply promised work that was \
     never done. Your tools are live right now, in this turn. Start with the \
     first tool call for that work; do not restate the plan and do not mention \
     tool availability.";
 
-/// True when a final reply announces imminent or undone work: the "fixing it
-/// now" ending that reads as a completed fix while nothing was edited.
 fn announces_pending_work(reply: &str) -> bool {
     const PROMISES: &[&str] = &[
         "fixing it now",
@@ -1789,8 +1689,6 @@ fn announces_pending_work(reply: &str) -> bool {
     PROMISES.iter().any(|p| reply.contains(p))
 }
 
-/// Told once, at the halfway mark, what the turn has left. Without it the model
-/// has no idea a budget exists and no reason to converge before it runs out.
 fn budget_notice(spent: usize, cap: usize) -> String {
     format!(
         "You are {spent} tool rounds into this turn; {} remain before it ends \
@@ -1800,9 +1698,6 @@ fn budget_notice(spent: usize, cap: usize) -> String {
     )
 }
 
-/// Consecutive identical tool rounds, all-error rounds, and lookup-only rounds
-/// all mean the model is spinning: correct once, then stop instead of burning
-/// the round cap.
 #[derive(Default)]
 struct NoProgress {
     last_round: Option<u64>,
@@ -1814,9 +1709,6 @@ struct NoProgress {
 }
 
 impl NoProgress {
-    /// Feed one round's signature (hashed name/args/result), whether every
-    /// result was an error, and whether anything but a lookup ran. Returns what
-    /// the loop should do next.
     fn feed(&mut self, sig: u64, all_errors: bool, productive: bool) -> RoundVerdict {
         if self.last_round == Some(sig) {
             self.identical_rounds += 1;
@@ -1853,17 +1745,12 @@ impl NoProgress {
     }
 }
 
-/// True when the round did something beyond looking the repository up. Edits,
-/// commands, sub-agents, plan updates, and MCP calls all count; the read tools
-/// and `explore` do not, since a round of those leaves the repo untouched.
 fn is_productive_round(round: &[(String, String, String)]) -> bool {
     round
         .iter()
         .any(|(name, _, _)| !PARALLEL_READ_TOOLS.contains(&name.as_str()) && name != "explore")
 }
 
-/// A lookup round still moves the turn forward when a result came back with
-/// substance. Only lookups that found nothing feed the barren streak.
 fn round_found_something(round: &[(String, String, String)]) -> bool {
     round.iter().any(|(_, _, result)| {
         !result.starts_with("error: ")
@@ -1872,9 +1759,6 @@ fn round_found_something(round: &[(String, String, String)]) -> bool {
     })
 }
 
-/// Hash a round's (tool name, arguments, result) triples so identical rounds
-/// compare equal. The call id is deliberately excluded: a model re-issues a
-/// fresh id each round, so including it would hide a repeated round.
 fn round_signature(round: &[(String, String, String)]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
@@ -2442,18 +2326,11 @@ not what the assistant did, and be concrete about the subject (\"Fix sandbox \
 seccomp filter\", not \"Debugging a bug\"). Keep the user's own nouns for \
 files, tools, and features.";
 
-/// User turns a session needs before it earns a name, when its opening message
-/// was too thin to name it from on its own.
 const TITLE_AFTER_TURNS: usize = 2;
 
-/// An opening message this substantial is already the topic. Either measure
-/// passes: the character count is what carries languages that do not space
-/// their words, where the word count is always one.
 const OPENER_WORDS: usize = 3;
 const OPENER_CHARS: usize = 12;
 
-/// Openers carrying no topic: a greeting, or a prod to keep going. A session
-/// that starts with one waits for the turn that says what it is about.
 const EMPTY_OPENERS: &[&str] = &[
     "hi",
     "hey",
@@ -2478,8 +2355,6 @@ const EMPTY_OPENERS: &[&str] = &[
     "whats up",
 ];
 
-/// True when the opening message says enough to name the session from it alone.
-/// Waiting for a second turn would leave the session unnamed while it is used.
 fn opener_names_session(first: &str) -> bool {
     let text = first.trim();
     let bare = text.trim_end_matches(['.', '!', '?', ' ']).to_lowercase();
@@ -2500,12 +2375,8 @@ fn turns_before_naming(history: &[ChatMessage]) -> usize {
     }
 }
 
-/// Longest a turn waits on its own naming call. The client's own timeout is
-/// minutes, which is far too long to hold a finished turn behind. A miss just
-/// leaves the session unnamed, and the next turn tries again.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Longest title kept; anything past this is the model ignoring the prompt.
 const TITLE_MAX_CHARS: usize = 60;
 
 /// Name the session once it has shape: after the first turn when the opening
@@ -2565,8 +2436,6 @@ pub(crate) fn name_session(
     }))
 }
 
-/// The exchange the titler sees: user turns in full, assistant turns clipped,
-/// since the opening lines carry the topic and the rest is tool narration.
 fn title_context(history: &[ChatMessage]) -> String {
     let mut out = String::new();
     for m in history
@@ -2585,8 +2454,6 @@ fn title_context(history: &[ChatMessage]) -> String {
     out
 }
 
-/// Strip the wrappers a model reaches for when asked for a bare line: quotes,
-/// a trailing period, a markdown heading, extra lines.
 fn clean_title(reply: &str) -> Option<String> {
     let line = reply.trim().lines().next()?.trim();
     let line = line.trim_start_matches('#').trim();
@@ -2640,8 +2507,6 @@ pub(crate) async fn compact_now(
     Ok((compacted, summary, split))
 }
 
-/// `--compact`: fold the head of the given history into a summary and print the
-/// shorter history back, for a front-end to adopt in place of its own.
 async fn run_compact(args: &ChatArgs, client: &AiClient) -> Result<()> {
     let history = read_history(args)?;
     let (compacted, summary, folded) = compact_now(client, &history).await?;
@@ -2685,9 +2550,6 @@ async fn summarize(client: &AiClient, head: &[ChatMessage]) -> Result<String> {
     client.complete_messages(&messages, 0.2).await
 }
 
-/// Tokens spent between two cumulative snapshots. `None` when the counter did
-/// not move, so a provider that reports no usage records nothing rather than a
-/// misleading zero.
 fn round_usage(before: UsageSnapshot, after: UsageSnapshot) -> Option<EventUsage> {
     let prompt_tokens = after.prompt_tokens.saturating_sub(before.prompt_tokens);
     let completion_tokens = after
@@ -3087,12 +2949,8 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
     tools
 }
 
-/// The escapes JSON actually allows.
 const JSON_ESCAPES: &str = "\"\\/bfnrtu";
 
-/// Tool arguments, repaired if the model produced an escape JSON does not
-/// allow. Bouncing those back costs a whole round, and the intent is never in
-/// doubt, so they are fixed here instead.
 fn parse_arguments(raw: &str) -> Result<Value> {
     match serde_json::from_str(raw) {
         Ok(value) => Ok(value),
@@ -3117,9 +2975,6 @@ fn parse_arguments(raw: &str) -> Result<Value> {
     }
 }
 
-/// `\s` and `\.` come from regexes, where the backslash was meant literally,
-/// so it is doubled. `\'` comes from shell quoting, where it was not meant at
-/// all, so it is dropped. Raw control characters in strings become escapes.
 fn repair_escapes(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len() + 8);
     let mut chars = raw.chars();
@@ -3449,9 +3304,6 @@ async fn exec_tool(
     ToolOutput::text(result.unwrap_or_else(|e| format!("error: {e:#}")))
 }
 
-/// Images a tool returned, as the turn that carries them to the model. They
-/// ride a user message rather than the tool one: an OpenAI-shaped endpoint
-/// takes content parts on a user turn and a bare string on a tool turn.
 fn image_turn(tool: &str, images: &[String]) -> Value {
     let mut parts = vec![json!({
         "type": "text",
@@ -3466,8 +3318,6 @@ fn image_turn(tool: &str, images: &[String]) -> Value {
     json!({ "role": "user", "content": parts })
 }
 
-/// Tools a round may run on parallel threads: read-only, no approval prompts,
-/// no ordering against edits or commands.
 const PARALLEL_READ_TOOLS: [&str; 6] = [
     "read_file",
     "list_files",
@@ -3477,14 +3327,8 @@ const PARALLEL_READ_TOOLS: [&str; 6] = [
     "read_skill",
 ];
 
-/// Lookups worth deduplicating within a turn: pure, cheap, and answered
-/// entirely from the tree. `read_file` is absent because [`cached_read`]
-/// already dedupes it per range, against the file's mtime.
 const DEDUPED_LOOKUPS: [&str; 4] = ["list_files", "search_files", "find_files", "explore"];
 
-/// True once this exact lookup has been answered this turn. Recording and testing
-/// are one step so two identical calls in a batch cannot both miss. Anything
-/// outside [`DEDUPED_LOOKUPS`] clears the cache instead of deduping.
 fn is_repeat_lookup(ctx: &SessionCtx, name: &str, arguments: &str) -> bool {
     let Ok(mut lookups) = ctx.lookups.lock() else {
         return false;
@@ -3499,9 +3343,6 @@ fn is_repeat_lookup(ctx: &SessionCtx, name: &str, arguments: &str) -> bool {
     !lookups.insert(format!("{name}:{arguments}"))
 }
 
-/// Re-serialized with sorted keys so whitespace and key order cannot disguise
-/// a repeat. Sorting is explicit: a dependency enables `preserve_order`, so
-/// `Value` itself keeps whatever order the model sent.
 fn canonical_json(value: &Value) -> String {
     match value {
         Value::Object(map) => {
@@ -3524,9 +3365,6 @@ fn canonical_json(value: &Value) -> String {
     }
 }
 
-/// Fan a batch of lookups out in one round. Every step goes through
-/// [`read_only_call`], so nothing here escapes the policy or runs anything
-/// stateful; a step it declines is reported rather than run another way.
 async fn explore(
     repo_root: &Path,
     policy: &Policy,
@@ -3583,8 +3421,6 @@ async fn explore(
     Ok(out.trim_end().to_string())
 }
 
-/// The steps an `explore` call names, accepted as an array or, for models that
-/// encode arguments as JSON strings, a string holding one.
 fn steps_array(args: &Value) -> Option<Vec<Value>> {
     match args.get("steps") {
         Some(Value::Array(steps)) => Some(steps.clone()),
@@ -3593,8 +3429,6 @@ fn steps_array(args: &Value) -> Option<Vec<Value>> {
     }
 }
 
-/// The tool a step names. Models reach for `name` about as often as `tool`,
-/// and a step naming neither is told so rather than reported as a bad path.
 fn step_tool(step: &Value) -> String {
     ["tool", "name"]
         .iter()
@@ -3603,8 +3437,6 @@ fn step_tool(step: &Value) -> String {
         .to_string()
 }
 
-/// A step's arguments, under any of the keys models use for them, and parsed
-/// when they arrive as a JSON string instead of an object.
 fn step_args(step: &Value) -> Value {
     ["args", "arguments", "input", "parameters"]
         .iter()
@@ -3616,8 +3448,6 @@ fn step_args(step: &Value) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-/// Why a step did not run, specific enough that the model can fix it instead
-/// of resending the same step.
 fn step_refused(tool: &str) -> String {
     if tool.is_empty() {
         return format!(
@@ -3634,8 +3464,6 @@ fn step_refused(tool: &str) -> String {
     )
 }
 
-/// Name a step by its most identifying argument, so the model can tell which
-/// result is which without re-reading the arguments it sent.
 fn step_label(tool: &str, args: &Value) -> String {
     match ["path", "query", "pattern", "dir", "name"]
         .iter()
@@ -3646,9 +3474,6 @@ fn step_label(tool: &str, args: &Value) -> String {
     }
 }
 
-/// Run one read-only call without the approval machinery. `None` sends the
-/// call back to the sequential pass, which can prompt for outside-repo paths
-/// and report argument errors.
 fn read_only_call(
     repo_root: &Path,
     policy: &Policy,
@@ -3737,7 +3562,6 @@ impl PlanStepStatus {
         }
     }
 
-    /// Matches the TUI's glyphs so every surface shows the same plan.
     fn glyph(self) -> &'static str {
         match self {
             Self::Pending => "◻",
@@ -3754,8 +3578,6 @@ impl PlanState {
         self.steps.iter().filter(|s| s.status == want).count()
     }
 
-    /// A count line over one row per step. Statuses nobody used stay off the
-    /// summary, so the common case reads as "3 done, 1 open".
     fn render(&self) -> String {
         let mut parts = vec![format!("{} done", self.count(PlanStepStatus::Done))];
         if self.count(PlanStepStatus::InProgress) > 0 {
@@ -3790,8 +3612,6 @@ impl PlanState {
     }
 }
 
-/// Replace the plan wholesale. The model resends every step each call, so the
-/// tool is a set rather than a patch and the UI never shows a stale strip.
 fn update_plan(ctx: &SessionCtx, steps: Vec<(String, Option<&str>)>) -> Result<String> {
     if steps.is_empty() {
         return Err(anyhow::anyhow!(
@@ -3823,14 +3643,10 @@ fn update_plan(ctx: &SessionCtx, steps: Vec<(String, Option<&str>)>) -> Result<S
     Ok(format!("plan updated:\n{}", plan.render()))
 }
 
-/// Whether the steps changed by more than their statuses. Ticking a step off
-/// keeps the user's approval; a rewritten step list is a different plan.
 fn relabelled(before: &[PlanStep], after: &[PlanStep]) -> bool {
     before.len() != after.len() || before.iter().zip(after).any(|(a, b)| a.label != b.label)
 }
 
-/// Put a question to the user and wait for the answer. Headless callers have no
-/// UI channel, so the agent is told to decide for itself rather than blocking.
 async fn ask_user(
     approver: Option<&UiSender>,
     header: &str,
@@ -3873,8 +3689,6 @@ async fn ask_user(
     }
 }
 
-/// Present the plan for approval. The user is asked whatever mode the session
-/// is in, since asking to plan is a request to be consulted, not a mode.
 async fn exit_plan_mode(
     approver: Option<&UiSender>,
     ctx: &SessionCtx,
@@ -3935,8 +3749,6 @@ async fn exit_plan_mode(
     Ok("plan approved; edit mode is now active".to_string())
 }
 
-/// The plan as a markdown checklist, for front-ends that render approvals as
-/// documents rather than plain rows.
 fn plan_markdown(plan: &PlanState) -> String {
     let mut out = String::from("## Plan\n");
     for step in &plan.steps {
@@ -3949,8 +3761,6 @@ fn plan_markdown(plan: &PlanState) -> String {
     out
 }
 
-/// The requested directory when it does not exist, so a caller can widen or
-/// hint instead of failing.
 fn missing_dir(repo_root: &Path, dir: &Option<String>) -> Option<String> {
     let dir = dir.as_deref().map(str::trim).filter(|d| !d.is_empty())?;
     (!edits::exists_anywhere(repo_root, dir)).then(|| dir.to_string())
@@ -3960,8 +3770,6 @@ fn widened(dir: &str, hits: String) -> String {
     format!("note: {dir} does not exist, so the whole repository was searched instead.\n\n{hits}")
 }
 
-/// A wrong path is a bad guess, not a failure. Name the nearest real paths so
-/// the model corrects itself instead of guessing again.
 fn missing_path(repo_root: &Path, path: &str) -> String {
     let nearby = bash_tools::suggest(repo_root, path, MAX_PATH_SUGGESTIONS);
     if nearby.is_empty() {
@@ -3979,8 +3787,6 @@ fn missing_path(repo_root: &Path, path: &str) -> String {
     )
 }
 
-/// Run a command, subject to policy and approval.
-/// The nested instruction file governing the path an edit just touched.
 fn governing_instructions(ctx: &SessionCtx, args: &Value) -> Option<String> {
     let path = args["path"].as_str()?;
     ctx.instructions
@@ -3988,9 +3794,6 @@ fn governing_instructions(ctx: &SessionCtx, args: &Value) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
-/// Route one `aster_mcp` call. Discovery answers from the local catalog;
-/// execution is authorized against the resolved `server/tool` id, never
-/// against the bridge, so allowing the bridge never allows every tool behind it.
 async fn mcp_bridge(
     policy: &Policy,
     approver: Option<&UiSender>,
@@ -4039,9 +3842,6 @@ async fn mcp_bridge(
     Ok(crate::mcp::render_result(&result))
 }
 
-/// The binary and its arguments, recovered from the shapes models send when
-/// `command` is not a plain string: the whole argv as a list, or the binary left
-/// in `args`. A shell line, or a leading flag, runs through `bash -lc`.
 fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
     let tail = string_list(&args["args"]);
     match args["command"].as_str().filter(|s| !s.trim().is_empty()) {
@@ -4077,8 +3877,6 @@ fn string_list(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The sandbox switches as the model passed them, with the session's yolo state
-/// and configured timeout folded in.
 fn run_opts(args: &Value, ctx: &SessionCtx) -> RunOpts {
     RunOpts {
         turbo: args["turbo"].as_bool().unwrap_or(false),
@@ -4087,19 +3885,15 @@ fn run_opts(args: &Value, ctx: &SessionCtx) -> RunOpts {
     }
 }
 
-/// Where a command runs and who can approve it, shared by every exec tool.
 struct ExecEnv<'a> {
     repo_root: &'a Path,
     policy: &'a Policy,
     approver: Option<&'a UiSender>,
     credentials: &'a aster_policy::CommandGrants,
-    /// Where an "always" answer is written, when the session persists at all.
     store: Option<&'a Store>,
-    /// No sandbox means no credential boundary to ask about.
     yolo: bool,
 }
 
-/// Sandbox switches and the per-command timeout.
 #[derive(Clone, Copy)]
 struct RunOpts {
     turbo: bool,
@@ -4107,8 +3901,6 @@ struct RunOpts {
     timeout_secs: u64,
 }
 
-/// A plan-mode refusal with the way out appended when this run can ask: the
-/// model should present its plan instead of retrying the blocked call.
 fn plan_mode_hint(reason: String, can_ask: bool) -> String {
     match can_ask && reason.contains("mode is `plan`") {
         true => format!(
@@ -4119,9 +3911,6 @@ fn plan_mode_hint(reason: String, can_ask: bool) -> String {
     }
 }
 
-/// Every execution goes through the same `Decision` path as edits: deny rules
-/// override the mode, ask-style modes prompt, headless runs without an
-/// approver deny.
 async fn authorize_exec(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Result<()> {
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match env.policy.evaluate(&Action::Exec {
@@ -4145,9 +3934,6 @@ async fn authorize_exec(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Res
     authorize_credentials(env, binary, args).await
 }
 
-/// A tool keeping its credentials outside the repository is asked about rather
-/// than refused, since the sandbox denies those directories by default. An
-/// approval covers one command and one directory, so `gh` never widens `cat`.
 async fn authorize_credentials(env: &ExecEnv<'_>, binary: &str, args: &[String]) -> Result<()> {
     if env.yolo {
         return Ok(());
@@ -4185,7 +3971,6 @@ async fn authorize_credentials(env: &ExecEnv<'_>, binary: &str, args: &[String])
     Ok(())
 }
 
-/// Run sandboxed unless yolo, returning the raw streams for the caller to shape.
 async fn run_raw(
     env: &ExecEnv<'_>,
     binary: &str,
@@ -4220,9 +4005,6 @@ async fn run_raw(
     aster_sandbox::run_command(&config, binary, args).await
 }
 
-/// Notes appended to a command result for failure classes models misread:
-/// pipe-masked build failures, buried first errors, auth failures worth zero
-/// retries, and sandbox denials that look like broken tools.
 fn command_coaching(output: &aster_sandbox::CommandOutput, sandboxed: bool) -> Vec<String> {
     let mut notes = Vec::new();
     let failed = output.exit_code != Some(0);
@@ -4290,7 +4072,6 @@ fn command_coaching(output: &aster_sandbox::CommandOutput, sandboxed: bool) -> V
     notes
 }
 
-/// The first line of `output` that looks like a compiler or test failure.
 fn first_error_line(output: &str) -> Option<String> {
     output
         .lines()
@@ -4305,9 +4086,6 @@ fn first_error_line(output: &str) -> Option<String> {
         .map(|line| line.trim().to_string())
 }
 
-/// Render a timed-out command for the model: the partial output is the
-/// evidence, and the coaching stops the two observed dead ends (diagnosing
-/// from nothing, or re-running with a longer timeout).
 fn render_timeout(output: &aster_sandbox::CommandOutput, timeout_secs: u64) -> String {
     let mut result = format!("error: command timed out after {timeout_secs}s\n");
     if output.stdout.is_empty() && output.stderr.is_empty() {
@@ -4498,7 +4276,6 @@ pub(crate) fn configured_credentials(
     aster_policy::CommandGrants::new(configured.chain(persisted))
 }
 
-/// The directory an approval covers: the file's parent, or the directory itself.
 fn grant_root(resolved: &Path) -> PathBuf {
     if resolved.is_dir() {
         return resolved.to_path_buf();
@@ -4506,8 +4283,6 @@ fn grant_root(resolved: &Path) -> PathBuf {
     resolved.parent().unwrap_or(resolved).to_path_buf()
 }
 
-/// Sync resolution for reads that need nobody's approval, usable off the async
-/// loop. `None` means the path leaves the repo and needs the approval flow.
 fn resolve_in_repo(
     repo_root: &Path,
     policy: &Policy,
@@ -4532,9 +4307,6 @@ fn resolve_in_repo(
     Some(Ok(resolved))
 }
 
-/// Resolve a path the agent wants to read. In-repo paths go through the
-/// policy's secret-read rules; anything outside the repo is gated on the
-/// user's approval, which a headless run cannot give.
 async fn resolve_for_read(
     repo_root: &Path,
     policy: &Policy,
@@ -4576,7 +4348,6 @@ async fn resolve_for_read(
     Ok(resolved)
 }
 
-/// An omitted or empty `dir` means the repo root, which never needs approval.
 async fn resolve_dir(
     repo_root: &Path,
     policy: &Policy,
@@ -4591,9 +4362,6 @@ async fn resolve_dir(
     }
 }
 
-/// `read_numbered`, but a repeat read of an unchanged range returns a pointer
-/// to the copy already in the conversation. Re-sending a file the model can
-/// still see is the single largest source of wasted context.
 fn cached_read(
     ctx: &SessionCtx,
     target: &Path,
@@ -4625,9 +4393,6 @@ fn cached_read(
     Ok(body)
 }
 
-/// Read a file as text, converting document formats (PDF, Office, EPUB, RTF)
-/// to Markdown via anydoc. CSV is exempt: it reads raw so line numbers keep
-/// matching the bytes on disk for edits.
 fn read_text_or_document(target: &Path) -> Result<String> {
     let format = target
         .extension()
@@ -4695,8 +4460,6 @@ fn list_files(probe: &bash_tools::ToolProbe, base: &Path) -> Result<String> {
     })
 }
 
-/// Search via the best available tool, then strip any paths the policy
-/// blocks (secret files) so they never reach the model.
 fn search_files(
     probe: &bash_tools::ToolProbe,
     repo_root: &Path,
@@ -4726,7 +4489,6 @@ fn search_files(
     ))
 }
 
-/// A path-shaped query is usually a file lookup sent to the wrong tool.
 fn path_shaped_query_hint(repo_root: &Path, query: &str) -> Option<String> {
     let looks_like_path = !query.contains(char::is_whitespace)
         && (query.contains('/') || Path::new(query).extension().is_some());
@@ -4816,9 +4578,6 @@ async fn edit_file(
     Ok(format!("{done} {path}:\n{}", edits::preview(&block)))
 }
 
-/// Gate a write that lands outside the repository on the user's approval,
-/// granted per directory so the rest of the session can keep working there.
-/// Yolo has already dropped the sandbox, so it drops this too.
 async fn approve_outside_write(
     repo_root: &Path,
     approver: Option<&UiSender>,
@@ -4863,7 +4622,6 @@ pub(crate) async fn request_approval(
     ask_approval(approver, preview, scope, None, UiRequest::Approval).await
 }
 
-/// As [`request_approval`], but tagged so the front-end promotes its own mode.
 async fn request_plan_approval(
     approver: Option<&UiSender>,
     preview: String,
@@ -4906,8 +4664,6 @@ fn truncate(text: &str, max: usize) -> String {
     format!("{}\n... [truncated]", &text[..cut])
 }
 
-/// Keep the end instead of the beginning: build and test failures state the
-/// verdict last, and that is the part worth spending context on.
 fn truncate_head(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
@@ -4919,7 +4675,6 @@ fn truncate_head(text: &str, max: usize) -> String {
     format!("... [truncated]\n{}", &text[cut..])
 }
 
-/// Schema for the `agent` tool: fan out N tasks to sub-agents.
 fn agent_tool_schema() -> Value {
     json!({
         "type": "function",
@@ -4949,9 +4704,6 @@ fn agent_tool_schema() -> Value {
     })
 }
 
-/// The tasks an `agent` call carries: the `tasks` batch array, or a flat
-/// single `{agent, task}` call folded into a batch of one. Models fanning out
-/// often send one task per parallel call, so the flat shape must spawn too.
 fn agent_task_batch(args: &Value) -> Option<Vec<Value>> {
     if let Some(tasks) = args.get("tasks").and_then(Value::as_array) {
         return Some(tasks.clone());
@@ -4959,8 +4711,6 @@ fn agent_task_batch(args: &Value) -> Option<Vec<Value>> {
     (args.get("agent").is_some() && args.get("task").is_some()).then(|| vec![args.clone()])
 }
 
-/// Dispatch one `agent` tool call: run the swarm, cap reports, return JSON.
-/// Streams `agent_status` events so the UIs can render live per-agent progress.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_agent_tool(
     repo_root: &Path,

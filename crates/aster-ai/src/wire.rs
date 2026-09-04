@@ -5,8 +5,6 @@ use serde_json::{Value, json};
 
 use crate::models::{ChatMessage, IMAGE_OMITTED};
 
-/// Wrapper kept around a folded note, so the model reads it as harness state
-/// rather than as something the user typed.
 const OPEN: &str = "<system-note>";
 const CLOSE: &str = "</system-note>";
 
@@ -127,7 +125,6 @@ pub(crate) fn apply_cache_control(messages: &mut [Value]) {
     }
 }
 
-/// False when the message has no text block to mark.
 fn mark_cached(message: &mut Value) -> bool {
     let Some(content) = message.get_mut("content") else {
         return false;
@@ -165,8 +162,6 @@ fn role_of(message: &Value) -> Option<&str> {
     message.get("role").and_then(Value::as_str)
 }
 
-/// A user turn carrying plain text is the one shape a note can be appended to
-/// without disturbing tool calls or content parts.
 fn merges(message: &Value) -> bool {
     role_of(message) == Some("user") && message.get("content").is_some_and(Value::is_string)
 }

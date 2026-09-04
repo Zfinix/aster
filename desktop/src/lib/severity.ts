@@ -24,7 +24,6 @@ export const SEV_LABEL: Record<Severity, string> = {
   info: "INFO",
 };
 
-/** Tailwind background utility for a severity's badge / accent. */
 export const SEV_BG: Record<Severity, string> = {
   critical: "bg-sev-critical",
   high: "bg-sev-high",

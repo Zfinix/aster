@@ -4,16 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// A global skills root, resolved lazily because it depends on the environment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Root {
-    /// Project-only agent: no user-global root.
     None,
-    /// Relative to the home directory.
     Home(&'static str),
-    /// Relative to the XDG config home (`~/.config` unless overridden).
     Config(&'static str),
-    /// `$var` holds the agent's home dir, else `~/<fallback>`; `sub` hangs off it.
     Env {
         var: &'static str,
         fallback: &'static str,
@@ -24,7 +19,6 @@ enum Root {
 /// One coding agent and the two roots it reads skills from.
 #[derive(Clone, Copy, Debug)]
 pub struct Agent {
-    /// Stable identifier, the same key the `skills` CLI uses for `--agent`.
     pub key: &'static str,
     pub display_name: &'static str,
     pub project_dir: &'static str,
@@ -63,8 +57,6 @@ impl Agent {
     }
 }
 
-/// `$XDG_CONFIG_HOME`, else `~/.config` on every platform, matching how the
-/// `skills` CLI resolves config-home agents.
 fn config_home() -> Option<PathBuf> {
     match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v.trim())),
@@ -72,7 +64,6 @@ fn config_home() -> Option<PathBuf> {
     }
 }
 
-/// Every agent Aster can import skills from, keyed as in the `skills` CLI.
 pub const AGENTS: &[Agent] = &[
     agent("adal", "AdaL", ".adal/skills", Root::Home(".adal/skills")),
     agent(

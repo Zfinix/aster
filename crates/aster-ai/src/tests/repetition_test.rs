@@ -125,9 +125,6 @@ async fn degenerate_non_streaming_reply_is_rejected() {
     );
 }
 
-/// The buffer is trimmed at a byte offset computed from its length, so a
-/// multi-byte character straddling that offset used to panic the streaming
-/// task: "end byte index 216 is not a char boundary; it is inside '├'".
 #[test]
 fn a_multibyte_character_on_the_trim_boundary_does_not_panic() {
     // A directory tree is the everyday case: the glyphs are three bytes each.

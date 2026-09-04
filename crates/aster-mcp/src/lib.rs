@@ -11,12 +11,9 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpTool {
-    /// Stable server identifier configured by the host.
     pub server: String,
     pub name: String,
-    /// Short, task-oriented description used for discovery.
     pub description: String,
-    /// The unmodified MCP input schema. It is exposed only by `describe`.
     pub input_schema: Value,
 }
 
@@ -138,15 +135,9 @@ impl McpCatalog {
 /// Context-sensitive settings for progressive tool injection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct ProgressiveConfig {
-    /// Tokens remaining in the active model context after system instructions,
-    /// conversation history, and a host-reserved response budget.
     pub available_context_tokens: usize,
-    /// Maximum percentage of available context a direct tool manifest may use.
-    /// The default is 6%.
     pub inventory_threshold_percent: f32,
-    /// Results returned when `search` omits `limit`.
     pub search_default_limit: usize,
-    /// Upper bound accepted from a model-supplied `search` limit.
     pub max_search_limit: usize,
 }
 
@@ -188,9 +179,7 @@ impl ProgressiveConfig {
 /// The catalogue summary placed in the system prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inventory {
-    /// Tool names and descriptions fit the configured context budget.
     Tools(Vec<ToolManifestEntry>),
-    /// The tool list would be too large; advertise only available MCP servers.
     Servers(Vec<McpServer>),
 }
 
@@ -204,13 +193,10 @@ pub struct ToolManifestEntry {
 
 #[derive(Debug, Clone)]
 pub struct Injection {
-    /// The single OpenAI-compatible `aster_mcp` function definition.
     pub bridge_tool: Value,
     pub prompt: String,
     pub inventory: Inventory,
-    /// Approximate token count of the full schema-free tool manifest.
     pub manifest_tokens: usize,
-    /// Configured maximum direct-manifest budget.
     pub inventory_budget_tokens: usize,
 }
 
@@ -351,8 +337,6 @@ pub struct ToolMatch {
 
 /// Host-supplied execution boundary for an MCP transport.
 pub trait McpInvoker {
-    /// Call the already-resolved tool.
-    /// Implementations must authorize `tool.id()`, not merely `aster_mcp`.
     fn invoke(&mut self, tool: &McpTool, arguments: &Value) -> Result<Value>;
 }
 

@@ -74,7 +74,6 @@ async fn dispatch(tools: &WebBackend, message: &Value, id: Value) -> Value {
     }
 }
 
-/// The same catalog the in-process server offers, in `tools/list` shape.
 fn listed(backend: &WebBackend) -> Vec<Value> {
     crate::register_tools(backend)
         .into_iter()
@@ -96,8 +95,6 @@ fn discovery() -> Value {
     })
 }
 
-/// A tool that fails reports it in the result, not as a JSON-RPC error: the
-/// model should see what went wrong and choose another query or URL.
 async fn call(tools: &WebBackend, params: &Value, id: Value) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return error(id, INTERNAL_ERROR, "`name` is required".into());

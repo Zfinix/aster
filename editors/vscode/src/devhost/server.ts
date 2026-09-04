@@ -23,8 +23,6 @@ import * as settingsData from "../settingsData";
 import * as asterConfig from "../asterConfig";
 import { shell } from "./shell";
 
-/** Everything the editor would have persisted in `globalState`. A dev host is
- *  one session at a time, so it lives for as long as the process does. */
 interface State {
   model: string | null;
   permissionMode: PermissionMode;
@@ -46,9 +44,6 @@ export function start(root: string, port: number): void {
   const review = new ReviewRunner();
   const clients = new Set<http.ServerResponse>();
 
-  /** A panel that navigated away leaves a dead socket behind, and writing to
-   *  one throws out of whichever stream handler is mid-turn, taking the host
-   *  down with it. Drop the client instead. */
   const post = (message: ToWebview | SettingsToWebview) => {
     const frame = `data: ${JSON.stringify(message)}\n\n`;
     for (const client of clients) {
@@ -64,7 +59,6 @@ export function start(root: string, port: number): void {
   };
   const env = () => cliEnv(state.provider);
   const runState = () => post({ type: "runState", review: review.running, chat: chat.running });
-  /** The editor-bound actions, which a browser has no editor to satisfy. */
   const noEditor = (what: string) => post({ type: "log", line: `[devhost] ${what} needs the editor` });
 
   const server = http.createServer(async (req, res) => {
@@ -140,8 +134,6 @@ export function start(root: string, port: number): void {
   const sendSettings = async () =>
     post({ type: "settings", snapshot: await settingsData.snapshot(root) });
 
-  /** The editor writes VS Code settings and opens files; a dev host has neither,
-   *  so those two arrive as a log line rather than silently doing nothing. */
   async function onSettings(message: SettingsToHost): Promise<void> {
     try {
       switch (message.type) {
@@ -437,8 +429,6 @@ function read(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-/** `@` mentions, off git rather than a workspace index: the same set the CLI
- *  would see, and it costs one process instead of a crawl. */
 function trackedFiles(root: string, query: string): Promise<string[]> {
   return new Promise((resolve) => {
     exec("git ls-files", { cwd: root, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {

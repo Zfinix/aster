@@ -5,7 +5,6 @@ export interface SliderOption {
   label: string;
 }
 
-/** One stop per option, in px; the knob's travel is a multiple of it. */
 const STEP = 13;
 
 /** An ordered ladder as a knob on a track: drag it, tap a stop, or arrow it
@@ -34,7 +33,6 @@ export function ChoiceSlider({
     if (next && next.value !== value) onSelect(next.value);
   };
 
-  /** The stop nearest the pointer, so a drag snaps as it goes. */
   const stopAt = (clientX: number) => {
     const track = ref.current;
     if (!track) return at;

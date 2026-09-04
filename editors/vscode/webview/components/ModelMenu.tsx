@@ -10,12 +10,9 @@ import { ModelPicker } from "./ModelPicker";
 
 type Pane = "model" | "provider";
 
-/**
- * The model chip's menu: three rows, each opening its list beside them under
- * the pointer. The chip itself opens on a tap; once inside, the lists follow
- * the hover, and one is out at a time so the panel reads as one surface
- * changing shape rather than every setting shouting at once.
- */
+/** The model chip's menu: three rows, each opening its list beside them under
+ *  the pointer. One list is out at a time, so the panel reads as one surface
+ *  changing shape rather than every setting shouting at once. */
 export function ModelMenu({
   pane: initial,
   model,
@@ -32,8 +29,6 @@ export function ModelMenu({
   onProvider,
   onClose,
 }: {
-  /** The row the menu opens on. Null off the chip: the rows come up on their
-   *  own, and the list follows the pointer. */
   pane: Pane | null;
   model: string | null;
   models: string[];

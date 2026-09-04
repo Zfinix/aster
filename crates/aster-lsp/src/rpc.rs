@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-/// Poll interval while waiting for a server to publish diagnostics.
 const POLL: Duration = Duration::from_millis(100);
 
 #[derive(Default)]

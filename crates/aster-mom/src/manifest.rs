@@ -6,11 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// Default hold, in turns (spec 6.2).
 pub const DEFAULT_HOLD: u32 = 3;
-/// Default `stuck` threshold, in failed tool steps (spec 6.3).
 pub const DEFAULT_STUCK: u32 = 3;
-/// Default `chat-full` percent (spec 6.3).
 pub const DEFAULT_CHAT_FULL: f64 = 70.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

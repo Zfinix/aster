@@ -55,8 +55,6 @@ pub(super) fn spawn_approver(cx: ConnectionTo<Client>, session: Arc<Session>) ->
     tx
 }
 
-/// Promote the session to `edit` so the grant outlives the turn, and tell the
-/// editor its mode picker moved.
 fn promote(cx: &ConnectionTo<Client>, session_id: &SessionId, session: &Session) {
     if session.mode().can_edit() {
         return;
@@ -185,8 +183,6 @@ async fn ask_question(
     (answer, respond)
 }
 
-/// Send one permission request and wait for the option the user picked.
-/// A cancelled or failed request reads as no answer.
 async fn selected(
     cx: &ConnectionTo<Client>,
     session_id: &SessionId,

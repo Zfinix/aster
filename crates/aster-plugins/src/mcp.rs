@@ -9,7 +9,6 @@ use serde_json::{Map, Value};
 
 use crate::path::{Anchor, PLUGIN_DATA_VAR, PLUGIN_ROOT_VAR, contained, cwd_anchor, expand};
 
-/// The one MCP configuration schema this client implements.
 pub const MCP_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
 #[derive(Debug, Clone)]
@@ -21,8 +20,6 @@ pub struct Server {
 #[derive(Debug, Clone)]
 pub enum Transport {
     Stdio(Stdio),
-    /// Remote transports, kept so a plugin's servers can be reported even where
-    /// this client cannot connect to them.
     Http(Http),
 }
 
@@ -38,7 +35,6 @@ pub struct Stdio {
 
 #[derive(Debug, Clone)]
 pub struct Http {
-    /// False for the deprecated HTTP+SSE transport.
     pub streamable: bool,
     pub url: String,
     pub headers: BTreeMap<String, String>,
@@ -224,8 +220,6 @@ fn closed(fields: &Map<String, Value>, allowed: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Absolute http(s), no user information, no fragment, and plaintext only for a
-/// loopback host.
 fn validate_url(url: &str) -> Result<()> {
     let Some((scheme, rest)) = url.split_once("://") else {
         bail!("`url` must be an absolute http or https URL");

@@ -5,13 +5,12 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-/// What the menu can show at once. The search runs on every keystroke, so it
-/// stops well before walking a monorepo to the end.
 const LIMIT: usize = 50;
 
-/// How many matches to rank before answering. Past this the shallowest ones are
-/// already in hand, and a keystroke is not worth a full crawl.
 const SCAN: usize = 2000;
+
+const MAX_PREVIEW_LINES: usize = 200;
+const MAX_PREVIEW_CHARS: usize = 32_000;
 
 /// Repo files matching `query`, plus the folders on the way to them, shallowest
 /// first. Mirrors what the extension gets from the editor's own file index.
@@ -63,8 +62,6 @@ pub fn mention(root: &Path, uri: &str) -> Option<String> {
     Some(relative.to_string_lossy().replace('\\', "/"))
 }
 
-/// Enough of a decoder for a dropped path: browsers escape spaces and the like,
-/// and nothing else in a `file://` URI needs undoing.
 fn percent_decode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
@@ -104,8 +101,6 @@ pub fn stage(root: &Path, name: &str, size: u64, data: &[u8]) -> Result<String, 
     Ok(target.display().to_string())
 }
 
-/// The one file in the repo with this name and size. More than one is a guess,
-/// so it is left to the staging copy instead.
 fn find(root: &Path, name: &str, size: u64) -> Option<String> {
     let mut found: Option<PathBuf> = None;
     for entry in walk(root).flatten() {
@@ -125,9 +120,6 @@ fn find(root: &Path, name: &str, size: u64) -> Option<String> {
     Some(relative.to_string_lossy().replace('\\', "/"))
 }
 
-/// Dotfiles are part of a repo and the composer can mention them, but what
-/// `.gitignore` excludes is noise. `require_git(false)` so a folder that is not
-/// a repo still gets its ignore file read.
 fn walk(root: &Path) -> ignore::Walk {
     WalkBuilder::new(root)
         .hidden(false)
@@ -135,7 +127,6 @@ fn walk(root: &Path) -> ignore::Walk {
         .build()
 }
 
-/// A pasted name is browser-supplied, so it never gets to pick the directory.
 fn sanitize(name: &str) -> String {
     name.rsplit(['/', '\\'])
         .next()
@@ -144,11 +135,52 @@ fn sanitize(name: &str) -> String {
         .to_string()
 }
 
-/// Root entries before anything nested, then alphabetical, as the tree reads.
 fn shallowest_first(a: &str, b: &str) -> std::cmp::Ordering {
     let (left, right) = (a.trim_end_matches('/'), b.trim_end_matches('/'));
     let depth = left.matches('/').count().cmp(&right.matches('/').count());
     depth.then_with(|| left.cmp(right))
+}
+
+/// The head of a file, for the preview card in the page.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct PreviewFile {
+    pub path: String,
+    pub lang: Option<String>,
+    pub content: String,
+    pub truncated: bool,
+}
+
+/// A bounded peek at a repo file: the head of it, never the whole thing, and
+/// never anything outside the repo.
+pub fn preview(root: &Path, path: &str) -> Option<PreviewFile> {
+    let canonical_root = root.canonicalize().ok()?;
+    let target = root.join(path).canonicalize().ok()?;
+    if !target.starts_with(canonical_root) || !target.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(&target).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut content = String::new();
+    let mut truncated = lines.len() > MAX_PREVIEW_LINES;
+    for line in lines.iter().take(MAX_PREVIEW_LINES) {
+        if content.len() + line.len() + 1 > MAX_PREVIEW_CHARS {
+            truncated = true;
+            break;
+        }
+        content.push_str(line);
+        content.push('\n');
+    }
+    let lang = target
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_string);
+    Some(PreviewFile {
+        path: path.to_string(),
+        lang,
+        content,
+        truncated,
+    })
 }
 
 #[cfg(test)]

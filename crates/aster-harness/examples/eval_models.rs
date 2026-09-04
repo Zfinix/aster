@@ -1,18 +1,6 @@
-//! Benchmark candidate hypothesis models on recall, latency, and cost.
-//!
-//! Pulls OpenRouter's live catalog, keeps the cheap text models, runs the real
-//! hypothesis prompt on a diff with several planted bugs, and ranks by how many
-//! it catches (then speed, then price). This is how the default
-//! hypothesis model was chosen; docs/EVAL.md covers measurement.
-//!
-//! Usage:
-//!   ASTER_API_KEY=... cargo run -p aster-harness --example eval_models
-//!
-//! Env knobs (optional):
-//!   ASTER_BASE_URL     default https://openrouter.ai/api/v1
-//!   EVAL_PRICE_CAP     max $/token for the prompt side (default 1e-6 = $1/M)
-//!   EVAL_MAX_MODELS    cap the fan-out (default 120)
-//!   EVAL_CONCURRENCY   parallel calls (default 16)
+//! Benchmark candidate hypothesis models on recall, latency, and cost against
+//! a diff with planted bugs; this is how the default was chosen (docs/EVAL.md).
+//! Usage: `ASTER_API_KEY=... cargo run -p aster-harness --example eval_models`
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -23,8 +11,6 @@ use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
-/// Bugs planted in the fixture diff: (id, new-file line, keyword signatures). A
-/// bug counts as found if a candidate lands within one line or names a keyword.
 const BUGS: &[(&str, i32, &[&str])] = &[
     (
         "sql-injection",
@@ -94,9 +80,6 @@ const BUGS: &[(&str, i32, &[&str])] = &[
 ];
 
 const DIFF: &str = include_str!("fixtures/multibug.diff");
-/// Substrings that mark a model as not a general code reviewer: embeddings,
-/// classifiers, audio/media, and OpenRouter's meta-routers (which forward to
-/// other models and muddy the ranking).
 const SKIP: &[&str] = &[
     "embed",
     "moderation",
@@ -313,7 +296,6 @@ async fn fetch_models(
     Ok(cheap.into_iter().map(|(id, _)| id).collect())
 }
 
-/// A modality list is acceptable if it's absent (assume text) or contains text.
 fn modality_ok(m: &Option<Vec<String>>) -> bool {
     m.as_ref()
         .map(|v| v.iter().any(|s| s == "text"))
@@ -368,8 +350,6 @@ async fn eval_one(
     })
 }
 
-/// Pull the first JSON object out of a possibly-fenced model response and read
-/// its candidates. Returns empty on any parse failure.
 fn extract_candidates(content: &str) -> Vec<aster_harness::Candidate> {
     let (Some(start), Some(end)) = (content.find('{'), content.rfind('}')) else {
         return Vec::new();

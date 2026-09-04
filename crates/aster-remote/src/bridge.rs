@@ -13,7 +13,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 
-/// How long a relayed prompt waits for a tap before it is denied.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// One `{"role","content"}` message on the `--messages-json` wire.
@@ -42,14 +41,12 @@ impl WireMessage {
 #[derive(Clone, Copy)]
 pub enum Answer {
     Allow,
-    /// Allow and persist the request's scope as a grant.
     AlwaysAllow,
     Deny,
 }
 
 /// What the running turn needs from the channel adapter.
 pub enum TurnEvent {
-    /// The agent started a tool call; `arguments` is the raw JSON string.
     ToolCall {
         id: String,
         name: String,
@@ -82,15 +79,10 @@ pub struct TurnOutcome {
 pub struct Turn {
     pub bin: PathBuf,
     pub repo_root: PathBuf,
-    /// Session id the turn records into, e.g. `telegram-12345`.
     pub session: String,
-    /// Permission mode passed through to `--permission-mode`.
     pub mode: String,
-    /// Model override passed through to `--model`.
     pub model: Option<String>,
-    /// Reasoning budget passed through to `--effort`.
     pub effort: Option<String>,
-    /// Extra environment for the child, e.g. chat context for MCP tools.
     pub extra_env: Vec<(String, String)>,
 }
 
@@ -263,8 +255,6 @@ pub async fn ask_once(bin: &Path, repo_root: &Path, prompt: &str) -> Result<Stri
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Await a prompt reply, falling back when the adapter drops it or the user
-/// never answers within [`PROMPT_TIMEOUT`].
 async fn await_or<T>(rx: oneshot::Receiver<T>, fallback: T) -> T {
     match tokio::time::timeout(PROMPT_TIMEOUT, rx).await {
         Ok(Ok(answer)) => answer,

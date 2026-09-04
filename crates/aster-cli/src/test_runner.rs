@@ -6,8 +6,6 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-/// Combined stdout+stderr kept verbatim at the end of the structured result,
-/// so the counts never hide the actual error text.
 const TAIL_CHARS: usize = 2_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,8 +174,6 @@ struct Counts {
     failures: Vec<String>,
 }
 
-/// Sums every `test result:` line, one per suite, and collects the indented
-/// names under each `failures:` block.
 fn parse_cargo(out: &str) -> Counts {
     let mut counts = Counts::default();
     let mut in_failures = false;
@@ -221,7 +217,6 @@ fn parse_cargo(out: &str) -> Counts {
     counts
 }
 
-/// Reads the `= X failed, Y passed in Zs =` summary and `FAILED name` lines.
 fn parse_pytest(out: &str) -> Counts {
     let mut counts = Counts::default();
     for line in out.lines() {
@@ -253,8 +248,6 @@ fn parse_pytest(out: &str) -> Counts {
     counts
 }
 
-/// Collects `--- FAIL: name` lines; go has no per-test totals, so only the
-/// failure count is derived.
 fn parse_go(out: &str) -> Counts {
     let mut counts = Counts::default();
     for line in out.lines() {
@@ -271,8 +264,6 @@ fn parse_go(out: &str) -> Counts {
     counts
 }
 
-/// Best effort over jest and vitest summaries; other runners keep null counts
-/// and let the exit code and tail speak.
 fn parse_node(out: &str) -> Counts {
     let mut counts = Counts::default();
     for line in out.lines() {

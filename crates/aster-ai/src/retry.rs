@@ -85,7 +85,6 @@ fn is_retryable(resp: &Response) -> bool {
     ) && has_retry_hint(resp.headers())
 }
 
-/// True if a retry could succeed: a `Retry-After` or any `x-ratelimit-*` header.
 fn has_retry_hint(headers: &HeaderMap) -> bool {
     headers.contains_key(RETRY_AFTER)
         || headers
@@ -93,8 +92,6 @@ fn has_retry_hint(headers: &HeaderMap) -> bool {
             .any(|k| k.as_str().starts_with("x-ratelimit"))
 }
 
-/// Server-requested delay: `Retry-After` seconds, or the gap until
-/// `x-ratelimit-reset`. The HTTP-date form is not parsed.
 fn header_delay(headers: &HeaderMap) -> Option<Duration> {
     if let Some(secs) = headers
         .get(RETRY_AFTER)

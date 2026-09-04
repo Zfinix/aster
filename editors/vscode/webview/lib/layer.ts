@@ -1,14 +1,10 @@
 import { useEffect, useRef, type RefObject } from "react";
 
-/** Every open popup and modal, innermost last. */
 const layers: symbol[] = [];
 
-/**
- * Holds the topmost layer while mounted. Escape closes the top layer only, so
- * a menu over a modal takes the key and the modal stays. Given `panel`, a
- * mousedown outside it closes too. A surface with no `onClose` still holds the
- * layer, which is how a blocking prompt keeps Escape off whatever it covers.
- */
+/** Holds the topmost layer while mounted. Escape closes the top layer only, and
+ *  given `panel` a mousedown outside it closes too. A surface with no `onClose`
+ *  still holds the layer, which keeps Escape off whatever a blocking prompt covers. */
 export function useLayer(onClose?: () => void, panel?: RefObject<HTMLElement | null>): void {
   const close = useRef(onClose);
   close.current = onClose;

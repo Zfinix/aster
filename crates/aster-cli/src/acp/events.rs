@@ -14,15 +14,12 @@ use serde_json::Value;
 
 use crate::chat::ChatEventSink;
 
-/// Tool output shown inline in the editor; the model still sees all of it.
 const MAX_RESULT_CHARS: usize = 8_000;
 
 pub(super) struct Sink {
     cx: ConnectionTo<Client>,
     session_id: SessionId,
     repo_root: PathBuf,
-    /// Progress lines per `agent` tool call, so each update carries the whole
-    /// picture rather than replacing the last line.
     agents: Mutex<HashMap<String, Vec<String>>>,
 }
 

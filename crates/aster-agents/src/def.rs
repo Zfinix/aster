@@ -6,7 +6,6 @@ use serde::Deserialize;
 
 pub const AGENT_FILE: &str = "AGENT.md";
 
-/// Tools an agent may call when its frontmatter names no allowlist: read-only.
 pub const DEFAULT_TOOLS: &[&str] = &[
     "read_file",
     "list_files",
@@ -15,7 +14,6 @@ pub const DEFAULT_TOOLS: &[&str] = &[
     "read_skill",
 ];
 
-/// Spec limits on the frontmatter fields, matching `aster-skills`.
 const MAX_NAME_LEN: usize = 64;
 const MAX_DESCRIPTION_LEN: usize = 1024;
 
@@ -31,13 +29,10 @@ pub enum AgentSource {
 pub struct AgentDef {
     pub name: String,
     pub description: String,
-    /// Role grouping shown in the agent index, e.g. "recon" or "review".
     pub category: Option<String>,
     pub model: Option<String>,
-    /// Tool allowlist; `None` means [`DEFAULT_TOOLS`].
     pub tools: Option<Vec<String>>,
     pub max_rounds: Option<usize>,
-    /// Gate the agent's final reply through an adversarial verify pass.
     pub verify: bool,
     pub source: AgentSource,
 }
@@ -58,8 +53,6 @@ impl AgentDef {
     }
 }
 
-/// Frontmatter as written; unknown keys are ignored so future fields do not
-/// break older binaries.
 #[derive(Debug, Default, Deserialize)]
 struct Frontmatter {
     #[serde(default)]
@@ -114,8 +107,6 @@ pub(crate) fn parse_agent_md(raw: &str, dir_name: &str, source: AgentSource) -> 
     })
 }
 
-/// Split `raw` into `(frontmatter_yaml, body)` when the file opens with a `---`
-/// fence, closed by `\n---`. `None` when the opening fence is missing.
 fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
     let rest = raw
         .strip_prefix("---\n")
@@ -130,15 +121,10 @@ fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
     Some((yaml, body))
 }
 
-/// The YAML text between the opening `---` and the next `\n---` line.
-/// Returns `None` when the file does not start with a frontmatter fence.
 fn frontmatter(raw: &str) -> Option<&str> {
     split_frontmatter(raw).map(|(yaml, _)| yaml)
 }
 
-/// Everything after the frontmatter fence, or the whole input when there is
-/// none.  Unlike the old code, this does NOT strip leading dashes/newlines
-/// from the body — the shared `split_frontmatter` handles that cleanly.
 fn strip_frontmatter(raw: &str) -> &str {
     match split_frontmatter(raw) {
         Some((_, body)) => body,

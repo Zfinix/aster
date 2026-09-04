@@ -31,7 +31,7 @@ aster-sandbox = { path = "../aster-sandbox" }
 aster-serve = { path = "../aster-serve" }
 aster-shortcuts = { path = "../aster-shortcuts" }
 aster-skills = { path = "../aster-skills" }
-aster-telemetry = { path = "../aster-telemetry", version = "0.4.0" }
+aster-telemetry = { path = "../aster-telemetry", version = "0.5.0" }
 aster-tools = { path = "../aster-tools" }
 aster-web = { path = "../aster-web" }
 aster-webmcp = { path = "../aster-webmcp" }

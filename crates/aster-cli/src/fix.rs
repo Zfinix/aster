@@ -16,7 +16,6 @@ use crate::term::{DIM, GREEN, RED, RESET};
 
 const FIX_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-fix.md");
 const FIX_TEMPERATURE: f64 = 0.0;
-/// Files larger than this are sent as a window around the finding, not whole.
 const MAX_WHOLE_FILE_BYTES: usize = 60_000;
 const WINDOW_LINES: usize = 150;
 
@@ -43,13 +42,11 @@ pub struct FixArgs {
     pub effort: crate::EffortArgs,
 }
 
-/// Per-finding outcome, also the `--json` wire shape.
 #[derive(Debug, Serialize)]
 struct FixResult {
     file_path: String,
     line: i32,
     title: String,
-    /// "applied" | "preview" | "cannot_fix" | "blocked" | "error"
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -231,7 +228,6 @@ fn fix_request(finding: &Finding, code: &str, is_excerpt: bool) -> String {
     msg
 }
 
-/// Lines around the finding for large files; None when the whole file fits.
 fn excerpt_for(content: &str, line: usize) -> Option<String> {
     if content.len() <= MAX_WHOLE_FILE_BYTES {
         return None;

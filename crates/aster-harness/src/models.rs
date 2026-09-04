@@ -18,7 +18,6 @@ pub struct HarnessConfig {
     pub hypothesis_model: Option<String>,
     pub verify_model: Option<String>,
     pub analyzers: Vec<String>,
-    /// ast-grep rule YAML content (not a path).
     pub astgrep_rules: Option<String>,
     pub verify_concurrency: usize,
     pub focus_areas: Vec<String>,

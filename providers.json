@@ -17,6 +17,14 @@
       "name": "ChatGPT (Codex subscription)",
       "base_url": "https://chatgpt.com/backend-api/codex",
       "example_model": "gpt-5.6-terra",
+      "recommended": [
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4-mini"
+      ],
       "auth": "ChatGPT OAuth via `aster login codex`; no API key",
       "notes": "Speaks the Responses API; Aster translates /chat/completions to it. Uses your ChatGPT plan, not API billing."
     },

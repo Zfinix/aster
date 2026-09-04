@@ -9,18 +9,13 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::oneshot;
 
-use crate::state::AppState;
+use crate::state::{AppState, Instance};
 
 /// A live child. Cancelling drops the sender, which the waiter reads as a kill.
 pub struct Run {
     stdin: Option<tokio::process::ChildStdin>,
     cancel: Option<oneshot::Sender<()>>,
-    /// The id the browser started this run under, so a reloaded tab can be
-    /// told which turn is still going.
     pub(crate) id: String,
-    /// The prompt the child is currently blocked on, so a tab that missed the
-    /// original event still gets the approval card. Shared with the stream
-    /// task, which sets it as events arrive.
     pending: Arc<std::sync::Mutex<Option<Value>>>,
 }
 
@@ -48,7 +43,12 @@ impl Run {
 /// Start a chat turn. Returns once the child is up: the turn's own end arrives
 /// as a `done` or `error` event, and a child that dies without one is reported
 /// as a `chatError`.
-pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<(), String> {
+pub async fn chat(
+    state: &Arc<AppState>,
+    instance: &Arc<Instance>,
+    id: String,
+    message: &Value,
+) -> Result<(), String> {
     let settings = state.settings.lock().await;
     let mode = message
         .get("permissionMode")
@@ -80,7 +80,7 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
 
     // Claim the slot before spawning: a refused turn must not leave a child
     // behind, and two turns must never share a repo.
-    let mut slot = state.chat.lock().await;
+    let mut slot = instance.chat.lock().await;
     if slot.is_some() {
         return Err("A turn is already running.".into());
     }
@@ -112,7 +112,7 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
 
     log(child.stderr.take());
     let pending = Arc::new(std::sync::Mutex::new(None));
-    let terminal = stream(state, child.stdout.take(), {
+    let terminal = stream(instance, child.stdout.take(), {
         let id = id.clone();
         let pending = pending.clone();
         move |event| {
@@ -151,29 +151,34 @@ pub async fn chat(state: &Arc<AppState>, id: String, message: &Value) -> Result<
     });
     drop(slot);
 
-    let state = state.clone();
+    let instance = instance.clone();
     tokio::spawn(async move {
         let code = wait(child, cancelled).await;
-        state.chat.lock().await.take();
+        instance.chat.lock().await.take();
         // A turn that ended on its own already said so. One that did not left
         // the UI waiting, so the exit code is the only explanation available.
         if let Some(code) = code
             && !terminal.load(std::sync::atomic::Ordering::SeqCst)
         {
-            state.post(json!({
+            instance.post(json!({
                 "type": "chatError",
                 "id": id,
                 "message": format!("aster chat exited with code {code}. See the terminal running aster serve."),
             }));
         }
-        state.post_run_state().await;
+        instance.post_run_state().await;
     });
     Ok(())
 }
 
 /// Start a review. Findings stream as they land; the run ends with `reviewDone`
 /// or `reviewError`.
-pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result<(), String> {
+pub async fn review(
+    state: &Arc<AppState>,
+    instance: &Arc<Instance>,
+    id: String,
+    source: &Value,
+) -> Result<(), String> {
     let mut args: Vec<String> = vec!["review".into(), "--stream".into()];
     let kind = source
         .get("kind")
@@ -186,7 +191,7 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
         args.push(value.into());
     }
 
-    let mut slot = state.review.lock().await;
+    let mut slot = instance.review.lock().await;
     if slot.is_some() {
         return Err("A review is already running.".into());
     }
@@ -200,7 +205,7 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
     // Nothing answers a review, so its stdin is closed at once.
     drop(child.stdin.take());
     log(child.stderr.take());
-    stream(state, child.stdout.take(), {
+    stream(instance, child.stdout.take(), {
         let id = id.clone();
         move |event| {
             (
@@ -219,30 +224,33 @@ pub async fn review(state: &Arc<AppState>, id: String, source: &Value) -> Result
     });
     drop(slot);
 
-    let state = state.clone();
+    let instance = instance.clone();
     tokio::spawn(async move {
         let code = wait(child, cancelled).await;
-        state.review.lock().await.take();
+        instance.review.lock().await.take();
         match code {
             // Cancelled: the browser asked, so it is not news.
             None => {}
-            Some(0) => state.post(json!({ "type": "reviewDone", "id": id })),
-            Some(code) => state.post(json!({
+            Some(0) => instance.post(json!({ "type": "reviewDone", "id": id })),
+            Some(code) => instance.post(json!({
                 "type": "reviewError",
                 "id": id,
                 "message": format!("aster exited with code {code}. See the terminal running aster serve."),
             })),
         }
-        state.post_run_state().await;
+        instance.post_run_state().await;
     });
     Ok(())
 }
 
-/// Start `aster login <target>` and relay what it prints as `loginOutput`, so
-/// the browser can follow the sign-in it asked for. The flow opens a browser
-/// on this machine, so it serves the local case; the ending arrives as
-/// `loginDone`. A login already running is replaced.
-pub async fn login(state: &Arc<AppState>, target: &str) -> Result<(), String> {
+/// Start `aster login <target>` and relay what it prints as `loginOutput`; the
+/// end arrives as `loginDone`. The flow opens a browser on this machine, so it
+/// serves the local case. A login already running is replaced.
+pub async fn login(
+    state: &Arc<AppState>,
+    instance: &Arc<Instance>,
+    target: &str,
+) -> Result<(), String> {
     if target.is_empty() {
         return Err("no login target given".into());
     }
@@ -253,14 +261,14 @@ pub async fn login(state: &Arc<AppState>, target: &str) -> Result<(), String> {
         .map_err(|e| format!("could not launch aster login: {e}"))?;
     drop(child.stdin.take());
     let last = Arc::new(std::sync::Mutex::new(String::new()));
-    relay(state, child.stdout.take(), last.clone());
-    relay(state, child.stderr.take(), last.clone());
+    relay(instance, child.stdout.take(), last.clone());
+    relay(instance, child.stderr.take(), last.clone());
 
     let (cancel, cancelled) = oneshot::channel();
     if let Some(previous) = state.login.lock().await.replace(cancel) {
         let _ = previous.send(());
     }
-    let state = state.clone();
+    let instance = instance.clone();
     tokio::spawn(async move {
         let Some(code) = wait(child, cancelled).await else {
             return;
@@ -271,19 +279,17 @@ pub async fn login(state: &Arc<AppState>, target: &str) -> Result<(), String> {
             (_, false) => last,
             (code, true) => format!("aster login exited with code {code}."),
         };
-        state.post(json!({ "type": "loginDone", "ok": code == 0, "message": message }));
+        instance.post(json!({ "type": "loginDone", "ok": code == 0, "message": message }));
     });
     Ok(())
 }
 
-/// Forward a login's output line by line, remembering the last one as the
-/// reason when the flow fails.
-fn relay<R>(state: &Arc<AppState>, pipe: Option<R>, last: Arc<std::sync::Mutex<String>>)
+fn relay<R>(instance: &Arc<Instance>, pipe: Option<R>, last: Arc<std::sync::Mutex<String>>)
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let Some(pipe) = pipe else { return };
-    let state = state.clone();
+    let instance = instance.clone();
     tokio::spawn(async move {
         let mut lines = BufReader::new(pipe).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -294,7 +300,7 @@ where
             if let Ok(mut slot) = last.lock() {
                 *slot = line.to_string();
             }
-            state.post(json!({ "type": "loginOutput", "line": line }));
+            instance.post(json!({ "type": "loginOutput", "line": line }));
         }
     });
 }
@@ -308,11 +314,8 @@ pub async fn cancel(run: &mut Option<Run>) {
     }
 }
 
-/// Forward NDJSON lines as they arrive, wrapped by `wrap` into the message the
-/// browser expects. The flag it returns rides back so a caller can tell whether
-/// the stream ever reached its own ending.
 fn stream<F>(
-    state: &Arc<AppState>,
+    instance: &Arc<Instance>,
     stdout: Option<ChildStdout>,
     wrap: F,
 ) -> Arc<std::sync::atomic::AtomicBool>
@@ -323,7 +326,7 @@ where
     let Some(stdout) = stdout else {
         return terminal;
     };
-    let (state, saw) = (state.clone(), terminal.clone());
+    let (instance, saw) = (instance.clone(), terminal.clone());
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -337,7 +340,7 @@ where
                     if ended {
                         saw.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
-                    state.post(message);
+                    instance.post(message);
                 }
                 // Not every line a child prints is an event; a stray one is
                 // log material, not a reason to tear the stream down.
@@ -348,8 +351,6 @@ where
     terminal
 }
 
-/// The CLI's stderr is its log feed. The terminal running the server is where
-/// it goes, which is the same place it would go without a browser attached.
 fn log(stderr: Option<ChildStderr>) {
     let Some(stderr) = stderr else { return };
     tokio::spawn(async move {
@@ -362,8 +363,6 @@ fn log(stderr: Option<ChildStderr>) {
     });
 }
 
-/// Wait for the child, or kill it when the browser cancels. `None` means it was
-/// cancelled or died on a signal, which is nobody's error to report.
 async fn wait(mut child: Child, cancelled: oneshot::Receiver<()>) -> Option<i32> {
     tokio::select! {
         status = child.wait() => status.ok().and_then(|status| status.code()),

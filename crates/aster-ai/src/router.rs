@@ -1,7 +1,6 @@
 //! Model router: picks a real model id from OpenRouter's live benchmark data
-//! when the configured model is `auto`. One `/benchmarks` call supplies coding,
-//! agentic, and intelligence indices plus pricing; results are cached under the
-//! Aster data dir with a TTL so a session start is usually network-free.
+//! when the configured model is `auto`. Results are cached under the Aster
+//! data dir with a TTL so a session start is usually network-free.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,18 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// The model value that routes through live rankings instead of a pinned id.
 pub const AUTO_MODEL: &str = "auto";
 
-/// Rankings older than this are refetched. A day keeps the 500/day data-API
-/// quota irrelevant while still tracking a moving leaderboard.
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-/// Hard cap on cached entries; the benchmark feed is larger than we need.
 const MAX_CACHED_MODELS: usize = 200;
 const FETCH_TIMEOUT_SECS: u64 = 15;
-/// Blended $/M ceiling for the cheap tier.
 const CHEAP_PRICE_CEILING: f64 = 0.30;
-/// Blended $/M ceiling for the balanced tier.
 const BALANCED_PRICE_CEILING: f64 = 2.00;
 
 const BENCHMARKS_URL: &str = "https://openrouter.ai/api/v1/benchmarks";
@@ -56,9 +49,7 @@ pub struct Pick {
     pub tier: Tier,
     pub coding_index: f64,
     pub agentic_index: f64,
-    /// Blended $/M tokens at a 3:1 prompt:completion mix.
     pub blended_price_per_m: f64,
-    /// Where the pick came from, for the one-line note surfaces print.
     pub from_cache: bool,
 }
 
@@ -175,8 +166,6 @@ fn score_strong(e: &Entry) -> f64 {
     0.7 * e.coding_index + 0.3 * e.agentic_index
 }
 
-/// Runs on its own thread: callers sit inside tokio runtimes, and a blocking
-/// client dropped on a runtime worker panics.
 fn fetch_entries(api_key: &str) -> Result<Vec<Entry>> {
     let key = api_key.to_string();
     std::thread::scope(|scope| {

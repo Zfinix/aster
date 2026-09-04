@@ -253,9 +253,6 @@ async fn hypothesize(
 const EVIDENCE_WINDOW: i32 = 25;
 const MAX_REFERENCE_HITS: usize = 8;
 
-/// Assemble a candidate's working set (changed hunk, source window, enclosing
-/// symbol, and indexed definition/callers/tests). Each section is bounded and
-/// the whole is capped to `max_evidence_bytes`.
 async fn retrieve_evidence(
     deps: &ReviewDeps,
     repo_root: Option<&Path>,
@@ -335,7 +332,6 @@ async fn retrieve_evidence(
     clamp_bytes(out, deps.config.max_evidence_bytes)
 }
 
-/// Symbol whose span contains `line`, else the nearest.
 fn enclosing_symbol(
     symbols: &[aster_index::SymbolHit],
     line: i32,
@@ -352,9 +348,6 @@ fn enclosing_symbol(
         })
 }
 
-/// Symbols referencing `name` via the index's snippet FTS, split into callers
-/// and tests. Symbol-granularity, no filesystem walk; the definition symbol is
-/// excluded (surfaced separately).
 async fn references_via_index(
     index: &SqliteCodeIndex,
     name: &str,
@@ -395,8 +388,6 @@ async fn references_via_index(
     (callers, tests)
 }
 
-/// Identifiers too common or short for reference search to be meaningful
-/// (`get`/`new`/`run`), so caller retrieval is skipped.
 fn is_common_ident(name: &str) -> bool {
     if name.len() < 4 {
         return true;
@@ -439,7 +430,6 @@ fn is_test_path(path: &str) -> bool {
         || lower.contains("_spec.")
 }
 
-/// Identifiers safe to turn into a `\b..\b` regex without escaping.
 fn is_simple_ident(name: &str) -> bool {
     !name.is_empty()
         && name.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -466,7 +456,6 @@ fn clamp_bytes(mut s: String, max: usize) -> String {
     s
 }
 
-/// Hunks under the header whose `+++ b/<path>` matches `file`; None if absent.
 fn diff_for_file(diff: &str, file: &str) -> Option<String> {
     let target = file.replace('\\', "/");
     let mut collecting = false;
@@ -513,8 +502,6 @@ fn diff_for_file(diff: &str, file: &str) -> Option<String> {
     }
 }
 
-/// Match paths on component boundaries: a suffix counts only when it aligns to
-/// a `/`, so `foo.rs` does not match `myfoo.rs`.
 fn paths_match(a: &str, b: &str) -> bool {
     if a == b {
         return true;
@@ -605,15 +592,10 @@ fn finding_rank(f: &Finding) -> f32 {
     severity_weight(&f.severity) as f32 * f.confidence.unwrap_or(0.5)
 }
 
-/// Same file, line, and overlapping titles. Title overlap (not category) is the
-/// signal, so a static-analyzer and model hit on one defect collapse while two
-/// differently-worded bugs on the same line are both kept.
 fn same_defect(a: &Finding, b: &Finding) -> bool {
     a.file_path == b.file_path && a.line == b.line && titles_overlap(&a.title, &b.title)
 }
 
-/// Loose title similarity: share >=2 meaningful (>=4 char) words, or one word
-/// set is contained in the other.
 fn titles_overlap(a: &str, b: &str) -> bool {
     let words = |s: &str| -> std::collections::HashSet<String> {
         s.to_lowercase()
@@ -630,8 +612,6 @@ fn titles_overlap(a: &str, b: &str) -> bool {
     shared >= 2 || shared == wa.len().min(wb.len())
 }
 
-/// Dedup same-defect findings to the higher-ranked survivor, then order by
-/// `severity x confidence`.
 fn shape_report(mut ordered: Vec<(usize, Finding)>) -> Vec<Finding> {
     // Restore hypothesis order so dedup is deterministic regardless of verify timing.
     ordered.sort_by_key(|(i, _)| *i);
@@ -703,9 +683,6 @@ fn truncate(diff: &str, max_bytes: usize) -> String {
     )
 }
 
-/// Recover complete `Candidate` objects from truncated JSON by walking the
-/// array with a string- and escape-aware depth counter, parsing each balanced
-/// top-level object and dropping the incomplete tail. None if nothing whole.
 fn salvage_candidates(json: &str) -> Option<CandidateList> {
     let key = json.find("\"candidates\"")?;
     let array_start = json[key..].find('[')? + key;

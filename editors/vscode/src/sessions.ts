@@ -49,12 +49,9 @@ export async function renameSession(cwd: string, id: string, title: string): Pro
   }
 }
 
-/**
- * A session's transcript, rebuilt into the turns the thread renders. Assistant
- * turns keep their thinking and tool calls: replaying only `content` dropped
- * every reasoning block, every tool step, and any turn that was tool calls
- * alone, which is most of a working session.
- */
+/** A session's transcript, rebuilt into the turns the thread renders. Assistant
+ *  turns keep their thinking and tool calls: replaying only `content` dropped
+ *  every reasoning block and tool step, which is most of a working session. */
 export async function loadSession(cwd: string, id: string): Promise<TranscriptTurn[]> {
   const { stdout, code } = await runCli(["sessions", "show", id, "--json"], cwd);
   if (code !== 0) {

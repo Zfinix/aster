@@ -4,10 +4,8 @@ import { ExternalIcon } from "./icons";
 import { InfoBody } from "./InfoBody";
 import { Modal } from "./Modal";
 
-/**
- * `/status`, `/memory`, `/diff`: a look at the session rather than part of it,
- * so it opens over the thread and closes without leaving anything behind.
- */
+/** `/status`, `/memory`, `/diff`: a look at the session rather than part of it,
+ *  so it opens over the thread and closes without leaving anything behind. */
 export function InfoModal({ card, onClose }: { card: InfoCardData; onClose: () => void }) {
   return (
     <Modal

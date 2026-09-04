@@ -1,17 +1,6 @@
-//! Run the review harness on a real diff.
-//!
-//! Usage:
-//!   cargo run -p aster-harness --example run_review -- <diff-file | ->
-//!
-//! Config via env (any OpenAI-compatible provider):
-//!   ASTER_API_KEY          required, unless the endpoint's own var is set
-//!                          (ANTHROPIC_API_KEY, OPENAI_API_KEY, and so on)
-//!   ASTER_BASE_URL         default https://openrouter.ai/api/v1
-//!   ASTER_MODEL            default openai/gpt-4o-mini (used when a stage
-//!                          override below is unset)
-//!   ASTER_HYPOTHESIS_MODEL optional; model for the high-recall hypothesis pass
-//!   ASTER_VERIFY_MODEL     optional; independent model for adversarial verify
-//!   ASTER_REPO             repo name for the summary (default "local")
+//! Run the review harness on a real diff, configured through the usual
+//! `ASTER_*` env vars plus `ASTER_HYPOTHESIS_MODEL` and `ASTER_VERIFY_MODEL`.
+//! Usage: `cargo run -p aster-harness --example run_review -- <diff-file | ->`
 
 use std::io::Read;
 use std::sync::Arc;

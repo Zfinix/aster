@@ -30,22 +30,17 @@ const EFFORT_KEY = "aster.effort";
 const PROVIDER_KEY = "aster.provider";
 
 export class AsterPanel implements vscode.WebviewViewProvider {
-  /** Secondary sidebar (right) on hosts that support it. */
   static readonly viewType = "asterChat";
-  /** Activity bar fallback for hosts that do not. */
   static readonly primaryViewType = "asterChatPrimary";
-  /** Editor-tab surface, for "Open in New Tab" and "Open in New Window". */
   static readonly tabViewType = "asterChatTab";
 
   private focusTarget = `${AsterPanel.viewType}.focus`;
-  /** The surface that last spoke to us; every reply is routed back to it. */
   private active: vscode.Webview | undefined;
   private readonly tabs = new Set<vscode.WebviewPanel>();
   private sidebar: vscode.WebviewView | undefined;
   private readonly surfaces = new Set<vscode.Webview>();
   private readonly chatRunners = new Map<vscode.Webview, ChatRunner>();
   private readonly reviewRunners = new Map<vscode.Webview, ReviewRunner>();
-  /** At most one `aster login` at a time; a new request replaces it. */
   private login: LoginRun | undefined;
 
   constructor(
@@ -86,7 +81,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.attach(view.webview);
   }
 
-  /** Wire a webview, wherever it lives: sidebar view, editor tab, or window. */
   private attach(webview: vscode.Webview): void {
     webview.options = {
       enableScripts: true,
@@ -101,8 +95,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.active ??= webview;
   }
 
-  /** A closed surface takes its runs with it: leaving them would orphan a CLI
-   *  child process with nowhere to report back to. */
   private detach(webview: vscode.Webview): void {
     this.chatRunners.get(webview)?.cancel();
     this.reviewRunners.get(webview)?.cancel();
@@ -114,10 +106,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  /** VS Code calls this on a window reload to bring back an editor tab that was
-   *  open. The webview's own `setState`/`getState` carries the thread and the
-   *  session id, so re-attaching the webview is enough to restore the
-   *  conversation; the panel itself is re-created by the host. */
   deserializeWebviewPanel(panel: vscode.WebviewPanel): void {
     panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "aster.svg");
     this.tabs.add(panel);
@@ -129,10 +117,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.active = panel.webview;
   }
 
-  /**
-   * Open the panel as an editor tab. Each invocation opens a fresh tab so
-   * multiple Aster editors can coexist; closing one disposes only itself.
-   */
   openInEditor(column: vscode.ViewColumn): void {
     const tab = vscode.window.createWebviewPanel(
       AsterPanel.tabViewType,
@@ -152,18 +136,11 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.active = tab.webview;
   }
 
-  /** Open as an editor tab, then hand that tab to a new OS window. */
   async openInNewWindow(): Promise<void> {
     this.openInEditor(vscode.ViewColumn.Active);
     await vscode.commands.executeCommand("workbench.action.moveEditorToNewWindow");
   }
 
-  /**
-   * Bring the panel into view wherever it already lives: the sidebar if it is
-   * showing, else the most recent editor tab, else a new one. Reusing the open
-   * tab is the point — this runs from every command that needs a surface, and
-   * spawning one each time would leave a trail of empty conversations.
-   */
   reveal(): void {
     if (this.sidebar?.visible) {
       this.active = this.sidebar.webview;
@@ -178,12 +155,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.openInEditor(vscode.ViewColumn.Active);
   }
 
-  /** Reveal the sidebar view in whichever container the host put it in. */
   async focus(): Promise<void> {
     await vscode.commands.executeCommand(this.focusTarget);
   }
 
-  /** Reveal the panel and kick off a review from a command or the status bar. */
   async startReview(source: ReviewSource): Promise<void> {
     this.reveal();
     // Whichever surface reveal() landed on owns this run.
@@ -196,7 +171,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     await this.runReview(id, source, origin);
   }
 
-  /** A command cannot say which surface it meant, so every review stops. */
   cancelReview(): void {
     for (const runner of this.reviewRunners.values()) {
       runner.cancel();
@@ -204,7 +178,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.broadcastRunState();
   }
 
-  /** Stop whatever turn is in flight on a surface, chat and review alike. */
   private cancelRuns(webview: vscode.Webview | undefined): void {
     if (!webview) return;
     this.chatRunners.get(webview)?.cancel();
@@ -212,12 +185,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.broadcastRunState();
   }
 
-  /**
-   * Start a fresh conversation without disturbing one already open. The sidebar
-   * is a single surface, so it starts over in place; editor tabs are not, so a
-   * new one opens beside the old, which keeps its thread. A new webview has no
-   * persisted state of its own, so it comes up clean without being told to.
-   */
   newConversation(): void {
     if (this.sidebar?.visible) {
       this.active = this.sidebar.webview;
@@ -227,22 +194,17 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.openInEditor(vscode.ViewColumn.Active);
   }
 
-  /** Re-send `init` to every open surface. `aster.binaryPath` is read once per
-   *  init, so a corrected path has to reach the panel here rather than leaving
-   *  it insisting the CLI is missing until the window reloads. */
   configChanged(): void {
     for (const surface of this.surfaces) {
       void this.sendInit(surface);
     }
   }
 
-  /** Everything the panel can do, from the editor's own palette or a chord. */
   showCommandMenu(): void {
     this.reveal();
     this.post({ type: "openCommandMenu" });
   }
 
-  /** Send the active editor's selection into the composer as a mention. */
   insertMention(): void {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -263,11 +225,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.post({ type: "insertMention", text });
   }
 
-  /**
-   * Drops from the explorer, an editor tab, or the OS arrive as `file://` URIs.
-   * Relativizing them is the host's job: the webview never learns where the
-   * workspace lives, and an absolute path in the composer would be noise.
-   */
   private insertPaths(uris: string[]): void {
     const root = workspaceRoot();
     const storage = this.context.globalStorageUri.fsPath;
@@ -295,13 +252,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  /**
-   * Pastes arrive as bytes and a name. A file copied out of the workspace is
-   * matched back to it, name and size, so the agent reads the real file instead
-   * of a stale copy; anything else (a screenshot, a file from elsewhere) is
-   * written under the extension's storage, because the clipboard is all we have
-   * of it.
-   */
   private async insertPasted(files: PastedFile[]): Promise<void> {
     const uris: string[] = [];
     for (const file of files) {
@@ -343,7 +293,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     return target;
   }
 
-  /** Reopen a saved session by picking it from a quick pick. */
   async reopenSession(): Promise<void> {
     const root = workspaceRoot();
     if (!root) {
@@ -382,15 +331,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     void this.active?.postMessage(message);
   }
 
-  /** Send to the surface that started the run, so its state always resolves. */
   private postTo(target: vscode.Webview | undefined, message: ToWebview): void {
     void (target ?? this.active)?.postMessage(message);
   }
 
-  /** Rename the editor tab that owns this webview once the session earns a
-   *  name. The title event arrives the moment the CLI names it, mid-turn; the
-   *  `done` event carries the same name so a tab reopened or reloaded late
-   *  still catches up. */
   private nameTab(origin: vscode.Webview, event: ChatStreamEvent): void {
     const title =
       event.type === "title"
@@ -407,9 +351,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Tell every surface its own run state, so none can be stuck busy or falsely
-   *  idle. Runs belong to the surface that started them, so the answer differs
-   *  per surface rather than being one shared flag. */
   private broadcastRunState(): void {
     for (const surface of this.surfaces) {
       const message: ToWebview = {
@@ -434,29 +375,22 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     return this.context.globalState.get<string>(MODEL_KEY) || null;
   }
 
-  /** Ids the user typed by hand, kept alongside the vetted list. */
   private customModels(): string[] {
     return this.context.globalState.get<string[]>(CUSTOM_MODELS_KEY) ?? [];
   }
 
-  /** Ids picked before, most recent first, capped so the picker stays short. */
   private recentModels(): string[] {
     return this.context.globalState.get<string[]>(RECENT_MODELS_KEY) ?? [];
   }
 
-  /** Unset until the user picks a level, so `aster.yaml` keeps deciding. */
   private effort(): Effort | null {
     return this.context.globalState.get<Effort>(EFFORT_KEY) ?? null;
   }
 
-  /** The environment every CLI child of this panel runs with. The provider
-   *  lives in aster.yaml now, so nothing is overridden here. */
   private env(): NodeJS.ProcessEnv {
     return process.env;
   }
 
-  /** One-shot: a provider chosen before this became aster.yaml-backed still
-   *  applies, then the panel-local override is gone for good. */
   private async migrateProviderOverride(root: string | undefined): Promise<void> {
     const legacy = this.context.globalState.get<ProviderOverride>(PROVIDER_KEY);
     if (!legacy?.baseUrl) return;
@@ -557,6 +491,28 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           paths: await searchFiles(message.query),
         });
         break;
+      case "readFile": {
+        const root = workspaceRoot();
+        const uri = root ? vscode.Uri.joinPath(vscode.Uri.file(root), message.path) : undefined;
+        let file: { path: string; lang?: string; content: string; truncated: boolean } | null = null;
+        if (uri) {
+          try {
+            const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+            const lines = text.split("\n");
+            const content = lines.slice(0, 200).join("\n").slice(0, 32000);
+            file = {
+              path: message.path,
+              lang: message.path.split(".").pop(),
+              content,
+              truncated: content.length < text.length,
+            };
+          } catch {
+            file = null;
+          }
+        }
+        this.post({ type: "filePreview", requestId: message.requestId, file });
+        break;
+      }
       case "listSessions": {
         const root = workspaceRoot();
         this.post({ type: "sessions", sessions: root ? await listSessions(root) : [] });
@@ -725,8 +681,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Drive `aster login <target>` from the panel, relaying its progress so the
-   *  user can follow the browser flow without a terminal. */
   private async runLogin(target: string, origin: vscode.Webview): Promise<void> {
     const root = workspaceRoot();
     if (!root) {
@@ -768,7 +722,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.post({ type: "mcpServers", servers });
   }
 
-  /** `/status`, `/memory`, and `/diff`, each answered as one card in the thread. */
   private async sendInfo(id: string, topic: "status" | "memory" | "diff"): Promise<void> {
     const root = workspaceRoot();
     if (!root) {
@@ -805,8 +758,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Repoint the endpoint for every surface: written to aster.yaml via the
-   *  CLI, so the terminal, desktop, and this panel resolve the same provider. */
   private async switchProvider(baseUrl: string, model: string): Promise<void> {
     const root = workspaceRoot();
     if (!root) return;
@@ -833,8 +784,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     });
   }
 
-  /** Fold the panel's transcript into a summary; the webview keeps its turns on
-   *  screen and sends what comes back in their place from here on. */
   private async runCompact(id: string, messages: ChatMessage[]): Promise<void> {
     const root = workspaceRoot();
     if (!root) return;
@@ -1008,7 +957,6 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Markdown fence tags to VS Code language ids, for tap-to-open code blocks. */
 function languageId(lang: string | undefined): string | undefined {
   if (!lang) return undefined;
   const aliases: Record<string, string> = {

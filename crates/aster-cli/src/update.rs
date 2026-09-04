@@ -9,7 +9,6 @@ use serde_json::Value;
 const REPO: &str = "Zfinix/aster";
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-/// Changelog entries carried in the notice; the rest collapse to `+N more`.
 const MAX_CHANGELOG: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,14 +16,12 @@ pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
     pub url: String,
-    /// Release notes, or commit subjects between the two versions.
     pub changelog: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Cache {
     checked_at: u64,
-    /// `None` records "checked, already up to date".
     update: Option<UpdateInfo>,
 }
 
@@ -117,7 +114,6 @@ async fn fetch(current: &str) -> anyhow::Result<Option<UpdateInfo>> {
     }))
 }
 
-/// Commit subjects between two tags, newest first, capped with a `+N more`.
 async fn compare_commits(
     client: &reqwest::Client,
     from: &str,
@@ -155,8 +151,6 @@ async fn compare_commits(
     Ok(subjects)
 }
 
-/// The release tag matching `version`, so the compare range starts where the
-/// running binary was cut.
 fn tag_for(releases: &[Value], version: (u64, u64, u64)) -> Option<String> {
     releases.iter().find_map(|r| {
         let tag = r.get("tag_name")?.as_str()?;
@@ -176,7 +170,6 @@ pub(crate) fn version_triple(text: &str) -> Option<(u64, u64, u64)> {
     ))
 }
 
-/// The digits a part starts with, so `0-rc1` still reads as `0`.
 fn leading_number(part: &str) -> Option<u64> {
     let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
@@ -189,7 +182,6 @@ fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-/// `cli-v0.3.0` shown as `0.3.0`.
 fn trimmed_version(tag: &str) -> String {
     match tag.find(|c: char| c.is_ascii_digit()) {
         Some(start) => tag[start..].to_string(),

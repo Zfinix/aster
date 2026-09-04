@@ -2,8 +2,6 @@
 
 use super::*;
 
-/// Trimmed from a real lite.duckduckgo.com response: two organic results and
-/// one sponsored row, which is the shape the parser has to survive.
 const PAGE: &str = r#"
 <table>
   <tr>

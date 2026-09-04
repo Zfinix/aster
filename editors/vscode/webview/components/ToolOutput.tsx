@@ -29,11 +29,6 @@ export function ToolOutput({ output, lang }: { output: string; lang?: string }) 
   );
 }
 
-/**
- * Read output arrives as "  1 | code". The gutter moves to its own column and
- * the code side is tokenised as one body, so block comments and multi-line
- * strings still colour correctly.
- */
 function GutteredOutput({ lines, lang }: { lines: string[]; lang?: string }) {
   const digits = lines.reduce((w, l) => {
     const m = GUTTER.exec(l);

@@ -61,7 +61,6 @@ fn an_ordinary_read_is_allowed() {
     );
 }
 
-/// One `allow` entry overrides a built-in, without disabling the whole set.
 #[test]
 fn a_user_allow_rule_beats_a_built_in() {
     let mut c = cfg();
@@ -96,8 +95,6 @@ fn ask_beats_allow() {
     assert!(is_prompt(&p.evaluate(&edit("src/generated/api.rs"))));
 }
 
-/// The whole difference between the two: `auto` pauses on the risky list,
-/// `edit` trusts commands and runs them.
 #[test]
 fn auto_pauses_on_a_risky_command_where_edit_runs_it() {
     let mut c = cfg();
@@ -115,15 +112,12 @@ fn auto_pauses_on_a_risky_command_where_edit_runs_it() {
     );
 }
 
-/// Trusting commands is not trusting everything: a write that runs as code
-/// later still asks in `edit`.
 #[test]
 fn edit_still_confirms_a_write_that_runs_later() {
     let p = policy(cfg());
     assert!(is_prompt(&p.evaluate(&edit(".github/workflows/ci.yml"))));
 }
 
-/// No mode may allow something a looser one refuses.
 #[test]
 fn the_ladder_never_inverts() {
     let ladder = [Mode::Plan, Mode::Manual, Mode::Auto, Mode::Edit, Mode::Yolo];
@@ -162,8 +156,6 @@ fn an_ordinary_command_runs() {
     );
 }
 
-/// The hole the rule language exists to close: the agent is told to chain
-/// through `bash -lc`, so a rule has to see inside it.
 #[test]
 fn a_risky_command_hidden_in_a_shell_still_asks() {
     let mut c = cfg();

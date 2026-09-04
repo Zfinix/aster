@@ -1,14 +1,9 @@
-/**
- * A plan, handed to a tab of its own under `aster serve`. `window.open` cannot
- * carry state (the tab loads the page fresh) and localStorage is the one
- * channel both ends of a same-origin pair can see. The answer travels back the
- * same way rather than going straight to the host: the thread's tab owns the
- * session, so it is the one that replies to the CLI and promotes the mode.
- */
+/** A plan handed to a tab of its own under `aster serve`. localStorage is the
+ *  one channel both same-origin tabs can see, so the plan and its answer both
+ *  travel that way; the thread's tab owns the session and replies to the CLI. */
 
 const PLAN = "aster.plan";
 const ANSWER = "aster.plan.answer";
-/** Named, so a second plan replaces that tab instead of piling up tabs. */
 const TARGET = "aster-plan";
 
 /** The plan's own tab, which has a document and nothing else: no thread to
@@ -19,7 +14,6 @@ export function inPlanTab(): boolean {
 
 export interface PlanAnswer {
   allow: boolean;
-  /** Distinct per answer: a storage event only fires on a changed value. */
   nonce: number;
 }
 

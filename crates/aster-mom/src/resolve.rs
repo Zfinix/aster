@@ -118,9 +118,6 @@ fn satisfies(entry: &ModelEntry, model: &CatalogModel, host_needs_tools: bool) -
         && (!(entry.uses_tools || host_needs_tools) || model.tools)
 }
 
-/// The `power` mapping (spec 7.5): candidates ranked best to worst by
-/// quality score (price as proxy), then `max` takes the top, `low` the
-/// cheapest, `medium` the cheapest in the upper two-thirds.
 fn pick_by_power<'m>(power: Power, candidates: &[&'m CatalogModel]) -> Option<&'m CatalogModel> {
     if candidates.is_empty() {
         return None;

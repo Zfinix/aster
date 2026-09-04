@@ -603,8 +603,6 @@ fn limits_default_to_room_for_real_work() {
     assert!(limits.command_timeout_secs >= 120);
 }
 
-/// Bouncing "give me options" back to the model made it retry the tool in
-/// a loop, so a question with nothing to pick declines instead.
 #[tokio::test]
 async fn a_question_without_options_declines_rather_than_asking_again() {
     let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
@@ -629,7 +627,6 @@ fn args(path: &str, search: Option<&str>, replace: &str) -> Value {
     }
 }
 
-/// Unwraps the approval these tests expect; a question here is a bug.
 fn approval(req: UiRequest) -> ApprovalRequest {
     match req {
         UiRequest::Approval(req) | UiRequest::PlanApproval(req) => req,
@@ -654,7 +651,6 @@ async fn run_tool(repo: &Path, name: &str, arguments: Value) -> String {
     .text
 }
 
-/// A policy in `plan`, the mode the plan tools are reached from.
 fn plan_policy() -> Policy {
     Policy::compile(&aster_policy::PermissionsConfig {
         mode: aster_policy::Mode::Plan,
@@ -663,8 +659,6 @@ fn plan_policy() -> Policy {
     .unwrap()
 }
 
-/// Runs a tool against a shared ctx, edit gate and policy, for the plan
-/// tools whose whole point is the state they leave behind.
 async fn run_tool_with(
     repo: &Path,
     allow_edits: &mut bool,
@@ -827,8 +821,6 @@ async fn exit_plan_mode_needs_a_plan_first() {
     assert!(out.contains("needs a `plan`"), "{out}");
 }
 
-/// The document is the plan the user reads; the step list is the progress
-/// strip, and standing in for a plan is what made approvals unreadable.
 #[tokio::test]
 async fn the_plan_document_is_what_gets_presented() {
     let repo = tempfile::tempdir().unwrap();
@@ -1442,8 +1434,6 @@ async fn outside_reads_are_denied_without_an_approver() {
     assert!(err.contains("needs the user's approval"), "{err}");
 }
 
-/// The protected globs are repo-relative, so an absolute path to the same
-/// file must not slip past them.
 #[tokio::test]
 async fn a_protected_file_stays_protected_through_an_absolute_path() {
     let repo = tempfile::tempdir().unwrap();
@@ -1532,8 +1522,6 @@ async fn outside_writes_are_denied_without_an_approver() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
 }
 
-/// A read grant is not a write grant: approving `read_file` on a directory
-/// must still leave `edit_file` asking.
 #[tokio::test]
 async fn a_read_grant_does_not_cover_a_write() {
     let repo = tempfile::tempdir().unwrap();
@@ -1751,8 +1739,6 @@ fn no_progress_a_good_round_resets_the_error_streak() {
     assert!(matches!(np.feed(6, true, true), RoundVerdict::Correct));
 }
 
-/// The wandering case the repetition guard cannot see: every round differs, so
-/// the signature never repeats, and nothing ever gets edited.
 #[test]
 fn no_progress_nudges_then_wraps_on_lookup_only_rounds() {
     let mut np = NoProgress::default();
@@ -2015,7 +2001,6 @@ fn a_malformed_credential_entry_is_dropped_not_fatal() {
     assert!(grants.allows("gh", &home.join(".config/gh")));
 }
 
-/// A skills root holding one skill, so `/name` has something to resolve to.
 fn skill_set(dir: &std::path::Path, name: &str) -> aster_skills::SkillSet {
     let root = dir.join("skills").join(name);
     std::fs::create_dir_all(&root).expect("dirs");
@@ -2149,8 +2134,6 @@ async fn turn_against(server: &wiremock::MockServer) -> Result<String> {
     .map(|(reply, _, _)| reply)
 }
 
-/// A round with neither text nor a tool call ended the whole turn as an error,
-/// throwing away everything above it. It gets asked again instead.
 #[tokio::test]
 async fn a_silent_round_is_retried_rather_than_failing_the_turn() {
     let server = wiremock::MockServer::start().await;
@@ -2169,8 +2152,6 @@ async fn a_silent_round_is_retried_rather_than_failing_the_turn() {
     assert_eq!(turn_against(&server).await.unwrap(), "back on my feet");
 }
 
-/// A model that never speaks still ends the turn cleanly: the session and the
-/// work above it survive, which an `Err` here would not.
 #[tokio::test]
 async fn a_model_that_stays_silent_ends_the_turn_without_an_error() {
     let server = wiremock::MockServer::start().await;

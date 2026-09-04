@@ -14,11 +14,8 @@ pub struct Report {
     pub turns: usize,
     pub rounds: usize,
     pub calls: usize,
-    /// Calls per tool round. 1.0 means the model never batches, and every
-    /// call costs its own model round-trip.
     pub batch_factor: f64,
     pub single_call_rate: f64,
-    /// Share of tool results that told the model nothing.
     pub barren_rate: f64,
     pub rounds_per_turn: Dist,
     pub model_rtt: Dist,
@@ -146,7 +143,6 @@ pub struct Delta {
     pub metric: String,
     pub before: f64,
     pub after: f64,
-    /// Whether a rise is the good direction, so callers do not have to know.
     pub higher_is_better: bool,
 }
 
@@ -197,8 +193,6 @@ fn tool_stats(turns: &[Turn]) -> Vec<ToolStat> {
     stats
 }
 
-/// Fold provider prefixes, the `~` alias marker, and case, so the table
-/// compares models rather than spellings.
 fn canonical_model(model: &str) -> String {
     let model = model.trim_start_matches('~');
     let model = model.rsplit('/').next().unwrap_or(model);

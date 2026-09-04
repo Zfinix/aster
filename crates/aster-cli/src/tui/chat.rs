@@ -36,13 +36,10 @@ use crate::persist::Recorder;
 
 type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
 
-/// Pressing ctrl-c once arms the quit; a second press within this window exits.
 const QUIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// How long the YOLO takeover animation holds the screen.
 const TAKEOVER: std::time::Duration = std::time::Duration::from_millis(1250);
 
-/// Read-only tools whose consecutive calls collapse into one `Explored` cell.
 const READ_ONLY: &[&str] = &[
     "read_file",
     "list_files",
@@ -65,7 +62,6 @@ pub(super) enum AppEvent {
     QuestionDismissed,
     YoloConfirmed,
     SessionPicked(String),
-    /// A server toggled from the `/mcp` panel: name plus its new state.
     McpToggle {
         name: String,
         disabled: bool,
@@ -73,52 +69,36 @@ pub(super) enum AppEvent {
     ModelChanged(String),
     ToggleThinking,
     BrowseModels,
-    /// A newer release found on GitHub, checked off the loop at startup.
     UpdateAvailable(crate::update::UpdateInfo),
-    /// A skill chosen from `/skills`; its action menu opens next.
+    Announcements(Vec<crate::announce::Announcement>),
     SkillPicked(String),
-    /// Start a message in the composer that applies the skill.
     SkillUse(String),
-    /// Show the skill's full description and where it lives.
     SkillView(String),
-    /// Ask before deleting; the confirmed event does the removal.
     SkillDelete(String),
     SkillDeleteConfirmed(String),
-    /// The provider's catalog, fetched off the loop so `/model` never blocks
-    /// the UI on a round trip.
     ModelsLoaded(Vec<String>),
-    /// The catalog request failed; `/model` says so instead of hanging on
-    /// "fetching models…" with the reason buried in a log file.
     ModelsFailed(String),
-    /// A provider chosen from `/provider`: endpoint plus its example model.
     ProviderPicked {
         base_url: String,
         model: String,
     },
-    /// The composer's `@` query changed; the owner searches off the loop.
     MentionQueried(String),
-    /// Ranked matches for a query; the pane drops stale ones.
     MentionResults {
         query: String,
         paths: Vec<String>,
     },
-    /// A manual `/compact` finished; swap in the folded history.
     Compacted {
         history: Vec<ChatMessage>,
         summary: String,
         replaces_through: usize,
     },
     CompactFailed(String),
-    /// The MCP connect finished off the loop; the session adopts its tools and
-    /// replays whatever was submitted while it was still pending.
     McpReady {
         runtime: Option<crate::mcp::McpRuntime>,
         problems: Vec<String>,
     },
 }
 
-/// Search for `@`-mention matches off the loop; the result lands as
-/// [`AppEvent::MentionResults`]. Typing never blocks on the walk.
 fn spawn_mention_search(
     tx: &mpsc::UnboundedSender<AppEvent>,
     root: &std::path::Path,
@@ -270,6 +250,7 @@ pub async fn run_chat(
             if let Some(info) = crate::update::check().await {
                 let _ = tx.send(AppEvent::UpdateAvailable(info));
             }
+            let _ = tx.send(AppEvent::Announcements(crate::announce::pending().await));
         });
     }
 
@@ -462,7 +443,6 @@ pub async fn run_chat(
     Ok(())
 }
 
-/// Resolve a finished turn; parks forever while no turn is running.
 async fn wait_turn(
     turn: &mut Option<ChatTurn>,
 ) -> std::result::Result<
@@ -479,7 +459,6 @@ async fn wait_turn(
     }
 }
 
-/// One YOLO animation frame: a shockwave with a fading banner and color gradient.
 fn takeover_frame(
     entering: bool,
     elapsed: std::time::Duration,
@@ -553,8 +532,6 @@ fn takeover_frame(
         .collect()
 }
 
-/// Deterministic per-cell noise, so a frame is stable within itself but
-/// flickers frame to frame.
 fn noise(a: u64, b: u64, c: u64) -> f32 {
     let mut x = a
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -604,8 +581,6 @@ enum Flow {
     Quit,
 }
 
-/// App-level keys first (interrupt, quit, the modes panel); everything else
-/// belongs to the bottom pane.
 fn on_key(
     app: &mut ChatApp,
     pane: &mut BottomPane<AppEvent>,
@@ -641,6 +616,15 @@ fn on_key(
         app.quit_armed = None;
         if key.code == KeyCode::BackTab && pane.composer.is_empty() {
             app.cycle_mode();
+            return Flow::Continue;
+        }
+        if key.code == KeyCode::Char('d')
+            && pane.composer.is_empty()
+            && app.pending_announcements.is_some()
+        {
+            let ids = app.pending_announcements.take().unwrap_or_default();
+            crate::announce::dismiss(&ids);
+            app.flash = Some("announcements dismissed".into());
             return Flow::Continue;
         }
     } else if ctrl && key.code == KeyCode::Char('c') {
@@ -683,9 +667,6 @@ fn on_key(
     Flow::Continue
 }
 
-/// The user message, plus a `[@name]: /full/path` block listing every path
-/// folded out of it. The model resolves a `[@name]` token from this block, and
-/// the block stays in the transcript so a resumed session still resolves it.
 fn render_user_content(text: &str, refs: &[(String, String)]) -> String {
     if refs.is_empty() {
         return text.to_string();
@@ -726,9 +707,6 @@ fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<A
     app.emit(history::notice("turn stopped", width));
 }
 
-/// Open the transcript this run records into: sessions start clean, and only
-/// `--continue` reopens the repo's latest and seeds its turns. `New` and `Pick`
-/// return nothing, so starting aster never leaves an empty file behind.
 fn resume_or_new(
     store: &Store,
     repo_root: &std::path::Path,
@@ -751,8 +729,6 @@ fn resume_or_new(
     Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), messages)))
 }
 
-/// The swarm's clean text: one status line per agent, then the curated report
-/// from the synthesis agent (or the last collector to finish).
 fn agent_report_text(rows: &[AgentRow]) -> String {
     let mut out = String::new();
     for row in rows {
@@ -780,7 +756,6 @@ fn agent_report_text(rows: &[AgentRow]) -> String {
     out
 }
 
-/// Decode one event from the agent's `ChatEventSink` NDJSON into a UI event.
 fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
     match event.get("type")?.as_str()? {
         "token" | "text" => Some(TurnEvent::Token(
@@ -908,8 +883,6 @@ pub(crate) fn step_label(name: &str, args: &str) -> String {
     }
 }
 
-/// The command line as invoked, so the label says what actually ran rather than
-/// just naming the binary.
 fn command_line(args: &Value) -> Option<String> {
     let binary = args.get("command").and_then(Value::as_str)?;
     let rest = args
@@ -923,8 +896,6 @@ fn command_line(args: &Value) -> Option<String> {
     }
 }
 
-/// A tool that answered with a hint instead of results: the path was a wrong
-/// guess. Worth a mark on the collapsed label, not a red failure cell.
 fn missed(result: &str) -> bool {
     result.starts_with("note: ") && result.contains("does not exist")
 }
@@ -936,8 +907,6 @@ fn arg_str(args: &str, key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Live progress from the running turn, decoded from the agent's
-/// `ChatEventSink` NDJSON (the same wire the `--stream` front-ends consume).
 enum TurnEvent {
     Token(String),
     ToolCall {
@@ -950,22 +919,13 @@ enum TurnEvent {
         result: String,
         error: bool,
     },
-    /// The model's thinking for this round, when it reasoned in the clear.
     Reasoning(String),
-    /// One live fragment of streamed thinking, buffered until `ReasoningDone`.
     ReasoningDelta(String),
     ReasoningDone,
-    /// Web-search source citations from the OpenRouter `web` plugin.
     Citations(Vec<Citation>),
-    /// Something the harness did that the user has to know about, e.g. the
-    /// turn being cut short at the tool-round cap.
     Notice(String),
-    /// A queued mid-turn message the engine just folded into the turn.
     Injected(String),
-    /// The mom router picked an entry for this turn; the app records the
-    /// switch so later turns hold it.
     MomRouted(String),
-    /// Live progress for one sub-agent in an `agent` tool call.
     AgentStatus {
         call_id: String,
         agent: String,
@@ -996,8 +956,6 @@ enum AgentRowStatus {
     Failed,
 }
 
-/// One sub-agent's state inside an `agent` tool call, accumulated from
-/// `agent_status` events so the finished call renders clean reports.
 struct AgentRow {
     agent: String,
     status: AgentRowStatus,
@@ -1005,8 +963,6 @@ struct AgentRow {
     error: Option<String>,
 }
 
-/// One compiled policy per gating mode, since the picker switches between
-/// them per turn, plus the shared out-of-repo grants.
 struct SessionPermissions {
     plan: sync::Arc<Policy>,
     manual: sync::Arc<Policy>,
@@ -1028,14 +984,12 @@ impl SessionPermissions {
     }
 }
 
-/// Picker order: plan → manual → auto → edit → yolo.
 const MODE_ORDER: [Mode; 5] = [Mode::Plan, Mode::Manual, Mode::Auto, Mode::Edit, Mode::Yolo];
 
 fn mode_color(mode: Mode) -> Color {
     theme::get().mode_color(mode)
 }
 
-/// How far the agent runs on its own: paused, one step at a time, or ahead.
 fn mode_glyph(mode: Mode) -> &'static str {
     match mode {
         Mode::Plan => "⏸",
@@ -1046,16 +1000,12 @@ fn mode_glyph(mode: Mode) -> &'static str {
     }
 }
 
-/// Opens every mid-conversation note about the edit tool, so a later toggle can
-/// find and replace the previous one.
 const EDIT_NOTE_PREFIX: &str = "Edits are now ";
 
 fn is_edit_note(msg: &ChatMessage) -> bool {
     msg.role == "system" && msg.content.text().starts_with(EDIT_NOTE_PREFIX)
 }
 
-/// Keys the composer answers to. None of them are visible on screen, so
-/// `/help` is where they get said.
 const KEY_HELP: &[(&str, &str)] = &[
     ("enter", "send · queues into a running turn"),
     ("esc esc", "quit (twice, so a stray press does not)"),
@@ -1173,42 +1123,24 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
 ];
 
 struct ChatApp {
-    /// Finished blocks waiting to be pushed into the terminal's scrollback.
     queue: VecDeque<Vec<Line<'static>>>,
-    /// Assistant text is rendered a source line at a time as it streams.
     markdown: MarkdownStream,
-    /// True between the first and last chunk of one assistant message, so
-    /// continuation lines hang under the bullet instead of starting a new cell.
     speaking: bool,
-    /// Everything the model streamed this turn, to tell a quiet endpoint (one
-    /// that sends no deltas) from one that already rendered its reply.
     streamed: String,
-    /// An `Explored` cell is open: further read-only rows hang off it instead
-    /// of opening a new one.
     exploring: bool,
-    /// Whether a thinking block prints in full. Off by default: reasoning is
-    /// usually longer than the answer it produced.
     show_thinking: bool,
-    /// Live streamed thinking, accumulated across `ReasoningDelta` events and
-    /// rendered once `ReasoningDone` closes the block.
     reasoning_buf: String,
     running: Vec<RunningTool>,
-    /// Live per-`agent`-tool-call rows, keyed by call id, fed by `agent_status`
-    /// events so a finished swarm renders cleanly instead of as a JSON dump.
     agent_rows: std::collections::HashMap<String, Vec<AgentRow>>,
-    /// Blank lines streamed mid-message, held back until real content follows
-    /// so a message never opens or closes with empty rows.
     pending_blanks: usize,
 
     thinking: bool,
     started: Option<Instant>,
     usage: Option<aster_ai::UsageSnapshot>,
-    /// Terminal width from the last draw; every cell is wrapped to it.
     width: usize,
 
     mode: Mode,
     effort: Effort,
-    /// `true` when the run is read-only; the picker cannot leave `plan`.
     edits_locked: bool,
     model: String,
     history: Vec<ChatMessage>,
@@ -1219,35 +1151,20 @@ struct ChatApp {
     approval_tx: UiSender,
     events_tx: mpsc::Sender<TurnEvent>,
     should_quit: bool,
-    /// Transient footer status, cleared on the next keystroke.
     flash: Option<String>,
-    /// Set by `/clear`; the run loop wipes the screen on the next pass.
+    pending_announcements: Option<Vec<String>>,
     clear_requested: bool,
-    /// Owned here rather than per turn, so a plan survives the turn that built it.
     plan: sync::Arc<sync::Mutex<crate::chat::PlanState>>,
-    /// Where the answer to the open `ask_user` question goes. A picker event
-    /// carries only the chosen text, since the responder cannot be cloned.
     pending_question: Option<tokio::sync::oneshot::Sender<Option<String>>>,
-    /// The open approval is a plan; granting it promotes the session.
     pending_plan_approval: bool,
-    /// `AGENTS.md` and friends, read once at startup rather than per turn.
     instructions: sync::Arc<crate::instructions::Instructions>,
     mcp: Option<crate::mcp::McpRuntime>,
-    /// The connect is still running, so `mcp` being `None` means "not yet"
-    /// rather than "none configured" and a turn must wait for it.
     mcp_pending: bool,
-    /// A submit that beat the connect, replayed once the servers answer.
     held_submit: Option<(String, Vec<(String, String)>)>,
-    /// The running turn's mid-turn queue: a submit while busy joins the turn
-    /// between rounds instead of cutting it short.
     turn_injected: Option<sync::Arc<sync::Mutex<Vec<String>>>>,
     limits: crate::chat::Limits,
-    /// The endpoint in use, so `/provider` can mark the current row.
     provider_base_url: String,
-    /// When the last interrupt key landed, so quitting takes two presses.
     quit_armed: Option<Instant>,
-    /// A YOLO switch is playing its full-screen animation; cleared by
-    /// `finish_takeover`, which repaints the world in the new palette.
     takeover: Option<Takeover>,
     agents: sync::Arc<aster_agents::AgentRegistry>,
     swarm: crate::chat::SwarmLimits,
@@ -1256,9 +1173,7 @@ struct ChatApp {
     mom_looping: bool,
     mom_model_down: bool,
     mom_turns: u64,
-    /// Light palette in use; `/theme` flips it. YOLO still overrides while on.
     theme_light: bool,
-    /// Whether the session header prints; `/welcome` flips it and saves.
     show_welcome: bool,
 }
 
@@ -1317,6 +1232,7 @@ impl ChatApp {
             limits: crate::chat::Limits::default(),
             provider_base_url: String::new(),
             quit_armed: None,
+            pending_announcements: None,
             takeover: None,
             agents: sync::Arc::default(),
             swarm: crate::chat::SwarmLimits::default(),
@@ -1514,8 +1430,6 @@ impl ChatApp {
         self.emit(block);
     }
 
-    /// The plan as the agent last left it. Read from the shared state rather
-    /// than parsed back out of the tool's text.
     fn plan_steps(&self) -> Vec<(crate::chat::PlanStepStatus, String)> {
         let Ok(plan) = self.plan.lock() else {
             return Vec::new();
@@ -1526,7 +1440,6 @@ impl ChatApp {
             .collect()
     }
 
-    /// Close the assistant message in flight, emitting its trailing partial line.
     fn end_message(&mut self) {
         if !self.markdown.is_empty() {
             let lines = self.markdown.flush();
@@ -1540,8 +1453,6 @@ impl ChatApp {
         self.speaking = false;
     }
 
-    /// Drop blank lines at a message's edges: leading ones vanish, interior
-    /// runs are held in `pending_blanks` until real content follows.
     fn hold_blank_edges(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         for line in lines {
@@ -1559,14 +1470,10 @@ impl ChatApp {
         out
     }
 
-    /// Close the open `Explored` cell so the next read-only run opens its own.
     fn end_explored(&mut self) {
         self.exploring = false;
     }
 
-    /// Queue a message into the running turn; it joins between rounds and the
-    /// scrollback shows it once the engine picks it up. `false` means there is
-    /// nothing to join and the caller should submit normally.
     fn queue_mid_turn(&mut self, text: &str, refs: &[(String, String)]) -> bool {
         let Some(injected) = &self.turn_injected else {
             return false;
@@ -1586,7 +1493,6 @@ impl ChatApp {
         true
     }
 
-    /// Messages still queued when the turn ended; they never joined it.
     fn take_unsent(&mut self) -> Vec<String> {
         let Some(injected) = self.turn_injected.take() else {
             return Vec::new();
@@ -1597,8 +1503,6 @@ impl ChatApp {
         }
     }
 
-    /// Turns carry the MCP tool list, so a submit that beats the connect is
-    /// held and replayed rather than run without the servers' tools.
     fn submit_or_hold(
         &mut self,
         text: &str,
@@ -1752,8 +1656,6 @@ impl ChatApp {
         self.streamed.clear();
     }
 
-    /// Drop the unanswered question from history so a retry resends it instead
-    /// of stacking a duplicate user turn.
     fn fail_turn(&mut self, msg: &str) {
         if msg.contains("degenerated into repeated text") {
             self.mom_looping = true;
@@ -1782,8 +1684,6 @@ impl ChatApp {
         }
     }
 
-    /// Replay a resumed transcript into the view and in-memory history. The
-    /// assistant turns are already recorded on disk, so nothing is re-appended.
     fn load_history(&mut self, messages: Vec<ChatMessage>) {
         if messages.is_empty() {
             return;
@@ -1815,9 +1715,6 @@ impl ChatApp {
         }
     }
 
-    /// The running turn cloned the older policy, so it keeps asking after a
-    /// promotion to `edit`; honour the newer mode. Out-of-repo requests
-    /// (`scope`) are a separate question `edit` does not answer.
     fn on_approval_request(&mut self, req: ApprovalRequest, pane: &mut BottomPane<AppEvent>) {
         if req.scope.is_none() && self.mode == Mode::Edit {
             let _ = req.respond.send(Answer::Yes);
@@ -1826,8 +1723,6 @@ impl ChatApp {
         pane.push_approval(req);
     }
 
-    /// The plan goes to the user whatever the mode: asking to plan is a request
-    /// to be consulted, so an editable session answers it too.
     fn on_plan_approval_request(&mut self, req: ApprovalRequest, pane: &mut BottomPane<AppEvent>) {
         // The pane keeps only the question; the plan itself goes into the
         // transcript as a document, where it scrolls and copies like one.
@@ -1839,8 +1734,6 @@ impl ChatApp {
         pane.push_approval(req);
     }
 
-    /// Offer the agent's question as a picker. Without options there is nothing
-    /// to pick, so the question is printed and the agent told to decide.
     fn on_question_request(&mut self, req: QuestionRequest, pane: &mut BottomPane<AppEvent>) {
         if req.options.is_empty() {
             self.note(&format!("{}: {}", req.header, req.question));
@@ -1865,9 +1758,6 @@ impl ChatApp {
         pane.push_picker(&req.header, items, Some(AppEvent::QuestionDismissed));
     }
 
-    /// YOLO drops the sandbox, so it is the one mode the user is asked about
-    /// rather than switched into. The prompt is the same picker every other
-    /// question uses; declining is the resting choice.
     fn confirm_yolo(&mut self, pane: &mut BottomPane<AppEvent>) {
         if self.mode == Mode::Yolo {
             return;
@@ -1957,6 +1847,13 @@ impl ChatApp {
                 let block = history::update(&info, self.width);
                 self.emit(block);
             }
+            AppEvent::Announcements(items) => {
+                if !items.is_empty() {
+                    let block = history::announcements(&items, self.width);
+                    self.emit(block);
+                    self.pending_announcements = Some(items.into_iter().map(|a| a.id).collect());
+                }
+            }
             // Skill events that need the pane are handled on the run loop.
             AppEvent::SkillPicked(_)
             | AppEvent::SkillUse(_)
@@ -1995,8 +1892,6 @@ impl ChatApp {
         }
     }
 
-    /// One row per saved session, newest first. With nothing saved there is
-    /// nothing to choose, so the run just starts clean.
     fn open_session_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
         let Some(store) = &self.store else {
             self.note("no session store available; starting fresh");
@@ -2044,8 +1939,6 @@ impl ChatApp {
         pane.push_picker("Resume a session", items, None);
     }
 
-    /// Adopt a chosen session: its history seeds the view and later turns append
-    /// to its transcript rather than to a fresh one.
     fn resume_session(&mut self, id: &str) {
         let Some(store) = &self.store else {
             return;
@@ -2074,8 +1967,6 @@ impl ChatApp {
         }
     }
 
-    /// Flips the session header and saves the choice, so it sticks across
-    /// sessions. `/clear` and YOLO repaints follow it too.
     fn toggle_welcome(&mut self) {
         self.show_welcome = !self.show_welcome;
         let value = match self.show_welcome {
@@ -2111,13 +2002,11 @@ impl ChatApp {
         });
     }
 
-    /// Shift+tab: step to the next mode in the footer order, wrapping around.
     fn cycle_mode(&mut self) {
         let at = MODE_ORDER.iter().position(|m| *m == self.mode).unwrap_or(0);
         self.select_mode(MODE_ORDER[(at + 1) % MODE_ORDER.len()]);
     }
 
-    /// The session header, in the palette current when it is called.
     fn welcome_block(&self) -> Vec<Line<'static>> {
         if !self.show_welcome {
             return history::banner();
@@ -2154,9 +2043,6 @@ impl ChatApp {
         history::welcome(&fields, self.width)
     }
 
-    /// The takeover has played out: land the screen in the new palette.
-    /// Scrollback cannot be repainted, so everything is cleared and the header
-    /// rebuilt after the theme settles, never mid-fade in neither colour.
     fn finish_takeover(&mut self) {
         let Some(t) = self.takeover.take() else {
             return;
@@ -2172,7 +2058,6 @@ impl ChatApp {
         });
     }
 
-    /// Apply a picker choice. A locked run stays in `plan` and says why.
     fn select_mode(&mut self, mode: Mode) {
         if self.edits_locked && mode.can_edit() {
             self.flash = Some("edits are off for this run (mode: plan)".into());
@@ -2204,7 +2089,6 @@ impl ChatApp {
         });
     }
 
-    /// An effort change takes effect next turn, since each turn clones the client.
     fn set_effort(&mut self, next: Effort, client: &mut AiClient) {
         client.set_effort(next);
         self.effort = next;
@@ -2260,8 +2144,6 @@ impl ChatApp {
         self.mom = Some(mom);
     }
 
-    /// The turn task already runs on the routed model; this records the pick
-    /// so the engine holds it and later turns follow.
     fn on_mom_routed(&mut self, entry: &str, client: &mut AiClient) {
         let Some(mut mom) = self.mom.take() else {
             return;
@@ -2381,7 +2263,6 @@ impl ChatApp {
         self.emit(block);
     }
 
-    /// Not set_model: a manifest pick must not suspend the manifest or persist.
     fn apply_mom_switch(
         &mut self,
         mom: &crate::mom::MomSession,
@@ -2401,9 +2282,6 @@ impl ChatApp {
         self.model = model;
     }
 
-    /// `/model <id>` may name another provider's model; re-pair the endpoint
-    /// and wire format first, so the id is not sent to an endpoint that cannot
-    /// serve it. Picker choices skip this: they came from the endpoint itself.
     fn set_model_typed(&mut self, model: String, client: &mut AiClient) {
         let Some(target) = crate::mom::target_for_model(&model, &self.provider_base_url) else {
             return self.set_model(model, client);
@@ -2425,7 +2303,6 @@ impl ChatApp {
         self.set_model(target.model_param, client);
     }
 
-    /// A model change takes effect next turn, since each turn clones the client.
     fn set_model(&mut self, model: String, client: &mut AiClient) {
         if model == self.model {
             return;
@@ -2451,8 +2328,6 @@ impl ChatApp {
         self.model = model;
     }
 
-    /// Ask the provider what it serves. The picker opens when the list lands,
-    /// so a slow endpoint stalls nothing but itself.
     fn request_models(&mut self, client: &AiClient, tx: mpsc::UnboundedSender<AppEvent>) {
         self.flash = Some("fetching models…".into());
         let client = client.clone();
@@ -2478,8 +2353,6 @@ impl ChatApp {
         pane.push_view(Box::new(view));
     }
 
-    /// Every session knob in one panel: thinking, mode, effort, model and
-    /// provider, so none of them needs a command of its own.
     fn open_unified_selector(&mut self, pane: &mut BottomPane<AppEvent>) {
         let current = self.provider_base_url.clone();
         let thinking = UnifiedItem {
@@ -2532,8 +2405,6 @@ impl ChatApp {
         pane.push_unified(items);
     }
 
-    /// Repoint the client, then offer that endpoint's models. A missing key is
-    /// said now rather than at the next turn's failure.
     fn switch_provider(&mut self, base_url: String, model: String, client: &mut AiClient) {
         // The same resolution every command uses, so the picker cannot hand
         // this endpoint a key that chat would then refuse.
@@ -2692,8 +2563,6 @@ impl ChatApp {
         }
     }
 
-    /// The tool list is rebuilt per turn, so tell the model its tools changed.
-    /// Without this it keeps trusting whatever it said about edits earlier.
     fn note_edit_mode(&mut self) {
         let content = match self.mode {
             Mode::Plan => format!(
@@ -2761,8 +2630,6 @@ impl ChatApp {
         });
     }
 
-    /// Bold-label rows rendered like the /help block. Each description is
-    /// clipped to its one row: a long one reads as a teaser, never a wall.
     fn emit_rows(&mut self, title: &str, rows: Vec<(String, String)>) {
         let width = self.width;
         let mut lines = vec![Line::from(Span::styled(
@@ -2873,8 +2740,6 @@ impl ChatApp {
         self.emit(lines);
     }
 
-    /// The `/mcp` control panel: every configured server with its state;
-    /// choosing one flips `disabled` in whichever config file declares it.
     fn show_mcp(&mut self, pane: &mut BottomPane<AppEvent>) {
         let settings = match crate::settings::Settings::load(Some(&self.repo_root)) {
             Ok(s) => s,
@@ -2977,8 +2842,6 @@ impl ChatApp {
         pane.push_picker(&format!("Skill: {name}"), items, None);
     }
 
-    /// Deleting removes a folder from disk, so it gets the same ask-first
-    /// treatment as YOLO; declining returns to the skill's action menu.
     fn confirm_skill_delete(&mut self, name: &str, pane: &mut BottomPane<AppEvent>) {
         let skills = crate::chat::discover_skills(&self.repo_root);
         let Some(skill) = skills.get(name) else {

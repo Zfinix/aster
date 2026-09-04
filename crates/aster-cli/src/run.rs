@@ -113,7 +113,6 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-/// The notification body: the report's first line, clipped to a char boundary.
 fn first_line(text: &str) -> String {
     let line = text
         .lines()
@@ -126,8 +125,6 @@ fn first_line(text: &str) -> String {
     line[..cut].to_string()
 }
 
-/// A scheduled run records its own session, tagged with the schedule name, so
-/// `aster sessions list` answers "what ran last night" without a terminal.
 fn record_scheduled_session(
     deps: &AgentDeps,
     args: &RunArgs,

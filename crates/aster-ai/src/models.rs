@@ -10,19 +10,14 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
-    /// Requests a final usage chunk on streamed responses; ignored where unsupported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
-    /// With `temperature: 0`, makes output reproducible on providers that honor it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// Reasoning-token control for thinking models (OpenRouter shape).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
-    /// OpenRouter web-search plugin. Only serializes when set, so non-OpenRouter
-    /// endpoints are unaffected.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<WebSearchPlugin>,
 }
@@ -62,11 +57,8 @@ pub struct ChatMessage {
     pub content: MessageContent,
 }
 
-/// What a model that cannot see an image is sent in its place.
 pub const IMAGE_OMITTED: &str = "[image content omitted because this model has no image input]";
 
-/// How an attached image reads wherever a turn is rendered as text: the
-/// transcript, a title, a summary. The mention beside it names the file.
 pub const IMAGE_MARK: &str = "[image]";
 
 /// A turn's content: plain text, or the parts array multimodal turns need.
@@ -173,8 +165,6 @@ impl MessageContent {
     }
 }
 
-/// Roughly 1500 tokens at four characters each, the flat cost the majority of
-/// providers bill an image at.
 const IMAGE_CHARS: usize = 6_000;
 
 impl From<String> for MessageContent {
@@ -223,8 +213,6 @@ pub struct ToolChatRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
-    /// OpenRouter web-search plugin. Only serializes when set, so non-OpenRouter
-    /// endpoints are unaffected.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<WebSearchPlugin>,
 }
@@ -247,13 +235,8 @@ pub struct AssistantMessage {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
-    /// Source citations attached by the OpenRouter web-search plugin. Each
-    /// annotation carries a URL and optional title the UI can render as a
-    /// source link below the answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<Annotation>,
-    /// The turn's thinking, replayed on the next request so a reasoning model
-    /// resumes its chain of thought after a tool result instead of restarting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_details: Vec<ReasoningDetail>,
 }
@@ -362,7 +345,6 @@ pub struct ChatDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCallDelta>,
-    /// Citations arrive on the final streaming chunk, not per-delta.
     #[serde(default)]
     pub annotations: Vec<Annotation>,
     #[serde(default)]

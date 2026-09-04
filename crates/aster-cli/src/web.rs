@@ -109,8 +109,6 @@ pub struct ScreenshotArgs {
     pub full_page: bool,
 }
 
-/// Live status for one long provider call: an animated spinner on a terminal,
-/// plain stderr lines when piped, nothing in JSON mode.
 struct Status {
     spinner: Option<cliclack::ProgressBar>,
     started: Instant,
@@ -132,7 +130,6 @@ impl Status {
         }
     }
 
-    /// Close the status line: a timed summary on success, a mark on failure.
     fn end<T>(self, result: Result<T>, summary: impl FnOnce(&T) -> String) -> Result<T> {
         let took = self.started.elapsed();
         // Tenths below a minute, where a search's speed is the interesting part;

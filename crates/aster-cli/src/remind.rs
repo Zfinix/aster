@@ -7,7 +7,7 @@ use clap::Args;
 #[derive(Debug, Args)]
 pub(crate) struct RemindArgs {
     /// What the notification says.
-    pub text: String,
+    pub text: Option<String>,
     /// When to fire: "in 30m", "in 2h", or "at 18:00".
     pub when: Option<String>,
 
@@ -31,13 +31,16 @@ pub(crate) fn run(args: RemindArgs) -> Result<()> {
     let Some(when) = &args.when else {
         anyhow::bail!("usage: aster remind \"<text>\" \"in 30m\" | \"at 18:00\"");
     };
+    let Some(text) = &args.text else {
+        anyhow::bail!("usage: aster remind \"<text>\" \"in 30m\" | \"at 18:00\"");
+    };
     let fire_at = aster_cron::remind::parse_when(when)?;
     let id = format!(
         "remind-{}",
         ulid::Ulid::new().to_string().to_ascii_lowercase()
     );
     let bin = std::env::current_exe().context("could not locate the aster binary")?;
-    let fire_args = aster_cron::remind::fire_args(&bin.to_string_lossy(), &id, &args.text);
+    let fire_args = aster_cron::remind::fire_args(&bin.to_string_lossy(), &id, text);
     let cron = aster_cron::remind::one_shot_cron(fire_at);
 
     #[cfg(target_os = "macos")]

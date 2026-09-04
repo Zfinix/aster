@@ -33,7 +33,6 @@ pub struct SessionMeta {
     pub aster_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The schedule that started this session, when it was not a human.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
 }
@@ -54,12 +53,8 @@ pub struct MessageEvent {
     pub ts: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<EventUsage>,
-    /// Web-search source citations, attached to assistant turns by the
-    /// OpenRouter `web` plugin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<Annotation>,
-    /// The round's thinking. Without it a reopened session shows the answer
-    /// with the reasoning that produced it missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningRecord>,
 }
@@ -69,7 +64,6 @@ pub struct MessageEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReasoningRecord {
     pub text: String,
-    /// Estimated, not billed: the same count the live block showed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,7 +179,6 @@ impl TitleEvent {
 pub struct EvictionEvent {
     pub reason: String,
     pub role: String,
-    /// Position in the request being built when the eviction happened.
     pub index: usize,
     pub chars: usize,
     pub ts: DateTime<Utc>,

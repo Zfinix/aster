@@ -14,7 +14,6 @@ pub struct CatalogModel {
     pub reasons: bool,
     pub images: bool,
     pub tools: bool,
-    /// Quality score, higher is better; price ranks as proxy when absent.
     #[serde(default)]
     pub quality: Option<f64>,
 }

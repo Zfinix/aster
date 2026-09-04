@@ -27,7 +27,6 @@ use crate::review::{Job, execute};
 const AGENT_PROMPT: &str = include_str!("../../prompts/aster-agent.md");
 const CHAT_TEMPERATURE: f64 = 0.4;
 
-/// Findings formatted as ground truth the chat agent answers follow-ups from.
 fn review_context(report: &ReviewReport, min_confidence: f32) -> String {
     let findings: Vec<_> = report
         .findings
@@ -192,11 +191,8 @@ struct App {
     finished: bool,
     found: usize,
     stream_chars: usize,
-    /// Chars streamed across the whole review; drives a continuously climbing
-    /// token meter rather than one that jumps only when real usage lands.
     total_stream_chars: usize,
     started: Instant,
-    /// Frozen at completion so the header timer stops once the review is done.
     elapsed: Option<Duration>,
     usage: Option<aster_ai::UsageSnapshot>,
     min_confidence: f32,
@@ -204,8 +200,6 @@ struct App {
     chatting: bool,
     chat_msgs: Vec<ChatMessage>,
     ctx: Option<String>,
-    /// Lines scrolled up from the bottom; `0` follows the live stream. Clamped in
-    /// `draw`, left alone as lines stream in so reading back is never yanked down.
     scroll: u16,
 }
 
@@ -245,8 +239,6 @@ impl App {
         self.ctx = Some(review_context(report, self.min_confidence));
     }
 
-    /// One chat turn: persona, review context, prior turns, then the new
-    /// question. Records the user message so the next turn carries it forward.
     fn build_chat(&mut self, text: &str) -> Vec<ChatMessage> {
         let mut msgs = vec![ChatMessage {
             role: "system".into(),
@@ -555,7 +547,6 @@ impl App {
         );
     }
 
-    /// Input and output token spend, with cost when priced.
     fn usage_label(&self) -> String {
         let Some(u) = self.usage.filter(|u| u.total_tokens > 0) else {
             return String::new();

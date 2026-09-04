@@ -1,15 +1,9 @@
-//! Turn a session transcript into a bounded, model-ready digest.
-//!
-//! The full transcript is unbounded and full of tool noise, so consolidation
-//! never sends it raw. This module extracts the durable-signal events: user
-//! turns, assistant replies (folded to their text), corrections, and terminal
-//! tool results, truncated to a hard cap so a consolidation call is bounded
-//! (AGENTS.md: nothing unbounded into context).
+//! Turn a session transcript into a bounded, model-ready digest: user turns,
+//! assistant text, and terminal tool results, truncated to a hard cap so a
+//! consolidation call never carries the raw transcript.
 
 use chrono::{DateTime, Utc};
 
-/// Hard cap on the digest characters a consolidation call may see. Stays well
-/// under the ~10K-token single-item ceiling.
 pub const MAX_DIGEST_CHARS: usize = 24_000;
 
 /// One durable-signal message pulled from a transcript.
@@ -55,9 +49,6 @@ pub fn build(transcript: &aster_persist::SessionTranscript) -> Option<SessionDig
     })
 }
 
-/// The durable signal of one message: user turns, assistant text, or a
-/// terminal tool result (the end of a tool round the model acted on). Thinking,
-/// intermediate tool calls, usage, and system noise are dropped.
 fn extract_durable(m: &aster_persist::MessageEvent) -> Option<DigestMessage> {
     match m.role.as_str() {
         "user" | "assistant" => Some(DigestMessage {
@@ -83,8 +74,6 @@ fn extract_durable(m: &aster_persist::MessageEvent) -> Option<DigestMessage> {
     }
 }
 
-/// Drop oldest messages until the digest fits the character budget. Messages
-/// are in transcript order (oldest first), so this keeps the newest tail.
 fn truncate_to_budget(messages: &mut Vec<DigestMessage>) {
     let total: usize = messages.iter().map(|m| m.content.len()).sum();
     if total <= MAX_DIGEST_CHARS {

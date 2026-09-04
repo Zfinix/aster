@@ -3,11 +3,9 @@ import { Code } from "./Code";
 const HUNK = /^@@ .* @@/;
 const FILE_MARKER = /^(\+\+\+|---)\s/;
 
-/**
- * Unified hunks are unambiguous. The bare `- old` / `+ new` form the editor's
- * own previews use is not, so it needs both signs present and to dominate the
- * block, or a search result full of hyphens would render as a diff.
- */
+/** Unified hunks are unambiguous. The bare `- old` / `+ new` form the editor's
+ *  own previews use is not, so it needs both signs present and to dominate the
+ *  block, or a search result full of hyphens would render as a diff. */
 export function looksLikeDiff(lines: string[]): boolean {
   if (lines.some((l) => HUNK.test(l))) return true;
 

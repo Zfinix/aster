@@ -96,6 +96,22 @@ pub fn render(
     )
 }
 
+fn gui_domain() -> String {
+    let uid = std::env::var("UID")
+        .ok()
+        .filter(|u| u.chars().all(char::is_numeric))
+        .unwrap_or_else(|| {
+            std::process::Command::new("id")
+                .arg("-u")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        });
+    format!("gui/{uid}")
+}
+
 /// Write the plist and ask launchd to load it. Idempotent: an existing plist
 /// for the same name is replaced.
 pub fn install(
@@ -117,11 +133,12 @@ pub fn install(
     .with_context(|| format!("writing {}", path.display()))?;
     // A stale load would keep the old definition alive; bootout is allowed to
     // fail when nothing was loaded.
+    let domain = gui_domain();
     let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/$UID/{}", label(name))])
+        .args(["bootout", &format!("{domain}/{}", label(name))])
         .status();
     let status = std::process::Command::new("launchctl")
-        .args(["bootstrap", "gui/$UID"])
+        .args(["bootstrap", &domain])
         .arg(&path)
         .status()
         .context("running launchctl bootstrap")?;
@@ -133,7 +150,7 @@ pub fn install(
 pub fn remove(name: &str) -> Result<()> {
     let path = plist_path(name)?;
     let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/$UID/{}", label(name))])
+        .args(["bootout", &format!("{}/{}", gui_domain(), label(name))])
         .status();
     if path.exists() {
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;

@@ -16,11 +16,6 @@ describe("Markdown tables", () => {
     expect(out).toContain("<td>/status</td>");
   });
 
-  /**
-   * The states a table passes through while it streams in. Each one used to
-   * match TABLE_ROW without matching the table branch, so no branch advanced
-   * the cursor and the renderer looped, pushing an empty <p> until it died.
-   */
   it.each([
     ["header only", "| Command | What it does |"],
     ["header and a partial separator", "| Command | What it does |\n| ---"],

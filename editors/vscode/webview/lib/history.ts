@@ -4,12 +4,9 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/**
- * How long ago a session started, at the coarsest useful precision and short
- * enough to sit at the end of a row without competing with its title. Anything
- * older than a week is a date, since "37d" is not how people look for a
- * conversation.
- */
+/** How long ago a session started, short enough to sit at the end of a row.
+ *  Anything older than a week is a date, since "37d" is not how people look
+ *  for a conversation. */
 export function relativeTime(iso: string, now = Date.now()): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) {

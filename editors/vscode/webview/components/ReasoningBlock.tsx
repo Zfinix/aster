@@ -1,9 +1,8 @@
 import { useState } from "react";
 
-/** One round's thinking: a muted summary line that expands into the raw text.
- *  Collapsed by default, since reasoning usually runs longer than the answer.
- *  The summary reflects the block's state: a live token count while it streams,
- *  a duration once it finishes, and a bare "Thought" when neither is known. */
+/** One round's thinking, collapsed by default since it usually runs longer than
+ *  the answer. The summary shows a live token count while it streams, a
+ *  duration once it finishes, and a bare "Thought" when neither is known. */
 export function ReasoningBlock({
   text,
   tokens,

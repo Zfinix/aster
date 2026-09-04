@@ -1,27 +1,20 @@
-/** Below this much left, the ring warns: a compact is close enough to plan for. */
 const LOW = 0.25;
 
-/** Hidden until the conversation has actually spent some of the window; an
- *  empty thread does not need a gauge. */
 const SHOW_ABOVE = 0.05;
 
 const SIZE = 16;
 const R = 6;
 const CIRCUMFERENCE = 2 * Math.PI * R;
 
-/**
- * How much of the history budget the conversation has used. The ring fills as
- * it grows; hovering opens a card with the exact figure and what happens when
- * the space runs out, and clicking compacts now.
- */
+/** How much of the history budget the conversation has used. The ring fills as
+ *  it grows; hovering opens a card with the exact figure and what happens when
+ *  the space runs out, and clicking compacts now. */
 export function ContextMeter({
   used,
   budget,
   onCompact,
 }: {
-  /** Characters the next turn would send. */
   used: number;
-  /** Characters the CLI auto-compacts above; 0 when the CLI could not say. */
   budget: number;
   onCompact: () => void;
 }) {

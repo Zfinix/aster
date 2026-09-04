@@ -37,18 +37,13 @@ export interface ChatMessage {
 export interface ChatHandlers {
   onEvent: (event: ChatStreamEvent) => void;
   onLog: (line: string) => void;
-  /** The child failed to spawn or the invoke itself failed. */
   onError: (message: string) => void;
-  /** The child exited. `error` is set when it failed without a terminal
-   *  stream event (a crash); `code` is null when cancelled. */
   onExit: (code: number | null, error: string | null) => void;
 }
 
-/**
- * Kick off a streaming chat turn (`aster chat --stream`). The backend owns the
- * child; NDJSON arrives as `aster://chat-event`, exit as `aster://chat-exit`.
- * Returns an unlisten that must be called when the turn is torn down.
- */
+/** Kick off a streaming chat turn (`aster chat --stream`). The backend owns the
+ *  child; NDJSON arrives as `aster://chat-event`, exit as `aster://chat-exit`.
+ *  Returns an unlisten that must be called when the turn is torn down. */
 export async function runChat(
   messages: ChatMessage[],
   repoPath: string | null,
@@ -243,11 +238,9 @@ interface RunHandlers {
   onDone: () => void;
 }
 
-/**
- * Kick off a streaming review. Wires the backend's NDJSON events, stderr log
- * lines, and terminal error into the caller's handlers, and returns an unlisten
- * that must be called when the run is torn down.
- */
+/** Kick off a streaming review. Wires the backend's NDJSON events, stderr log
+ *  lines, and terminal error into the caller's handlers, and returns an unlisten
+ *  that must be called when the run is torn down. */
 export async function runReview(
   opts: ReviewOpts,
   handlers: RunHandlers,

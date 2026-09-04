@@ -42,16 +42,11 @@ pub trait WebCrawl: Send + Sync {
     async fn crawl(&self, url: &str, opts: &CrawlOptions) -> anyhow::Result<CrawlResult>;
 }
 
-/// One provider's pending attempt at a request: its display name and the
-/// not-yet-awaited call, so dispatch can try providers lazily in order.
 type Attempt<'a, T> = (
     &'static str,
     std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<T>> + Send + 'a>>,
 );
 
-/// Await attempts in priority order and return the first success. A failed
-/// provider is logged and skipped; only when every attempt fails does the
-/// call error, naming what each provider reported.
 async fn first_success<T>(what: &str, attempts: Vec<Attempt<'_, T>>) -> anyhow::Result<T> {
     let mut failures = Vec::new();
     for (provider, attempt) in attempts {
@@ -73,19 +68,13 @@ async fn first_success<T>(what: &str, attempts: Vec<Attempt<'_, T>>) -> anyhow::
 /// providers in priority order and fall through to the next one on failure.
 #[derive(Clone)]
 pub struct WebBackend {
-    /// Search-first, so it leads `search` and sits mid-table for `extract`.
     exa: Option<exa::ExaClient>,
-    /// Real-time ranked search; follows Exa for `search`.
     perplexity: Option<perplexity::PerplexityClient>,
     context_dev: Option<context_dev::ContextDevClient>,
-    /// Always present: Firecrawl's keyless tier serves scrape and search
-    /// without a key, so only `crawl` and the keyed dispatch rank need one.
     firecrawl: firecrawl::FirecrawlClient,
     browserbase: Option<browserbase::BrowserbaseClient>,
     cloudflare: Option<cloudflare_br::CloudflareBrClient>,
     jina: jina::JinaClient,
-    /// Keyless fallback for search. Shared because it carries a per-process
-    /// rate limiter that must not be cloned.
     duckduckgo: std::sync::Arc<duckduckgo::DuckDuckGoClient>,
     plain_http: plain_http::PlainHttpClient,
 }

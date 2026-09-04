@@ -5,8 +5,6 @@ const MOD = IS_MAC ? "⌘" : "ctrl";
 const ALT = IS_MAC ? "⌥" : "alt";
 const SHIFT = IS_MAC ? "⇧" : "shift";
 
-/** Openers for the empty panel. The panel is a review tool and a chat, so the
- *  line that greets you should not insist it is only one of them. */
 export const OPENERS = [
   "What should we review next?",
   "What are we looking at?",
@@ -20,9 +18,6 @@ export const OPENERS = [
   "Ready when you are.",
 ];
 
-/** One-line reminders of what the panel can do; none of it is on screen until
- *  you go looking, so the empty state is where it gets said. Anything bracketed
- *  is drawn as a chip: a key to press or a name to type. */
 export const TIPS = [
   "[@] mentions a file from this repo",
   "[/review] reads the working tree",
@@ -48,7 +43,6 @@ export const TIPS = [
 
 export interface Part {
   text: string;
-  /** Drawn as a chip rather than prose. */
   chip: boolean;
 }
 
@@ -71,11 +65,9 @@ export function itemAt<T>(items: readonly T[], index: number): T {
   return items[((index % items.length) + items.length) % items.length];
 }
 
-/**
- * Holds a line from `items`, stepping on after `everyMs` when that is set. The
- * start is random so launches differ; the order after it is not, so a rotation
- * never repeats itself before the list is out.
- */
+/** Holds a line from `items`, stepping on after `everyMs` when that is set. The
+ *  start is random so launches differ; the order after it is not, so a rotation
+ *  never repeats itself before the list is out. */
 export function useRotation(items: readonly string[], everyMs = 0): string {
   const [at, setAt] = useState(() => Math.floor(Math.random() * items.length));
   useEffect(() => {

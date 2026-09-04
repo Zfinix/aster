@@ -91,7 +91,6 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Skills the next turn would see, plugin-contributed ones included.
 fn count(repo_root: &Path) -> usize {
     crate::chat::discover_skills(repo_root).len()
 }

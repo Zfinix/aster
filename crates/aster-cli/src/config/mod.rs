@@ -1,7 +1,6 @@
 //! `aster config`: the one command for providers, models, keys, and every
 //! setting. Reads are bare, writes are positional (`aster config model x`),
-//! and every read reports where the value came from, since the shell outranks
-//! both files.
+//! and every read reports where the value came from.
 
 pub mod key;
 pub mod models;
@@ -146,8 +145,6 @@ pub async fn run(args: ConfigArgs) -> Result<()> {
     }
 }
 
-/// The endpoint in use and where each part of it came from, so the read form
-/// answers the same question every other read here does.
 fn provider_status(repo_root: &Path) -> Result<()> {
     let settings = Settings::load(Some(repo_root))?;
     let (base_url, model) = provider::resolve_endpoint(&settings.review, None);
@@ -179,7 +176,6 @@ fn provider_status(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The model in use and where it came from.
 fn model_status(repo_root: &Path) -> Result<()> {
     let settings = Settings::load(Some(repo_root))?;
     let (_, model) = provider::resolve_endpoint(&settings.review, None);
@@ -203,8 +199,6 @@ fn model_status(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The key situation for the endpoint in use: which var it reads, whether one
-/// is set, and which layer is supplying it.
 fn key_status(repo_root: &Path) -> Result<()> {
     let settings = Settings::load(Some(repo_root))?;
     let (base_url, _) = provider::resolve_endpoint(&settings.review, None);
@@ -324,7 +318,6 @@ impl Kind {
     }
 }
 
-/// Display only: a written value is always the bare number.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Unit {
     None,
@@ -348,8 +341,6 @@ impl Unit {
     }
 }
 
-/// How the form groups settings, which is not the section they sit in: `review`
-/// holds the model every surface uses as well as the review pipeline's knobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
     Model,
@@ -405,13 +396,11 @@ impl Group {
 
 #[derive(Debug)]
 struct Key {
-    /// Dotted path, `<section>.<key>`, matching docs/CONFIG.md.
     name: &'static str,
     label: &'static str,
     group: Group,
     kind: Kind,
     unit: Unit,
-    /// Shell variables that outrank the file, in the order they win.
     env: &'static [&'static str],
     default: &'static str,
     help: &'static str,
@@ -430,7 +419,6 @@ impl Key {
 const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 
-/// `mcp.servers` and `mcp.tools` are absent on purpose: `aster mcp` owns them.
 const KEYS: &[Key] = &[
     Key {
         name: "review.model",
@@ -757,7 +745,6 @@ fn key(name: &str) -> Result<&'static Key> {
     }
 }
 
-/// The closest key by shared prefix, so a half-remembered name still lands.
 fn nearest(name: &str) -> Option<&'static str> {
     let shared = |k: &Key| {
         k.name
@@ -772,7 +759,6 @@ fn nearest(name: &str) -> Option<&'static str> {
         .map(|k| k.name)
 }
 
-/// The merged value across the config files, `Null` when none of them sets it.
 fn configured(settings: &Settings, name: &str) -> Value {
     let review = &settings.review;
     let perms = &settings.permissions;
@@ -815,8 +801,6 @@ fn configured(settings: &Settings, name: &str) -> Value {
     }
 }
 
-/// An f32 widened to f64 gains digits that were never in it, so 0.6 would print
-/// as 0.6000000238. Its own shortest representation is the one to keep.
 fn float(value: f32) -> Value {
     value
         .to_string()
@@ -824,8 +808,6 @@ fn float(value: f32) -> Value {
         .map_or(Value::Null, |v| json!(v))
 }
 
-/// One config file, kept as text so a key's origin comes from the file itself
-/// rather than from a merged value that happens to equal its default.
 struct Layer {
     path: PathBuf,
     label: String,
@@ -851,14 +833,10 @@ fn layers(repo_root: &Path) -> Vec<Layer> {
 
 struct Resolved {
     value: Value,
-    /// `env ASTER_MODEL`, the files that set it, or `default`.
     source: String,
-    /// Set when the shell outranks a file that also sets the key.
     shadowed: Option<&'static str>,
 }
 
-/// What one file sets for a key on its own. `pins` decides whether it sets it at
-/// all, since a `Settings` parsed from a file reports defaults for what it omits.
 fn in_layer(key: &Key, layer: &Layer) -> Value {
     if !crate::settings::pins(&layer.text, key.section(), key.leaf()) {
         return Value::Null;
@@ -868,8 +846,6 @@ fn in_layer(key: &Key, layer: &Layer) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// Each file's own answer, so an editor can write back to the file the user
-/// picked rather than the one that won.
 fn scoped(key: &Key, layers: &[Layer], global: &Path) -> Value {
     let mut user = Value::Null;
     let mut workspace = Value::Null;
@@ -890,8 +866,6 @@ fn resolve(key: &Key, settings: &Settings, layers: &[Layer]) -> Resolved {
     resolve_from(key, settings, layers, from_env)
 }
 
-/// The shell wins, then whichever files set the key, then the default. Taking
-/// the environment as an argument keeps the decision testable.
 fn resolve_from(
     key: &Key,
     settings: &Settings,
@@ -929,8 +903,6 @@ fn resolve_from(
     }
 }
 
-/// The value as it is written in the file. `Null` means no file set it, so the
-/// default stands in.
 fn render(value: &Value, key: &Key) -> String {
     match value {
         Value::Null => key.default.to_string(),
@@ -949,8 +921,6 @@ fn render(value: &Value, key: &Key) -> String {
     }
 }
 
-/// The value as a person reads it, never written back: an empty list says what
-/// empty means, and a number carries what it counts.
 fn display(value: &Value, key: &Key) -> String {
     let empty = matches!(value, Value::Array(items) if items.is_empty());
     let text = match value.is_null() || empty {
@@ -960,8 +930,6 @@ fn display(value: &Value, key: &Key) -> String {
     with_unit(&text, key.unit)
 }
 
-/// The unit lands on a number and nowhere else, so a default written in words is
-/// left as it reads.
 fn with_unit(text: &str, unit: Unit) -> String {
     let Ok(number) = text.parse::<f64>() else {
         return text.to_string();
@@ -977,8 +945,6 @@ fn with_unit(text: &str, unit: Unit) -> String {
     }
 }
 
-/// The first screen: the provider, the keys, a group of settings, the file
-/// writes land in, or the way out.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Top {
     Provider,
@@ -988,7 +954,6 @@ enum Top {
     Done,
 }
 
-/// The second screen: a setting to change, or back to the groups.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Row {
     Key(usize),
@@ -1054,8 +1019,6 @@ fn provider_hint(repo_root: &Path) -> Result<String> {
     ))
 }
 
-/// The init wizard's provider step, reached from the form: endpoint, model,
-/// and optionally the key, saved to the scoped file. Returns writes made.
 async fn provider_flow(target: Target, repo_root: &Path) -> Result<usize> {
     let providers = crate::init::load_providers()?;
     let current = crate::init::Current::read(repo_root);
@@ -1088,8 +1051,6 @@ async fn provider_flow(target: Target, repo_root: &Path) -> Result<usize> {
     Ok(saved)
 }
 
-/// Every key Aster reads in one list: pick one, then type a value to store it,
-/// enter to keep it, or `-` to clear it. Returns writes made.
 fn keys_flow(repo_root: &Path, local: bool) -> Result<usize> {
     let mut saved = 0usize;
     let mut at = 0usize;
@@ -1142,7 +1103,6 @@ fn keys_flow(repo_root: &Path, local: bool) -> Result<usize> {
     Ok(saved)
 }
 
-/// One group's settings, until Back. Returns how many were written.
 fn settings_in(group: Group, path: &Path, repo_root: &Path) -> Result<usize> {
     let mut saved = 0;
     let mut at = group
@@ -1190,8 +1150,6 @@ fn settings_in(group: Group, path: &Path, repo_root: &Path) -> Result<usize> {
     Ok(saved)
 }
 
-/// What the next turn runs with, so the form opens on the same answer `aster
-/// status` gives.
 fn headline(repo_root: &Path) -> Result<String> {
     let settings = Settings::load(Some(repo_root))?;
     let (base_url, model) = provider::resolve_endpoint(&settings.review, None);
@@ -1215,11 +1173,8 @@ enum Answer {
     Keep,
 }
 
-/// Typed at a value prompt to clear the key. Clack turns an empty submit back
-/// into the default it prefilled, so "leave it blank" cannot mean anything.
 const CLEAR: &str = "-";
 
-/// Prompt for one key and write it. `true` when the file changed.
 fn change(key: &'static Key, settings: &Settings, path: &Path, repo_root: &Path) -> Result<bool> {
     // Prefilled from the file rather than from a shell variable that outranks it.
     let current = configured(settings, key.name);
@@ -1263,7 +1218,6 @@ fn change(key: &'static Key, settings: &Settings, path: &Path, repo_root: &Path)
     Ok(true)
 }
 
-/// A fixed-value key picks from its values, plus a row that clears it.
 fn pick(key: &Key, options: &'static [&'static str], current: &Value) -> Result<Answer> {
     let now = current.as_str().map(str::to_string);
     let mut menu = select::<Option<&str>>(key.help)
@@ -1282,8 +1236,6 @@ fn pick(key: &Key, options: &'static [&'static str], current: &Value) -> Result<
     })
 }
 
-/// Everything else is typed, validated against the parser before the prompt
-/// closes, so a bad value is corrected in place.
 fn typed(key: &'static Key, current: &Value, path: &Path) -> Result<Answer> {
     let text = fs::read_to_string(path).unwrap_or_default();
     let validate = move |input: &String| {
@@ -1456,8 +1408,6 @@ fn unset(repo_root: &Path, name: &str, global: bool, local: bool) -> Result<()> 
     report(repo_root, key, &path, "cleared from")
 }
 
-/// What the next turn resolves the key to now, so an environment variable
-/// outranking what was just written is not hidden.
 fn report(repo_root: &Path, key: &Key, path: &Path, verb: &str) -> Result<()> {
     let settings = Settings::load(Some(repo_root))?;
     let resolved = resolve(key, &settings, &layers(repo_root));
@@ -1566,8 +1516,6 @@ impl Target {
     }
 }
 
-/// Lists are written inline so one key stays one line, which is what keeps the
-/// rest of the file byte for byte.
 fn yaml_value(key: &Key, raw: &str) -> String {
     if key.kind != Kind::List {
         return scalar(raw);
@@ -1581,7 +1529,6 @@ fn yaml_value(key: &Key, raw: &str) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// Quote anything YAML would read as something other than a string.
 fn scalar(raw: &str) -> String {
     let plain = !raw.is_empty()
         && raw
@@ -1595,14 +1542,11 @@ fn scalar(raw: &str) -> String {
     format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Validated with the parser the next run uses, so nothing unreadable is saved.
 fn check(text: &str) -> Result<()> {
     serde_yaml::from_str::<Settings>(text)?;
     Ok(())
 }
 
-/// How a config file prints: repo-relative inside the repo, `~/…` under the home
-/// directory.
 fn label(path: &Path, repo_root: &Path) -> String {
     if let Ok(rest) = path.strip_prefix(repo_root) {
         return rest.display().to_string();

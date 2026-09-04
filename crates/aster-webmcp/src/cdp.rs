@@ -1,7 +1,6 @@
 //! Just enough of the Chrome DevTools Protocol to reach a page: find a tab
-//! over HTTP, then speak JSON-RPC on its WebSocket. Connecting to a page
-//! target's own debugger URL scopes every command to that tab, so no
-//! `Target.attachToTarget` session plumbing is needed.
+//! over HTTP, then speak JSON-RPC on its WebSocket. A page target's own
+//! debugger URL scopes every command to that tab, so no session plumbing.
 
 use std::time::Duration;
 
@@ -27,7 +26,6 @@ struct Target {
 pub struct Tab {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_id: i64,
-    /// What the tab is showing, kept for error messages.
     url: String,
 }
 

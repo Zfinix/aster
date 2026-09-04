@@ -149,8 +149,6 @@ fn file_value(path: Option<&Path>, var: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The value `line` assigns to `var`, if it assigns one. Quotes are stripped so
-/// a hand-written `VAR="x"` compares equal to what `aster key set` writes.
 fn assignment<'a>(line: &'a str, var: &str) -> Option<&'a str> {
     let rest = line.trim_start().strip_prefix(var)?.strip_prefix('=')?;
     let rest = rest.trim();
@@ -169,8 +167,6 @@ fn global_env() -> Option<PathBuf> {
     crate::persist::global_env_path()
 }
 
-/// The repo's `.env`, beside its `aster.yaml` when it has one so `init` and
-/// this command always write the same file.
 fn local_env(repo_root: &Path) -> Option<PathBuf> {
     let beside = crate::settings::project_config(Some(repo_root))
         .map(|yaml| yaml.with_file_name(".env"))
@@ -212,7 +208,6 @@ pub(crate) fn masked(var: &str) -> Option<String> {
     env_non_empty(var).map(|live| mask_tail(&live))
 }
 
-/// Short keys mask whole so the tail does not give most of the value away.
 fn mask_tail(live: &str) -> String {
     let chars: Vec<char> = live.chars().collect();
     if chars.len() <= 8 {
@@ -314,8 +309,6 @@ pub(crate) fn list(repo_root: &Path, all: bool) -> Result<()> {
     Ok(())
 }
 
-/// The live value itself, the way `gh auth token` prints one, so editors can
-/// reveal a key on demand without keeping every value in memory.
 fn get(repo_root: &Path, var: &str) -> Result<()> {
     let var = normalize(var)?;
     let source = source(&var, repo_root);
@@ -419,9 +412,6 @@ pub(crate) fn set(
     Ok(())
 }
 
-/// What still outranks the file just written, so a key that looks stored but
-/// cannot take effect says so now rather than as a 401 next turn. `before` is
-/// the layer that supplied the key when the command started.
 fn shadow_note(var: &str, before: Source, local: bool) -> Option<String> {
     match before {
         Source::Shell => Some(format!(
@@ -513,8 +503,6 @@ fn paths(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Uppercase the name and check it could be an env var, so a typo is caught
-/// here rather than written into `.env` and silently never read.
 fn normalize(var: &str) -> Result<String> {
     let var = var.trim().to_ascii_uppercase();
     if var.is_empty() {
@@ -553,8 +541,6 @@ fn ask(var: &str) -> Result<String> {
     Ok(entered.unwrap_or_default().trim().to_string())
 }
 
-/// `~/.aster/.env` rather than the absolute path, which is what the user typed
-/// and what the docs call it.
 fn display(path: &Path) -> String {
     let Some(home) = dirs::home_dir() else {
         return path.display().to_string();

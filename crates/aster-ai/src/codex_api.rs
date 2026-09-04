@@ -105,9 +105,6 @@ pub fn translate_request(chat: &Value) -> Value {
     request
 }
 
-/// A user message becomes an input item. Text arrives either as a plain string
-/// or as content parts; image parts are forwarded so vision models on the plan
-/// still see them.
 fn user_item(message: &Value) -> Value {
     match message["content"] {
         Value::String(ref text) => json!({
@@ -146,8 +143,6 @@ fn user_item(message: &Value) -> Value {
     }
 }
 
-/// Text out of a message content field, whether it arrived as a string or as
-/// content parts.
 fn text_of(content: &Value) -> Option<String> {
     match content {
         Value::String(text) => (!text.is_empty()).then(|| text.clone()),
@@ -232,8 +227,6 @@ pub fn assemble_stream(sse: &str) -> Option<Value> {
     Some(translate_response(&response))
 }
 
-/// Map a Responses usage block onto the chat-completions names. Absent fields
-/// stay absent rather than becoming zeros, so estimation still kicks in.
 fn translate_usage(usage: &Value) -> Value {
     let mut mapped = json!({});
     if let Some(v) = usage["input_tokens"].as_u64() {
@@ -297,9 +290,6 @@ impl StreamTranslator {
         Some(chunk.to_string())
     }
 
-    /// Fragment index for an event's tool call. An argument delta and the
-    /// item-done event that closes its call share an `item_id`, so they must
-    /// land in the same reassembly slot; each distinct call gets its own.
     fn tool_index(&mut self, parsed: &Value) -> usize {
         let Some(id) = parsed["item_id"]
             .as_str()

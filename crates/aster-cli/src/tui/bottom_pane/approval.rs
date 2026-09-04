@@ -16,7 +16,6 @@ use crate::chat::{Answer, ApprovalRequest};
 use crate::tui::render::{Inset, Insets, Renderable, wrapped};
 use crate::tui::{history, theme};
 
-/// Longest preview shown; older lines elide so the composer stays reachable.
 const MAX_PREVIEW_ROWS: usize = 12;
 
 pub(crate) struct ApprovalView<E> {
@@ -24,7 +23,6 @@ pub(crate) struct ApprovalView<E> {
     queue: VecDeque<ApprovalRequest>,
     selected: usize,
     tx: mpsc::UnboundedSender<E>,
-    /// Maps the decision to an app event for side effects (notices, promotion).
     on_decide: fn(Answer, Option<PathBuf>) -> E,
 }
 

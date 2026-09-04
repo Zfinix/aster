@@ -38,19 +38,13 @@ export type PermissionMode = "plan" | "manual" | "auto" | "edit" | "yolo";
 
 /** One line of `aster chat --stream` output. */
 export type ChatStreamEvent =
-  /** One streamed content delta, appended as it arrives. */
   | { type: "token"; content: string }
-  /** A whole content block, sent only when the endpoint streamed no deltas. */
   | { type: "text"; content: string }
-  /** The round's thinking, absent when the model reasons under encryption. */
   | { type: "reasoning"; content: string; tokens?: number; duration_ms?: number }
-  /** One live fragment of streamed thinking, with the running token estimate. */
   | { type: "reasoning_delta"; content: string; tokens: number }
-  /** Thinking finished: the final token estimate and how long the round took. */
   | { type: "reasoning_done"; tokens: number; duration_ms: number }
   | { type: "tool_call"; id: string; name: string; arguments: string }
   | { type: "tool_result"; id: string; name: string; result: string; error: boolean }
-  /** Live progress for one sub-agent in an `agent` tool call. */
   | {
       type: "agent_status";
       call_id: string;
@@ -62,18 +56,14 @@ export type ChatStreamEvent =
       done: number;
       total: number;
     }
-  /** `plan` means approving promotes the mode; `action` is a one-off. */
   | {
       type: "approval_request";
       kind?: "plan" | "action";
       preview: string;
-      /** A plan carries its document here; the preview is the flattened copy. */
       markdown?: string;
     }
   | { type: "done"; reply: string; edits: string[]; usage?: Usage }
-  /** A generated name for the session, sent once the conversation has shape. */
   | { type: "title"; title: string }
-  /** Something the harness did to the turn, e.g. stopping at the round cap. */
   | { type: "notice"; message: string }
   | { type: "error"; message: string };
 

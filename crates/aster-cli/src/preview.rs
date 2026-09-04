@@ -10,30 +10,17 @@ use anyhow::{Context, Result, bail};
 
 use crate::chat::{Answer, SessionCtx, UiSender, request_approval};
 
-/// How long a local dev server has to accept a connection before the preview
-/// is refused. Long enough for a listening socket, short enough that a dead
-/// port does not stall the turn.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(700);
 
-/// Set it to keep Aster out of the browser: over SSH, in a container, or on a
-/// box where launching one is not wanted. The URL still comes back, so the
-/// agent reports it instead of opening it.
 const NO_BROWSER: &str = "ASTER_NO_BROWSER";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Preview {
     pub url: String,
-    /// True when the target is loopback or a file inside the repository, which
-    /// opens without asking. Anything else is a page the agent chose to send
-    /// the user to, so the user confirms it.
     pub local: bool,
-    /// Loopback port to probe before opening, so a dead dev server is reported
-    /// as such instead of showing the user a connection error.
     pub port: Option<u16>,
 }
 
-/// Hands a resolved URL to the browser. Swapped in tests, which have every
-/// reason to exercise the tool and none to open a window.
 type Launch = fn(&str) -> Result<()>;
 
 fn browser(url: &str) -> Result<()> {
@@ -120,8 +107,6 @@ pub(crate) fn resolve(repo_root: &Path, target: &str) -> Result<Preview> {
     }
 }
 
-/// The scheme of `target`, when it has one. A single letter is a Windows drive
-/// and a digit after the colon is a port, so neither counts.
 fn scheme(target: &str) -> Option<&str> {
     let (head, rest) = target.split_once(':')?;
     if head.len() < 2
@@ -137,8 +122,6 @@ fn scheme(target: &str) -> Option<&str> {
     Some(head)
 }
 
-/// `localhost:5173`, `127.0.0.1:8080/about`, and a bare `:3000` as the http
-/// URL they meant. Anything else is left for the path branch.
 fn host_port(target: &str) -> Option<String> {
     let (host, rest) = target.split_once(':')?;
     let port: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -186,8 +169,6 @@ fn path_preview(repo_root: &Path, target: &str) -> Result<Preview> {
     })
 }
 
-/// A directory is not a page: open its `index.html` when it has one, and say
-/// what is missing when it does not.
 fn entry_point(path: PathBuf) -> Result<PathBuf> {
     if !path.is_dir() {
         return Ok(path);
@@ -202,8 +183,6 @@ fn entry_point(path: PathBuf) -> Result<PathBuf> {
     )
 }
 
-/// A `file://` URL. Percent-encodes the bytes a browser would otherwise read
-/// as a query, a fragment, or an escape.
 fn file_url(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     let mut url = String::from("file://");
@@ -221,15 +200,12 @@ fn file_url(path: &Path) -> String {
     url
 }
 
-/// Everything between `://` and the path, which is where the host lives.
 fn authority(url: &str) -> Option<&str> {
     let rest = url.split_once("://")?.1;
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     Some(&rest[..end])
 }
 
-/// The host alone. Userinfo is dropped from the front, since
-/// `http://localhost@example.com/` is example.com wearing a local name.
 fn host(authority: &str) -> &str {
     let bare = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     if let Some(end) = bare.strip_prefix('[').and_then(|rest| rest.find(']')) {
@@ -238,7 +214,6 @@ fn host(authority: &str) -> &str {
     bare.split(':').next().unwrap_or(bare)
 }
 
-/// The port to probe: the one in the URL, or the scheme's default.
 fn port(authority: &str, url: &str) -> Option<u16> {
     let after_host = authority
         .rsplit_once(']')
@@ -263,8 +238,6 @@ fn is_loopback(host: &str) -> bool {
     }
 }
 
-/// Refuse a loopback URL nothing is serving. The browser would show a
-/// connection error the user reads as Aster being broken.
 async fn probe(port: u16) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let connect = tokio::net::TcpStream::connect(&addr);

@@ -68,8 +68,6 @@ pub(crate) struct AgentDeps {
     pub repo_root: PathBuf,
     pub policy: Arc<Policy>,
     pub grants: Arc<Grants>,
-    /// The parent's credential approvals: a sub-agent is the same user in the
-    /// same session, so it inherits them rather than re-asking.
     pub credentials: Arc<aster_policy::CommandGrants>,
     pub probe: Arc<bash_tools::ToolProbe>,
     pub environment: Option<String>,
@@ -78,7 +76,6 @@ pub(crate) struct AgentDeps {
     pub session_registry: Arc<AgentRegistry>,
 }
 
-/// Clip to a display line, cutting at a char boundary.
 fn clip(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -90,7 +87,6 @@ fn clip(s: &str, max: usize) -> String {
     format!("{}…", &s[..cut])
 }
 
-/// Collapse narration to one display line, or None if it was all whitespace.
 fn condense(text: &str) -> Option<String> {
     let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if joined.is_empty() {
@@ -100,7 +96,6 @@ fn condense(text: &str) -> Option<String> {
     }
 }
 
-/// "read_file src/chat.rs"-style line for a child tool call event.
 fn tool_line(ev: &Value) -> Option<String> {
     let name = ev.get("name").and_then(Value::as_str)?;
     let args: Value = ev
@@ -117,8 +112,6 @@ fn tool_line(ev: &Value) -> Option<String> {
     })
 }
 
-/// Translate a child's stream into activity lines: narration buffers until the
-/// next tool call, so each line is a finished thought or an action.
 fn activity_sink(tx: tokio::sync::mpsc::UnboundedSender<String>) -> crate::chat::ChatEventSink {
     let narration = std::sync::Mutex::new(String::new());
     Box::new(move |ev| {
@@ -142,13 +135,10 @@ fn activity_sink(tx: tokio::sync::mpsc::UnboundedSender<String>) -> crate::chat:
     })
 }
 
-/// Injected when a task nears its time limit, so the child lands a report
-/// with what it has instead of dying mid-research.
 const WRAP_UP: &str = "Your time limit is nearly up. Stop calling tools and \
 write your final report now from what you have gathered, noting what you did \
 not get to.";
 
-/// Activity lines kept for the salvage report a timed-out task returns.
 const SALVAGE_LINES: usize = 40;
 
 fn push_salvage(log: &std::sync::Mutex<Vec<String>>, line: &str) {
@@ -160,8 +150,6 @@ fn push_salvage(log: &std::sync::Mutex<Vec<String>>, line: &str) {
     }
 }
 
-/// The partial report a timed-out task hands back: its recent activity, so the
-/// parent can finish from where it stopped instead of restarting blind.
 fn salvage_report(timeout_secs: u64, trail: &str) -> Option<String> {
     if trail.is_empty() {
         return None;
@@ -172,8 +160,6 @@ fn salvage_report(timeout_secs: u64, trail: &str) -> Option<String> {
     ))
 }
 
-/// Extra time a task gets past its deadline once the wrap-up nudge fires:
-/// enough for one more model round, scaled to the budget but bounded.
 fn wrap_up_grace(timeout: std::time::Duration) -> std::time::Duration {
     (timeout / 5).clamp(
         std::time::Duration::from_secs(15),
@@ -181,9 +167,6 @@ fn wrap_up_grace(timeout: std::time::Duration) -> std::time::Duration {
     )
 }
 
-/// Run a single sub-agent, returning its final text answer. Live activity
-/// lines go out through `activity` as the child works, and `injected` feeds
-/// mid-turn messages into it.
 async fn run_agent(
     def: &aster_agents::AgentDef,
     task: &str,

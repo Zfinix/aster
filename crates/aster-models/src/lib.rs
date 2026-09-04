@@ -9,10 +9,8 @@ pub struct Finding {
     pub line: i32,
     #[serde(default)]
     pub start_line: Option<i32>,
-    /// "left" or "right"; lowercase, defaults to "right".
     #[serde(default)]
     pub side: Option<String>,
-    /// "critical" | "high" | "medium" | "low" | "info".
     pub severity: String,
     pub category: String,
     pub title: String,
@@ -137,9 +135,6 @@ impl Language {
     }
 }
 
-/// Directories never worth descending into when walking a source tree: build
-/// output, dependency caches, and VCS metadata. Shared so every walker in the
-/// workspace skips the same set.
 pub const SKIP_DIRS: &[&str] = &[
     ".git",
     ".hg",

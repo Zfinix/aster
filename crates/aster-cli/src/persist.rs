@@ -21,8 +21,6 @@ pub fn home() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The XDG data dir other coding tools share: `~/.local/share` on every
-/// platform, unless `XDG_DATA_HOME` overrides it.
 fn data_root() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));
@@ -32,8 +30,6 @@ fn data_root() -> Result<PathBuf> {
         .join(".local/share"))
 }
 
-/// Where this data used to live: `~/.aster`, and `<config>/aster` before that.
-/// Newest first, so its files win a collision during migration.
 fn legacy_homes() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(home) = dirs::home_dir() {
@@ -45,9 +41,6 @@ fn legacy_homes() -> Vec<PathBuf> {
     out
 }
 
-/// Copy legacy data across the first time the new path is asked for, so a
-/// login, session, or memory from an older build is not silently orphaned.
-/// A stamp makes it truly one-time: re-copying would resurrect deleted data.
 fn migrate_legacy_homes(new: &PathBuf) {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -76,8 +69,6 @@ fn migrate_legacy_homes(new: &PathBuf) {
     });
 }
 
-/// Copy a legacy home's data into the new one, leaving config files behind:
-/// they keep living in `~/.aster`, only data moves.
 fn migrate_data(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
     const CONFIG: &[&str] = &["aster.yaml", "aster.yml", ".aster.yaml", "mcp.json", ".env"];
     fs::create_dir_all(to)?;
@@ -97,9 +88,6 @@ fn migrate_data(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
     Ok(())
 }
 
-/// Copy every entry under `from` into `to`, keeping anything that is already
-/// there. The source is left in place: losing a credential to a half-finished
-/// move is worse than a stale directory.
 fn merge_dir(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {

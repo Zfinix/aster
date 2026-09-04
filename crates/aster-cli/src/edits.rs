@@ -74,15 +74,9 @@ pub fn apply_block(content: &str, block: &EditBlock) -> Result<String> {
     }
 }
 
-/// Extra file lines shown either side of the best match, so the caller can
-/// re-anchor without another read.
 const REGION_CONTEXT_LINES: usize = 5;
-/// Bigram-similarity floor below which a "closest" line is just noise.
 const MIN_SIMILARITY: f64 = 0.5;
 
-/// The file region most similar to a failed search, with line numbers. Retrying a
-/// mismatched edit verbatim was the most common wasted round, and the real text
-/// removes the extra read the retry depends on.
 fn closest_region(content: &str, search: &str) -> Option<String> {
     let anchor = search.lines().find(|l| !l.trim().is_empty())?.trim();
     let lines: Vec<&str> = content.lines().collect();
@@ -105,8 +99,6 @@ fn closest_region(content: &str, search: &str) -> Option<String> {
     Some(region)
 }
 
-/// Dice coefficient over character bigrams; whitespace-insensitive enough to
-/// survive indentation drift, cheap enough to run per line.
 fn similarity(a: &str, b: &str) -> f64 {
     let bigrams = |s: &str| -> Vec<(char, char)> {
         let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
@@ -149,9 +141,7 @@ pub fn resolve_in_repo(repo_root: &Path, path: &str) -> Result<PathBuf> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Inside the repo. The policy's globs apply to the repo-relative path.
     InRepo,
-    /// Outside the repo. Reachable only with the user's per-path approval.
     Outside,
 }
 

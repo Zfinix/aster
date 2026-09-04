@@ -14,16 +14,9 @@ use serde_json::{Value, json};
 
 pub use servers::{ServerKind, installed, supported};
 
-/// How long diagnostics() waits for the server's first publish.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(10);
-/// How long locations() retries while the project is still loading: the
-/// server answers "file not found" or "content modified", or returns an
-/// empty result before analysis finishes.
 const REQUEST_WAIT: Duration = Duration::from_secs(10);
-/// Diagnostics returned per file; past this the list is cut and counted.
 const MAX_DIAGNOSTICS: usize = 200;
-/// Locations returned per references/definitions query; past this the list is
-/// cut and counted.
 const MAX_LOCATIONS: usize = 100;
 
 pub struct Client {
@@ -168,9 +161,6 @@ impl Client {
     }
 }
 
-/// rust-analyzer canonicalizes paths (/var/folders -> /private/var/folders on
-/// macOS) when indexing, so every URI we send must be canonical or the server
-/// reports "file not found".
 fn path_to_uri(path: &Path) -> String {
     let absolute = absolute_path(path);
     let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);

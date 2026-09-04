@@ -13,8 +13,6 @@ use crate::{ExtractedPage, PageMetadata, SearchOptions, WebExtract, fetch, html,
 
 const SEARCH_URL: &str = "https://lite.duckduckgo.com/lite/";
 
-/// Requests per minute. DuckDuckGo publishes no quota, so these are politeness
-/// limits, not measured ceilings.
 const SEARCHES_PER_MINUTE: usize = 30;
 const FETCHES_PER_MINUTE: usize = 20;
 
@@ -234,8 +232,6 @@ pub async fn search(
     Ok(parse(&body, max_results))
 }
 
-/// Pull `<a class="result-link">` anchors and their sibling snippet cells out of
-/// the Lite HTML. Hand-rolled to keep the crate free of an HTML parser.
 fn parse(page: &str, max_results: usize) -> Vec<Hit> {
     let mut hits = Vec::new();
     let mut cursor = 0;
@@ -270,8 +266,6 @@ fn parse(page: &str, max_results: usize) -> Vec<Hit> {
     hits
 }
 
-/// The snippet belonging to the result that ends at `from`: the next
-/// `result-snippet` cell before the following result begins.
 fn snippet_after(page: &str, from: usize) -> Option<String> {
     let bound = page[from..]
         .find("result-link")
@@ -285,8 +279,6 @@ fn snippet_after(page: &str, from: usize) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Results are wrapped in a `/l/?uddg=<encoded>` redirect; ads point at `y.js`
-/// and are dropped.
 fn result_url(href: &str) -> Option<String> {
     let href = html::decode_entities(href);
     if href.contains("/y.js") {

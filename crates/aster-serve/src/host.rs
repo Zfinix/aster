@@ -2,17 +2,19 @@
 //! the webview would send an extension arrives here as one POST, and every
 //! answer goes back to the tab over the event stream.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use serde_json::{Value, json};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
-use crate::state::AppState;
+use crate::cli::Cli;
+use crate::state::{AppState, Instance};
 use crate::{files, info, run, sessions};
 
 pub async fn message(
@@ -27,53 +29,72 @@ pub async fn message(
     }
 }
 
-/// The live feed. One connection carries every message the host sends, so a
-/// reloaded tab is caught up by asking for `ready` again.
+/// The live feed. Each tab subscribes to its own instance, so a reloaded tab
+/// is caught up by asking for `ready` again and never sees another tab's
+/// turns.
 pub async fn events(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let instance = state
+        .instance(
+            query
+                .get("instance")
+                .map(String::as_str)
+                .unwrap_or("default"),
+        )
+        .await;
     // A tab that falls far enough behind to lag the channel has dropped lines
     // either way; skipping them beats tearing the stream down.
-    let stream = BroadcastStream::new(state.events.subscribe())
+    let stream = BroadcastStream::new(instance.events.subscribe())
         .filter_map(|message| message.ok().map(|data| Ok(Event::default().data(data))));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
+    let instance = state.instance_for(message).await;
     let id = || message["id"].as_str().unwrap_or_default().to_string();
     match message["type"].as_str().unwrap_or_default() {
         "ready" => {
-            state.post(init(state).await);
-            state.post_run_state().await;
+            instance.post(init(state).await);
+            instance.post_run_state().await;
         }
         "chat" => {
-            if let Err(error) = run::chat(state, id(), message).await {
-                state.post(json!({ "type": "chatError", "id": id(), "message": error }));
+            if let Err(error) = run::chat(state, &instance, id(), message).await {
+                instance.post(json!({ "type": "chatError", "id": id(), "message": error }));
             }
-            state.post_run_state().await;
+            instance.post_run_state().await;
         }
         "review" => {
-            if let Err(error) = run::review(state, id(), &message["source"]).await {
-                state.post(json!({ "type": "reviewError", "id": id(), "message": error }));
+            if let Err(error) = run::review(state, &instance, id(), &message["source"]).await {
+                instance.post(json!({ "type": "reviewError", "id": id(), "message": error }));
             }
-            state.post_run_state().await;
+            instance.post_run_state().await;
         }
         // Cancel both: whichever is idle is a no-op, and this removes any
         // dependence on the browser guessing which kind of run is in flight.
         "cancelChat" | "cancelReview" => {
-            run::cancel(&mut *state.chat.lock().await).await;
-            run::cancel(&mut *state.review.lock().await).await;
-            state.post_run_state().await;
+            run::cancel(&mut *instance.chat.lock().await).await;
+            run::cancel(&mut *instance.review.lock().await).await;
+            instance.post_run_state().await;
         }
         "approval" => {
             let mut line = json!({ "allow": message["allow"].as_bool().unwrap_or(false) });
             if message["always"].as_bool() == Some(true) {
                 line["always"] = json!(true);
             }
-            state.answer(line).await?;
+            instance.answer(line).await?;
         }
-        "answer" => state.answer(json!({ "choice": message["choice"] })).await?,
-        "inject" => state.answer(json!({ "message": message["text"] })).await?,
+        "answer" => {
+            instance
+                .answer(json!({ "choice": message["choice"] }))
+                .await?
+        }
+        "inject" => {
+            instance
+                .answer(json!({ "message": message["text"] }))
+                .await?
+        }
         "setPermissionMode" => {
             let mut settings = state.settings.lock().await;
             if let Some(mode) = message["mode"].as_str() {
@@ -101,22 +122,34 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
         }
         "searchFiles" => {
             let paths = files::search(&state.cli.root, message["query"].as_str().unwrap_or(""));
-            state.post(json!({
+            instance.post(json!({
                 "type": "fileResults",
                 "requestId": message["requestId"],
                 "paths": paths,
             }));
         }
+        "readFile" => {
+            let file = files::preview(
+                &state.cli.root,
+                message["path"].as_str().unwrap_or_default(),
+            );
+            instance.post(json!({
+                "type": "filePreview",
+                "requestId": message["requestId"],
+                "file": file,
+            }));
+        }
         "listSessions" => {
-            state.post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
+            instance
+                .post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
         }
         "loadSession" => {
             // Switching sessions abandons the turn in flight; stop it so the
             // loaded session starts clean.
-            run::cancel(&mut *state.chat.lock().await).await;
+            run::cancel(&mut *instance.chat.lock().await).await;
             let turns =
                 sessions::load(&state.cli, message["id"].as_str().unwrap_or_default()).await?;
-            state.post(json!({ "type": "sessionLoaded", "id": id(), "turns": turns }));
+            instance.post(json!({ "type": "sessionLoaded", "id": id(), "turns": turns }));
         }
         // Both answer with the fresh list, so the browser never has to guess
         // what the store now holds.
@@ -133,13 +166,14 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
                     .await
                 }
             };
-            state.post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
+            instance
+                .post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
             outcome?;
         }
-        "fetchModels" => state.post(models(state).await),
-        "info" => state.post(card(state, &id(), message["topic"].as_str().unwrap_or("")).await),
+        "fetchModels" => instance.post(models(state).await),
+        "info" => instance.post(card(state, &id(), message["topic"].as_str().unwrap_or("")).await),
         "listMcp" => {
-            state.post(
+            instance.post(
                 json!({ "type": "mcpServers", "servers": info::mcp_servers(&state.cli).await }),
             );
         }
@@ -152,26 +186,26 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             .await;
             // Re-read rather than assume: the toggle writes a config file, and
             // what landed there is what the next turn will start.
-            state.post(
+            instance.post(
                 json!({ "type": "mcpServers", "servers": info::mcp_servers(&state.cli).await }),
             );
             outcome?;
         }
         "listProviders" => {
-            state.post(json!({
+            instance.post(json!({
                 "type": "providers",
                 "providers": info::providers(&state.cli).await,
             }));
         }
-        "setProvider" => switch_provider(state, message).await?,
+        "setProvider" => switch_provider(state, &instance, message).await?,
         "login" => {
             let target = message["target"].as_str().unwrap_or_default();
-            run::login(state, target).await?;
+            run::login(state, &instance, target).await?;
         }
         "compact" => {
             let model = message["model"].as_str().filter(|m| !m.is_empty());
             match info::compact(&state.cli, &message["messages"], model).await {
-                Ok(result) => state.post(json!({
+                Ok(result) => instance.post(json!({
                     "type": "compacted",
                     "id": id(),
                     "summary": result["summary"],
@@ -179,7 +213,7 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
                     "messages": result["messages"],
                 })),
                 Err(error) => {
-                    state.post(json!({ "type": "chatError", "id": id(), "message": error }))
+                    instance.post(json!({ "type": "chatError", "id": id(), "message": error }))
                 }
             }
         }
@@ -187,7 +221,7 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             let finding = message["finding"].clone();
             let results = fix(state, &json!([finding.clone()])).await;
             if let Some(result) = results.first() {
-                state.post(json!({
+                instance.post(json!({
                     "type": "fixResult",
                     "finding": finding,
                     "status": result["status"],
@@ -213,12 +247,12 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
                     })
                 })
                 .collect();
-            state.post(json!({ "type": "fixAllResult", "results": paired }));
+            instance.post(json!({ "type": "fixAllResult", "results": paired }));
         }
         // A drag carries paths; the clipboard rarely does, so a paste arrives
         // as bytes and a name for this side to place.
-        "dropFiles" => mention_paths(state, &message["uris"]),
-        "pasteFiles" => stage_files(state, &message["files"]),
+        "dropFiles" => mention_paths(state, &instance, &message["uris"]),
+        "pasteFiles" => stage_files(state, &instance, &message["files"]),
         // No editor to reveal a file in, so it opens the way double-clicking it
         // would. Scoped to the repo: a link in a reply does not get to open
         // whatever it names.
@@ -232,12 +266,29 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
         "openSettings" => open_settings(state),
         // The page answers `openExternal`, `openUntitled` and `runCommand`
         // itself, since all three are things a browser already does.
+        "dismissAnnouncements" => {
+            let ids: Vec<String> = message["ids"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !ids.is_empty() {
+                let joined = ids.join(",");
+                let _ = state
+                    .cli
+                    .run(&["announce", "--dismiss", &joined], None)
+                    .await;
+            }
+        }
         _ => {}
     }
     Ok(())
 }
 
-/// Everything the page needs before its first turn.
 async fn init(state: &Arc<AppState>) -> Value {
     let root = state.cli.root.clone();
     let settings = state.settings.lock().await.clone();
@@ -278,11 +329,20 @@ async fn init(state: &Arc<AppState>) -> Value {
         "binaryOk": true,
         "skills": info::skills(&state.cli).await,
         "setup": info::setup(&state.cli).await,
+        "announcements": announcements(&state.cli).await,
     })
 }
 
-/// The endpoint's shortlist from the shipped catalog, so the browser's picker
-/// and the CLI's cannot disagree about what is recommended.
+async fn announcements(cli: &Cli) -> Option<Value> {
+    let items = cli
+        .json(&["announce"])
+        .await
+        .ok()
+        .and_then(|out| out["items"].as_array().cloned())
+        .filter(|items| !items.is_empty())?;
+    Some(Value::Array(items))
+}
+
 async fn recommended(state: &Arc<AppState>) -> Vec<String> {
     state
         .cli
@@ -293,8 +353,6 @@ async fn recommended(state: &Arc<AppState>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Not every endpoint implements `/models`, so the failure is reported rather
-/// than swallowed: the picker says so and offers to take an id.
 async fn models(state: &Arc<AppState>) -> Value {
     let out = state.cli.run(&["models", "--json"], None).await;
     let Ok(out) = out else {
@@ -318,7 +376,6 @@ async fn models(state: &Arc<AppState>) -> Value {
     }
 }
 
-/// `/status`, `/memory` and `/diff`, each answered as one card in the thread.
 async fn card(state: &Arc<AppState>, id: &str, topic: &str) -> Value {
     let answer = match topic {
         "status" => info::status(&state.cli)
@@ -355,9 +412,11 @@ async fn card(state: &Arc<AppState>, id: &str, topic: &str) -> Value {
     }
 }
 
-/// Repoint the endpoint and adopt one of its models, saved to aster.yaml so
-/// the terminal and the browser agree on what runs next.
-async fn switch_provider(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
+async fn switch_provider(
+    state: &Arc<AppState>,
+    instance: &Arc<Instance>,
+    message: &Value,
+) -> Result<(), String> {
     let base_url = message["baseUrl"].as_str().unwrap_or_default().to_string();
     let model = message["model"].as_str().unwrap_or_default().to_string();
 
@@ -376,14 +435,12 @@ async fn switch_provider(state: &Arc<AppState>, message: &Value) -> Result<(), S
         .to_string();
     let models = info::models_for(&state.cli, &model).await;
 
-    state.post(json!({
+    instance.post(json!({
         "type": "providerChanged", "provider": name, "model": model, "models": models,
     }));
     Ok(())
 }
 
-/// Patch findings in the working tree. A run that fails answers per finding, so
-/// every card in the UI resolves rather than hanging.
 async fn fix(state: &Arc<AppState>, findings: &Value) -> Vec<Value> {
     let failed = |reason: String| -> Vec<Value> {
         findings
@@ -408,8 +465,7 @@ async fn fix(state: &Arc<AppState>, findings: &Value) -> Vec<Value> {
     }
 }
 
-/// Mention what was dropped, relative to the repo when it lives there.
-fn mention_paths(state: &Arc<AppState>, uris: &Value) {
+fn mention_paths(state: &Arc<AppState>, instance: &Arc<Instance>, uris: &Value) {
     let mentions: Vec<String> = uris
         .as_array()
         .unwrap_or(&Vec::new())
@@ -419,12 +475,10 @@ fn mention_paths(state: &Arc<AppState>, uris: &Value) {
         .map(|path| format!("@{path}"))
         .collect();
     if !mentions.is_empty() {
-        state.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+        instance.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
     }
 }
 
-/// Settings in a browser is the config file itself: the repo's `aster.yaml`
-/// when there is one, the global one otherwise.
 fn open_settings(state: &Arc<AppState>) {
     let repo = state.cli.root.join("aster.yaml");
     let target = if repo.exists() {
@@ -439,7 +493,6 @@ fn open_settings(state: &Arc<AppState>) {
     }
 }
 
-/// Hand a repo file to whatever this machine opens it with.
 fn open_in_repo(state: &Arc<AppState>, path: &str) {
     let target = state.cli.root.join(path);
     let Ok(target) = target.canonicalize() else {
@@ -454,9 +507,7 @@ fn open_in_repo(state: &Arc<AppState>, path: &str) {
     }
 }
 
-/// Put dropped or pasted files where the agent can read them, then mention them
-/// in the composer the way the extension does.
-fn stage_files(state: &Arc<AppState>, files: &Value) {
+fn stage_files(state: &Arc<AppState>, instance: &Arc<Instance>, files: &Value) {
     let mut mentions = Vec::new();
     for file in files.as_array().unwrap_or(&Vec::new()) {
         let Some(name) = file["name"].as_str() else {
@@ -470,7 +521,7 @@ fn stage_files(state: &Arc<AppState>, files: &Value) {
         }
     }
     if !mentions.is_empty() {
-        state.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+        instance.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
     }
 }
 

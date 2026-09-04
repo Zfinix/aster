@@ -1,8 +1,5 @@
 /** Mirrors the desktop app's model naming; see desktop/src/lib/session.ts. */
 
-/** Humanize one slug token by rule, not by lookup:
- *  "3.1" -> "3.1", "v1" -> "v1", "80b"/"a3b" -> "80B"/"A3B",
- *  "gpt"/"glm" -> "GPT"/"GLM" (no vowels = acronym), "qwen3" -> "Qwen3". */
 function caseToken(word: string): string {
   if (/^[0-9.]+$/.test(word)) return word;
   if (/^v\d+$/i.test(word)) return word.toLowerCase();
@@ -42,4 +39,9 @@ export function modelChip(id: string | null): string {
 /** "google/gemini-3.1-flash-lite" -> "google" */
 export function modelProvider(id: string): string {
   return id.includes("/") ? id.split("/")[0] : "";
+}
+
+export function recentsFor(recent: string[], catalog: string[] | null): string[] {
+  if (!catalog || catalog.length === 0) return recent;
+  return recent.filter((id) => catalog.includes(id));
 }

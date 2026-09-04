@@ -9,17 +9,11 @@ import {
   ShieldIcon,
 } from "./icons";
 
-/**
- * Aster's `permissions.mode` values, passed straight through as
- * `--permission-mode`. Review is folded in as a mode entry so the picker is
- * the single place to choose what the next action does.
- */
 const MODES: {
   mode: PermissionMode;
   label: string;
   detail: string;
   icon: ReactNode;
-  /** Worth the colour: this one hands over the machine. */
   danger?: boolean;
 }[] = [
   {

@@ -20,9 +20,6 @@ import { PlusMenu } from "./PlusMenu";
 
 export type ComposerBinding = Omit<Props, "variant">;
 
-/** Aster's `permissions.mode` values, passed through as --permission-mode.
- *  "review" is a UI-only entry that switches the composer to review intent
- *  rather than a backend permission mode. */
 type ModeEntry = {
   value: PermissionMode | "review";
   label: string;
@@ -69,7 +66,6 @@ const MODE_ENTRIES: ModeEntry[] = [
   },
 ];
 
-/** The @token being typed at the caret, if any. */
 function mentionAt(
   text: string,
   caret: number,

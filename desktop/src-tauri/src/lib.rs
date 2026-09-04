@@ -29,8 +29,6 @@ struct StartupInfo {
     bin_path: Option<String>,
 }
 
-/// The old `desktop.json` shape, kept only to migrate it into the CLI's own
-/// config (`~/.aster/aster.yaml` + `~/.aster/.env`), the one every surface reads.
 #[derive(Debug, Default, Deserialize)]
 struct LegacyProvider {
     api_key: Option<String>,
@@ -38,8 +36,6 @@ struct LegacyProvider {
     model: Option<String>,
 }
 
-/// What the UI is allowed to know: whether a key is set, and the non-secret
-/// settings. The key itself is never returned.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthStatus {
@@ -52,9 +48,6 @@ fn provider_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("aster").join("desktop.json"))
 }
 
-/// Per-run overrides from the UI (the composer's model pill, a review's key
-/// field). The provider itself lives in the CLI's own config files, so
-/// nothing else is injected.
 fn inject_provider_env(
     cmd: &mut Command,
     model_override: Option<String>,
@@ -68,8 +61,6 @@ fn inject_provider_env(
     }
 }
 
-/// Run `aster <args> --json` and parse the reply: the same bridge the editors
-/// use, so config reads and writes land in the files every surface shares.
 async fn cli_json(args: &[&str]) -> Result<serde_json::Value, String> {
     let mut cmd = Command::new(resolve_bin());
     cmd.args(args).arg("--json");
@@ -97,8 +88,6 @@ async fn cli_json(args: &[&str]) -> Result<serde_json::Value, String> {
     Ok(parsed)
 }
 
-/// One-shot: fold an old `desktop.json` into the CLI's config, then park the
-/// file so this app and the terminal can never disagree again.
 async fn migrate_desktop_json() {
     let Some(path) = provider_path() else { return };
     if !path.is_file() {
@@ -129,8 +118,6 @@ async fn migrate_desktop_json() {
     let _ = std::fs::rename(&path, path.with_extension("json.migrated"));
 }
 
-/// The var a key for the endpoint in use belongs in, most specific first, so a
-/// stored key survives switching away and back.
 async fn key_var_in_use() -> String {
     cli_json(&["config", "key"])
         .await
@@ -146,7 +133,6 @@ async fn key_var_in_use() -> String {
         .unwrap_or_else(|| "ASTER_API_KEY".to_string())
 }
 
-/// The CLI's provider errors are shell-oriented; append the app's own remedy.
 fn friendly_provider_error(msg: String) -> String {
     if msg.contains("no API key") {
         format!("{msg}\nYou can also add a key in Settings, under Provider.")
@@ -155,8 +141,6 @@ fn friendly_provider_error(msg: String) -> String {
     }
 }
 
-/// The useful lines of a failed CLI run: ANSI-stripped stderr with clap's
-/// boilerplate footer dropped, so the surfaced error is the real one.
 fn stderr_tail(lines: &[String]) -> String {
     lines
         .iter()
@@ -175,8 +159,6 @@ struct ChatMessage {
     content: String,
 }
 
-/// Spawn an `aster` subcommand with the repo as cwd, write `payload` to stdin,
-/// and return its parsed stdout JSON. Shared by `chat` and `apply_fix`.
 async fn run_aster_json(
     cli_args: &[&str],
     repo_path: Option<&str>,
@@ -231,17 +213,12 @@ async fn run_aster_json(
         .map_err(|_| "unexpected output from aster".to_string())
 }
 
-/// The one live `chat --stream` child, so a turn can be cancelled and a new
-/// turn never overlaps an old one. Mirrors the extension's ChatRunner slot.
-/// The mutex only ever guards a state swap; it is never held across an await
-/// (std MutexGuards are not Send, which Tauri commands require).
 static ACTIVE_CHAT: Mutex<Option<ActiveChat>> = Mutex::new(None);
 
 struct ActiveChat {
     child: Child,
 }
 
-/// Free the slot if the child in it already exited. True when no turn is live.
 fn reap_finished_chat() -> Result<bool, String> {
     let mut slot = ACTIVE_CHAT.lock().map_err(|e| e.to_string())?;
     match slot.as_mut() {
@@ -257,11 +234,6 @@ fn reap_finished_chat() -> Result<bool, String> {
     }
 }
 
-/// Spawn a streaming chat turn. Stdout NDJSON is forwarded line-by-line as
-/// `aster://chat-event` payloads and stderr as `aster://log`; the returned
-/// future resolves once the child is launched — turn end arrives as a `done`
-/// or `error` event, and process exit as `aster://chat-exit`. Approval
-/// replies go through `answer_approval`.
 #[tauri::command]
 async fn chat(
     app: AppHandle,
@@ -405,8 +377,6 @@ async fn chat(
     Ok(())
 }
 
-/// Answer a pending `approval_request`; the CLI reads one `{"allow": bool}`
-/// line per prompt.
 #[tauri::command]
 async fn answer_approval(allow: bool) -> Result<(), String> {
     let mut stdin = {
@@ -421,8 +391,6 @@ async fn answer_approval(allow: bool) -> Result<(), String> {
         .map_err(|e| format!("could not answer the approval prompt: {e}"))
 }
 
-/// Stop the running turn. The monitor task sees the kill, frees the slot, and
-/// reports a null exit code so the UI settles without an error.
 #[tauri::command]
 async fn cancel_chat() -> Result<(), String> {
     let active = ACTIVE_CHAT.lock().map_err(|e| e.to_string())?.take();
@@ -432,8 +400,6 @@ async fn cancel_chat() -> Result<(), String> {
     Ok(())
 }
 
-/// Ask the fix engine to patch one finding in place. Returns the CLI's
-/// per-finding result object (status, reason, patch).
 #[tauri::command]
 async fn apply_fix(
     finding: serde_json::Value,
@@ -494,8 +460,6 @@ async fn memory_list() -> Result<serde_json::Value, String> {
     run_aster_json(&["memory", "list", "--json"], None, None, Vec::new()).await
 }
 
-/// Save a durable fact. With `title` it writes a named block; otherwise it
-/// appends to project memory.
 #[tauri::command]
 async fn memory_add(text: String, title: Option<String>) -> Result<serde_json::Value, String> {
     let mut args: Vec<String> = vec!["memory".into(), "add".into(), "--json".into()];
@@ -569,8 +533,6 @@ async fn save_provider(
     Ok(())
 }
 
-/// The composer's model pill writes through the CLI, so the terminal, the
-/// editors, and this app all resolve the same model afterwards.
 #[tauri::command]
 async fn set_model(model: String) -> Result<(), String> {
     let model = model.trim().to_string();
@@ -580,8 +542,6 @@ async fn set_model(model: String) -> Result<(), String> {
     cli_json(&["model", "use", &model]).await.map(|_| ())
 }
 
-/// Review and provider settings read through the CLI so the desktop, the
-/// terminal, and the editors all resolve the same `aster.yaml` afterwards.
 #[tauri::command]
 async fn config_list(repo_path: Option<String>) -> Result<serde_json::Value, String> {
     run_aster_json(
@@ -624,8 +584,6 @@ async fn config_unset(
     run_aster_json(&refs, repo_path.as_deref(), None, Vec::new()).await
 }
 
-/// `ASTER_BIN` always wins. A dev build runs the workspace CLI (never the sidecar,
-/// which dev doesn't stage); a release build uses the bundled sidecar, then PATH.
 fn resolve_bin() -> String {
     if let Ok(p) = std::env::var("ASTER_BIN") {
         if !p.is_empty() {
@@ -643,9 +601,6 @@ fn resolve_bin() -> String {
         .unwrap_or_else(|| "aster".to_string())
 }
 
-/// The bundled Tauri `externalBin`, next to the app executable. Named `aster-cli`,
-/// distinct from the `Aster` app binary so the two never collide on a
-/// case-insensitive filesystem. `None` in dev, where no sidecar is staged.
 fn find_sidecar_bin() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let name = if cfg!(windows) {
@@ -657,8 +612,6 @@ fn find_sidecar_bin() -> Option<PathBuf> {
     cand.is_file().then_some(cand)
 }
 
-/// The workspace CLI at `target/<profile>/aster`. Selected by explicit profile,
-/// not mtime, so dev always runs current source instead of guessing.
 fn workspace_bin(profile: &str) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()?
@@ -679,8 +632,6 @@ fn default_repo() -> Option<String> {
     None
 }
 
-/// Strip ANSI escape sequences so the live feed reads as plain text; the CLI's
-/// streaming path emits color codes regardless of NO_COLOR.
 fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -701,9 +652,6 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
-/// Follow a link the agent printed. Opening it in the OS browser rather than
-/// the webview: a plain anchor would navigate the app itself away, and there
-/// is no way back. Pages only, so a crafted link cannot launch a handler.
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     let scheme = url
@@ -755,8 +703,6 @@ async fn pick_repo(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Tracked and untracked-but-not-ignored files, for @-mentions in the
-/// composer. Capped so huge repos stay cheap to ship to the UI.
 #[tauri::command]
 async fn list_repo_files(repo_path: String) -> Result<Vec<String>, String> {
     let out = Command::new("git")
@@ -778,9 +724,6 @@ async fn list_repo_files(repo_path: String) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// A launched macOS/Linux GUI app inherits a minimal `PATH`, so the CLI's own
-/// subprocesses (`git`, `gh`) can go missing even when they work in a shell.
-/// Prepend the common install locations so those tools resolve.
 fn augmented_path() -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
     let extras = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
@@ -889,6 +832,23 @@ async fn run_review(app: AppHandle, opts: ReviewOpts) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(desktop)]
+fn forward_login_callback(app: &tauri::App) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    app.deep_link().on_open_url(|event| {
+        for url in event.urls() {
+            let Some(home) = dirs::home_dir() else {
+                continue;
+            };
+            let path = home.join(".aster/login-callback");
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, url.as_str());
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
@@ -897,11 +857,14 @@ pub fn run() {
     {
         builder = builder
             .plugin(tauri_plugin_process::init())
-            .plugin(tauri_plugin_updater::Builder::new().build());
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_deep_link::init());
     }
 
     builder
-        .setup(|_app| {
+        .setup(|app| {
+            #[cfg(desktop)]
+            forward_login_callback(app);
             tauri::async_runtime::spawn(migrate_desktop_json());
             Ok(())
         })

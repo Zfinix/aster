@@ -65,9 +65,6 @@ impl WebExtract for PlainHttpClient {
     }
 }
 
-/// Route a response body: document formats (PDF, Office, EPUB, RTF) through
-/// anydoc, HTML through the tag stripper, anything else as-is. Magic bytes
-/// decide, not Content-Type: servers routinely mislabel documents.
 fn body_to_markdown(ct: &str, bytes: &[u8], url: &str) -> Result<String> {
     if let Some(format) = anydoc::Format::from_bytes(bytes) {
         return anydoc::to_markdown_bytes(bytes, format)
@@ -81,7 +78,6 @@ fn body_to_markdown(ct: &str, bytes: &[u8], url: &str) -> Result<String> {
     }
 }
 
-/// Strip HTML tags, decode entities, and collapse whitespace into rough Markdown.
 fn html_to_markdown(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;

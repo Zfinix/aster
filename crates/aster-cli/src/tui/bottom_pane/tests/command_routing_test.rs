@@ -106,8 +106,6 @@ fn every_chat_command_runs_when_typed_in_full() {
     }
 }
 
-/// A bare `/` with the menu open ran as a message, which is how a lone "/"
-/// ended up being sent to the model.
 #[test]
 fn a_bare_slash_runs_the_highlighted_command() {
     let mut p = pane();
@@ -118,8 +116,6 @@ fn a_bare_slash_runs_the_highlighted_command() {
     }
 }
 
-/// Arrowing through the menu changes nothing in the draft, so enter has to
-/// read the highlight rather than the text.
 #[test]
 fn enter_runs_the_row_the_arrows_landed_on() {
     let mut p = pane();
@@ -132,7 +128,6 @@ fn enter_runs_the_row_the_arrows_landed_on() {
     }
 }
 
-/// A prefix runs the highlighted match, so `/qu` is `/quit`.
 #[test]
 fn a_prefix_runs_the_matching_command() {
     let mut p = pane();
@@ -164,7 +159,6 @@ mod mouse {
         }
     }
 
-    /// Areas are recorded during rendering, so a click has to follow a draw.
     fn draw(p: &BottomPane<()>) {
         let area = Rect::new(0, 0, 80, p.desired_height(80).max(1));
         let mut buf = Buffer::empty(area);
@@ -330,8 +324,6 @@ fn the_slash_menu_window_follows_the_selection() {
     assert!(shown.last().unwrap().to_string().contains("+2 more"));
 }
 
-/// A skill is a message the user is still writing, so enter on its row fills
-/// the name in and hands the line back, the way the panel's menu does.
 #[test]
 fn enter_on_a_skill_completes_it_instead_of_running_it() {
     let mut p = pane();

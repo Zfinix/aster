@@ -4,9 +4,7 @@ export interface Suggestion {
   value: string;
   label: string;
   detail?: string;
-  /** For file mentions: the repo-relative path `value`'s basename stands for. */
   full?: string;
-  /** A folder, drawn with the folder glyph and a trailing slash. */
   dir?: boolean;
 }
 

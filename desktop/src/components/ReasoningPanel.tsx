@@ -1,11 +1,9 @@
 import { useState } from "react";
 import { ChevronIcon } from "./icons";
 
-/** The model's thinking for a turn: a muted summary line that expands into the
- *  raw text. Collapsed by default, since reasoning usually runs longer than the
- *  answer it produced. The summary reflects the block's state: a live token
- *  count while it streams, a duration once it finishes, and a bare "Thought"
- *  when neither is known. */
+/** The model's thinking for a turn, collapsed by default since it usually runs
+ *  longer than the answer. The summary line shows a live token count while it
+ *  streams, a duration once it finishes, and a bare "Thought" otherwise. */
 export function ReasoningPanel({
   text,
   tokens,

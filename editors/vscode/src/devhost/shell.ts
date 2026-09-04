@@ -1,11 +1,9 @@
 /** Which built bundle the page loads, and which outbox it talks to. */
 export type Page = "index" | "settings";
 
-/**
- * What VS Code contributes to a webview and a browser does not: the theme
- * variables the panel is styled against, and the `acquireVsCodeApi` bridge.
- * Here the bridge is an SSE stream in and a POST out.
- */
+/** What VS Code contributes to a webview and a browser does not: the theme
+ *  variables the panel is styled against, and the `acquireVsCodeApi` bridge.
+ *  Here the bridge is an SSE stream in and a POST out. */
 export function shell(repo: string, page: Page = "index"): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -46,7 +44,6 @@ export function shell(repo: string, page: Page = "index"): string {
 </html>`;
 }
 
-/** VS Code's Dark Modern, near enough that the panel reads the way it ships. */
 const THEME = `
 :root {
   --vscode-font-family: -apple-system, "SF Pro Text", system-ui, sans-serif;

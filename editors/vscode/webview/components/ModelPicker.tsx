@@ -8,13 +8,9 @@ interface Row {
   detail: string;
 }
 
-/**
- * Model picker: the vetted coding models, with the endpoint's whole catalog one
- * search away. Listing hundreds of models nobody would pick is not a menu, so
- * the rest of the catalog appears only once there is something to match on. The
- * catalog is re-read each time this opens, so a provider switch or a newly
- * released model shows up without anyone having to know its id.
- */
+/** Model picker: the vetted coding models, with the endpoint's whole catalog one
+ *  search away. The rest of the catalog appears only once there is something
+ *  to match on, and it is re-read each time this opens. */
 export function ModelPicker({
   model,
   models,

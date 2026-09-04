@@ -135,7 +135,6 @@ fn a_config_without_an_mcp_block_gets_a_whole_one() {
     assert!(out.starts_with("review:\n  model: x\n"), "{out}");
 }
 
-/// A one-pixel PNG, base64 encoded the way a server sends an image part.
 const PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 #[test]
@@ -209,8 +208,6 @@ fn an_unfamiliar_shape_falls_back_to_the_raw_payload() {
     assert_eq!(render_result(&result).text, result.to_string());
 }
 
-/// A whole MCP server in one argument, so the transport test needs no
-/// fixture file on disk.
 const FAKE_SERVER: &str = r#"
 import json, sys
 TOOLS = [{"name": "create_issue", "description": "Create a GitHub issue",
@@ -228,8 +225,6 @@ for line in sys.stdin:
         reply(m["id"], {"content": [{"type": "text", "text": "ran " + p.get("name", "")}]})
 "#;
 
-/// A 2026-07-28 server: no `initialize`, answers `server/discover`, and
-/// rejects any request that arrives without the required `_meta` fields.
 const MODERN_SERVER: &str = r#"
 import json, sys
 TOOLS = [{"name": "create_issue", "description": "Create a GitHub issue",
@@ -261,8 +256,6 @@ for line in sys.stdin:
                         "content": [{"type": "text", "text": "ran " + p.get("name", "")}]})
 "#;
 
-/// Modern, but speaks only a revision Aster does not prefer: it must answer
-/// with -32022 rather than push the client back to `initialize`.
 const OLDER_MODERN_SERVER: &str = r#"
 import json, sys
 def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
@@ -298,24 +291,16 @@ fn python_settings() -> McpSettings {
     settings_for(FAKE_SERVER)
 }
 
-/// Connect with no session-scoped extras, so an ambient `ASTER_MCP_EXTRA` in
-/// the environment (the telegram bridge sets one) cannot change the catalog
-/// these tests assert on.
 async fn connect(settings: &McpSettings) -> (Option<McpRuntime>, Vec<String>) {
     McpRuntime::connect_with(settings, &BTreeMap::new()).await
 }
 
-/// Every server carries whatever web tools the environment's provider keys enable.
-/// Counting them keeps the assertions honest whichever `WEB_*` vars are set,
-/// rather than mutating process env from a test.
 fn web_tool_count() -> usize {
     let config = aster_web::WebConfig::from_env();
     let backend = aster_web::WebBackend::from_env(&config);
     aster_web::register_tools(&backend).len()
 }
 
-/// The runtime registers the Shortcuts catalog the same way; see
-/// [`web_tool_count`] for why it is counted instead of hardcoded.
 fn shortcuts_tool_count() -> usize {
     aster_shortcuts::register_tools().len()
 }
@@ -415,8 +400,6 @@ fn version_choice_prefers_the_newest_shared_revision() {
     assert_eq!(pick_version(None), None);
 }
 
-/// Advertises three tools one page at a time, so a client that reads only
-/// the first page sees one of them.
 const PAGINATED_SERVER: &str = r#"
 import json, sys
 PAGES = {None: ([{"name":"one","description":"First","inputSchema":{"type":"object"}}], "c1"),
@@ -436,7 +419,6 @@ for line in sys.stdin:
         send({"jsonrpc":"2.0","id":m["id"],"result":r})
 "#;
 
-/// Modern, but serves resources only: it never declares a tools capability.
 const NO_TOOLS_SERVER: &str = r#"
 import json, sys
 def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
@@ -529,15 +511,12 @@ async fn a_server_that_cannot_start_is_reported_and_skipped() {
     );
 }
 
-/// Dies the way a server missing credentials dies: a complaint on stderr,
-/// then a non-zero exit before answering anything.
 const AUTH_FAILING_SERVER: &str = r#"
 import sys
 sys.stderr.write("Error: LINKEDIN_ACCESS_TOKEN environment variable is required\n")
 sys.exit(1)
 "#;
 
-/// An OAuth-style server: prints the auth route the user must open, then dies.
 const AUTH_URL_SERVER: &str = r#"
 import sys
 sys.stderr.write("Not authenticated. Please authorize at https://linkedin-mcp.dev/auth and retry.\n")
@@ -620,8 +599,6 @@ fn a_node_crash_dump_line_is_cut_down_to_the_reason() {
     assert_eq!(brief("plain reason"), "plain reason");
 }
 
-/// Exits over the probe the way railway's CLI server does: anything before
-/// `initialize` is fatal. Only a probe-free respawn can talk to it.
 const STRICT_LEGACY_SERVER: &str = r#"
 import json, sys
 def reply(i, r): sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":i,"result":r})+"\n"); sys.stdout.flush()
@@ -721,8 +698,6 @@ fn a_tool_without_a_description_still_enters_the_catalog() {
 const ACCEPTED: &str = "HTTP/1.1 202 Accepted\r\nconnection: close\r\ncontent-length: 0\r\n\r\n";
 const CLOSED_OK: &str = "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 0\r\n\r\n";
 
-/// Just enough of an MCP server to handshake, list, and answer one call.
-/// `None` for a notification, which gets no reply.
 fn http_reply(message: &Value) -> Option<Value> {
     let id = message.get("id")?.clone();
     let result = match message.get("method").and_then(Value::as_str)? {
@@ -748,7 +723,6 @@ fn http_reply(message: &Value) -> Option<Value> {
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
-/// Read one HTTP request off the socket, returning its head and its body.
 async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
     use tokio::io::AsyncReadExt;
     let mut raw = Vec::new();
@@ -779,9 +753,6 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, Str
     }
 }
 
-/// A Streamable HTTP server on loopback. `as_events` frames each reply as an
-/// SSE stream instead of a JSON body; both are legal answers to a POST.
-/// Returns its url and the request heads it saw.
 async fn serve_streamable(as_events: bool) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
     use tokio::io::AsyncWriteExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -828,8 +799,6 @@ async fn serve_streamable(as_events: bool) -> (String, Arc<std::sync::Mutex<Vec<
     (url, heads)
 }
 
-/// A server speaking the deprecated HTTP+SSE binding: one GET stream carries
-/// every reply, and POSTed messages are acknowledged with 202.
 async fn serve_sse() -> String {
     use tokio::io::AsyncWriteExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1038,9 +1007,6 @@ fn event_frames_are_parsed_across_chunk_boundaries() {
     assert_eq!(events[0].data, "one\ntwo");
 }
 
-/// Regression: the runtime handed the web connection `tool.name` while the
-/// connection matched on `tool.id()`, so every `web/*` call reported the tool
-/// as unknown instead of running it. Both spellings now reach the backend.
 #[tokio::test]
 async fn web_tools_are_dispatched_by_name_or_qualified_id() {
     let config = aster_web::WebConfig::from_env();

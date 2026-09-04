@@ -7,19 +7,11 @@ use std::path::{Path, PathBuf};
 /// Describes the filesystem and network boundaries for a sandboxed command.
 #[derive(Debug, Clone)]
 pub struct SandboxProfile {
-    /// The repository root: readable and writable.
     pub repo_root: PathBuf,
-    /// Additional directories the command may read. Only enforced by bwrap;
-    /// Seatbelt allows reads everywhere and restricts writes and network.
     pub readable_dirs: Vec<PathBuf>,
-    /// Additional directories the command may write to (beyond repo and temp).
     pub writable_dirs: Vec<PathBuf>,
     pub network: bool,
-    /// Maximum execution time in seconds.
     pub timeout_secs: u64,
-    /// Credential directories the user approved for this command. Subtracted
-    /// from the credential deny list; hard-denied paths are never listed
-    /// here, so approving one is impossible rather than merely refused.
     pub allowed_credentials: Vec<PathBuf>,
 }
 
@@ -120,8 +112,6 @@ impl SandboxProfile {
         profile
     }
 
-    /// Repo paths that stay read-only even though the repo is writable: a git
-    /// hook or CI workflow written in the sandbox would run unsandboxed later.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn protected_repo_paths(&self) -> Vec<PathBuf> {
         resolve_existing(
@@ -131,8 +121,6 @@ impl SandboxProfile {
         )
     }
 
-    /// All directories the command may write to: repo root, temp dirs, and any
-    /// explicitly writable dirs.
     #[cfg(target_os = "macos")]
     fn writable_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.repo_root.clone()];
@@ -222,8 +210,6 @@ impl SandboxProfile {
     }
 }
 
-/// Credential stores no command may read, approved or not. Under bwrap these
-/// need no rule: `$HOME` is simply not bound into the namespace.
 #[cfg(target_os = "macos")]
 fn hard_denied() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
@@ -281,8 +267,6 @@ pub fn command_name(binary: &str) -> String {
     name.strip_suffix(".exe").unwrap_or(&name).to_string()
 }
 
-/// Whether a `git` invocation is one that needs a key: talking to a remote, or
-/// signing. Everything else stays inside the repository.
 fn reaches_remote(args: &[String]) -> bool {
     const REMOTE: [&str; 8] = [
         "push",
@@ -299,9 +283,6 @@ fn reaches_remote(args: &[String]) -> bool {
         .is_some_and(|sub| REMOTE.contains(&sub.as_str()))
 }
 
-/// Resolve paths through symlinks and drop the missing ones: Seatbelt rejects
-/// the whole profile over one unresolvable `subpath`, and on macOS `/tmp` and
-/// `/var` are symlinks into `/private`.
 fn resolve_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for path in paths {
@@ -315,7 +296,6 @@ fn resolve_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     out
 }
 
-/// Quote a path for a Seatbelt string literal.
 #[cfg(target_os = "macos")]
 fn escape(path: &Path) -> String {
     path.display()

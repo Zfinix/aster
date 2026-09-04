@@ -25,7 +25,6 @@ pub struct ZaiSession {
     pub zcode_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
-    /// Unix seconds, from the exchange's `expires_in`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
 }

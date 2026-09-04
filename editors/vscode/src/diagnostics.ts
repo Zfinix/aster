@@ -10,11 +10,6 @@ const SEVERITY_MAP: Record<string, vscode.DiagnosticSeverity> = {
   info: vscode.DiagnosticSeverity.Hint,
 };
 
-/**
- * Findings belong to the Aster panel, not the Problems tab: a review is a
- * conversation, and mixing it into the same list as compiler errors buries the
- * problems the editor found itself. Publishing is opt-in per workspace.
- */
 function publishingEnabled(): boolean {
   return vscode.workspace.getConfiguration("aster").get<boolean>("publishDiagnostics", false);
 }
@@ -64,7 +59,6 @@ export class FindingDiagnostics {
     }
   }
 
-  /** Push what is held to the Problems tab, or take it back down. */
   private republish(): void {
     this.collection.clear();
     if (!publishingEnabled()) {

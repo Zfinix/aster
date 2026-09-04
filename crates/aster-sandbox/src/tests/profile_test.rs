@@ -35,8 +35,6 @@ fn seatbelt_profile_contains_repo() {
     assert!(profile.contains("(deny network*)"), "{profile}");
 }
 
-/// Seatbelt rejects the whole profile when a `subpath` cannot be resolved,
-/// and on macOS `/tmp` and `/var` are symlinks into `/private`.
 #[cfg(target_os = "macos")]
 #[test]
 fn seatbelt_writable_paths_are_resolved_and_existing() {

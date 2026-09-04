@@ -22,7 +22,6 @@ pub struct Settings {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ui {
-    /// Whether chat prints the session header (model, provider, skills).
     pub welcome: Option<bool>,
 }
 
@@ -31,12 +30,8 @@ pub struct Ui {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
-    /// Tool call rounds before the agent is forced to answer with what it has.
     pub max_tool_rounds: Option<usize>,
-    /// Seconds a `run_command` call may run before it is killed.
     pub command_timeout_secs: Option<u64>,
-    /// History size (chars) above which older turns are compacted into a
-    /// summary. Lower it for small-context models.
     pub compact_budget_chars: Option<usize>,
 }
 
@@ -46,44 +41,27 @@ pub struct Agent {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agents {
-    /// Cheap model for collector agents.  Falls back to the session model
-    /// when unset.
     pub collector_model: Option<String>,
-    /// Max sub-agents running concurrently (default 8).
     pub max_concurrent: Option<usize>,
-    /// Max `agent` tool tasks per turn (default 24).
     pub max_per_turn: Option<usize>,
-    /// Seconds a single sub-agent may run (default 300).
     pub agent_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Review {
-    /// Fallback model when a stage override is unset.
     pub model: Option<String>,
-    /// OpenAI-compatible endpoint.
     pub base_url: Option<String>,
     pub hypothesis_model: Option<String>,
     pub verify_model: Option<String>,
-    /// Drop findings below this confidence (0.0-1.0).
     pub min_confidence: Option<f32>,
     pub max_diff_bytes: Option<usize>,
-    /// Static analyzer backends, e.g. ["semgrep"].
     pub analyzers: Vec<String>,
-    /// Repo-relative path to an ast-grep rule YAML for the `ast-grep` backend.
     pub astgrep_rules: Option<String>,
-    /// Defect classes to bias the hypothesis pass toward.
     pub focus_areas: Vec<String>,
-    /// Reasoning budget for thinking models: off, low, medium, high, xhigh,
-    /// max, or ultra.
     pub effort: Option<aster_ai::Effort>,
-    /// Enable OpenRouter web search: the agent gets a server tool, review
-    /// stages get the `web` plugin. No effect on non-OpenRouter endpoints.
     pub web_search: Option<bool>,
-    /// Globs of files to review. Empty = everything (minus `exclude`).
     pub include: Vec<String>,
-    /// Globs of files to never review.
     pub exclude: Vec<String>,
 }
 
@@ -128,9 +106,6 @@ impl Settings {
         Ok(settings)
     }
 
-    /// Layer `project` over `self`. Scalars are the project's; permission lists union,
-    /// since both files are grants. `mode` takes the stricter of the two, so a project
-    /// file cannot loosen a global `ask` just by omitting the key.
     fn overlaid_with(self, project: Settings) -> Settings {
         Settings {
             review: self.review.overlaid_with(project.review),
@@ -179,9 +154,6 @@ impl Settings {
     }
 }
 
-/// Servers union by name, the project's definition winning, so a repo can point a
-/// shared name at its own binary. The tool filter unions like permissions do: a
-/// global `deny` is a decision a project file must not undo by omission.
 fn merge_mcp(
     mut global: crate::mcp::McpSettings,
     project: crate::mcp::McpSettings,
@@ -241,8 +213,6 @@ impl Review {
     }
 }
 
-/// Review lists replace rather than union: an `include` of `["src/**"]` in a
-/// project means that and nothing else.
 fn pick(global: Vec<String>, project: Vec<String>) -> Vec<String> {
     if project.is_empty() { global } else { project }
 }
@@ -280,9 +250,7 @@ pub(crate) fn writable_config(repo_root: Option<&Path>) -> Result<PathBuf> {
 }
 
 pub struct Saved {
-    /// The global config, where the choice lives.
     pub path: PathBuf,
-    /// A project config that pinned the same keys and was moved along with it.
     pub also: Option<PathBuf>,
 }
 
@@ -329,13 +297,9 @@ pub(crate) fn save(path: &Path, text: String) -> Result<()> {
     std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Where `<section>.<key>` sits in a config's lines.
 enum Slot {
-    /// Already set, on this line at this indent.
     At(usize, usize),
-    /// The block exists without the key; it goes in at this line and indent.
     Insert(usize, usize),
-    /// There is no `<section>:` block yet.
     Missing,
 }
 
@@ -380,8 +344,6 @@ fn slot(lines: &[String], section: &str, key: &str) -> Slot {
     Slot::Insert(lines.len(), level.unwrap_or(2))
 }
 
-/// One past the last line of the value at `start`: a nested list or block
-/// scalar runs on past the key's own line. Trailing blanks stay put.
 fn value_end(lines: &[String], start: usize) -> usize {
     let indent = indent_of(&lines[start]);
     let mut end = start + 1;
@@ -465,7 +427,6 @@ pub struct PathFilter {
     exclude: GlobSet,
 }
 
-/// Generated/vendored files always excluded, on top of the user's `exclude`.
 const DEFAULT_EXCLUDE: &[&str] = &[
     "**/*.lock",
     "**/package-lock.json",

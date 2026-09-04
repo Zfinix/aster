@@ -6,8 +6,6 @@ use std::path::Path;
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "ash", "fish"];
 
-/// How far a shell inside a shell is followed. Three is past anything a model
-/// writes on purpose and keeps a hostile nesting from looping.
 const MAX_DEPTH: usize = 3;
 
 /// The command lines a rule is matched against: the invocation itself, plus
@@ -44,8 +42,6 @@ fn collect(tokens: &[String], depth: usize, out: &mut Vec<String>) {
     }
 }
 
-/// `FOO=1 sudo rm` is a `sudo` call. Leading assignments are dropped so a rule
-/// naming the command still matches.
 fn without_env_prefix(tokens: &[String]) -> &[String] {
     let skip = tokens
         .iter()
@@ -60,7 +56,6 @@ fn without_env_prefix(tokens: &[String]) -> &[String] {
     &tokens[skip..]
 }
 
-/// The script a shell was handed, as in the `-c` of `bash -lc "…"`.
 fn script_argument(tokens: &[String]) -> Option<&str> {
     if !SHELLS.contains(&command_name(tokens.first()?).as_str()) {
         return None;
@@ -73,8 +68,6 @@ fn script_argument(tokens: &[String]) -> Option<&str> {
     })
 }
 
-/// Split on the operators that separate one command from the next, leaving
-/// quoted text alone.
 fn split_operators(script: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -117,8 +110,6 @@ fn split_operators(script: &str) -> Vec<String> {
     parts
 }
 
-/// Split a line into words, honouring quotes and dropping them from the result
-/// the way a shell would.
 fn tokenize(line: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -160,7 +151,6 @@ fn tokenize(line: &str) -> Vec<String> {
     tokens
 }
 
-/// The bare program name: no directory, no `.exe`.
 fn command_name(binary: &str) -> String {
     let name = Path::new(binary)
         .file_name()

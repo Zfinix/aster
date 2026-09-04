@@ -42,7 +42,6 @@ fn a_command_prefix_matches_the_rest_of_the_line() {
     assert!(!r.matches(&exec("cargo", &["build"])));
 }
 
-/// `Bash(rm:*)` must not also catch `rmdir`.
 #[test]
 fn a_prefix_stops_at_a_word_boundary() {
     let r = rule("Bash(rm:*)");
@@ -57,8 +56,6 @@ fn an_exact_command_rule_needs_the_whole_line() {
     assert!(!r.matches(&exec("git", &["status", "--short"])));
 }
 
-/// The whole point of matching segments: the agent is told to chain through
-/// `bash -lc`, which would otherwise make every command look like `bash`.
 #[test]
 fn a_command_rule_reaches_inside_a_shell_invocation() {
     let r = rule("Bash(sudo:*)");

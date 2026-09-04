@@ -7,17 +7,11 @@ use serde::Deserialize;
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// Explore and propose a plan; never edit, never run a command.
     Plan,
-    /// Confirm every edit and command before it happens.
     Manual,
-    /// Apply edits and run commands, confirming the risky ones.
     Auto,
-    /// As `auto`, but commands are trusted: only a rule stops one.
     #[default]
     Edit,
-    /// No guardrails: rules and isolation are skipped entirely.
-    /// Toggled with `/yolo` behind a confirm; turns the theme red.
     Yolo,
 }
 
@@ -71,14 +65,8 @@ impl Mode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
-    Deny {
-        reason: String,
-    },
-    /// `preview` describes the pending change. The caller prompts (interactive)
-    /// or treats it as a denial (headless).
-    Prompt {
-        preview: String,
-    },
+    Deny { reason: String },
+    Prompt { preview: String },
 }
 
 #[cfg(test)]

@@ -18,7 +18,8 @@ async fn searching_files_answers_the_request_that_asked() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("guard.rs"), "fn main() {}").expect("file");
     let state = state(dir.path().to_path_buf());
-    let mut events = state.events.subscribe();
+    let instance = state.instance_for(&json!({})).await;
+    let mut events = instance.events.subscribe();
 
     handle(
         &state,
@@ -43,7 +44,8 @@ async fn answering_with_no_turn_running_says_so() {
 #[tokio::test]
 async fn a_message_only_an_editor_could_serve_is_let_through_quietly() {
     let state = state(PathBuf::from("."));
-    let mut events = state.events.subscribe();
+    let instance = state.instance_for(&json!({})).await;
+    let mut events = instance.events.subscribe();
     for message in [
         json!({ "type": "openExternal", "url": "https://example.test" }),
         json!({ "type": "runCommand", "command": "aster.newConversation" }),
@@ -59,7 +61,8 @@ async fn dropped_paths_come_back_as_mentions() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("notes.md"), "x").expect("file");
     let state = state(dir.path().to_path_buf());
-    let mut events = state.events.subscribe();
+    let instance = state.instance_for(&json!({})).await;
+    let mut events = instance.events.subscribe();
 
     let uri = format!("file://{}/notes.md", dir.path().display());
     handle(&state, &json!({ "type": "dropFiles", "uris": [uri] }))
@@ -74,7 +77,8 @@ async fn dropped_paths_come_back_as_mentions() {
 #[tokio::test]
 async fn nothing_droppable_posts_nothing() {
     let state = state(PathBuf::from("."));
-    let mut events = state.events.subscribe();
+    let instance = state.instance_for(&json!({})).await;
+    let mut events = instance.events.subscribe();
     handle(
         &state,
         &json!({ "type": "dropFiles", "uris": ["https://example.test/x"] }),
@@ -87,8 +91,9 @@ async fn nothing_droppable_posts_nothing() {
 #[tokio::test]
 async fn run_state_tells_every_tab_that_nothing_is_running() {
     let state = state(PathBuf::from("."));
-    let mut events = state.events.subscribe();
-    state.post_run_state().await;
+    let instance = state.instance_for(&json!({})).await;
+    let mut events = instance.events.subscribe();
+    instance.post_run_state().await;
     let posted: Value = serde_json::from_str(&events.try_recv().expect("a message")).expect("json");
     assert_eq!(
         posted,

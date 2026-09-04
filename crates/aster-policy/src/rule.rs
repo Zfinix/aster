@@ -25,17 +25,11 @@ impl Subject {
     }
 }
 
-/// How a rule's specifier matches. A path rule holds a compiled glob; a command
-/// rule holds the literal text and whether it matches a prefix or the whole
-/// line.
 #[derive(Debug, Clone)]
 enum Match {
-    /// No specifier: every action on that tool.
     Any,
     Path(GlobMatcher),
-    /// `Bash(cargo test:*)`: the command line starts with this.
     CommandPrefix(String),
-    /// `Bash(cargo test)`: the command line is exactly this.
     CommandExact(String),
 }
 
@@ -43,7 +37,6 @@ enum Match {
 pub struct Rule {
     subject: Subject,
     matcher: Match,
-    /// The rule as written, for the reason on a deny and the preview on an ask.
     source: String,
 }
 

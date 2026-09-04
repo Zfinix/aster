@@ -4,12 +4,9 @@ import { Modal } from "./Modal";
 
 const letter = (index: number) => String.fromCharCode(65 + index);
 
-/**
- * Modal shown while `ask_user` blocks the turn: the thread dims behind a card
- * with lettered options, answerable by click or by pressing A/B/C or 1/2/3.
- * Skipping answers `null`, which hands the decision back to the agent rather
- * than cancelling the turn.
- */
+/** Modal shown while `ask_user` blocks the turn: lettered options, answerable
+ *  by click or by pressing A/B/C or 1/2/3. Skipping answers `null`, which hands
+ *  the decision back to the agent rather than cancelling the turn. */
 export function QuestionPrompt({
   question,
   onAnswer,

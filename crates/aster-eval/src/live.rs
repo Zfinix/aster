@@ -8,8 +8,6 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// Generated file name inside the eval workspace. Gitignored: the cases below
-/// are the source, this is only what Ori is handed.
 const GENERATED: &str = "cases.eval.ts";
 
 /// One thing a model has to get right, and the tool budget it gets.
@@ -17,17 +15,12 @@ const GENERATED: &str = "cases.eval.ts";
 pub struct Case {
     pub name: String,
     pub prompt: String,
-    /// Substring the answer must contain.
     #[serde(default)]
     pub must_mention: Option<String>,
-    /// Tools that must run at least once.
     #[serde(default)]
     pub calls: Vec<String>,
-    /// Tools that must never run.
     #[serde(default)]
     pub avoids: Vec<String>,
-    /// Per-tool ceilings. A regression shows up here first: the answer stays
-    /// right while the round count climbs.
     #[serde(default)]
     pub at_most: Vec<(String, usize)>,
 }
@@ -124,13 +117,9 @@ pub fn render_eval(cases: &[Case], model: Option<&str>) -> String {
 pub struct Outcome {
     pub case: String,
     pub passed: bool,
-    /// Tools the turn ran, in call order.
     pub tools: Vec<String>,
     pub secs: f64,
-    /// What aster priced this turn at. `None` when the provider reported no
-    /// usage, which is not the same as free.
     pub cost_usd: Option<f64>,
-    /// Set when the run never reached this harness, which voids the result.
     pub wrong_harness: Option<String>,
 }
 
@@ -223,14 +212,8 @@ pub fn run_model(dir: &Path, repo: &Path, cases: &[Case], model: Option<&str>) -
     Ok(summarise(model.unwrap_or("(configured)"), &report))
 }
 
-/// The harness these cases exist to measure. Ori falls back to its own agent
-/// when the feature fails to boot, and every assertion then passes against the
-/// wrong subject, so the name is checked rather than assumed.
 const HARNESS: &str = "aster";
 
-/// Pull per-case outcomes out of Ori's report. Two arrays carry half the story
-/// each and are ordered alike: `tests` names the case and whether it passed,
-/// `results` records which harness ran. They are joined by index.
 fn summarise(model: &str, report: &serde_json::Value) -> ModelRun {
     let array = |key: &str| {
         report
@@ -394,8 +377,6 @@ pub fn repo_root(from: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-/// `ori` from the environment, else the installer's `~/.local/bin`, which a
-/// non-login shell often leaves off PATH.
 fn ori_bin() -> PathBuf {
     if let Ok(path) = std::env::var("ORI_BIN") {
         return path.into();
@@ -404,7 +385,6 @@ fn ori_bin() -> PathBuf {
     if local.exists() { local } else { "ori".into() }
 }
 
-/// JSON-quote, which is also valid TypeScript for every string here.
 fn quote(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
 }

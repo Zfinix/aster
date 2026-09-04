@@ -1,9 +1,6 @@
 export interface Trigger {
-  /** Text between the sigil and the end of the token. */
   query: string;
-  /** Index of the sigil in the input. */
   start: number;
-  /** Index just past the token. */
   end: number;
 }
 
@@ -14,7 +11,6 @@ export interface Triggers {
 }
 
 const MENTION = /(?:^|\s)@[^\s]*/g;
-/** A second slash ends the token, so a path typed after one is not a command. */
 const COMMAND = /(?:^|\s)\/[^\s/]*/g;
 
 export function triggersAt(text: string, caret: number): Triggers {
@@ -24,7 +20,6 @@ export function triggersAt(text: string, caret: number): Triggers {
   };
 }
 
-/** The token holding the caret, so moving off it closes whatever it opened. */
 function tokenAt(text: string, caret: number, pattern: RegExp, sigil: string): Trigger | null {
   pattern.lastIndex = 0;
   for (const match of text.matchAll(pattern)) {

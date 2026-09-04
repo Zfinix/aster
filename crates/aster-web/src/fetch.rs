@@ -9,8 +9,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::html;
 
-/// Longest page text returned. Past this a page is reference material the model
-/// should search rather than read whole.
 pub const MAX_CHARS: usize = 8_000;
 
 pub async fn fetch(client: &reqwest::Client, url: &str, allow_private: bool) -> Result<String> {
@@ -59,9 +57,6 @@ fn truncate(mut text: String) -> String {
     text
 }
 
-/// Resolve the host and refuse loopback, private, and link-local addresses.
-/// Resolution happens again inside the request, so this is a guard rather than
-/// a guarantee; it stops the cases that matter without a custom DNS resolver.
 async fn reject_private_host(url: &reqwest::Url) -> Result<()> {
     let host = url.host_str().context("url has no host")?;
     let port = url.port_or_known_default().unwrap_or(443);

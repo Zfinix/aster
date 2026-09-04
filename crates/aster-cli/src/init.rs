@@ -17,7 +17,6 @@ use serde::Deserialize;
 use crate::term::{DIM, GREEN, RESET};
 use crate::util::or_cancel;
 
-/// Closest 256-color palette match to the Aster accent.
 const ORANGE_256: u8 = 208;
 
 #[derive(Args)]
@@ -54,19 +53,16 @@ struct Catalog {
 }
 
 impl Provider {
-    /// Local/self-hosted servers advertise "none" or "optional" auth and skip the key prompt.
     fn needs_key(&self) -> bool {
         let a = self.auth.to_ascii_lowercase();
         !(a.contains("none") || a.contains("optional"))
     }
 
-    /// A base URL with a `{placeholder}` the user must fill in before it resolves.
     fn templated(&self) -> bool {
         self.base_url.contains('{')
     }
 }
 
-/// Embedded at build time so there's no runtime file to locate.
 const PROVIDERS_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.json"));
 
@@ -133,8 +129,6 @@ pub fn find_provider(target: &str) -> Result<(String, String, String)> {
     bail!("no provider {target:?} in the catalog; run `aster provider list` to see the ids")
 }
 
-/// The catalog entry for a base URL: every exact match is considered before any
-/// host match, so a shared host never shadows the endpoint actually named.
 fn lookup(base_url: &str) -> Option<Provider> {
     let want = base_url.trim_end_matches('/');
     let providers = load_providers().ok()?;
@@ -162,7 +156,6 @@ fn host_only(url: &str) -> &str {
         .unwrap_or(url)
 }
 
-/// Prefill for the non-interactive path and "Skip" row; OpenRouter is the friendliest default.
 fn default_provider(providers: &[Provider]) -> &Provider {
     providers
         .iter()
@@ -298,8 +291,6 @@ pub async fn run(args: InitArgs) -> Result<()> {
 pub(crate) struct Current {
     base_url: String,
     model: String,
-    /// False when nothing has been chosen yet and the values above are only
-    /// the built-in defaults.
     pub(crate) configured: bool,
 }
 
@@ -317,7 +308,6 @@ impl Current {
         }
     }
 
-    /// The "here is what you already have" line the wizard opens with.
     fn summary(&self) -> String {
         if !self.configured {
             return "Nothing set up yet".to_string();
@@ -340,8 +330,6 @@ impl Current {
         }
     }
 
-    /// True when `base_url` is the endpoint already in use, so its model is
-    /// worth offering as a row rather than being a leftover from another one.
     fn serves(&self, base_url: &str) -> bool {
         self.configured && self.base_url.trim_end_matches('/') == base_url.trim_end_matches('/')
     }
@@ -351,18 +339,12 @@ fn env_set(var: &str) -> bool {
     env::var(var).is_ok_and(|v| !v.trim().is_empty())
 }
 
-/// The env var a key for this endpoint would be read from, when one is set.
-/// Walks the same order as [`crate::config::provider::resolve_key`], so the wizard
-/// reports the key the next turn would actually use.
 fn key_status(base_url: &str) -> Option<&'static str> {
     keys::key_vars(base_url)
         .into_iter()
         .find(|var| env_set(var))
 }
 
-/// The var a key typed at the prompt belongs in. Endpoints with a var of their
-/// own get it, so two providers each keep a key and switching back does not ask
-/// for it again.
 fn key_var_for(base_url: &str) -> &'static str {
     provider_key_vars(base_url)
         .first()
@@ -373,23 +355,17 @@ fn key_var_for(base_url: &str) -> &'static str {
 struct Configured {
     base_url: String,
     model: String,
-    /// A key typed at the prompt; `None` leaves whatever is already stored.
     api_key: Option<String>,
-    /// Where that key goes. `None` when the provider step was skipped.
     key_var: Option<&'static str>,
-    /// Web tool keys typed at the prompt, as `(var, key)`.
     web_keys: Vec<(&'static str, String)>,
 }
 
-/// What the user opted into on the first screen; nothing is prompted for the rest.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Setup {
     Provider,
     WebTools,
 }
 
-/// Pick what to set up first, then only prompt for what was picked.
-/// `None` when the user cancels.
 async fn wizard(providers: &[Provider], current: &Current) -> Result<Option<Configured>> {
     let Some(picked) = or_cancel(
         multiselect("What do you want to set up? (space to toggle · enter to confirm)")
@@ -447,8 +423,6 @@ fn key_prompt(what: &str, set: bool) -> String {
     }
 }
 
-/// What one web key is asked for. A provider needing two vars names each one,
-/// since "Cloudflare API key" asked twice says nothing about which is which.
 fn web_prompt_label(provider: &str, var: &str, vars: usize) -> String {
     match vars {
         1 => format!("{provider} API key"),
@@ -456,7 +430,6 @@ fn web_prompt_label(provider: &str, var: &str, vars: usize) -> String {
     }
 }
 
-/// How many web providers already hold a key, for the first screen.
 fn web_hint() -> String {
     let providers = crate::config::key::web_providers();
     let set = providers
@@ -469,9 +442,6 @@ fn web_hint() -> String {
     }
 }
 
-/// Pick which web providers to key, then ask for each one's vars. Driven by the
-/// catalog aster-web resolves from, so a provider added there turns up here.
-/// Escaping a prompt skips that key rather than discarding the answers given.
 fn web_setup() -> Result<Vec<(&'static str, String)>> {
     let providers = crate::config::key::web_providers();
     let mut menu = multiselect::<usize>(
@@ -616,8 +586,6 @@ pub(crate) async fn provider_setup(
     }))
 }
 
-/// The base URL for a custom endpoint. The one in use is offered back when it
-/// is already a custom one, so re-running init edits it instead of retyping it.
 fn custom_base_url(current: &Current, in_use: bool) -> Result<Option<String>> {
     let mut input = cliclack::input("Base URL, e.g. http://localhost:8080/v1");
     input = match in_use {
@@ -634,9 +602,6 @@ fn custom_base_url(current: &Current, in_use: bool) -> Result<Option<String>> {
     }))
 }
 
-/// The catalog's shortlist, the endpoint's own list, or a typed id. Both menus
-/// filter as you type, and the model in use is where the cursor starts.
-/// `None` when the user cancels.
 async fn pick_model(
     provider: &Provider,
     base_url: &str,
@@ -714,14 +679,9 @@ fn type_model(provider: &Provider) -> Result<Option<String>> {
 enum Search {
     Picked(String),
     Cancelled,
-    /// The endpoint could not be asked, which is not fatal: the shortlist and
-    /// the free-text prompt are both still there.
     Unavailable,
 }
 
-/// Ask the endpoint for its whole catalog and filter it in place. This is the
-/// only way to reach a model that is neither in the catalog's shortlist nor
-/// already known by heart.
 async fn search_models(base_url: &str, key: &str, current: &Current) -> Result<Search> {
     let spinner = cliclack::spinner();
     spinner.start("Asking the endpoint what it serves…");
@@ -762,7 +722,6 @@ async fn search_models(base_url: &str, key: &str, current: &Current) -> Result<S
     }
 }
 
-/// A one-line status, emitted inside the clack frame or as a plain line.
 enum Note {
     Success(String),
     Info(String),
@@ -805,9 +764,6 @@ fn finish_plain(global: bool, base_url: &str) {
     }
 }
 
-/// Store the API key in `.env`, replacing any value already there: a key typed
-/// at the prompt is the one the user wants from here on. When `gitignore` is
-/// set, also keep the file out of git.
 fn store_key(env_path: &Path, var_name: &str, key: &str, gitignore: bool) -> Result<Note> {
     let replaced = env_has_key(env_path, var_name);
     if let Some(parent) = env_path.parent() {
@@ -825,9 +781,6 @@ fn store_key(env_path: &Path, var_name: &str, key: &str, gitignore: bool) -> Res
     )))
 }
 
-/// Write the choice down. An existing config is edited in place, so re-running
-/// init to switch provider switches it instead of being ignored; comments and
-/// everything else in the file survive. `--force` rewrites the whole scaffold.
 fn save_provider(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
     if !path.exists() || force {
         return write_scaffold(path, base_url, model);
@@ -839,8 +792,6 @@ fn save_provider(path: &Path, base_url: &str, model: &str, force: bool) -> Resul
     )))
 }
 
-/// The non-interactive path, which never overwrites: `-y` picks defaults the
-/// user was never shown, and a config already there outranks a guess.
 fn scaffold(path: &Path, base_url: &str, model: &str, force: bool) -> Result<Note> {
     if path.exists() && !force {
         return Ok(Note::Info(format!(
@@ -965,8 +916,6 @@ pub(crate) fn remove_env_key(path: &Path, key: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Write a file that holds a key, created 0o600 from the start so it is never
-/// briefly world-readable; an existing wider file is narrowed the same way.
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
@@ -1006,7 +955,6 @@ pub(crate) fn ensure_gitignored(repo_root: &Path, entry: &str) -> Result<()> {
     append_line(&path, entry).with_context(|| format!("updating {}", path.display()))
 }
 
-/// Show a repo-relative path when we can, so output stays short.
 fn display(path: &Path) -> String {
     env::current_dir()
         .ok()

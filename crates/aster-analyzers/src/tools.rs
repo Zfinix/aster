@@ -11,13 +11,9 @@ use crate::ALL_MODES;
 use crate::ast_grep::{lang_of, source_files};
 use crate::models::Severity;
 
-/// Matches per ast_grep_search result; past this the list is cut with a notice.
 const MAX_MATCHES: usize = 50;
-/// Diff lines per ast_edit result; past this the diff is cut with a notice.
 const MAX_DIFF_LINES: usize = 200;
-/// Findings per security_scan result; past this the list is cut with a notice.
 const MAX_FINDINGS: usize = 100;
-/// Lines per file past which ast_edit skips the LCS diff and names the file only.
 const MAX_DIFF_FILE_LINES: usize = 2000;
 
 fn lang_from_str(name: &str) -> Option<SupportLang> {
@@ -83,7 +79,6 @@ pub fn ast_grep_search(root: &Path, pattern: &str, language: Option<&str>) -> Re
 /// A computed ast_edit: the new source per changed file, plus the rendered
 /// summary and diff. Nothing is written until [`ast_edit_commit`].
 pub struct AstEditPlan {
-    /// `(file, new source)` pairs in scan order.
     pub changes: Vec<(std::path::PathBuf, String)>,
     total: usize,
     diff_lines: Vec<String>,
@@ -196,8 +191,6 @@ fn apply_edits(src: &str, edits: &[(usize, usize, Vec<u8>)]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Append a `file:` header and `-`/`+` lines for every changed run, with one
-/// line of context, bounded by MAX_DIFF_LINES.
 fn push_diff(out: &mut Vec<String>, file: &Path, old: &str, new: &str) {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
@@ -228,7 +221,6 @@ enum Op {
     Add(usize),
 }
 
-/// Longest-common-subsequence edit script between two line slices.
 fn lcs_ops(a: &[&str], b: &[&str]) -> Vec<Op> {
     let n = a.len();
     let m = b.len();

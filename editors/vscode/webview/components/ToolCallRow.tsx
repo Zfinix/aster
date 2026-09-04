@@ -1,6 +1,7 @@
 import { useState, type ReactElement } from "react";
 import { languageFromPath } from "../lib/highlight";
 import { inEditor, post } from "../lib/host";
+import { openFilePreview } from "../lib/filePreview";
 import type { ToolCall } from "../lib/thread";
 import {
   describeTool,
@@ -64,8 +65,6 @@ const ICONS: Record<string, ReactElement> = {
   aster_mcp: <PlugIcon />,
 };
 
-/** A web call is a web call whichever server served it, so it wears the globe
- *  rather than the generic MCP plug. */
 const MCP_ICONS: Record<string, ReactElement> = {
   screenshot: <ImageIcon />,
   sitemap: <NetworkIcon />,
@@ -82,8 +81,6 @@ function toolIcon(name: string, target: string | undefined): ReactElement {
   return ICONS[name] ?? <FileIcon />;
 }
 
-/** Commands show their output without being asked: what ran and what came back
- *  is the transcript's story. */
 const OPEN_BY_DEFAULT = new Set(["run_command", "run_tests"]);
 
 /** One step, collapsed to its header until asked: eighteen reads stay a list
@@ -101,15 +98,9 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const card = Boolean(output || input);
   const open = card && (expanded || call.error === true);
 
-  /** Every step in a run shares one icon and one verb, and the run's header
-   *  already wears both. What is left is the argument that tells them apart,
-   *  which takes the row's weight now that nothing leads it. */
   const lead = nested ? undefined : verb;
   const body = nested && !detail ? verb : detail;
 
-  /** A path opens the real file; anything else opens its output as a scratch
-   *  tab, which is where find, folding, and highlighting live. A page has no
-   *  tab for that, so there the output opens over the thread. */
   const openLabel = path
     ? `Open ${path}`
     : inEditor
@@ -118,7 +109,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const openInEditor = () => {
     if (window.getSelection()?.isCollapsed === false) return;
     if (path) {
-      post({ type: "openFile", path });
+      openFilePreview(path);
     } else if (output) {
       post({ type: "openUntitled", content: output, title: outputTitle(call), doc: prose });
     }

@@ -22,7 +22,6 @@ pub fn list(probe: &ToolProbe, base: &Path, max_entries: usize) -> Result<String
     list_manual(base, max_entries)
 }
 
-/// Shell out to `fd`. Faster on large directories.
 fn list_with_fd(
     fd: &Path,
     base: &Path,
@@ -75,7 +74,6 @@ fn list_with_fd(
     Ok(entries.join("\n"))
 }
 
-/// Hand-rolled fallback: `fs::read_dir` + sort + truncate.
 fn list_manual(base: &Path, max_entries: usize) -> Result<String> {
     let mut entries: Vec<String> = fs::read_dir(base)
         .with_context(|| format!("listing {}", base.display()))?

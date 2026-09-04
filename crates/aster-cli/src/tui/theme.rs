@@ -36,16 +36,11 @@ impl ThemeState {
     }
 }
 
-/// How long a theme swap takes to settle. Zero under test: the palette is a
-/// process-global, so a transition in one test would bleed colours into every
-/// other test running beside it.
 #[cfg(not(test))]
 const TRANSITION: Duration = Duration::from_millis(450);
 #[cfg(test)]
 const TRANSITION: Duration = Duration::ZERO;
 
-/// Back-out ease: races past the target and settles back, so the swap reads as
-/// a flash rather than a fade nobody notices in a four-row viewport.
 fn overshoot(t: f32) -> f32 {
     const C: f32 = 2.4;
     let p = t - 1.0;
@@ -147,12 +142,10 @@ pub struct Theme {
     pub severity_medium: Color,
     pub severity_low: Color,
     pub severity_info: Color,
-    /// Row colors of the Aster mark, top to bottom.
     pub mark: [Color; 10],
 }
 
 impl Theme {
-    /// Current default palette, matching the aster-tui-spec mockup.
     pub const DEFAULT: Theme = Theme {
         text: Color::Rgb(0xff, 0xff, 0xff),
         dim: Color::Rgb(0x8a, 0x8a, 0x85),
@@ -198,8 +191,6 @@ impl Theme {
         ],
     };
 
-    /// Light palette for pale terminals: warm paper background, dark text, the
-    /// same accent family darkened enough to read on white.
     pub const LIGHT: Theme = Theme {
         text: Color::Rgb(0x1a, 0x1a, 0x1a),
         dim: Color::Rgb(0x6a, 0x6a, 0x66),
@@ -245,8 +236,6 @@ impl Theme {
         ],
     };
 
-    /// Red-tinted theme for YOLO mode — everything gets a red cast so the
-    /// user never forgets they are running without a sandbox.
     pub const YOLO: Theme = Theme {
         text: Color::Rgb(0xff, 0xff, 0xff),
         dim: Color::Rgb(0x8a, 0x7a, 0x7a),

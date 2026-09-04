@@ -1,15 +1,7 @@
 import * as vscode from "vscode";
 
-/**
- * Virtual document provider for scratch output tabs. Using a content provider
- * with a custom URI scheme means VS Code treats these as read-only virtual
- * documents and never prompts the user to save them on close, unlike untitled
- * documents which are always unsaved.
- */
 export const ASTER_OUTPUT_SCHEME = "aster-output";
 
-/** Tab labels come from the URI, so the name has to stay short enough to read
- *  in a tab strip. */
 function tabName(title: string | undefined, id: string): string {
   const base = (title ?? "")
     .split(/[/\\]/)

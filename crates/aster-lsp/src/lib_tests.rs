@@ -22,8 +22,6 @@ fn uri_round_trip_keeps_the_path() {
     assert!(uri.starts_with("file://"), "{uri}");
 }
 
-/// rust-analyzer only analyzes files inside a loaded project, so the fixture
-/// gets a minimal manifest with the probe file as its lib target.
 fn rust_project(file_contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(

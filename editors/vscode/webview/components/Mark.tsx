@@ -2,7 +2,6 @@ import { useState } from "react";
 
 const N = 13;
 const C = 6;
-/** Top-to-bottom warm gradient of the mark; the one source of brand colour. */
 export const ROW_COLORS = [
   "#ef5a6f", "#ef5a6f", "#f0664f", "#f2764f", "#f4864e", "#f79b4d", "#f79b4d",
   "#f6a854", "#f7b458", "#f7c15c", "#f7c15c", "#f8cb66", "#f8cb66",

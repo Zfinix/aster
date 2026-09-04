@@ -4057,6 +4057,40 @@ body.vscode-high-contrast-light .sh {
   max-height: 84vh;
 }
 
+/* A peek at a file, opened over the thread like an info card. */
+.file-preview {
+  width: min(760px, 100%);
+  max-height: 84vh;
+}
+
+.file-preview-code {
+  margin: 0;
+  padding: var(--s2);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  max-height: 60vh;
+}
+
+.file-preview-code code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+  font-size: 0.9em;
+}
+
+.file-preview-note {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
+.file-preview-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--s2);
+}
+
 .info-modal-doc .info-modal-body {
   padding: 0 var(--s5) var(--s5);
 }

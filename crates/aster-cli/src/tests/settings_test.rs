@@ -88,8 +88,6 @@ permissions:
     ));
 }
 
-/// The keys the collapse removed. A stale config stops the run rather than
-/// silently dropping the protection it asked for.
 #[test]
 fn a_retired_permissions_key_is_an_error() {
     for key in [

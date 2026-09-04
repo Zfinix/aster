@@ -1,25 +1,31 @@
 import type { ReviewSource, ToHost, ToWebview } from "../../src/protocol";
 import { openPlanTab } from "./plan-tab";
 
-/**
- * The host, when the page is a page: `aster serve` on this machine instead of
- * an extension. Messages go out as one POST each and come back on an event
- * stream, and the handful of things only an editor can do are answered here
- * with what a browser has instead.
- */
+/** The host when the page is a page: `aster serve` instead of an extension.
+ *  Messages go out as one POST each and come back on an event stream; the few
+ *  things only an editor can do are answered here with what a browser has. */
 
 const HOST = "/api/host";
 const EVENTS = "/api/events";
 
+const instance = (() => {
+  try {
+    let id = sessionStorage.getItem("aster.instance");
+    if (!id) {
+      id = `tab-${crypto.randomUUID()}`;
+      sessionStorage.setItem("aster.instance", id);
+    }
+    return id;
+  } catch {
+    return "default";
+  }
+})();
+
 type Handler = (message: ToWebview) => void;
 
 const handlers = new Set<Handler>();
-/** Posts go out in order: two that cross would let an answer overtake the
- *  prompt it belongs to. */
 let queue: Promise<unknown> = Promise.resolve();
 let stream: EventSource | undefined;
-/** A reconnect means the server came back, so the page asks to be told where
- *  things stand. The first connection is not one: App sends `ready` itself. */
 let connected = false;
 
 export function post(message: ToHost): void {
@@ -75,13 +81,13 @@ async function send(message: ToHost): Promise<void> {
   await fetch(HOST, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(message),
+    body: JSON.stringify({ ...message, instance }),
   });
 }
 
 function connect(): void {
   if (stream) return;
-  stream = new EventSource(EVENTS);
+  stream = new EventSource(`${EVENTS}?instance=${encodeURIComponent(instance)}`);
   stream.onmessage = (event: MessageEvent<string>) => {
     try {
       dispatch(JSON.parse(event.data) as ToWebview);
@@ -103,7 +109,6 @@ function dispatch(message: ToWebview): void {
   }
 }
 
-/** The extension's commands, in the terms a page has. */
 function runCommand(command: string): void {
   if (command === "aster.newConversation") {
     dispatch({ type: "newConversation" });
@@ -125,17 +130,10 @@ function runCommand(command: string): void {
   post({ type: "review", id, source });
 }
 
-/**
- * A code block, opened the way a page can open one: over the thread. Its own
- * tab would have to be a `blob:` URL, which not every browser will put in one,
- * and the ones that refuse load it in place: the session goes with it.
- */
 function openScratch(content: string, lang?: string, title?: string, doc?: boolean): void {
   dispatch({ type: "scratch", content, lang, title, doc });
 }
 
-/** The composer's `+`. A picked file arrives as bytes, like a paste, because
- *  the browser will not say where it came from. */
 async function attach(): Promise<void> {
   const input = document.createElement("input");
   input.type = "file";

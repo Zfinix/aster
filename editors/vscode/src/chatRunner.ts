@@ -8,18 +8,15 @@ export interface ChatOptions {
   model: string | null;
   permissionMode: PermissionMode;
   effort: Effort | null;
-  /** Carries the panel's provider override; see `cliEnv`. */
   env: NodeJS.ProcessEnv;
   session: string | null;
   onEvent: (event: ChatStreamEvent) => void;
   onStderr: (line: string) => void;
 }
 
-/**
- * Owns at most one `aster chat --stream` child. The messages go in as a single
- * stdin line and stdin then stays open, because that is the channel the CLI
- * reads approval replies from.
- */
+/** Owns at most one `aster chat --stream` child. The messages go in as a single
+ *  stdin line and stdin then stays open, because that is the channel the CLI
+ *  reads approval replies from. */
 export class ChatRunner {
   private child: ChildProcess | undefined;
 
@@ -110,22 +107,18 @@ export class ChatRunner {
     });
   }
 
-  /** Answer a pending `approval_request`. */
   approve(allow: boolean): void {
     this.child?.stdin?.write(`${JSON.stringify({ allow })}\n`);
   }
 
-  /** Answer a pending `question`; `null` leaves the agent to decide. */
   answer(choice: string | null): void {
     this.child?.stdin?.write(`${JSON.stringify({ choice })}\n`);
   }
 
-  /** Offer a user message to the running turn; absorbed at a round boundary. */
   inject(text: string): void {
     this.child?.stdin?.write(`${JSON.stringify({ message: text })}\n`);
   }
 
-  /** Stop the turn and free the slot immediately; see ReviewRunner.cancel. */
   cancel(): void {
     const child = this.child;
     if (!child) {

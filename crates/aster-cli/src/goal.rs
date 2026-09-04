@@ -4,7 +4,6 @@
 
 use aster_ai::{AiClient, ChatMessage};
 
-/// Turn cap for one goal run, so a stuck loop dies instead of spending forever.
 const DEFAULT_MAX_TURNS: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,8 +90,6 @@ pub(crate) async fn judge(
     Ok(parse_judgment(&reply))
 }
 
-/// Parse the judge's reply, tolerating prose around the JSON. An unreadable
-/// reply is `not_yet`: the turn cap bounds the damage, a false `met` does not.
 fn parse_judgment(reply: &str) -> Judgment {
     let json = reply
         .find('{')

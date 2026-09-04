@@ -31,8 +31,6 @@ export class SettingsPanel {
     this.tab = tab;
   }
 
-  /** Settings changed elsewhere (the Settings UI, another window) still belong
-   *  on screen here, so an open tab re-reads rather than going stale. */
   refresh(): void {
     if (this.tab) void this.send();
   }
@@ -103,9 +101,6 @@ export class SettingsPanel {
     }
   }
 
-  /** Every write reports back the same way: the whole snapshot on success, so
-   *  a value the CLI normalized or a scope that now shadows another is what
-   *  lands on screen, and an anchored error on failure. */
   private async write(key: string, apply: () => Promise<void>): Promise<void> {
     try {
       await apply();

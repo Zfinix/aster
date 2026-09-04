@@ -1,11 +1,6 @@
 // Ori harness that runs aster instead of Ori's own agent loop, so an eval
-// measures this harness rather than Ori's.
-//
-// `aster --stream` already emits NDJSON, one event per line, so this only has
-// to translate that vocabulary into Ori's and forward it.
-//
-// The cases are generated from crates/aster-eval/src/live.rs; nothing here is
-// edited by hand except the translation itself.
+// measures this harness. `aster --stream` already emits NDJSON, so this only
+// translates that vocabulary into Ori's. Cases come from aster-eval/src/live.rs.
 
 import { type AgentRuntimeEvent, defineHarness } from "ori";
 
@@ -16,12 +11,10 @@ interface HarnessOptions {
   readonly temperature?: number;
 }
 
-/** Checkout aster runs against; the driver passes the repo root. */
 const REPO = process.env.ASTER_EVAL_REPO ?? process.cwd();
 const BIN = process.env.ASTER_BIN ?? "aster";
 const TMP = process.env.TMPDIR ?? "/tmp";
 
-/** Names the per-run message file; two cases may be in flight at once. */
 let proc_seq = 0;
 
 async function* lines(stream: ReadableStream<Uint8Array>) {
@@ -39,11 +32,6 @@ async function* lines(stream: ReadableStream<Uint8Array>) {
   if (buffer.trim()) yield buffer.trim();
 }
 
-/**
- * aster's stream carries a message; Ori's failures are a classified record.
- * Ori caps the message at 256 chars and drops the whole event when it is
- * longer, so a panic or a stack trace has to be clipped rather than lost.
- */
 const failure = (message: string) => ({
   code: "ORI_HARNESS_PROCESS_FAILED",
   kind: "unknown",
@@ -51,7 +39,6 @@ const failure = (message: string) => ({
   stage: "harness",
 }) as const;
 
-/** aster sends tool arguments as a JSON string; Ori wants an object. */
 const asObject = (raw: unknown) => {
   if (typeof raw !== "string") return raw ?? {};
   try {

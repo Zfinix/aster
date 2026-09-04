@@ -9,11 +9,8 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
-/** The same UI runs in an editor panel and, under `aster serve`, in a browser
- *  tab. Which one is decided by whether the editor handed us its API. */
 const api = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
 
-/** False under `aster serve`, where there is no editor to hand anything to. */
 export const inEditor = api !== undefined;
 
 export function post(message: ToHost): void {
@@ -30,10 +27,8 @@ export function onHostMessage(handler: (message: ToWebview) => void): () => void
   return () => window.removeEventListener("message", listener);
 }
 
-/**
- * Webview state survives the view being hidden and rebuilt, so the thread is
- * still there when the panel comes back.
- */
+/** Webview state survives the view being hidden and rebuilt, so the thread is
+ *  still there when the panel comes back. */
 export function persist(state: unknown): void {
   api ? api.setState(state) : browser.persist(state);
 }

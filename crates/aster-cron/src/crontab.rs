@@ -2,8 +2,6 @@
 
 use anyhow::{Context, Result};
 
-/// The marker comment that scopes every aster-owned line, so `remove` never
-/// touches entries the user wrote themselves.
 fn marker(name: &str) -> String {
     format!("ASTER-CRON:{name}")
 }

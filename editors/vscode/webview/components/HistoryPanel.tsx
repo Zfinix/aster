@@ -5,13 +5,9 @@ import { filterSessions, relativeTime } from "../lib/history";
 import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
 import { Modal } from "./Modal";
 
-/**
- * Session history, as a command-palette popup: type to filter, arrows to move,
- * Enter to open. One line a session, because a list you scan for a title reads
- * faster without a second line of metadata under every row. Rename and delete
- * live on the row and appear on hover, so the list stays a list until you want
- * to change something in it.
- */
+/** Session history as a command-palette popup: type to filter, arrows to move,
+ *  Enter to open. One line a session; rename and delete appear on hover so the
+ *  list stays a list until you want to change something in it. */
 export function HistoryPanel({
   sessions,
   activeId,
@@ -28,7 +24,6 @@ export function HistoryPanel({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  /** The row being renamed, if any: its id and the name typed so far. */
   const [editing, setEditing] = useState<{ id: string; title: string }>();
 
   const rows = useMemo(() => filterSessions(sessions, query), [sessions, query]);

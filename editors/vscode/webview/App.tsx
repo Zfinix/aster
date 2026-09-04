@@ -16,11 +16,12 @@ import { Composer } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { InfoModal } from "./components/InfoModal";
+import { FilePreview } from "./components/FilePreview";
 import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { onHostMessage, persist, post, restore } from "./lib/host";
 import { type LoginState, loginLine } from "./lib/login";
-import { modelShort } from "./lib/model";
+import { modelShort, recentsFor } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
 import {
   appendAgentActivity,
@@ -51,7 +52,6 @@ import {
 let counter = 0;
 const nextId = () => `t${++counter}`;
 
-/** Session ids namespace the CLI transcript; keep them distinct from turn ids. */
 const newSessionId = () => `vsc-${Date.now().toString(36)}`;
 
 interface Persisted {
@@ -80,27 +80,21 @@ export function App() {
   const [effort, setEffort] = useState<Effort | null>(null);
   const [turns, setTurns] = useState<Turn[]>(() => hydrate(saved?.turns));
   const [session, setSession] = useState(saved?.session ?? newSessionId());
-  /** The saved name of the loaded session, shown in the toolbar until a turn
-   *  earns a new one. */
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [pendingMention, setPendingMention] = useState<string | null>(null);
-  /** Messages typed while a turn was running, flushed in order once it ends. */
   const [queued, setQueued] = useState<string[]>([]);
-  /** Saved sessions for the history overlay. */
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [info, setInfo] = useState<InfoCardData | null>(null);
-  /** Backing data for the `/mcp` and `/provider` pickers; each refreshes itself
-   *  when it opens, since both read config that changes outside this panel. */
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
-  /** Raised when the host asks for the command menu; the composer owns it. */
   const [openMenu, setOpenMenu] = useState(false);
   const closeMenuRequest = useCallback(() => setOpenMenu(false), []);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | undefined>();
+  const [catalog, setCatalog] = useState<string[] | null>(null);
   const refreshModels = useCallback(() => {
     setModelsLoading(true);
     setModelsError(undefined);
@@ -128,8 +122,6 @@ export function App() {
   const planApprovalRef = useRef(false);
 
   const modelRef = useRef<string | null>(null);
-  /** Drop a divider the first time the model changes mid-conversation; a run of
-   *  switches with no message between them collapses to the last one. */
   const markModelChange = useCallback((next: string | null) => {
     if (modelRef.current === next) return;
     modelRef.current = next;
@@ -323,6 +315,7 @@ export function App() {
       case "modelsLoaded":
         setModelsLoading(false);
         setModelsError(message.error);
+        setCatalog(message.models.length ? message.models : null);
         setInit((prev) =>
           prev ? { ...prev, models: [...new Set([...prev.models, ...message.models])] } : prev
         );
@@ -335,6 +328,7 @@ export function App() {
         setProviders(message.providers);
         break;
       case "providerChanged":
+        setCatalog(message.models.length ? message.models : null);
         setInit((prev) =>
           prev
             ? {
@@ -387,8 +381,6 @@ export function App() {
     }
   }, []);
 
-  /** Re-render a prompt the surface missed because it loaded mid-turn. Only
-   *  the two blocking events are ever re-sent. */
   const reapplyPending = (id: string, event: ChatStreamEvent) => {
     if (event.type === "approval_request") {
       planApprovalRef.current = event.kind === "plan";
@@ -481,6 +473,20 @@ export function App() {
           )
         );
         break;
+      case "compacted":
+        // The CLI folded the history mid-turn; everything above this seam is
+        // dropped from future sends but stays readable.
+        setTurns((prev) => [
+          {
+            id: nextId(),
+            role: "compaction",
+            summary: event.summary,
+            folded: event.folded,
+            messages: event.messages.map(({ role, content }) => ({ role, content })),
+          },
+          ...prev,
+        ]);
+        break;
       case "agent_status":
         patchAssistant(id, (turn) =>
           upsertAgentState(turn, {
@@ -517,6 +523,9 @@ export function App() {
       case "done":
         activeRef.current = null;
         setBusy(false);
+        if (event.context_budget) {
+          setEffectiveBudget(event.context_budget);
+        }
         patchAssistant(id, (turn) => ({
           ...(turn.streamed ? turn : appendText(turn, event.reply, "\n\n")),
           edits: event.edits,
@@ -551,7 +560,6 @@ export function App() {
     return unsubscribe;
   }, [handle]);
 
-  /** Picked in the composer, or promoted by approving a plan. */
   const choosePermissionMode = (mode: PermissionMode) => {
     setPermissionMode(mode);
     post({ type: "setPermissionMode", mode });
@@ -578,9 +586,6 @@ export function App() {
     [permissionMode]
   );
 
-  /** Reject, then hand the turn the alternative. The CLI routes `message`
-   *  lines to the injection queue, so it lands as guidance rather than as the
-   *  approval reply. */
   const redirectApproval = (instead: string) => {
     answerApproval(false);
     setQueued((prev) => [...prev, instead]);
@@ -636,8 +641,6 @@ export function App() {
     post({ type: "review", id, source });
   };
 
-  /** A locally-answered command opens its modal straight away, so the ask is
-   *  on screen before the host gets back with the answer. */
   const askInfo = (topic: "status" | "memory" | "diff") => {
     const id = nextId();
     setInfo({ id, title: infoTitle(topic), pending: true });
@@ -702,9 +705,9 @@ export function App() {
     post({ type: "searchFiles", query, requestId });
   };
 
-  // What the next turn would actually send, which is what the CLI measures
-  // against its compact budget — not the whole thread, since older turns are
-  // already dropped before they reach it.
+  // The effective budget the CLI reported for this session (compact budget
+  // minus the system prompt's share), once a turn has told us.
+  const [effectiveBudget, setEffectiveBudget] = useState<number | null>(null);
   const contextUsed = useMemo(
     () => buildMessages(turns).reduce((n, m) => n + m.content.length, 0),
     [turns]
@@ -755,14 +758,14 @@ export function App() {
         model={init?.model ?? null}
         models={init?.models ?? []}
         recommended={init?.recommended ?? []}
-        recent={init?.recent ?? []}
+        recent={recentsFor(init?.recent ?? [], catalog)}
         modelsLoading={modelsLoading}
         modelsError={modelsError}
         onRefreshModels={refreshModels}
         permissionMode={permissionMode}
         effort={effort}
         contextUsed={contextUsed}
-        contextBudget={init?.contextBudget ?? 0}
+        contextBudget={effectiveBudget ?? init?.contextBudget ?? 0}
         skills={init?.skills ?? []}
         mcpServers={mcpServers}
         providers={providers}
@@ -810,6 +813,7 @@ export function App() {
         }}
       />
       {info && <InfoModal card={info} onClose={() => setInfo(null)} />}
+      <FilePreview />
 
       {showHistory && (
         <HistoryPanel
@@ -825,8 +829,6 @@ export function App() {
   );
 }
 
-/** The `/status` rows only this panel knows: how much conversation it is
- *  carrying, and what the last turn cost. */
 function sessionRows(turns: Turn[]): InfoRow[] {
   const messages = buildMessages(turns, Infinity);
   const chars = messages.reduce((n, m) => n + m.content.length, 0);

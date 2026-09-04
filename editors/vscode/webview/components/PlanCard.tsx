@@ -17,10 +17,8 @@ const MARKS: Record<PlanStepStatus, ReactNode> = {
   blocked: <CircleXIcon />,
 };
 
-/**
- * The agent's plan, rendered inline where the `update_plan` call landed —
- * the same as any other tool output, not pinned outside the thread.
- */
+/** The agent's plan, rendered inline where the `update_plan` call landed —
+ *  the same as any other tool output, not pinned outside the thread. */
 export function PlanCard({ call }: { call: ToolCall }) {
   const steps = parsePlan(call.arguments);
   if (!steps) return null;

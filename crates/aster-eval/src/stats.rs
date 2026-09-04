@@ -35,7 +35,6 @@ impl Dist {
     }
 }
 
-/// `sorted` must be ascending and non-empty.
 fn percentile(sorted: &[f64], q: f64) -> f64 {
     let rank = (q * sorted.len() as f64).ceil() as usize;
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]

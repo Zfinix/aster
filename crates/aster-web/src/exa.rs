@@ -15,8 +15,6 @@ use crate::{ExtractedPage, PageMetadata, SearchOptions, WebExtract};
 
 const BASE_URL: &str = "https://api.exa.ai";
 
-/// Page text per result. Exa returns whole pages, and a search of ten of them
-/// would otherwise cost more context than the answer is worth.
 const MAX_CHARACTERS: u32 = 4_000;
 
 #[derive(Debug, Clone)]

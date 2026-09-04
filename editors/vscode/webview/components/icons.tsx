@@ -1,8 +1,4 @@
-/** Drawn on a 16 grid at a 1.25 stroke: horizontals, verticals and 45s, rounded
- *  off, with a 3-unit minimum gap wherever two shapes overlap. */
 const GRID = 16;
-/** Matches the `--glyph` column the layout reserves. The stroke is in grid
- *  units, so it scales with the box rather than being re-hinted per size. */
 const SIZE = 14;
 
 const base = {
@@ -1935,9 +1931,6 @@ export function CollapseIcon() {
   );
 }
 
-/** Filled icons are solid shapes with the interior detail cut straight out of
- *  the fill, so a filled and an outline icon read as the same glyph. Only the
- *  ones the product needs a selected or active state for have one. */
 const solid = {
   width: SIZE,
   height: SIZE,

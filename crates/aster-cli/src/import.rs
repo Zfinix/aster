@@ -54,8 +54,6 @@ fn home() -> Result<PathBuf> {
     dirs::home_dir().context("no home directory")
 }
 
-/// Where an imported server was scoped in its source tool, deciding which
-/// `.mcp.json` it lands in.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scope {
     Global,
@@ -185,8 +183,6 @@ pub fn run_mcp_import(from: Option<Source>, repo_root: Option<&Path>) -> Result<
     Ok(())
 }
 
-/// `command arg arg…`, or the endpoint for a remote server: the one-line
-/// summary a picker row shows.
 fn spawn_line(value: &Value) -> String {
     let command = value
         .get("command")
@@ -213,8 +209,6 @@ fn spawn_line(value: &Value) -> String {
     out
 }
 
-/// Add servers to a `.mcp.json`'s `mcpServers`, creating the file when
-/// missing. Only the fields aster reads carry over.
 fn merge_mcp_json(path: &Path, servers: &[&FoundServer]) -> Result<Vec<String>> {
     let mut config: Value = match std::fs::read_to_string(path) {
         Ok(text) => {
@@ -255,8 +249,6 @@ fn merge_mcp_json(path: &Path, servers: &[&FoundServer]) -> Result<Vec<String>> 
     Ok(names)
 }
 
-/// Global `~/.claude.json` servers plus the ones it scopes to this repo. The
-/// repo's shared `.mcp.json` is not read: aster reads that natively.
 fn claude_mcp(repo_root: Option<&Path>) -> Result<Vec<(String, Scope, Value)>> {
     let mut out = Vec::new();
     if let Ok(text) = std::fs::read_to_string(home()?.join(".claude.json")) {
@@ -333,8 +325,6 @@ fn opencode_mcp(repo_root: Option<&Path>) -> Result<Vec<(String, Scope, Value)>>
     Ok(out)
 }
 
-/// Hermes declares MCP servers in `~/.hermes/config.yaml` under
-/// `mcp_servers`, in the same command/args/env (or url) shape.
 fn hermes_mcp() -> Result<Vec<(String, Scope, Value)>> {
     let path = home()?.join(".hermes/config.yaml");
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -348,8 +338,6 @@ fn hermes_mcp() -> Result<Vec<(String, Scope, Value)>> {
     Ok(out)
 }
 
-/// Opencode declares `command` as one argv array and env as `environment`;
-/// reshape both to the `.mcp.json` form.
 fn opencode_server(v: &Value) -> Value {
     let mut out = serde_json::Map::new();
     let mut argv = v["command"]
@@ -374,7 +362,6 @@ fn opencode_server(v: &Value) -> Value {
 }
 
 struct ImportedSession {
-    /// Source-prefixed, e.g. `claude-<uuid>`, so ids never collide across tools.
     id: String,
     title: Option<String>,
     model: Option<String>,
@@ -388,7 +375,6 @@ struct ImportedMessage {
     ts: DateTime<Utc>,
 }
 
-/// What a picker row shows when a session has no stored title.
 fn first_user_text(session: &ImportedSession) -> &str {
     session
         .messages
@@ -538,8 +524,6 @@ fn write_session(
     Ok(true)
 }
 
-/// Claude Code keeps one jsonl per session under a directory named after the
-/// project path with `/` and `.` turned into `-`.
 fn claude_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     let slug: String = repo_root
         .to_string_lossy()
@@ -602,8 +586,6 @@ fn claude_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     Ok(sessions)
 }
 
-/// Codex writes rollout jsonl files under date directories; each opens with a
-/// `session_meta` line whose `cwd` scopes it to a repo.
 fn codex_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     let root = home()?.join(".codex/sessions");
     let mut files = Vec::new();
@@ -683,8 +665,6 @@ fn codex_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     Ok(sessions)
 }
 
-/// Cursor keeps chats in sqlite: each workspace lists its composer ids, and the
-/// global database holds one row per composer plus one per message bubble.
 fn cursor_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     let Some(user_dir) = cursor_user_dir()? else {
         return Ok(Vec::new());
@@ -822,7 +802,6 @@ fn cursor_user_dir() -> Result<Option<PathBuf>> {
     .find(|p| p.exists()))
 }
 
-/// True when the workspace's folder is this repo or a directory inside it.
 fn workspace_matches(workspace_json: &Path, repo_root: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(workspace_json) else {
         return false;
@@ -838,8 +817,6 @@ fn workspace_matches(workspace_json: &Path, repo_root: &Path) -> bool {
     Path::new(&path).starts_with(repo_root)
 }
 
-/// Opencode keeps everything in one sqlite database; sessions carry their
-/// project directory, messages their role, and parts the actual text.
 fn opencode_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     let db = home()?.join(".local/share/opencode/opencode.db");
     if !db.exists() {
@@ -952,8 +929,6 @@ fn opencode_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     Ok(sessions)
 }
 
-/// Hermes keeps sessions and messages in `~/.hermes/state.db`; rows carry a
-/// cwd and repo root, so only this repo's conversations come over.
 fn hermes_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     let db = home()?.join(".hermes/state.db");
     if !db.exists() {
@@ -1038,8 +1013,6 @@ fn hermes_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
     Ok(sessions)
 }
 
-/// Query rows as JSON objects via `sqlite3 -json`, for multi-column selects
-/// where line splitting would be ambiguous.
 fn sqlite_json(db: &Path, sql: &str) -> Result<Vec<Value>> {
     let output = Command::new("sqlite3")
         .arg("-readonly")
@@ -1085,8 +1058,6 @@ fn sqlite_rows(db: &Path, sql: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Message content as plain text: a string as-is, an array reduced to its
-/// text parts. Harness-injected wrappers are dropped either way.
 fn content_text(content: &Value) -> String {
     let parts: Vec<&str> = match content {
         Value::String(s) => vec![s.as_str()],
@@ -1109,7 +1080,6 @@ fn content_text(content: &Value) -> String {
         .join("\n\n")
 }
 
-/// Text the harness injected around the user's words, not something typed.
 fn injected(text: &str) -> bool {
     const TAGS: &[&str] = &[
         "<ide_",

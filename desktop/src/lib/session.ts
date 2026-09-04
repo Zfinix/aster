@@ -50,18 +50,12 @@ export type Turn =
       pending?: boolean;
       error?: boolean;
       steps?: ToolStep[];
-      /** The model's thinking, joined across the turn's rounds. */
       reasoning?: string;
-      /** Running/final token estimate for the reasoning shown above. */
       reasoningTokens?: number;
-      /** Wall-clock time the reasoning round took, in milliseconds. */
       reasoningDurationMs?: number;
-      /** True once `reasoning_done` closed the block. */
       reasoningDone?: boolean;
-      /** Live per-sub-agent state from `agent_status` events. */
       agents?: AgentRun[];
       usage?: Usage | null;
-      /** Set when the user cancelled the turn mid-stream. */
       stopped?: boolean;
     }
   | { id: string; role: "review"; data: ReviewData; ts?: number };
@@ -190,12 +184,9 @@ function toStep(
   };
 }
 
-/**
- * Rebuild a whole conversation from a saved transcript, so reopening the app
- * shows the thread rather than an empty pane. Every assistant round between two
- * user messages folds into one turn, the way it was shown live: steps
- * accumulate, thinking joins with a blank line, and commentary joins the reply.
- */
+/** Rebuild a conversation from a saved transcript. Every assistant round
+ *  between two user messages folds into one turn, the way it was shown live:
+ *  steps accumulate, thinking joins with a blank line, commentary joins the reply. */
 export function turnsFromEvents(events: unknown[], idPrefix = "h"): Turn[] {
   const evs = (events as RawEvent[]).filter((e) => e?.type === "message");
   // Results arrive as their own `tool` events after the call that produced them.
@@ -315,15 +306,10 @@ export interface Conversation {
   repoPath: string;
   whenLabel: string;
   turns: Turn[];
-  /** Set only by an explicit "Save session": the turn then records into this
-   *  CLI session and the thread resumes it. Ephemeral until then. */
   sessionId?: string;
-  /** Set once the user renames the thread, so a generated title never
-   *  overwrites a name they chose. */
   renamed?: boolean;
 }
 
-/** The 7/7-recall models from docs/BENCHMARKS.md, best first. */
 export const RESEARCH_MODELS = [
   "google/gemini-3.1-flash-lite",
   "anthropic/claude-sonnet-5",
@@ -334,9 +320,6 @@ export const RESEARCH_MODELS = [
 
 export const DEFAULT_MODEL = RESEARCH_MODELS[0];
 
-/** Humanize one slug token by rule, not by lookup:
- *  "3.1" -> "3.1", "v1" -> "v1", "80b"/"a3b" -> "80B"/"A3B",
- *  "gpt"/"glm" -> "GPT"/"GLM" (no vowels = acronym), "qwen3" -> "Qwen3". */
 function caseToken(w: string): string {
   if (/^[0-9.]+$/.test(w)) return w;
   if (/^v\d+$/i.test(w)) return w.toLowerCase();

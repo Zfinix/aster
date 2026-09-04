@@ -28,19 +28,12 @@ use ulid::Ulid;
 
 use state::AppState;
 
-/// Aster's port. Nothing else is registered on it, and it stays put across
-/// restarts so a bookmark keeps working.
 pub const DEFAULT_PORT: u16 = 4187;
 
-/// How many ports past the default to try before giving up, so a second repo
-/// can be served without picking a number by hand.
 const PORT_SCAN: u16 = 10;
 
 pub struct ServeConfig {
-    /// Loopback unless the user asks otherwise, which also turns on the token.
     pub host: IpAddr,
-    /// `None` scans from [`DEFAULT_PORT`]; a port asked for by name is taken
-    /// as meant, and a busy one is an error rather than a silent move.
     pub port: Option<u16>,
     pub repo_root: PathBuf,
 }
@@ -60,7 +53,6 @@ impl Default for ServeConfig {
 pub struct Server {
     listener: TcpListener,
     state: Arc<AppState>,
-    /// What to type into a browser, token and all.
     pub url: String,
     pub addr: SocketAddr,
 }
@@ -132,8 +124,6 @@ async fn listen(host: IpAddr, port: Option<u16>) -> Result<TcpListener> {
     )
 }
 
-/// `localhost` reads better than `127.0.0.1` and is what a browser is happiest
-/// with; anywhere else, the address is the only name this side knows.
 fn origin(addr: SocketAddr) -> String {
     match addr.ip().is_loopback() {
         true => format!("http://localhost:{}", addr.port()),

@@ -10,7 +10,6 @@ use ratatui::widgets::{Paragraph, Widget, WidgetRef, Wrap};
 pub(super) trait Renderable {
     fn render(&self, area: Rect, buf: &mut Buffer);
     fn desired_height(&self, width: u16) -> u16;
-    /// Absolute cursor position when this renderable owns the caret.
     fn cursor_pos(&self, _area: Rect) -> Option<(u16, u16)> {
         None
     }
@@ -120,7 +119,6 @@ impl Renderable for Column<'_> {
             .fold(0u16, u16::saturating_add)
     }
 
-    /// The first child that claims the caret wins; at most one should.
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         let mut y = area.y;
         for child in &self.children {

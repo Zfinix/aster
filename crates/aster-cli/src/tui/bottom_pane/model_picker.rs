@@ -218,8 +218,6 @@ impl BottomPaneView<AppEvent> for ModelPickerView {
         self.complete
     }
 
-    /// One click picks that model. `lines` spends rows 0-3 on the title, a
-    /// blank, the query, and another blank, so the list starts at row 4.
     fn handle_click(&mut self, row: u16) -> bool {
         const FIRST_ROW: u16 = 4;
         let filtered = self.filtered();

@@ -14,8 +14,6 @@ use crate::{ExtractedPage, PageMetadata, SearchOptions};
 
 const BASE_URL: &str = "https://api.perplexity.ai";
 
-/// Longest snippet returned per result. Past this the agent should call
-/// `web/extract` on the URL rather than read the page through the search tool.
 const MAX_SNIPPET_CHARS: usize = 4_000;
 
 #[derive(Debug, Clone)]

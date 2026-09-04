@@ -6,7 +6,6 @@ fn temp_home() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
-/// A minimal unsigned JWT: header.payload with the given claims, no signature.
 fn fake_jwt(claims: &serde_json::Value) -> String {
     let enc = |v: &serde_json::Value| {
         base64::engine::general_purpose::URL_SAFE_NO_PAD

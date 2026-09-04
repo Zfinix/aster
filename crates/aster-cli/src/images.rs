@@ -9,16 +9,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use image::ImageFormat;
 
-/// Extensions worth attaching. Documents are excluded on purpose: the agent
-/// reads those with `read_file`, and a PDF is not something to send as pixels.
 const EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
-/// Beyond this an image is more likely a mistake than a question about a
-/// screenshot, and the re-encode would cost more than the turn is worth.
 const MAX_BYTES: u64 = 10 * 1024 * 1024;
 
-/// Long edge every image is fitted to before sending. Providers charge by
-/// pixels and cap dimensions well below what a modern screenshot arrives at.
 const MAX_EDGE: u32 = 2048;
 
 /// The turn with each image it mentions attached. The mention stays in the text:
@@ -48,25 +42,69 @@ pub(crate) fn attach(text: &str, repo_root: &Path) -> MessageContent {
     MessageContent::Parts(parts)
 }
 
-/// Paths in `text` that name an image on disk, in the order written and
-/// without repeats.
 fn mentioned(text: &str, repo_root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    for token in text.split_whitespace() {
-        let token = token
-            .trim_matches(|c: char| {
-                matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':')
-            })
-            .trim_start_matches('@');
-        if !has_image_extension(token) {
-            continue;
-        }
-        let path = resolve(token, repo_root);
-        if path.is_file() && !out.contains(&path) {
-            out.push(path);
+    for line in text.lines() {
+        let mut at = 0;
+        while at < line.len() {
+            let rest = &line[at..];
+            let lead = rest.len() - rest.trim_start().len();
+            if lead > 0 {
+                at += lead;
+                continue;
+            }
+            let token = rest.split_whitespace().next().unwrap_or_default();
+            let mut next = at + token.len();
+            let mut found = on_disk(trim_punctuation(token).trim_start_matches('@'), repo_root);
+            if found.is_none()
+                && token.starts_with('@')
+                && let Some((path, len)) = spanning_spaces(&rest[1..], repo_root)
+            {
+                found = Some(path);
+                next = at + 1 + len;
+            }
+            if let Some(path) = found
+                && !out.contains(&path)
+            {
+                out.push(path);
+            }
+            at = next;
         }
     }
     out
+}
+
+fn spanning_spaces(rest: &str, repo_root: &Path) -> Option<(PathBuf, usize)> {
+    let lead = rest.len() - rest.trim_start_matches(['"', '\'']).len();
+    let body = &rest[lead..];
+    for (dot, _) in body.match_indices('.') {
+        let after = &body[dot + 1..];
+        let end = dot
+            + 1
+            + after
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(after.len());
+        let candidate = &body[..end];
+        if !candidate.contains(char::is_whitespace) {
+            continue;
+        }
+        if let Some(path) = on_disk(candidate, repo_root) {
+            return Some((path, lead + end));
+        }
+    }
+    None
+}
+
+fn on_disk(token: &str, repo_root: &Path) -> Option<PathBuf> {
+    if !has_image_extension(token) {
+        return None;
+    }
+    let path = resolve(token, repo_root);
+    path.is_file().then_some(path)
+}
+
+fn trim_punctuation(token: &str) -> &str {
+    token.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':'))
 }
 
 fn has_image_extension(token: &str) -> bool {
@@ -80,7 +118,6 @@ fn has_image_extension(token: &str) -> bool {
         })
 }
 
-/// A mention is repo-relative unless it is absolute or starts at home.
 fn resolve(token: &str, repo_root: &Path) -> PathBuf {
     if let Some(rest) = token.strip_prefix("~/")
         && let Some(home) = dirs::home_dir()
@@ -94,7 +131,6 @@ fn resolve(token: &str, repo_root: &Path) -> PathBuf {
     repo_root.join(path)
 }
 
-/// One image file as a `data:` URL.
 fn encode(path: &Path) -> anyhow::Result<String> {
     let size = std::fs::metadata(path)?.len();
     anyhow::ensure!(

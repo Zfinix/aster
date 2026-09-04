@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { configList, configSet, type ConfigValue } from "../lib/aster";
 import { useToast } from "./chrome";
 
-/** Render one resolved config value back into its text form. Lists are comma
- *  separated, everything else is its scalar; unset (null) is blank. */
 function toText(value: ConfigValue): string {
   if (value == null) return "";
   if (Array.isArray(value)) return value.join(", ");

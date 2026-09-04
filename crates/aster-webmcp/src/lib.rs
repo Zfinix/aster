@@ -1,10 +1,7 @@
 #![forbid(unsafe_code)]
-//! A WebMCP bridge: the tools a web page registers through
-//! `document.modelContext` become MCP tools Aster can call. The crate attaches
-//! to a tab in the user's own browser over CDP, injects a shim that polyfills
-//! the WebMCP draft where the browser has none, and maps `tools/list` and
-//! `tools/call` onto the page's registry. Calls run in the page with the
-//! user's session, which is the point: the agent acts on what the user sees.
+//! A WebMCP bridge: tools a page registers through `document.modelContext`
+//! become MCP tools. It attaches to a tab in the user's browser over CDP, so
+//! calls run in the page with the user's session.
 
 mod cdp;
 mod serve;
@@ -20,14 +17,9 @@ use tokio::sync::Mutex;
 
 pub use serve::serve;
 
-/// Injected into every document of the attached tab, and re-run on the
-/// current one so a tab already open before the attach is bridged too.
 const SHIM: &str = include_str!("shim.js");
 
-/// A page script that never returns must not hang the turn.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Attaching happens at session startup, where a slow browser delays
-/// everything behind it.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const DEFAULT_CDP_URL: &str = "http://127.0.0.1:9222";
@@ -36,11 +28,7 @@ const DEFAULT_CDP_URL: &str = "http://127.0.0.1:9222";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebmcpConfig {
-    /// Off by default: an enabled bridge with no browser running would cost
-    /// every session a failed connection attempt.
     pub enabled: bool,
-    /// Where the browser's DevTools endpoint listens. Chrome and Edge expose
-    /// it when started with `--remote-debugging-port=9222`.
     pub cdp_url: String,
 }
 
@@ -134,8 +122,6 @@ impl WebmcpBackend {
     }
 }
 
-/// Evaluate an expression and return its string value. A page exception is an
-/// error carrying the script's own message, not a transport failure.
 async fn evaluate_on(tab: &mut cdp::Tab, expression: &str, budget: Duration) -> Result<String> {
     let result = tab
         .command(
@@ -158,8 +144,6 @@ async fn evaluate_on(tab: &mut cdp::Tab, expression: &str, budget: Duration) -> 
         .context("the page returned no value")
 }
 
-/// The page's own message from an `exceptionDetails` payload, first line only:
-/// V8 descriptions carry a whole stack trace below the message.
 fn page_error(details: &Value) -> String {
     let reason = details
         .pointer("/exception/description")
@@ -170,7 +154,6 @@ fn page_error(details: &Value) -> String {
     reason.lines().next().unwrap_or(reason).to_string()
 }
 
-/// Skips malformed entries: one bad tool should not cost the page's others.
 fn tool_from(entry: &Value) -> Option<McpTool> {
     let name = entry.get("name")?.as_str()?.to_string();
     let description = entry

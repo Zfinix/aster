@@ -9,8 +9,6 @@ use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
-/// How long any one OAuth round trip may take. A browser login is human-paced,
-/// so the callback wait is its own, much longer budget.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -19,10 +17,8 @@ pub(crate) struct StoredTokens {
     pub(crate) access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refresh_token: Option<String>,
-    /// Unix seconds after which `access_token` should be refreshed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) expires_at: Option<u64>,
-    /// The client id this server issued us, reused on re-login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) client_id: Option<String>,
 }
@@ -103,7 +99,6 @@ pub async fn bearer_header(name: &str) -> Option<String> {
     Some(format!("Bearer {}", updated.access_token))
 }
 
-/// The configured url of a named server, read back from the settings.
 fn server_url(name: &str) -> Option<String> {
     let settings = crate::settings::Settings::load(None).ok()?;
     settings
@@ -143,8 +138,6 @@ struct AuthMetadata {
     scopes_supported: Vec<String>,
 }
 
-/// Find the authorization server for `url`: the resource-metadata route first,
-/// then the well-known document on the origin itself.
 async fn discover(url: &str) -> Result<AuthMetadata> {
     let http = http_client()?;
     let base = reqwest::Url::parse(url).context("parsing the MCP server url")?;
@@ -401,7 +394,6 @@ pub(crate) async fn await_callback(listener: tokio::net::TcpListener) -> Result<
     }
 }
 
-/// Percent-decode a query value: `%XX` sequences and `+` as space.
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

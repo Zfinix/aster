@@ -2,8 +2,6 @@ use super::*;
 
 use std::io::Write;
 
-/// Build a transcript through the real loader, so the tests cover the on-disk
-/// shape rather than a hand-built struct that could drift from it.
 pub(crate) fn load(lines: &[String]) -> SessionTranscript {
     let mut file = tempfile::Builder::new()
         .suffix(".jsonl")

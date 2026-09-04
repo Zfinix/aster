@@ -8,27 +8,16 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-/// Read in this order, so the file a repo most likely maintains for Aster is
-/// read last and reads as the final word.
 pub const INSTRUCTION_FILES: &[&str] = &["CLAUDE.md", "AGENTS.md", "ASTER.md"];
-/// One oversized file must not crowd out the others.
 const MAX_FILE_CHARS: usize = 12_000;
-/// Total budget for root instructions. These sit in every request, so this is
-/// a standing context cost rather than a one-off.
 const MAX_TOTAL_CHARS: usize = 24_000;
-/// Nested files listed by path. Beyond this the index itself is the cost the
-/// bodies were meant to avoid.
 const MAX_NESTED_LISTED: usize = 40;
 const MAX_DEPTH: usize = 8;
-/// Stop walking after this many entries; outside a repo (a launch from `~`,
-/// say) the tree is effectively unbounded and this runs before the UI is up.
 const MAX_WALK_ENTRIES: usize = 50_000;
 
 #[derive(Debug, Default, Clone)]
 pub struct Instructions {
-    /// Loaded in full: the repo-wide contract.
     root: Vec<Loaded>,
-    /// Advertised by path only, read when a turn works in that directory.
     nested: Vec<PathBuf>,
 }
 
@@ -80,7 +69,6 @@ fn load_root(repo_root: &Path) -> Vec<Loaded> {
     files
 }
 
-/// Global files first, then the repo's, so the repo has the last word.
 fn root_candidates(repo_root: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     if let Ok(home) = crate::persist::home() {
@@ -94,8 +82,6 @@ fn root_candidates(repo_root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Instruction files below the root, respecting `.gitignore`. Only `AGENTS.md`
-/// nests by spec; the other names are root-level conventions.
 fn find_nested(repo_root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let walk = WalkBuilder::new(repo_root)

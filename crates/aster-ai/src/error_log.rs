@@ -7,12 +7,8 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-/// The response body is kept for diagnosis but bounded, since some providers
-/// echo whole requests back on validation failures.
 pub const MAX_BODY_CHARS: usize = 2048;
 
-/// The whole log is bounded. Past this it is truncated to nothing and starts
-/// over: recent failures matter, history does not.
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 pub const LOG_RELATIVE_PATH: &str = ".aster/logs/provider-errors.jsonl";
@@ -46,9 +42,6 @@ pub fn log_request_failure(
     }
 }
 
-/// The fields of a chat request worth recording when it fails: enough to spot
-/// a wrong wire format (a bad temperature, an unexpected top-level key) without
-/// carrying message contents or credentials.
 fn summarize_request(request: &Value) -> Value {
     if !request.is_object() {
         return Value::Null;

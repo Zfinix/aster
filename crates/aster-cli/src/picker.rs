@@ -6,7 +6,6 @@ use std::io;
 use anyhow::Result;
 use console::{Key, Term, style};
 
-/// Rows shown at once; longer lists scroll under the cursor.
 const MAX_VISIBLE: usize = 12;
 
 pub struct Item {

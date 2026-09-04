@@ -2,11 +2,6 @@ import { useEffect, useState } from "react";
 import { Mark } from "./Mark";
 import { StatusWord } from "./StatusWord";
 
-/**
- * Aster leans on its own name: a star, so navigation and stargazing verbs, plus
- * the rummaging ones that describe reading code. Rotating them is the point,
- * since a fixed word makes a slow turn read as a hang.
- */
 const WORDS = [
   "Astering",
   "Stargazing",
@@ -47,8 +42,6 @@ const WORDS = [
 
 const ROTATE_MS = 3200;
 
-/** A running time as a reader states it: seconds under a minute, `2m 14s` past
- *  one. Four minutes of work should not read as a part number. */
 function elapsedLabel(secs: number): string {
   return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }

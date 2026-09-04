@@ -8,20 +8,15 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// The shared catalog, embedded at build time. Every endpoint Aster ships with
-/// names the var holding its key, so a key set once survives switching away and
-/// back.
 const PROVIDERS_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.json"));
 
-/// The var used when the endpoint has no var of its own, or that var is unset.
 pub const SHARED_KEY_VAR: &str = "ASTER_API_KEY";
 
 /// Where the key for an endpoint came from, so a caller can say which one it
 /// would use before spending a turn finding out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeySource {
-    /// A var named for this endpoint, e.g. `ANTHROPIC_API_KEY`.
     Provider,
     Shared,
 }
@@ -53,14 +48,10 @@ struct CatalogEntry {
     #[serde(default)]
     name: String,
     base_url: String,
-    /// Absent for servers that take no key, e.g. Ollama.
     #[serde(default)]
     key_env: Vec<String>,
 }
 
-/// Hosts resolved once and kept for the process. Templated hosts such as
-/// `{resource}.openai.azure.com` cannot be matched whole, so their literal
-/// parts are kept and every one has to appear.
 struct KeyTable {
     exact: HashMap<String, &'static [&'static str]>,
     templated: Vec<(Vec<String>, &'static [&'static str])>,
@@ -100,8 +91,6 @@ fn table() -> &'static KeyTable {
     })
 }
 
-/// The parts of a templated host either side of its `{placeholder}`, so
-/// `bedrock-runtime.{region}.amazonaws.com` still matches a real region.
 fn literal_segments(host: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut rest = host;
@@ -168,8 +157,6 @@ pub fn resolve_key(base_url: &str) -> Option<(String, KeySource)> {
     }
 }
 
-/// One catalog row's model shortlist, resolved once: `recommended`, else the
-/// example model.
 struct ModelRow {
     base_url: String,
     models: Vec<String>,

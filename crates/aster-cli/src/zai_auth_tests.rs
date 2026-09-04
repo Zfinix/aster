@@ -16,7 +16,7 @@ fn authorize_url_carries_the_client_and_redirect() {
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
     assert!(pairs.contains(&("client_id".into(), CLIENT_ID.into())));
-    assert!(pairs.contains(&("redirect_uri".into(), REDIRECT_URI.into())));
+    assert!(pairs.contains(&("redirect_uri".into(), redirect_uri())));
     assert!(pairs.contains(&("response_type".into(), "code".into())));
 }
 

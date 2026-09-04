@@ -1,12 +1,6 @@
-//! The consolidation pass: the transfer that turns a finished session's
-//! episodic record into durable semantic memory.
-//!
-//! This is the learning step. It runs detached at session boundaries (and as a
-//! startup sweep for sessions a crash left un-consolidated), reads a bounded
-//! digest plus the recent memory journal, asks the model for structured
-//! proposals, and applies them through the journaled `MemoryStore` API so every
-//! learned fact is as auditable as a hand-written one. A `Consolidated`
-//! journal marker records completion, making the sweep idempotent.
+//! The consolidation pass: turns a finished session's transcript into durable
+//! memory. It reads a bounded digest, asks the model for proposals, and applies
+//! them through the journaled store; a `Consolidated` marker makes it idempotent.
 
 use anyhow::{Context, Result};
 use aster_ai::AiClient;
@@ -15,12 +9,8 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::digest::{self, SessionDigest};
 
-/// How far back the duplicate-detection journal window reaches. Sessions
-/// consolidate at their end, so only recent history can meaningfully collide.
 pub const JOURNAL_WINDOW: Duration = Duration::days(30);
 
-/// The system prompt for a consolidation call: what the model is, what it must
-/// emit, and the constraints that keep learned memory bounded and plain.
 pub const CONSOLIDATE_SYSTEM: &str = "\
 You turn the tail of a finished coding session into durable memory for the agent that ran it.
 The agent's memory is a set of named markdown blocks (a name, a one-line description, and a
@@ -54,7 +44,6 @@ Respond with ONLY a JSON object of this exact shape, no markdown fences, nothing
 }
 ";
 
-/// How many recent user turns make a session worth consolidating.
 pub const DEFAULT_MIN_TURNS: usize = 6;
 
 /// The full set of decisions a consolidation call may return. Every field is
@@ -201,8 +190,6 @@ pub fn apply(memory: &MemoryStore, session_id: &str, proposals: &Proposals) -> R
     Ok(report)
 }
 
-/// The merge/archived names from a merge proposal are handled by the writer
-/// side; the apply report records an archived merge target distinctly.
 fn valid_name(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() {
@@ -211,8 +198,6 @@ fn valid_name(name: &str) -> String {
     name.chars().take(80).collect()
 }
 
-/// Render the current memory index for the model, bounded to the same 60-block
-/// cap the prompt index uses so the call stays small.
 fn current_index(memory: &MemoryStore) -> Vec<String> {
     memory
         .list()

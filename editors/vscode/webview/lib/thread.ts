@@ -7,23 +7,19 @@ export interface ToolCall {
   arguments: string;
   result?: string;
   error?: boolean;
-  /** The turn was cancelled before this call finished, so it never will. */
   stopped?: boolean;
 }
 
 export interface ReviewData {
   status: "running" | "done" | "error" | "stopped";
   phase: string;
-  /** Candidate count from the hypothesis pass, the tally on that step's row. */
   candidates?: number;
-  /** Which candidate the verify gate is on right now. */
   verify?: { index: number; total: number; title: string };
   findings: Finding[];
   refuted: { title: string; reason: string }[];
   summary: string;
   usage?: UsageSummary;
   errorMsg?: string;
-  /** Files touched by the diff under review, parsed from the `diff` event. */
   files: string[];
 }
 
@@ -37,42 +33,31 @@ export interface AgentTaskState {
   error?: string;
   done: number;
   total: number;
-  /** Rolling feed of the agent's live actions, newest last. */
   log?: string[];
 }
 
-/**
- * One chronological slice of a turn. Text and tool groups are kept in arrival
- * order so steps render under the thought that produced them, the way the CLI
- * prints them, instead of piling up above the whole reply.
- */
+/** One chronological slice of a turn. Text and tool groups are kept in arrival
+ *  order so steps render under the thought that produced them, the way the CLI
+ *  prints them, instead of piling up above the whole reply. */
 export type TurnBlock =
   | { kind: "text"; id: string; text: string }
   | { kind: "tools"; id: string; calls: ToolCall[] }
-  /** The model's thinking for one round, shown where it happened. */
   | {
       kind: "reasoning";
       id: string;
       text: string;
-      /** Running/final token estimate, streamed in `reasoning_delta` events. */
       tokens?: number;
-      /** Wall-clock time the round took, in milliseconds. */
       durationMs?: number;
-      /** True once `reasoning_done` closed the block. */
       done?: boolean;
     }
-  /** Live sub-agent swarm for one `agent` tool call. */
   | { kind: "agents"; id: string; callId: string; tasks: AgentTaskState[] }
-  /** A user message the turn absorbed mid-run, shown where it landed. */
   | { kind: "injected"; id: string; text: string }
-  /** A judged goal loop running inside this turn, fed by `goal_*` events. */
   | {
       kind: "goal";
       id: string;
       condition: string;
       maxTurns: number;
       verdicts: GoalVerdictRow[];
-      /** Set once the loop ends; absent while it is still running. */
       outcome?: GoalOutcome;
     };
 
@@ -113,7 +98,6 @@ export function parsePlan(args: string): PlanStep[] | null {
  *  would be remembered against; without one there is nothing to remember. */
 export interface ApprovalAsk {
   preview: string;
-  /** Plan approvals carry the plan as clean markdown for document rendering. */
   markdown?: string | null;
   scope?: string | null;
   kind?: "plan" | "action";
@@ -129,22 +113,15 @@ export interface Question {
 export interface AssistantTurn {
   id: string;
   role: "assistant";
-  /** The whole reply, flattened: chat history, copy, and error display use it. */
   text: string;
   blocks: TurnBlock[];
-  /** Set while the CLI blocks waiting for an approval reply. */
   approval?: ApprovalAsk;
-  /** Set while `ask_user` blocks waiting for a choice. */
   question?: Question;
-  /** True once any token delta arrived, so `text` is already the full answer. */
   streamed?: boolean;
   pending?: boolean;
   error?: boolean;
-  /** Kept apart from `text` so a failure never erases the output that preceded it. */
   errorMsg?: string;
-  /** The turn never started: the endpoint needs a login or a key first. */
   setup?: SetupInfo;
-  /** Cancelled by the user, or abandoned because the host went idle mid-turn. */
   stopped?: boolean;
   edits?: string[];
   usage?: UsageSummary;
@@ -157,8 +134,6 @@ export interface InfoCardData {
   rows?: InfoRow[];
   body?: string;
   lang?: string;
-  /** The body is a document to read, so it renders as prose rather than as
-   *  the verbatim output a card usually carries. */
   doc?: boolean;
   note?: string;
   error?: boolean;
@@ -218,11 +193,9 @@ export function parseDiffFiles(diff: string): string[] {
 let blocks = 0;
 const blockId = () => `b${++blocks}`;
 
-/**
- * Webview state persisted before turns kept a block timeline has `text` and a
- * flat `tools` list instead. Fold it into one text block so a panel restored
- * across an extension update still renders.
- */
+/** Webview state persisted before turns kept a block timeline has `text` and a
+ *  flat `tools` list instead. Fold it into one text block so a panel restored
+ *  across an extension update still renders. */
 export function hydrate(turns: Turn[] | undefined): Turn[] {
   const restored = (turns ?? []).map((turn) => {
     if (turn.role !== "assistant" || Array.isArray(turn.blocks)) return turn;
@@ -247,11 +220,9 @@ export function newTurn(id: string): AssistantTurn {
   return { id, role: "assistant", text: "", blocks: [], pending: true };
 }
 
-/**
- * `separator` joins the chunk onto whatever came before in the flattened text.
- * A chunk that opens a new block never carries it, so the block itself never
- * starts with blank lines.
- */
+/** `separator` joins the chunk onto whatever came before in the flattened text.
+ *  A chunk that opens a new block never carries it, so the block itself never
+ *  starts with blank lines. */
 export function appendText(turn: AssistantTurn, chunk: string, separator = ""): AssistantTurn {
   if (!chunk) return turn;
   const last = turn.blocks[turn.blocks.length - 1];
@@ -344,12 +315,9 @@ export function appendGoalVerdict(
   };
 }
 
-/**
- * Rebuild a saved assistant turn: what it thought, what it said, then what it
- * ran, which is the order the live events arrived in. A reopened session used
- * to come back as one flat text block, losing every reasoning panel and tool
- * step, so anything but a plain chat reply reloaded as a wall of prose.
- */
+/** Rebuild a saved assistant turn in the order the live events arrived: what it
+ *  thought, said, then ran. A reopened session used to come back as one flat
+ *  text block, losing every reasoning panel and tool step. */
 export function restoreTurn(
   id: string,
   content: string,
@@ -447,11 +415,9 @@ export function appendAgentActivity(
   };
 }
 
-/**
- * Close out anything still spinning. The host owns the run state, so whenever it
- * reports idle every unfinished turn is over, whether it was cancelled, failed,
- * or the CLI died without a terminal event.
- */
+/** Close out anything still spinning. The host owns the run state, so whenever it
+ *  reports idle every unfinished turn is over, whether it was cancelled, failed,
+ *  or the CLI died without a terminal event. */
 export function stopUnfinished(turns: Turn[]): Turn[] {
   return turns.map((turn) => {
     if (turn.role === "assistant" && turn.pending) {
@@ -492,15 +458,11 @@ export function stopUnfinished(turns: Turn[]): Turn[] {
   });
 }
 
-/** Turns older than this are dropped from what a turn sends; `/compact` folds
- *  them into a summary instead, and passes `Infinity` to see all of them. */
 const HISTORY_LIMIT = 12;
 
-/**
- * The chat history sent to `aster chat`, from the last compaction onwards.
- * Review turns are flattened into an assistant message describing their
- * findings, so "why is finding 2 critical?" has the findings in context.
- */
+/** The chat history sent to `aster chat`, from the last compaction onwards.
+ *  Review turns are flattened into an assistant message describing their
+ *  findings, so "why is finding 2 critical?" has the findings in context. */
 export function buildMessages(turns: Turn[], limit = HISTORY_LIMIT): ChatMessage[] {
   const seam = turns.reduce((at, turn, i) => (turn.role === "compaction" ? i : at), -1);
   const folded = seam === -1 ? [] : (turns[seam] as CompactionTurn).messages;

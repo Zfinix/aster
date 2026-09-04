@@ -170,9 +170,6 @@ impl CloudflareBrClient {
     }
 }
 
-/// Cloudflare's envelope. The explicit bound is required: `#[serde(default)]` on
-/// a generic field makes the derive infer `T: Default`, which the payload types
-/// have no reason to satisfy.
 #[derive(Debug, Deserialize)]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
 struct BrResponse<T> {
@@ -184,8 +181,6 @@ struct BrResponse<T> {
 }
 
 impl<T> BrResponse<T> {
-    /// Cloudflare reports failures in the body with a 200, so the envelope has
-    /// to be checked even on success.
     fn error_detail(&self) -> Option<String> {
         if self.success {
             return None;

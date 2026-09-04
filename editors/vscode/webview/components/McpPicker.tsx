@@ -3,11 +3,9 @@ import type { McpServer } from "../../src/protocol";
 import { post } from "../lib/host";
 import { redactSecrets } from "../lib/redact";
 
-/**
- * The `/mcp` control panel: every configured server with its state, where
- * picking one flips `disabled` in whichever config file declares it. It stays
- * open across toggles, since turning two servers off is one errand.
- */
+/** The `/mcp` control panel: every configured server with its state, where
+ *  picking one flips `disabled` in whichever config file declares it. It stays
+ *  open across toggles, since turning two servers off is one errand. */
 export function McpPicker({
   servers,
   onToggle,

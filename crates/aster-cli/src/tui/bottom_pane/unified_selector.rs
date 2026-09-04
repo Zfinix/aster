@@ -14,8 +14,6 @@ use super::window_start_of;
 use crate::tui::render::{Inset, Insets, Renderable, wrapped};
 use crate::tui::theme;
 
-/// Item rows plus their headers; a taller panel would push the composer off a
-/// short terminal.
 const PANEL_ROWS: usize = 18;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,13 +41,10 @@ pub(crate) struct UnifiedItem<E> {
     pub section: UnifiedSection,
     pub name: String,
     pub description: String,
-    /// Ticked in the list: the mode in force, the effort in use, and so on.
     pub is_current: bool,
-    /// Sent to the app when this row is accepted.
     pub event: E,
 }
 
-/// A rendered row: either a section header or one of `items`.
 enum Row {
     Header(UnifiedSection),
     Item(usize),
@@ -57,7 +52,6 @@ enum Row {
 
 pub(crate) struct UnifiedSelector<E> {
     items: Vec<UnifiedItem<E>>,
-    /// Typed filter; rows whose name contains it are the ones shown.
     query: String,
     selected: usize,
     complete: bool,
@@ -95,7 +89,6 @@ impl<E: Clone> UnifiedSelector<E> {
         }
     }
 
-    /// Keep the selection on a row the filter still shows.
     fn reselect(&mut self) {
         let stale = self
             .items
@@ -116,7 +109,6 @@ impl<E: Clone> UnifiedSelector<E> {
         self.selected = shown[next];
     }
 
-    /// Headers interleaved with the rows that survived the filter.
     fn rows(&self) -> Vec<Row> {
         let mut out = Vec::new();
         let mut section = None;
@@ -131,8 +123,6 @@ impl<E: Clone> UnifiedSelector<E> {
         out
     }
 
-    /// The window of rows on screen, kept around the selection so a long list
-    /// scrolls instead of growing the panel.
     fn window(&self) -> (Vec<Row>, usize) {
         let rows = self.rows();
         let at = rows
@@ -196,8 +186,6 @@ impl<E: Clone> UnifiedSelector<E> {
         Inset::new(wrapped(self.lines()), Insets::tlbr(0, 0, 0, 0))
     }
 
-    /// Which item sits on `row` of the rendered panel. `lines` opens with the
-    /// filter row, so the windowed rows start one below it.
     fn item_at(&self, row: u16) -> Option<usize> {
         let offset = row.checked_sub(1)? as usize;
         match self.window().0.get(offset)? {
@@ -239,7 +227,6 @@ impl<E: Clone> BottomPaneView<E> for UnifiedSelector<E> {
         self.complete
     }
 
-    /// One click picks the row outright, the way enter does.
     fn handle_click(&mut self, row: u16) -> bool {
         match self.item_at(row) {
             Some(index) => {

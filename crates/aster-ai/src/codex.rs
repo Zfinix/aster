@@ -10,7 +10,6 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-/// Codex CLI's public OAuth client. It is not a secret; every Codex build ships it.
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const ISSUER: &str = "https://auth.openai.com";
 pub const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -51,7 +50,6 @@ pub fn store_path(home: &Path) -> PathBuf {
     data_dir(home).join("codex.json")
 }
 
-/// `$XDG_DATA_HOME/aster` or `~/.local/share/aster`, the CLI's own data root.
 fn data_dir(home: &Path) -> PathBuf {
     let root = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir),
@@ -60,8 +58,6 @@ fn data_dir(home: &Path) -> PathBuf {
     root.join("aster")
 }
 
-/// Where older builds put the store: `~/.aster`, and a nested `.aster` under
-/// the data dir from a login that was handed the data dir as home.
 fn legacy_store_paths(home: &Path) -> [PathBuf; 2] {
     [
         data_dir(home).join(".aster").join("codex.json"),
@@ -172,8 +168,6 @@ fn current_access_token(auth: &CodexAuth) -> Result<String> {
         .context("refresh produced no tokens")
 }
 
-/// JWT expiry from the access token itself. Unparseable counts as expired so a
-/// malformed token costs one refresh attempt instead of a 401 loop.
 fn expired(access_token: &str) -> bool {
     jwt_claim(access_token, "exp")
         .and_then(|v| v.as_u64())
@@ -197,7 +191,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// `token_url` is a parameter so tests can point it at a local server.
 async fn refresh_with(token_url: &str, home: &Path, auth: &mut CodexAuth) -> Result<()> {
     let Some(tokens) = &auth.tokens else {
         bail!("no tokens to refresh");
@@ -319,8 +312,6 @@ fn open_browser(url: &str) {
         .spawn();
 }
 
-/// The authorize URL with every parameter percent-encoded; a raw `format!`
-/// would put the scope list's literal spaces into the URL.
 fn authorize_url(challenge: &str, state: &str) -> Result<reqwest::Url> {
     reqwest::Url::parse_with_params(
         AUTHORIZE_URL,
@@ -337,15 +328,12 @@ fn authorize_url(challenge: &str, state: &str) -> Result<reqwest::Url> {
     .context("building the authorize URL")
 }
 
-/// What one request to the callback listener turned out to be.
 enum Callback {
     Code(String),
     Refused(String),
     NotTheRedirect,
 }
 
-/// Classify one raw HTTP request against the state this attempt sent. Favicon
-/// probes and empty speculative connections are NotTheRedirect, not failures.
 fn parse_callback(req: &str, expected_state: &str) -> Callback {
     let target = req.split_whitespace().nth(1).unwrap_or_default();
     let Ok(url) = reqwest::Url::parse(&format!("http://localhost{target}")) else {
@@ -372,8 +360,6 @@ fn parse_callback(req: &str, expected_state: &str) -> Callback {
     Callback::Code(code)
 }
 
-/// Localhost listener for the OAuth redirect. Blocking by design: the CLI has
-/// nothing else to do until the browser comes back.
 fn wait_for_code(expected_state: &str) -> Result<String> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
         .with_context(|| format!("binding port {CALLBACK_PORT}; is another login running?"))?;

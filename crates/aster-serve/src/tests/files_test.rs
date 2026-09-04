@@ -88,3 +88,23 @@ fn a_pasted_name_cannot_pick_the_directory() {
     assert_eq!(sanitize(".."), "pasted");
     assert_eq!(sanitize("shot.png"), "shot.png");
 }
+
+#[test]
+fn a_preview_survives_a_space_in_the_path() {
+    let dir = repo();
+    fs::write(dir.path().join("my notes.md"), "# hi\n").expect("file");
+    let file = preview(dir.path(), "my notes.md").expect("preview");
+    assert_eq!(file.content, "# hi\n");
+    assert!(!file.truncated);
+}
+
+#[test]
+fn a_preview_stays_inside_the_repo_and_is_bounded() {
+    let dir = repo();
+    assert_eq!(preview(dir.path(), "../outside.txt"), None);
+    let many = "line\n".repeat(400);
+    fs::write(dir.path().join("big.rs"), &many).expect("file");
+    let file = preview(dir.path(), "big.rs").expect("preview");
+    assert!(file.truncated);
+    assert_eq!(file.content.lines().count(), 200);
+}

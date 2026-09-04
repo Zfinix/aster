@@ -11,11 +11,8 @@ pub use runner::{CommandOutput, SandboxConfig, run_command};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
-    /// macOS Seatbelt via `sandbox-exec`.
     Seatbelt,
-    /// Linux `bubblewrap` via `bwrap`.
     Bubblewrap,
-    /// Process-level only: no OS-enforced isolation.
     ProcessLevel,
 }
 

@@ -35,12 +35,9 @@ use super::terminal::FrameRequester;
 use super::theme;
 use crate::chat::{Answer, ApprovalRequest};
 
-/// Any list shows at most this many rows; the rest collapse to `+N more`.
 const VISIBLE_ROWS: usize = 10;
 const MENU_ROWS: usize = 10;
 
-/// The row a click landed on, counted from the top of `area`, or `None` when
-/// it landed outside.
 fn row_within(area: Rect, ev: MouseEvent) -> Option<u16> {
     let inside = ev.column >= area.x
         && ev.column < area.x + area.width
@@ -49,8 +46,6 @@ fn row_within(area: Rect, ev: MouseEvent) -> Option<u16> {
     inside.then(|| ev.row - area.y)
 }
 
-/// First row of a picker's visible window: keeps the selection centred until
-/// it reaches either end of the list.
 fn window_start(selected: usize, len: usize) -> usize {
     window_start_of(selected, len, VISIBLE_ROWS)
 }
@@ -73,8 +68,6 @@ pub(super) struct MenuEntry {
     name: String,
     desc: String,
     takes_arg: bool,
-    /// Names a skill, so picking it fills the composer and leaves the sending
-    /// to the user; a command runs on the spot instead.
     skill: bool,
 }
 
@@ -91,16 +84,11 @@ impl From<&CommandDesc> for MenuEntry {
 
 pub(super) enum InputResult {
     None,
-    /// A message to send, plus the `[@name]` → full-path references folded out
-    /// of it so the caller can attach them as a resolvable block.
     Submitted {
         text: String,
         refs: Vec<(String, String)>,
     },
-    /// A slash command to run (leading `/` stripped).
     Command(String),
-    /// Enter on a draft while a turn is running; the draft is taken so the
-    /// caller can abort the running turn and submit it immediately.
     Busy {
         text: String,
         refs: Vec<(String, String)>,
@@ -108,11 +96,7 @@ pub(super) enum InputResult {
 }
 
 const MAX_MENTION_MATCHES: usize = 10;
-/// Cap on walked entries per search; outside a repo (a launch from `~`, say)
-/// the tree is effectively unbounded and no `.gitignore` applies.
 const MAX_WALK_ENTRIES: usize = 20_000;
-/// Matches collected before ranking; enough to rank well, small enough to
-/// stop the walk early in a dense tree.
 const MAX_CANDIDATES: usize = 256;
 
 /// Search `root` for files matching the `@` query, best matches first: file
@@ -163,8 +147,6 @@ pub(super) struct BottomPane<E> {
     views: Vec<Box<dyn BottomPaneView<E>>>,
     status: Option<StatusWidget>,
     commands: &'static [CommandDesc],
-    /// Skills the menu suggests once the user types part of a name; a bare
-    /// `/` stays commands-only.
     skills: Vec<MenuEntry>,
     menu_sel: usize,
     placeholder: &'static str,
@@ -173,13 +155,9 @@ pub(super) struct BottomPane<E> {
     on_approval: fn(Answer, Option<PathBuf>) -> E,
     on_mention: fn(String) -> E,
     task_running: bool,
-    /// The `@` query the owner was last asked to search for.
     mention_query: Option<String>,
-    /// Ranked results for `mention_query`, delivered asynchronously.
     mention_results: Vec<String>,
     mention_sel: usize,
-    /// Where the clickable things landed on the last draw. Rendering takes
-    /// `&self`, so these are recorded rather than returned.
     view_area: Cell<Option<Rect>>,
     menu_area: Cell<Option<Rect>>,
     mention_area: Cell<Option<Rect>>,
@@ -562,9 +540,6 @@ impl<E: Clone + 'static> BottomPane<E> {
         }
     }
 
-    /// True when the draft should run as a slash command. A leading `/` alone is not
-    /// enough: a dragged-in absolute path starts with one too, so the first word must
-    /// name or prefix a known command. A skill is not one: `/name` is a message.
     fn looks_like_command(&self) -> bool {
         let text = self.composer.text().trim_start();
         let Some(rest) = text.strip_prefix('/') else {
@@ -578,8 +553,6 @@ impl<E: Clone + 'static> BottomPane<E> {
         self.commands.iter().any(|c| c.name.starts_with(first))
     }
 
-    /// A typed command with args runs as-is; a bare prefix, or a bare `/`,
-    /// runs whichever row the menu has highlighted.
     fn command_to_run(&self) -> String {
         let rest = self
             .composer
@@ -631,8 +604,6 @@ impl<E: Clone + 'static> BottomPane<E> {
         Some(lines)
     }
 
-    /// Ask the owner to search when the `@` query changed since the last
-    /// look. Results land later via [`Self::set_mention_results`].
     fn sync_mentions(&mut self) {
         let query = self.composer.mention_context().map(|(_, q)| q.to_string());
         if query == self.mention_query {
@@ -743,7 +714,6 @@ impl<E: Clone + 'static> BottomPane<E> {
         col
     }
 
-    /// Rows above the shaded band: the gap row and, when idle, the status row.
     fn unshaded_rows(&self, width: u16) -> u16 {
         let status = match (&self.status, self.views.is_empty()) {
             (Some(s), true) => s.desired_height(width) + 1,
@@ -774,7 +744,6 @@ impl<E: Clone + 'static> Renderable for BottomPane<E> {
     }
 }
 
-/// Borrowed adapters so `Column` can hold references without cloning.
 struct ViewRef<'a>(&'a dyn Renderable);
 impl Renderable for ViewRef<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {

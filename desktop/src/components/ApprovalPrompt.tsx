@@ -7,7 +7,6 @@ export function ApprovalPrompt({
   onRespond,
 }: {
   preview: string;
-  /** Set for a plan, which is prose to read rather than a command to scan. */
   markdown?: string;
   onRespond: (allow: boolean) => void;
 }) {

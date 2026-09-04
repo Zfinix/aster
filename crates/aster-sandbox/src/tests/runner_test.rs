@@ -5,8 +5,6 @@ fn config() -> SandboxConfig {
     SandboxConfig::new(SandboxProfile::new(Path::new(".")))
 }
 
-/// Check if the OS sandbox is usable in this environment.
-/// (sandbox-exec can fail with permission denied when nested.)
 async fn can_run_sandboxed() -> bool {
     match detect_backend() {
         SandboxBackend::ProcessLevel => true,
@@ -298,9 +296,6 @@ async fn working_directory_is_repo_root() {
     );
 }
 
-/// The bug this exists for: `gh` could not read `~/.config/gh`, so every GitHub
-/// operation died inside the sandbox. Approving the directory for one command must
-/// change what the OS permits, not just what the profile string says.
 #[tokio::test]
 #[ignore = "slow: spawns real sandboxed processes"]
 async fn an_approved_credential_directory_becomes_readable() {
@@ -332,7 +327,6 @@ async fn an_approved_credential_directory_becomes_readable() {
     assert!(out.success(), "approved read failed: {}", out.stderr);
 }
 
-/// Approving one credential directory must not open the others.
 #[tokio::test]
 #[ignore = "slow: spawns real sandboxed processes"]
 async fn approving_one_directory_leaves_the_rest_denied() {
@@ -351,9 +345,6 @@ async fn approving_one_directory_leaves_the_rest_denied() {
     assert!(!out.success(), "~/.ssh should still be denied");
 }
 
-/// A shell that backgrounds a server and prints before exiting used to lose
-/// both: the grandchild held the pipes past the grace, and the output was
-/// dropped and the process group killed five seconds later.
 #[tokio::test]
 #[ignore = "slow: spawns real sandboxed processes"]
 async fn a_backgrounded_job_keeps_its_output_and_its_process() {

@@ -6,17 +6,12 @@ use std::collections::HashMap;
 use aster_persist::{SessionTranscript, TranscriptEvent};
 use chrono::{DateTime, Utc};
 
-/// Results that told the model nothing, so the round that produced them was
-/// spent for no information. Compared against the whole trimmed result.
 const BARREN: &[&str] = &["no matches", "no files matched", "no results"];
 
-/// Tools that block on a human. Their duration is the user thinking, not
-/// aster working, so it never counts towards active time.
 const WAITS_ON_USER: &[&str] = &["ask_user", "exit_plan_mode"];
 
 pub struct Call {
     pub tool: String,
-    /// `None` when the transcript ends before the result was recorded.
     pub duration: Option<f64>,
     pub result_chars: usize,
     pub barren: bool,
@@ -34,10 +29,7 @@ pub struct Turn {
     pub model: Option<String>,
     pub started: DateTime<Utc>,
     pub ended: DateTime<Utc>,
-    /// Model round-trips: the gap from each user or tool message to the
-    /// assistant message it produced. Excludes tool execution by construction.
     pub latencies: Vec<f64>,
-    /// Calls in each assistant message that carried at least one, in order.
     pub batches: Vec<usize>,
     pub calls: Vec<Call>,
     pub prompt_tokens: u64,

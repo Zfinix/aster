@@ -14,12 +14,9 @@ const shikiTheme: Parameters<typeof Streamdown>[0]["shikiTheme"] = [
 ];
 const plugins = { code };
 
-/** An assistant reply. On first appearance it fades itself in word by word via
- *  Streamdown's own animation, then renders as static markdown. The whole text
- *  is handed to Streamdown at once (Shiki highlights complete code immediately);
- *  we no longer re-parse a growing substring every frame, which was the source
- *  of the streaming stutter. Skips animation for errors, replies already seen,
- *  and reduced-motion. */
+/** An assistant reply: fades in word by word on first appearance, then renders
+ *  as static markdown. The whole text goes to Streamdown at once; re-parsing a
+ *  growing substring every frame was the streaming stutter. */
 export function AssistantText({
   id,
   text,

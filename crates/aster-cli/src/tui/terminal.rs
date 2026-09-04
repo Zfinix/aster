@@ -22,13 +22,11 @@ use tokio::sync::mpsc;
 pub(super) use super::term::Frame;
 use super::term::InlineTerm;
 
-/// Draws faster than this are pointless; terminals cap around 60-120fps.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 /// One input to the UI loop, merged from the terminal and the frame scheduler.
 pub(super) enum TuiEvent {
     Key(KeyEvent),
-    /// Only ever arrives while a menu or picker is open; see [`Tui::set_mouse`].
     Mouse(MouseEvent),
     Paste(String),
     Resize,
@@ -61,11 +59,9 @@ impl FrameRequester {
 
 pub(super) struct Tui {
     term: InlineTerm,
-    /// Created lazily, after [`InlineTerm::new`]'s one cursor query.
     events: Option<EventStream>,
     frame_tx: mpsc::UnboundedSender<Instant>,
     frame_rx: mpsc::UnboundedReceiver<Instant>,
-    /// Earliest requested deadline not yet drawn.
     next_frame: Option<Instant>,
     last_draw: Instant,
     mouse: bool,

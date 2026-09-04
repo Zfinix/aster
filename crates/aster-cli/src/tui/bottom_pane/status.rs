@@ -54,8 +54,6 @@ const WORDS: [&str; 35] = [
     "Sleuthing",
 ];
 
-/// Scrambles the rotation so consecutive words are unrelated, and seeds it per
-/// session so two runs don't open on the same one.
 fn word(seed: u64, elapsed: Duration) -> &'static str {
     let bucket = (elapsed.as_millis() / ROTATE_EVERY.as_millis()) as u64;
     let mixed = seed

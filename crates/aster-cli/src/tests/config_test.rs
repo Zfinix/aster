@@ -1,6 +1,5 @@
 use super::*;
 
-/// A value of the right shape for a key, so the whole table can be exercised.
 fn sample(kind: Kind) -> &'static str {
     match kind {
         Kind::Text => "sample",
@@ -11,8 +10,6 @@ fn sample(kind: Kind) -> &'static str {
     }
 }
 
-/// The table is written by hand, so drift is the failure to catch: a key that
-/// `Settings` no longer has, or one this module cannot read back.
 #[test]
 fn every_documented_key_writes_reads_and_parses() {
     for key in KEYS {
@@ -72,8 +69,6 @@ fn lists_are_written_inline_and_scalars_only_quoted_when_they_must_be() {
     assert_eq!(yaml_value(text, ""), "\"\"");
 }
 
-/// The written value has to survive the parser, since that is what the next
-/// run reads it with.
 #[test]
 fn a_written_glob_list_parses_back_to_the_globs_given() {
     let key = KEYS.iter().find(|k| k.name == "permissions.deny").unwrap();
@@ -190,8 +185,6 @@ fn a_value_the_type_rejects_never_reaches_the_file() {
     assert!(check(&text).is_err(), "{text}");
 }
 
-/// The form shows labels, so two rows reading the same in one group would be
-/// two rows nobody can tell apart.
 #[test]
 fn every_group_labels_its_settings_distinctly() {
     for group in Group::ALL {
@@ -213,8 +206,6 @@ fn every_group_labels_its_settings_distinctly() {
     );
 }
 
-/// A unit is a reading aid, so it lands on a number and never on a default
-/// written in words.
 #[test]
 fn numbers_carry_their_unit_and_words_do_not() {
     let timeout = KEYS
@@ -242,8 +233,6 @@ fn numbers_carry_their_unit_and_words_do_not() {
     assert_eq!(display(&json!(["src/**"]), include), "src/**");
 }
 
-/// What a prompt prefills and what `get` prints is the file's own value, never
-/// the decorated one, or the next write would save "600s" as a number.
 #[test]
 fn the_written_value_never_carries_the_unit() {
     let timeout = KEYS
@@ -253,9 +242,6 @@ fn the_written_value_never_carries_the_unit() {
     assert_eq!(render(&json!(600), timeout), "600");
 }
 
-/// A layer reports only what it sets itself. `permissions.mode` is the trap:
-/// parsing a file that omits it still yields the default, so a settings editor
-/// asking "does this file set the mode?" would be told yes by every file.
 #[test]
 fn a_layer_reports_only_the_keys_it_sets() {
     let layer = Layer {
@@ -272,8 +258,6 @@ fn a_layer_reports_only_the_keys_it_sets() {
     assert!(in_layer(key("permissions.mode").unwrap(), &layer).is_null());
 }
 
-/// Each file answers for itself, so an editor can write back to the scope the
-/// user picked rather than to whichever file happened to win.
 #[test]
 fn each_scope_keeps_its_own_value() {
     let global = PathBuf::from("/home/u/.aster/aster.yaml");

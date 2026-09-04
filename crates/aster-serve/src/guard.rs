@@ -9,8 +9,6 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 
-/// The cookie the token is parked in after the first visit, so the URL the
-/// user copies around does not have to keep carrying it.
 const COOKIE: &str = "aster_token";
 
 pub async fn guard(
@@ -70,9 +68,6 @@ fn refuse(why: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{why}\n")).into_response()
 }
 
-/// A loopback server answers only to loopback names on its own port, so a site
-/// that resolves its own domain to 127.0.0.1 cannot reach it. Bound anywhere
-/// else, the name is unknowable from here and the token is what stands guard.
 fn host_allowed(state: &crate::state::AppState, host: Option<&str>) -> bool {
     if !state.bind.ip().is_loopback() {
         return true;
@@ -93,7 +88,6 @@ fn origin_allowed(state: &crate::state::AppState, origin: &str) -> bool {
     matches!(scheme, "http" | "https") && host_allowed(state, Some(rest))
 }
 
-/// Split `host[:port]`, leaving a bracketed IPv6 literal intact.
 fn split_host(host: &str) -> (&str, Option<u16>) {
     match host.rsplit_once(':') {
         Some((name, port)) if !name.ends_with(']') || port.chars().all(|c| c.is_ascii_digit()) => {

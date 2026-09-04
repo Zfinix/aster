@@ -3,11 +3,9 @@ import { inEditor, post } from "../lib/host";
 import type { LoginState } from "../lib/login";
 import { setupCopy } from "../lib/login";
 
-/**
- * Shown in place of an error when the endpoint has no credentials yet: a
- * sign-in button when a browser login exists, else where the key goes. The
- * login's own output streams underneath so the user can follow the browser flow.
- */
+/** Shown in place of an error when the endpoint has no credentials yet: a
+ *  sign-in button when a browser login exists, else where the key goes. The
+ *  login's own output streams underneath so the user can follow the browser flow. */
 export function SetupCard({ setup, login }: { setup: SetupInfo; login: LoginState | null }) {
   const copy = setupCopy(setup);
   const running = login !== null && !login.done;

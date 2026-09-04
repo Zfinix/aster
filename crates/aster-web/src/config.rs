@@ -4,9 +4,6 @@ use std::env;
 
 use serde::{Deserialize, Serialize};
 
-/// Every env var the providers read, as `(provider, var, what it buys)`, in
-/// dispatch order. Kept beside the `resolve_*` methods so a provider cannot
-/// gain a key without `aster key` listing it.
 pub const KEY_VARS: &[(&str, &str, &str)] = &[
     ("Exa", "EXA_API_KEY", "leads web/search"),
     ("Perplexity", "PERPLEXITY_API_KEY", "web/search, behind Exa"),
@@ -112,8 +109,6 @@ impl WebConfig {
     }
 }
 
-/// First non-blank value among `names`, in order. Split from the environment
-/// lookup so tests exercise the precedence without mutating process-wide state.
 fn resolve_key(lookup: impl Fn(&str) -> Option<String>, names: &[&str]) -> Option<String> {
     names
         .iter()

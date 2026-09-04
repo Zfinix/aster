@@ -44,7 +44,6 @@ impl ContextDevClient {
 
 #[async_trait]
 impl WebExtract for ContextDevClient {
-    /// Extract a single page as Markdown via the crawl endpoint with `maxPages=1`.
     async fn extract(&self, url: &str) -> Result<ExtractedPage> {
         let result = self
             .crawl(
@@ -243,8 +242,6 @@ impl ContextDevClient {
     }
 }
 
-/// Map Context.dev status codes to retryable or terminal errors; return the
-/// body text on success. Cold hits (408) and rate limits (429) are retryable.
 async fn read_body(res: reqwest::Response, what: &str) -> Result<String> {
     match res.status().as_u16() {
         408 => {
@@ -418,7 +415,6 @@ struct SearchResultItem {
 struct SearchMarkdown {
     #[serde(default)]
     markdown: Option<String>,
-    /// SUCCESS, NOT_REQUESTED, TIMEOUT, WEBSITE_ACCESS_ERROR, or ERROR.
     code: String,
 }
 

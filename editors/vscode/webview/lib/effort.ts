@@ -1,6 +1,5 @@
 import type { Effort } from "../../src/protocol";
 
-/** The ladder in menu order; "" is whatever aster.yaml configures. */
 export const EFFORTS: (Effort | "")[] = ["", "off", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /** "medium" -> "Med", so the chip and the menu row stay one short word. */

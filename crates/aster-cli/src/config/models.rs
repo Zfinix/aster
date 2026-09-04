@@ -76,8 +76,6 @@ pub async fn run_model(args: ModelArgs) -> Result<()> {
     }
 }
 
-/// Live picks from OpenRouter's benchmark data, the same resolution
-/// `model: auto` runs. One fetch serves every tier and warms the cache.
 fn router_command(args: RouterArgs) -> Result<()> {
     use aster_ai::router::{self, Tier};
     let repo_root = env::current_dir().context("could not determine the current directory")?;
@@ -132,9 +130,6 @@ pub(crate) fn use_model(args: UseModelArgs) -> Result<()> {
     super::provider::report(&repo_root, &saved, &["ASTER_MODEL"])
 }
 
-/// OpenRouter answers from the live benchmark router, so the shortlist tracks
-/// the rankings instead of a hand-written snapshot. Other endpoints keep the
-/// catalog's shortlist, which costs nothing and stays right when they move.
 fn recommended() -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let settings = Settings::load(Some(&repo_root))?;
@@ -153,9 +148,6 @@ fn recommended() -> Result<()> {
     Ok(())
 }
 
-/// The router's picks for `base_url`, or `None` when the endpoint is not
-/// OpenRouter, no key is set, or the rankings cannot be fetched: callers fall
-/// back to the catalog rather than failing the command.
 fn router_recommended(base_url: &str) -> Option<Vec<String>> {
     use aster_ai::router;
     if !super::provider::is_openrouter(base_url) {
@@ -202,8 +194,6 @@ pub async fn run(args: ModelsArgs) -> Result<()> {
     Ok(())
 }
 
-/// `images: null` is the endpoint saying nothing about its modalities, which
-/// Aster reads as "try it"; `false` is the endpoint ruling images out.
 async fn list_capabilities(client: &aster_ai::AiClient) -> Result<()> {
     let mut catalog = client.fetch_model_catalog().await?;
     catalog.sort_by(|a, b| a.id.cmp(&b.id));
@@ -226,8 +216,6 @@ async fn list_capabilities(client: &aster_ai::AiClient) -> Result<()> {
     Ok(())
 }
 
-/// The provider catalog, with the endpoint currently in use marked. Templated
-/// entries are left out: they name a host the user still has to fill in.
 fn list_providers(current: &str) -> Result<()> {
     let current = current.trim_end_matches('/');
     let providers: Vec<_> = crate::init::provider_choices()

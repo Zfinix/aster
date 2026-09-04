@@ -36,7 +36,6 @@ enum Block {
 }
 
 impl Block {
-    /// Render to one or more HTML strings, each at most `limit` chars.
     fn render(&self, limit: usize) -> Vec<String> {
         match self {
             Block::Code(code) => split_plain(&escape(code), limit.saturating_sub(11))
@@ -90,7 +89,6 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
     blocks
 }
 
-/// One markdown line to HTML: headers, bullets, inline code, and bold.
 fn render_line(line: &str) -> String {
     let trimmed = line.trim_start();
     if let Some(header) = trimmed.strip_prefix('#') {
@@ -107,7 +105,6 @@ fn render_line(line: &str) -> String {
     inline(line)
 }
 
-/// Inline code spans first (their content stays literal), then bold.
 fn inline(text: &str) -> String {
     let parts: Vec<&str> = text.split('`').collect();
     if parts.len().is_multiple_of(2) {
@@ -145,8 +142,6 @@ fn bold(text: &str) -> String {
         .collect()
 }
 
-/// Split HTML-free-of-unclosed-tags text into pieces of at most `limit`,
-/// preferring newline boundaries and never splitting inside a char.
 fn split_plain(text: &str, limit: usize) -> Vec<String> {
     let limit = limit.max(64);
     let mut pieces = Vec::new();

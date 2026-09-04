@@ -2,6 +2,7 @@
 
 mod acp;
 mod agents;
+mod announce;
 mod auth;
 use auth::LoginArgs;
 mod budget;
@@ -146,6 +147,8 @@ enum Command {
     Run(run::RunArgs),
     /// Install, list, and remove scheduled agent runs from aster.yaml.
     Cron(cron::CronArgs),
+    /// Print undismissed release announcements as JSON.
+    Announce(announce::AnnounceArgs),
     /// Set a one-shot native notification: `aster remind "text" "in 30m"`.
     Remind(remind::RemindArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
@@ -163,15 +166,12 @@ enum OutputFormat {
     Json,
 }
 
-/// Set once from the root `--json` flag, then read anywhere a command chooses
-/// between its human and machine output.
 static JSON: AtomicBool = AtomicBool::new(false);
 
 pub fn json_mode() -> bool {
     JSON.load(Ordering::Relaxed)
 }
 
-/// Set once from the command's `--effort` flag; `None` leaves env and aster.yaml in charge.
 static EFFORT: OnceLock<Option<Effort>> = OnceLock::new();
 
 pub fn effort_flag() -> Option<Effort> {
@@ -233,6 +233,7 @@ async fn main() -> Result<()> {
         Command::Remote(args) => remote::run(args).await,
         Command::Run(args) => run::run(args).await,
         Command::Cron(args) => cron::run(args),
+        Command::Announce(args) => announce::run(args).await,
         Command::Remind(args) => remind::run(args),
         Command::Serve(args) => serve::run(args).await,
         Command::Acp(args) => acp::run(args).await,
@@ -258,9 +259,6 @@ async fn main() -> Result<()> {
     }
 }
 
-/// The console layer keeps obeying `RUST_LOG`; spans go to OTLP on their own
-/// filter, so turning export on never changes what is printed. Returns the
-/// exporter handle, which must outlive the run to flush what it batched.
 fn init_tracing(tui_mode: bool, stream_mode: bool) -> Option<aster_telemetry::Telemetry> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;

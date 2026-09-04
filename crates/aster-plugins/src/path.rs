@@ -37,8 +37,6 @@ pub fn contained(root: &Path, path: &Path) -> bool {
     }
 }
 
-/// Collapse `.` and `..` without touching the filesystem. A `..` with nothing
-/// left to pop is kept, which is what makes an escape visible to [`contained`].
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {

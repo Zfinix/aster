@@ -10,31 +10,18 @@ use ratatui::text::{Line, Span};
 use crate::tui::theme;
 use crate::tui::wrap;
 
-/// A paste longer than this is folded into a placeholder so it cannot swallow
-/// the screen; the real text is restored on send.
 const FOLD_PASTE_OVER: usize = 240;
-/// A path token this long is folded into a `[@name]` reference so the composer
-/// and transcript stay readable. Short paths pass through untouched.
 const FOLD_PATH_MIN_LEN: usize = 28;
-/// Longest name shown inside a `[@name]` token; longer basenames are truncated
-/// with an ellipsis. The full path always survives in the reference block.
 const MAX_TOKEN_CHARS: usize = 40;
 
 #[derive(Default)]
 pub(super) struct Composer {
     text: String,
-    /// Byte offset into `text`, always on a char boundary.
     cursor: usize,
-    /// Previously sent messages, oldest first.
     sent: Vec<String>,
-    /// Position in `sent` while recalling; `None` means editing a fresh draft.
     recall: Option<usize>,
-    /// The draft set aside while recalling, restored on the way back down.
     stash: String,
-    /// Placeholder text mapped to the full paste it stands for.
     folded: Vec<(String, String)>,
-    /// `[@name]` token mapped to the full cleaned path it stands for. The
-    /// tokens stay in the sent text; the paths ride along as a reference block.
     refs: Vec<(String, String)>,
 }
 
@@ -227,9 +214,6 @@ impl Composer {
         self.refs.clear();
     }
 
-    /// Replace path-like tokens with `[@name]` placeholders, recording each token's
-    /// full path in [`Self::refs`]. Tokens may contain shell-escaped spaces, so a
-    /// space ends one only when no backslash precedes it.
     fn fold_paths(&mut self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let bytes = text.as_bytes();
@@ -290,7 +274,6 @@ impl Composer {
         out
     }
 
-    /// The cursor's `(row, column)` among `rows`.
     fn position(&self, rows: &[Range<usize>]) -> (usize, usize) {
         let idx = rows
             .iter()
@@ -301,7 +284,6 @@ impl Composer {
         (idx, col)
     }
 
-    /// The line the cursor sits on, as byte offsets into `text`.
     fn row_bounds(&self) -> Range<usize> {
         let start = self.text[..self.cursor]
             .rfind('\n')
@@ -410,9 +392,6 @@ impl Composer {
     }
 }
 
-/// `token` with shell escapes removed when it looks like a path, else `None`. It
-/// must contain a separator and be absolute, relative (`./`, `../`, `~/`), a
-/// Windows drive, or end in a short file extension.
 fn clean_path(token: &str) -> Option<String> {
     let has_sep = token.contains('/') || token.contains('\\');
     if !has_sep {
@@ -428,8 +407,6 @@ fn clean_path(token: &str) -> Option<String> {
     looks_like_path.then(|| unescape(token))
 }
 
-/// Drop a backslash that escapes a following space (`\ ` → space). Windows
-/// separator backslashes (`C:\Users`) are left intact.
 fn unescape(token: &str) -> String {
     let mut out = String::with_capacity(token.len());
     let mut i = 0;
@@ -448,8 +425,6 @@ fn unescape(token: &str) -> String {
     out
 }
 
-/// The basename of a path, truncated with an ellipsis (extension preserved)
-/// when it would overflow a `[@name]` token.
 fn short_name(cleaned: &str) -> String {
     let base = cleaned.rsplit(['/', '\\']).next().unwrap_or(cleaned);
     let chars: Vec<char> = base.chars().collect();
@@ -469,8 +444,6 @@ fn short_name(cleaned: &str) -> String {
     out
 }
 
-/// True when the final path segment ends in a short extension like `.mov` or
-/// `.rs`, which is a strong path signal even without a leading separator hint.
 fn file_extension(token: &str) -> bool {
     let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
     matches!(

@@ -1,6 +1,3 @@
-/** Vetted for agentic coding, strongest first then down the cost curve; every
-    one takes tools, which a harness that calls them is useless without. Ids are
-    OpenRouter's; another endpoint falls back to its own catalog. */
 export const MODELS = [
   "anthropic/claude-opus-5",
   "anthropic/claude-sonnet-5",
@@ -15,5 +12,4 @@ export const MODELS = [
   "poolside/laguna-xs-2.1",
 ];
 
-/** The five shown at the top of the picker; the rest of MODELS stays searchable. */
 export const RECOMMENDED = MODELS.slice(0, 5);

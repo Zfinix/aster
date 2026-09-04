@@ -36,7 +36,6 @@ fn a_leading_env_assignment_is_dropped() {
     assert_eq!(lines("FOO=1", &["sudo", "rm"])[0], "sudo rm");
 }
 
-/// A value that merely contains `=` is an argument, not an assignment.
 #[test]
 fn an_argument_with_an_equals_sign_is_kept() {
     assert_eq!(

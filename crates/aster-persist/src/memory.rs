@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::slugify;
 
 pub const PROJECT_MEMORY_FILE: &str = "ASTER.md";
-/// Blocks rendered into the prompt are capped; the rest stay on disk and in
-/// `aster memory list`. Model-visible memory must not grow without bound.
 pub const MAX_INDEX_ENTRIES: usize = 60;
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
@@ -24,7 +22,6 @@ pub struct MemoryMeta {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
-    /// Transcript id that wrote this block, when the write came from a session.
     pub source_session: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
@@ -41,8 +38,6 @@ pub enum MemoryOp {
     Forget,
     Archive,
     Recall,
-    /// A consolidation pass finished for the recorded session. The marker makes
-    /// the startup sweep idempotent: a session is only distilled once.
     Consolidated,
 }
 
@@ -52,16 +47,12 @@ pub struct MemoryJournalEntry {
     pub op: MemoryOp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Short note about the event: the appended fact, or an archive reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Session that produced the event, when one was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_session: Option<String>,
 }
 
-/// Frontmatter fields parsed from a block file. All optional: blocks written
-/// before provenance existed simply have none.
 #[derive(Debug, Clone, Default)]
 struct BlockMeta {
     name: Option<String>,
@@ -292,8 +283,6 @@ impl MemoryStore {
         self.log(MemoryOp::Consolidated, None, None, Some(session_id))
     }
 
-    /// Append one line to the memory journal. A failure to journal is logged,
-    /// never fatal: reads and writes of memory must not be blocked by it.
     fn log(
         &self,
         op: MemoryOp,
@@ -400,9 +389,6 @@ fn parse_ts(value: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-/// Recency for index ordering and decay: newest activity (creation or update)
-/// first, so the always-loaded part of the index is what the agent touched
-/// most recently.
 fn recency(block: &MemoryMeta) -> DateTime<Utc> {
     block.updated_at.or(block.created_at).unwrap_or(Utc::now())
 }

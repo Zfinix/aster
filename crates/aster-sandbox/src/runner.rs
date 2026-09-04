@@ -14,7 +14,6 @@ use crate::detect_backend;
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
     pub profile: SandboxProfile,
-    /// Environment variables to set (in addition to a filtered inherited set).
     pub env: Vec<(String, String)>,
     pub unset_env: Vec<String>,
 }
@@ -53,7 +52,6 @@ impl CommandOutput {
     }
 }
 
-/// Environment variables that are never inherited into the sandbox.
 const DROPPED_ENV: &[&str] = &[
     "ASTER_API_KEY",
     "OPEN_ROUTER_API_KEY",
@@ -66,9 +64,6 @@ const DROPPED_ENV: &[&str] = &[
     "ASTER_SESSION",
 ];
 
-/// Environment variables re-added after `env_clear`, when set. The Windows
-/// names are absent on Unix; without `SystemRoot` and friends most Windows
-/// programs fail to start.
 const INHERITED_ENV: &[&str] = &[
     "PATH",
     "HOME",
@@ -177,16 +172,10 @@ pub async fn run_command(
     })
 }
 
-/// Cap on captured bytes per stream; commands can emit gigabytes.
 const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 
-/// How long to wait for the stream readers after the child exits or is
-/// killed, in case a leftover grandchild still holds the pipes open.
 const READER_GRACE: Duration = Duration::from_secs(5);
 
-/// A stream's captured bytes, shared so a read still in progress can be
-/// snapshotted: a grandchild holding the pipe must not cost the output the
-/// child already wrote.
 type Captured = Arc<Mutex<(Vec<u8>, bool)>>;
 
 fn captured() -> Captured {
@@ -202,8 +191,6 @@ fn snapshot(captured: &Captured) -> String {
     out
 }
 
-/// Read a stream to the end, keeping at most [`MAX_CAPTURE_BYTES`] and
-/// draining the rest so the child never blocks on a full pipe.
 async fn read_capped<R>(reader: Option<R>, into: Captured)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -226,8 +213,6 @@ where
     }
 }
 
-/// SIGKILL the child's whole process group: `kill_on_drop` only reaches the
-/// direct child, not grandchildren a shell left running in the background.
 #[cfg(unix)]
 fn kill_process_group(pid: Option<u32>) {
     use nix::sys::signal::{Signal, killpg};

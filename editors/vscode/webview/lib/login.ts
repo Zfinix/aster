@@ -8,7 +8,6 @@ export interface LoginState {
   message?: string;
 }
 
-/** How many lines of login output to keep on screen; the flow prints a handful. */
 const MAX_LINES = 12;
 
 export function loginLine(prev: LoginState | null, line: string): LoginState {
@@ -19,9 +18,7 @@ export function loginLine(prev: LoginState | null, line: string): LoginState {
 export interface SetupCopy {
   title: string;
   body: string;
-  /** Label for the browser sign-in button, absent when the endpoint has none. */
   signIn?: string;
-  /** The env var to fill instead, when a key is an option. */
   keyVar?: string;
 }
 

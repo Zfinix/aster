@@ -9,8 +9,6 @@ use axum::http::{Uri, header};
 use axum::response::{IntoResponse, Response};
 use include_dir::{Dir, include_dir};
 
-/// Staged here by `bun run build:web`. Empty in a checkout that has not built
-/// the UI yet, which is what [`missing`] explains.
 static UI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/ui");
 
 const INDEX: &str = "index.html";
@@ -44,8 +42,6 @@ fn read(path: &str) -> Option<Vec<u8>> {
     UI.get_file(path).map(|file| file.contents().to_vec())
 }
 
-/// Keep a request inside the served directory: no `..`, no absolute paths, no
-/// root escape.
 fn safe_join(root: &Path, path: &str) -> Option<PathBuf> {
     let relative = Path::new(path);
     relative

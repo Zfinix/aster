@@ -20,41 +20,20 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-/// A server that never answers must not hang the turn.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Handshake and listing happen at startup, where a slow server delays the
-/// whole session, so they get a tighter budget than a tool call.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-/// A legacy server may never answer `server/discover`, so the probe waits only
-/// long enough to tell silence from slowness. A modern server answers in
-/// single-digit milliseconds; every legacy one pays this in full, per session.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
-/// Backstop against a server that paginates without ever ending.
 const MAX_TOOLS_PER_SERVER: usize = 2_000;
-/// How long a server gets to exit on its own after its stdin closes.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
-/// Stderr lines kept per server: enough to hold a whole Node crash dump
-/// (message plus stack frames), bounded so a chatty server cannot grow memory.
 const STDERR_TAIL_LINES: usize = 40;
-/// Longest stderr line kept; anything past this is a dump, not a reason.
 const STDERR_LINE_CHARS: usize = 400;
-/// Newest revision we speak. Modern revisions carry it per request instead of
-/// negotiating once.
 const PROTOCOL_VERSION: &str = "2026-07-28";
-/// Sent in the `initialize` handshake when a server turns out to predate
-/// per-request metadata.
 const LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
-/// `UnsupportedProtocolVersionError`. Identifies a modern server even when it
-/// refuses our version, so it must not trigger the legacy fallback.
 const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 
-/// Which era a server turned out to speak. Determined once per process and
-/// then reused, as the spec requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Era {
-    /// Per-request `_meta`, no handshake.
     Modern { version: String },
-    /// `initialize` handshake, state held by the connection.
     Legacy,
 }
 
@@ -63,21 +42,14 @@ enum Era {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Executable to spawn, e.g. `npx`.
     pub command: String,
     pub args: Vec<String>,
-    /// Extra environment for the child, merged over the inherited environment.
     pub env: BTreeMap<String, String>,
-    /// Working directory for the child; the inherited one when unset.
     pub cwd: Option<std::path::PathBuf>,
     pub url: String,
-    /// Fixed headers sent when connecting to a remote server.
     pub headers: BTreeMap<String, String>,
-    /// `stdio`, `streamable-http`, or `sse`. Inferred from the fields above
-    /// when unset, which is how every config that predates remote support reads.
     #[serde(rename = "type", alias = "transport")]
     pub kind: Option<Transport>,
-    /// Skip this server without deleting its configuration.
     pub disabled: bool,
 }
 
@@ -85,10 +57,8 @@ pub struct ServerConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum Transport {
     Stdio,
-    /// `http` is accepted too: that is the spelling other clients write.
     #[serde(alias = "http")]
     StreamableHttp,
-    /// The deprecated HTTP+SSE binding.
     Sse,
 }
 
@@ -125,13 +95,8 @@ impl ServerConfig {
 pub struct McpSettings {
     pub servers: BTreeMap<String, ServerConfig>,
     pub tools: ToolFilter,
-    /// The WebMCP bridge: tools a page registers through
-    /// `document.modelContext`, served from the user's own browser tab.
     pub webmcp: aster_webmcp::WebmcpConfig,
-    /// Context the inventory is measured against.
     pub context_tokens: usize,
-    /// Share of `context_tokens` the tool inventory may spend. Above it the
-    /// prompt lists servers only and the model searches for what it needs.
     pub inventory_percent: f32,
     pub search_limit: usize,
 }
@@ -156,7 +121,6 @@ impl Default for McpSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolFilter {
-    /// Empty means every tool, so a config that only denies still works.
     pub allow: Vec<String>,
     pub deny: Vec<String>,
 }
@@ -177,8 +141,6 @@ impl ToolFilter {
     }
 }
 
-/// Compiled [`ToolFilter`]. `deny` wins, so denying a tool an `allow` also
-/// names still turns it off.
 struct ToolMatcher {
     allow: Option<globset::GlobSet>,
     deny: globset::GlobSet,
@@ -208,8 +170,6 @@ impl McpSettings {
     }
 }
 
-/// Front-ends inject session-scoped servers via ASTER_MCP_EXTRA, a JSON map
-/// of server configs; the bridge uses it for its telegram tools.
 fn extra_servers(problems: &mut Vec<String>) -> BTreeMap<String, ServerConfig> {
     match std::env::var("ASTER_MCP_EXTRA") {
         Ok(raw) => match serde_json::from_str::<BTreeMap<String, ServerConfig>>(&raw) {
@@ -249,31 +209,23 @@ enum Wire {
 
 struct StdioWire {
     child: Child,
-    /// Taken on shutdown: closing stdin is the portable signal telling the
-    /// server to exit.
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
-    /// Last stderr lines, kept so a dead server's reason survives it.
     stderr_tail: Arc<std::sync::Mutex<VecDeque<String>>>,
-    /// Drains stderr for the life of the child; finishes at EOF.
     stderr_task: tokio::task::JoinHandle<()>,
 }
 
-/// A wrapper for web tools, acting as an MCP server.
 struct WebConnection {
     backend: aster_web::WebBackend,
 }
 
 impl WebConnection {
-    /// Takes the qualified id the catalog uses and hands the bare name to the
-    /// backend, which owns the one dispatch table.
     async fn call(&self, tool: &str, arguments: &Value) -> Result<Value> {
         let name = tool.strip_prefix("web/").unwrap_or(tool);
         self.backend.call(name, arguments).await
     }
 }
 
-/// A wrapper for shortcuts tools, acting as an MCP server.
 struct ShortcutsConnection {
     backend: aster_shortcuts::ShortcutsBackend,
 }
@@ -285,9 +237,6 @@ impl ShortcutsConnection {
     }
 }
 
-/// A wrapper for the WebMCP bridge, acting as an MCP server. The tool list is
-/// live: the page registers and unregisters tools as its state changes, so
-/// the catalog is re-read on every call rather than frozen at startup.
 struct WebmcpConnection {
     backend: aster_webmcp::WebmcpBackend,
 }
@@ -299,9 +248,6 @@ impl WebmcpConnection {
     }
 }
 
-/// One JSON-RPC failure, kept structured so the probe can tell an
-/// `UnsupportedProtocolVersionError` (modern server) from anything else
-/// (legacy server).
 #[derive(Debug)]
 struct RpcError {
     code: i64,
@@ -316,8 +262,6 @@ impl std::fmt::Display for RpcError {
 }
 
 impl StdioWire {
-    /// Write one message and read until the reply to `id`. Notifications and
-    /// server-initiated requests in between are skipped, not mistaken for it.
     async fn exchange(
         &mut self,
         name: &str,
@@ -433,8 +377,6 @@ impl Connection {
         ))
     }
 
-    /// Open a remote server. Nothing is exchanged yet: the session's own
-    /// handshake is what tells a reachable endpoint from a working one.
     async fn connect(name: &str, config: &ServerConfig, transport: Transport) -> Result<Self> {
         let url = config.url.trim();
         // A stored OAuth login rides in as the Authorization header; a server
@@ -470,8 +412,6 @@ impl Connection {
         }
     }
 
-    /// True once a local server's process has exited. A remote one has no
-    /// process to lose, so it never reports itself dead.
     async fn died(&mut self) -> bool {
         let Some(wire) = self.stdio() else {
             return false;
@@ -479,8 +419,6 @@ impl Connection {
         matches!(timeout(SHUTDOWN_GRACE, wire.child.wait()).await, Ok(Ok(_)))
     }
 
-    /// The per-request metadata a modern server needs to serve a request with
-    /// no prior connection state. Legacy servers get no `_meta` at all.
     fn meta(&self) -> Option<Value> {
         let Era::Modern { version } = &self.era else {
             return None;
@@ -501,9 +439,6 @@ impl Connection {
             .map_err(|e| anyhow::anyhow!("MCP server `{}` rejected {method}: {e}", self.name))
     }
 
-    /// One JSON-RPC round trip. The outer `Result` is a transport failure, the inner
-    /// one the server's own error, which the probe inspects rather than treats as
-    /// fatal. Notifications are skipped, not mistaken for the reply.
     async fn try_request(
         &mut self,
         method: &str,
@@ -545,7 +480,6 @@ impl Connection {
         }
     }
 
-    /// How long the era probe waits before calling a server legacy.
     fn probe_budget(&self) -> Duration {
         match self.wire {
             Wire::Stdio(_) => PROBE_TIMEOUT,
@@ -553,7 +487,6 @@ impl Connection {
         }
     }
 
-    /// Settle which era the server speaks, then list what it advertises.
     async fn start(&mut self) -> Result<Vec<McpTool>> {
         let discovered = self.detect_era().await?;
         if self.era == Era::Legacy {
@@ -570,8 +503,6 @@ impl Connection {
         self.list_tools().await
     }
 
-    /// Walk every page. `tools/list` is paginated, and stopping at the first
-    /// page would silently hide most of a large catalog.
     async fn list_tools(&mut self) -> Result<Vec<McpTool>> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
@@ -596,9 +527,6 @@ impl Connection {
         Ok(tools)
     }
 
-    /// Probe with `server/discover`, as the stdio binding requires. A result or
-    /// an `UnsupportedProtocolVersionError` means modern; any other error, or
-    /// silence, means the server predates per-request metadata.
     async fn detect_era(&mut self) -> Result<Option<Value>> {
         let probe = self
             .try_request("server/discover", json!({}), self.probe_budget())
@@ -637,15 +565,12 @@ impl Connection {
         Ok(discovered)
     }
 
-    /// Start straight into the legacy handshake with no probe, for servers
-    /// that treat an unknown method before `initialize` as fatal.
     async fn start_legacy(&mut self) -> Result<Vec<McpTool>> {
         self.era = Era::Legacy;
         self.initialize().await?;
         self.list_tools().await
     }
 
-    /// The pre-2026 handshake, used only once the probe says the server needs it.
     async fn initialize(&mut self) -> Result<()> {
         self.request(
             "initialize",
@@ -660,7 +585,6 @@ impl Connection {
         self.notify("notifications/initialized", json!({})).await
     }
 
-    /// Skips malformed entries: one bad tool should not cost the whole server.
     fn tool_from(&self, entry: &Value) -> Option<McpTool> {
         let name = entry.get("name")?.as_str()?.to_string();
         let description = entry
@@ -690,8 +614,6 @@ impl Connection {
         .await
     }
 
-    /// Turn a startup failure into one short line saying what to do about it.
-    /// The raw error and full stderr go to the debug log, not the user.
     async fn diagnose(mut self, error: anyhow::Error) -> anyhow::Error {
         let name = self.name.clone();
         let Wire::Stdio(wire) = &mut self.wire else {
@@ -731,8 +653,6 @@ impl Connection {
         }
     }
 
-    /// Stop the server. A child is asked to exit by closing its stdin and
-    /// killed if it will not; a remote session is ended over the wire.
     async fn shutdown(&mut self) {
         match &mut self.wire {
             Wire::Stdio(wire) => {
@@ -748,17 +668,12 @@ impl Connection {
     }
 }
 
-/// A remote server leaves no stderr to mine, so the transport error is the
-/// reason. The server name is already printed alongside it, so it is stripped
-/// here rather than repeated.
 fn remote_reason(name: &str, error: anyhow::Error) -> anyhow::Error {
     tracing::debug!(server = %name, "MCP server failed to connect: {error:#}");
     let text = format!("{error:#}").replace(&format!("MCP server `{name}` "), "");
     anyhow::anyhow!("{}", brief(&text))
 }
 
-/// One short reason from a stderr line: error-name prefixes, "imported from"
-/// trailers, and anything past 80 chars are noise in a one-line report.
 fn brief(line: &str) -> String {
     let mut reason = line.trim();
     if let Some((prefix, rest)) = reason.split_once(':')
@@ -779,8 +694,6 @@ fn brief(line: &str) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// Whether a dying server's stderr reads like a credentials problem rather
-/// than a crash. Bare "token" is excluded: parsers also complain about those.
 fn looks_like_auth_failure(stderr: &str) -> bool {
     const SIGNS: [&str; 17] = [
         "unauthorized",
@@ -805,8 +718,6 @@ fn looks_like_auth_failure(stderr: &str) -> bool {
     SIGNS.iter().any(|sign| text.contains(sign))
 }
 
-/// The login link the server printed, if any: OAuth-based servers hand the
-/// user a URL to open, so the report should carry it rather than bury it.
 fn auth_url(tail: &VecDeque<String>) -> Option<String> {
     tail.iter().find_map(|line| {
         let start = line.find("https://").or_else(|| line.find("http://"))?;
@@ -818,8 +729,6 @@ fn auth_url(tail: &VecDeque<String>) -> Option<String> {
     })
 }
 
-/// The stderr line most likely to say why the server died: the first one
-/// naming an error, else the last non-empty one.
 fn stderr_headline(tail: &VecDeque<String>) -> Option<String> {
     let lines: Vec<&str> = tail
         .iter()
@@ -841,8 +750,6 @@ pub struct McpRuntime {
     shortcuts_connection: Option<Arc<ShortcutsConnection>>,
     webmcp_connection: Option<Arc<WebmcpConnection>>,
     disabled_servers: Vec<DisabledServer>,
-    /// Tools `mcp.tools` held back, kept so `aster mcp list` can say a tool is
-    /// off rather than let it silently vanish from the catalog.
     filtered_tools: Vec<String>,
 }
 
@@ -894,9 +801,8 @@ impl McpRuntime {
     }
 
     /// A runtime built from the cached tool listings, before any server has
-    /// connected. The first prompt goes out with these tools and the live
-    /// connect replaces the runtime when it lands; until then a call to a
-    /// cached tool fails with "not connected", same as a dead server.
+    /// connected. The live connect replaces it when it lands; until then a
+    /// call to a cached tool fails with "not connected".
     pub fn from_cache(settings: &McpSettings, repo_root: &std::path::Path) -> Option<Self> {
         Self::from_cache_hit(settings, crate::mcp_cache::load(repo_root, settings)?)
     }
@@ -920,8 +826,6 @@ impl McpRuntime {
         })
     }
 
-    /// The `web` and `shortcuts` servers run in-process, so they register
-    /// synchronously in every runtime, cached or live.
     fn in_process_tools(
         tools: &mut Vec<McpTool>,
     ) -> (Option<Arc<WebConnection>>, Option<Arc<ShortcutsConnection>>) {
@@ -938,8 +842,6 @@ impl McpRuntime {
         )
     }
 
-    /// Apply `mcp.tools` and build the injector. Shared by the live connect
-    /// and the cache-built runtime so the two catalogs cannot drift.
     fn assemble(
         settings: &McpSettings,
         mut tools: Vec<McpTool>,
@@ -1218,8 +1120,6 @@ impl McpRuntime {
     }
 }
 
-/// The newest version in `offered` that Aster also speaks. Versions are
-/// date-stamped, so lexical order is chronological order.
 fn pick_version(offered: Option<&Value>) -> Option<String> {
     let ours = [PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION];
     offered?
@@ -1327,8 +1227,6 @@ fn push_line(out: &mut String, line: &str) {
     out.push_str(line);
 }
 
-/// One `image` content part as a `data:` URL. Re-encoded rather than passed
-/// through, so the size and dimension caps apply to a screenshot too.
 fn image_part(part: &Value) -> Option<String> {
     let data = part.get("data").and_then(Value::as_str)?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -1375,8 +1273,6 @@ pub enum McpAction {
     Serve { name: String },
 }
 
-/// Serve a bundled server on this process's stdio. Stdout is the wire, so nothing
-/// else may write to it for the life of the call.
 async fn serve_builtin(name: &str) -> Result<()> {
     match name {
         // `websearch` is the retired name of the same server, kept so a stale
@@ -1500,8 +1396,6 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
     Ok(())
 }
 
-/// One tree per server: tool names aligned under the server heading, each
-/// description cut to its first line and the terminal width.
 fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings) {
     use std::collections::BTreeMap;
     let width = console::Term::stdout().size().1 as usize;
@@ -1571,9 +1465,6 @@ pub fn toggle_server(
     }
 }
 
-/// Bare `aster mcp`: the configured servers as a menu, in the style of `aster
-/// config`. Enter toggles a server, the loop redraws, Back exits. Nothing is
-/// spawned: the state shown is what the config files say.
 async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
     use cliclack::select;
 
@@ -1683,9 +1574,6 @@ async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
     Ok(())
 }
 
-/// `aster mcp list --no-connect`: the configured servers and their on/off
-/// state, straight from the config files. Nothing is spawned, so this answers
-/// fast enough for a UI that redraws a control panel.
 fn list_configured(settings: &McpSettings) -> Result<()> {
     let servers: Vec<_> = settings
         .servers
@@ -1746,8 +1634,6 @@ fn set_disabled(repo_root: Option<&std::path::Path>, name: &str, disabled: bool)
     Ok(())
 }
 
-/// Turn one tool off or on by writing its `server/tool` id into
-/// `mcp.tools.deny`. The id may be a glob, so `browser/*` works too.
 fn set_tool_denied(repo_root: Option<&std::path::Path>, id: &str, denied: bool) -> Result<()> {
     let path = crate::settings::writable_config(repo_root)?;
     let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1783,8 +1669,6 @@ fn set_tool_denied(repo_root: Option<&std::path::Path>, id: &str, denied: bool) 
     Ok(())
 }
 
-/// `aster mcp remove`: delete servers from every config file declaring them,
-/// picking interactively when no name was given.
 fn remove_servers(repo_root: Option<&std::path::Path>, name: Option<&str>) -> Result<()> {
     let settings = crate::settings::Settings::load(repo_root)?;
     let chosen: Vec<String> = match name {
@@ -1856,7 +1740,6 @@ fn remove_servers(repo_root: Option<&std::path::Path>, name: Option<&str>) -> Re
     Ok(())
 }
 
-/// Every config file this repo reads that declares `name`, edited in place.
 fn remove_everywhere(
     repo_root: Option<&std::path::Path>,
     name: &str,
@@ -1891,7 +1774,6 @@ fn remove_everywhere(
     Ok(edited)
 }
 
-/// Delete a server's block under `servers:`, or `None` when it is not there.
 fn without_server(text: &str, name: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let key = format!("{name}:");
@@ -2027,8 +1909,6 @@ pub fn mcp_json_servers(path: &std::path::Path) -> Result<Vec<(String, ServerCon
     Ok(out)
 }
 
-/// Toggle `disabled` in the first `.mcp.json` declaring `name`, returning the
-/// file edited, or `None` when no file declares it.
 fn mcp_json_set_disabled(
     repo_root: Option<&std::path::Path>,
     name: &str,
@@ -2062,8 +1942,6 @@ fn mcp_json_set_disabled(
     Ok(None)
 }
 
-/// The config file whose `mcp.servers` declares `name`: the project's first,
-/// since that is the one overriding the global.
 fn config_declaring(repo_root: Option<&std::path::Path>, name: &str) -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = repo_root
         .map(|root| {
@@ -2084,8 +1962,6 @@ fn config_declaring(repo_root: Option<&std::path::Path>, name: &str) -> Option<s
     })
 }
 
-/// Rewrite the `disabled:` line under `name`, inserting one when the block has
-/// none. Returns `None` when the server key is not in the text.
 fn toggled(text: &str, name: &str, disabled: bool) -> Option<String> {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let key = format!("{name}:");
@@ -2135,8 +2011,6 @@ fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
-/// First line past the block opened at `start`: everything indented deeper
-/// than it belongs to that block, blank lines included.
 fn block_end(lines: &[String], start: usize) -> usize {
     let indent = indent_of(&lines[start]);
     (start + 1..lines.len())
@@ -2144,8 +2018,6 @@ fn block_end(lines: &[String], start: usize) -> usize {
         .unwrap_or(lines.len())
 }
 
-/// `key` among the direct children of the mapping at `parent`. Depth is taken
-/// from the first child rather than assumed, so a four-space file works too.
 fn child_key(lines: &[String], parent: usize, key: &str) -> Option<usize> {
     let end = block_end(lines, parent);
     let mut level = None;
@@ -2162,14 +2034,11 @@ fn child_key(lines: &[String], parent: usize, key: &str) -> Option<usize> {
     None
 }
 
-/// The value of a `- item` line, unquoted.
 fn list_item(line: &str) -> Option<&str> {
     let item = line.trim().strip_prefix("- ")?;
     Some(item.trim().trim_matches(['"', '\'']))
 }
 
-/// Add or remove one `server/tool` id under `mcp.tools.deny`, creating the
-/// blocks it needs. `None` when the id already reads that way.
 fn with_denied_tool(text: &str, id: &str, denied: bool) -> Option<String> {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let mcp = lines
@@ -2217,7 +2086,6 @@ fn with_denied_tool(text: &str, id: &str, denied: bool) -> Option<String> {
     Some(join(&lines, text))
 }
 
-/// Short description for well-known servers so the agent can decide when to ask.
 fn describe_disabled_server(name: &str) -> String {
     match name {
         "browser" => "Drive a real browser: navigate, click, type, read page state, and \

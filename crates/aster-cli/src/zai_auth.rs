@@ -9,22 +9,20 @@ use serde::Deserialize;
 
 const AUTHORIZE_URL: &str = "https://chat.z.ai/api/oauth/authorize";
 const TOKEN_URL: &str = "https://zcode.z.ai/api/v1/oauth/token";
-/// The sign-in token is a ZCode session, not a model credential; this trades it
-/// for the key the model endpoints accept.
 const BUSINESS_LOGIN_URL: &str = "https://api.z.ai/api/auth/z/login";
-/// Z.ai's public ZCode client; it ships in the web app's bundle.
 const CLIENT_ID: &str = "client_P8X5CMWmlaRO9gyO-KSqtg";
-/// The only redirect this client is registered for, so the code arrives in the
-/// browser's address bar rather than on a loopback port.
-const REDIRECT_URI: &str = "https://zcode.z.ai/login";
+fn redirect_uri() -> String {
+    format!(
+        "https://zcode.z.ai/app/oauth/login?redirect=aster%3A%2F%2Foauth%2Fcallback&app_version={}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 const APP_RETURN_TO: &str = "https://zcode.z.ai/en";
 pub(crate) const KEY_VAR: &str = "ZAI_API_KEY";
-/// A plan token is only served the coding endpoint; the general one rejects it.
 pub(crate) const CODING_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 
 const REFRESH_SKEW: u64 = 60;
 
-/// Mint a fresh model key from the stored sign-in, with no browser round trip.
 pub async fn refresh() -> Result<std::path::PathBuf> {
     let session = crate::credentials::load()
         .zai
@@ -41,8 +39,6 @@ pub async fn refresh() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// A model key from what the sign-in returned: the API sign-in first, then the
-/// credentials themselves, which the model endpoints sometimes take directly.
 async fn mint(http: &reqwest::Client, candidates: &[String]) -> Result<String> {
     if candidates.is_empty() {
         bail!("the sign-in carried no token");
@@ -64,8 +60,6 @@ async fn mint(http: &reqwest::Client, candidates: &[String]) -> Result<String> {
         .context(NO_KEY_FROM_SIGN_IN))
 }
 
-/// The sign-in is undocumented and Z.ai has broken it before, so the refusal
-/// has to name the supported way in rather than leave a stack trace behind.
 const NO_KEY_FROM_SIGN_IN: &str = "signing in to Z.ai did not yield a usable key. \
 Create one at https://z.ai/manage-apikey/apikey-list, then set it as ZAI_API_KEY \
 (or run `aster init` and pick Z.ai)";
@@ -75,8 +69,6 @@ async fn serves_models(http: &reqwest::Client, token: &str) -> bool {
     matches!(http.get(&url).bearer_auth(token).send().await, Ok(resp) if resp.status().is_success())
 }
 
-/// The names an exchange envelope carries, so a refusal says what came back
-/// without ever printing a credential.
 fn token_fields(raw: &serde_json::Value) -> String {
     let mut groups = Vec::new();
     for (label, value) in [("top level", raw), ("data", &raw["data"])] {
@@ -104,7 +96,6 @@ fn field_names(value: &serde_json::Value) -> Option<String> {
     (!names.is_empty()).then(|| names.join(", "))
 }
 
-/// Re-mint the key when the stored sign-in has aged out.
 pub async fn refresh_if_stale() {
     let Some(expires_at) = crate::credentials::load().zai.and_then(|s| s.expires_at) else {
         return;
@@ -120,13 +111,10 @@ pub async fn refresh_if_stale() {
     }
 }
 
-/// Spent a skew early, so a turn never starts on a key that dies mid-flight.
 fn is_spent(expires_at: u64, now: u64) -> bool {
     expires_at <= now.saturating_add(REFRESH_SKEW)
 }
 
-/// Run the whole browser sign-in and store the token. Returns the summary
-/// printed by the CLI.
 pub async fn login() -> Result<String> {
     if let Ok(path) = refresh().await {
         return Ok(finish(None, &path, true));
@@ -137,10 +125,9 @@ pub async fn login() -> Result<String> {
 
     let instructions = format!(
         "\nTo sign in with Z.ai, finish in your browser:\n  {url}\n\n\
-         You land back on zcode.z.ai saying the sign-in could not be completed. \
-         That page is for the ZCode app, not for Aster, so the message is expected \
-         and your code is still unused. Copy the whole address from the address bar \
-         and paste it below."
+         When the Aster app is installed, your browser hands the code back to it \
+         and this command finishes on its own. Otherwise copy the final address \
+         (it starts with aster://oauth/callback) and paste it below."
     );
     if crate::json_mode() {
         eprintln!("{instructions}");
@@ -149,21 +136,18 @@ pub async fn login() -> Result<String> {
     }
     let _ = open::that(url.as_str());
 
-    let pasted = read_callback()?;
+    let pasted = read_callback().await?;
     let code = callback_code(&pasted, &nonce)?;
     let session = exchange(&code, &state).await?;
     let path = store_key(&session.token)?;
     if !session.upstream.is_empty() {
         crate::credentials::store_zai_session(session.upstream)?;
     }
-    // Reload so the token reaches this process too: without it the run that
-    // offered the sign-in would still find nothing and fail anyway.
     let _ = dotenvy::from_path_override(&path);
 
     Ok(finish(session.account, &path, false))
 }
 
-/// The shared tail of both paths to a key: the JSON line or the printed summary.
 fn finish(account: Option<String>, path: &std::path::Path, reused: bool) -> String {
     if crate::json_mode() {
         println!(
@@ -191,8 +175,6 @@ fn finish(account: Option<String>, path: &std::path::Path, reused: bool) -> Stri
     summary
 }
 
-/// Sign in, print the summary, and offer to point Aster at the endpoint the
-/// token actually serves; the shared tail of every entry point.
 pub async fn login_and_report() -> Result<()> {
     let summary = login().await?;
     if !summary.is_empty() {
@@ -204,7 +186,7 @@ pub async fn login_and_report() -> Result<()> {
 fn authorize_url(state: &str) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).context("parsing the Z.ai auth url")?;
     url.query_pairs_mut()
-        .append_pair("redirect_uri", REDIRECT_URI)
+        .append_pair("redirect_uri", &redirect_uri())
         .append_pair("response_type", "code")
         .append_pair("client_id", CLIENT_ID)
         .append_pair("state", state);
@@ -217,13 +199,11 @@ fn nonce() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Z.ai carries the callback's own context inside `state`, and the token
-/// exchange checks it against the code, so the shape has to match the app's.
 fn encode_state(nonce: &str) -> String {
     let payload = serde_json::json!({
         "nonce": nonce,
         "app_return_to": APP_RETURN_TO,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri(),
     });
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
 }
@@ -239,13 +219,41 @@ fn state_nonce(state: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-fn read_callback() -> Result<String> {
+fn callback_file() -> Result<std::path::PathBuf> {
+    let dir = crate::persist::global_env_path()
+        .context("no home directory")?
+        .parent()
+        .context("no config directory")?
+        .to_path_buf();
+    Ok(dir.join("login-callback"))
+}
+
+async fn read_callback() -> Result<String> {
+    let file = callback_file()?;
+    let _ = std::fs::remove_file(&file);
     let prompt = "Paste the address you were redirected to";
+    let stdin = tokio::task::spawn_blocking(move || read_pasted(prompt));
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&file)
+            && !text.trim().is_empty()
+        {
+            return Ok(text);
+        }
+        if stdin.is_finished() {
+            return stdin
+                .await
+                .context("reading the pasted address")?
+                .context("reading the pasted address");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+}
+
+fn read_pasted(prompt: &str) -> Result<String> {
     if console::Term::stdout().features().is_attended() {
         let pasted: String = cliclack::input(prompt).required(true).interact()?;
         return Ok(pasted);
     }
-    // Piped input still gets to finish the sign-in; only a closed stdin cannot.
     eprintln!("{prompt}:");
     let mut line = String::new();
     std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
@@ -256,9 +264,6 @@ fn read_callback() -> Result<String> {
     Ok(line)
 }
 
-/// The code out of a pasted callback address, or the code alone when that is
-/// what was pasted. A state from some other attempt is refused rather than
-/// exchanged, which would fail later as a bare parameter error.
 fn callback_code(pasted: &str, nonce: &str) -> Result<String> {
     let pasted = pasted.trim();
     let Ok(url) = reqwest::Url::parse(pasted) else {
@@ -307,7 +312,6 @@ struct Envelope {
 
 #[derive(Deserialize)]
 struct TokenData {
-    /// The ZCode JWT, which the web app stores as `zcodejwttoken`.
     #[serde(default)]
     token: Option<String>,
     #[serde(default)]
@@ -341,7 +345,7 @@ async fn exchange(code: &str, state: &str) -> Result<Session> {
         .post(TOKEN_URL)
         .json(&serde_json::json!({
             "code": code,
-            "redirect_uri": REDIRECT_URI,
+            "redirect_uri": redirect_uri(),
             "state": state,
         }))
         .send()
@@ -386,8 +390,6 @@ async fn exchange(code: &str, state: &str) -> Result<Session> {
     })
 }
 
-/// Which of the two the API sign-in verifies is undocumented and has changed
-/// before, so both are tried, ZCode JWT first.
 fn sign_in_tokens(zcode_token: Option<String>, access_token: Option<String>) -> Vec<String> {
     let mut tokens: Vec<String> = [zcode_token, access_token].into_iter().flatten().collect();
     tokens.dedup();
@@ -400,8 +402,6 @@ fn clean(token: Option<String>) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
-/// A deadline, not the lifetime `expires_in` carries: nothing reading it back
-/// knows when it was fetched.
 fn expires_at(expires_in: Option<u64>) -> Option<u64> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -410,14 +410,10 @@ fn expires_at(expires_in: Option<u64>) -> Option<u64> {
     expires_in.map(|secs| now.saturating_add(secs))
 }
 
-/// Trade the account's access token for the key the model endpoints take. The
-/// field it comes back in is not documented, so every plausible name is tried
-/// and a miss reports the names that were there.
 async fn business_login(http: &reqwest::Client, access_token: &str) -> Result<String> {
     let envelope: serde_json::Value = http
         .post(BUSINESS_LOGIN_URL)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .json(&serde_json::json!({}))
+        .json(&serde_json::json!({ "token": access_token }))
         .send()
         .await
         .context("signing in to the Z.ai API")?
@@ -427,7 +423,7 @@ async fn business_login(http: &reqwest::Client, access_token: &str) -> Result<St
         .await
         .context("decoding the API sign-in response")?;
     let code = envelope.get("code").and_then(serde_json::Value::as_i64);
-    if code.is_some_and(|code| code != 0) {
+    if code.is_some_and(|code| code != 0 && code != 200) {
         let msg = envelope
             .get("msg")
             .and_then(serde_json::Value::as_str)
@@ -454,7 +450,6 @@ async fn business_login(http: &reqwest::Client, access_token: &str) -> Result<St
             return Ok(token.to_string());
         }
     }
-    // Names only: the values here are credentials.
     let fields: Vec<&str> = data
         .as_object()
         .map(|map| map.keys().map(String::as_str).collect())
@@ -474,9 +469,6 @@ fn store_key(token: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// A plan token only works against the coding endpoint, so a sign-in that
-/// leaves Aster pointed elsewhere fails on the next turn. Offer the switch
-/// where there is someone to ask, and name the command where there is not.
 fn adopt_coding_endpoint() -> Result<()> {
     let repo_root = std::env::current_dir().context("could not determine the current directory")?;
     let settings = crate::settings::Settings::load(Some(&repo_root))?;

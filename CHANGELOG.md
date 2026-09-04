@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-04
+
+### Added
+
+- **Aster is a Zed agent.** `aster acp` serves the agent over the Agent Client
+  Protocol on stdio, so Zed's External Agents menu drives the full agent:
+  streamed replies and thoughts, tool calls with diffs and file locations,
+  plans, approvals and questions as permission prompts, cancel, and thread
+  resume. Each thread offers pickers for the permission mode, provider, model,
+  and effort, with the same humanized model names and coding shortlist as the
+  desktop and VS Code apps. A thread opened without credentials offers to run
+  `aster login` in a terminal.
+
+- **The agent can forget.** A `forget` tool deletes a memory block by name, so
+  a wrong or unwanted fact is removed instead of overwritten with a
+  placeholder. The TUI, Telegram, desktop, and VS Code label the step.
+
 ### Added
 
 - **Web search and page extraction now work on a fresh install, with no key.**

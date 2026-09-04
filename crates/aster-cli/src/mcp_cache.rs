@@ -1,8 +1,6 @@
 //! Tool listings cached per folder, so a session's first prompt does not wait
-//! for every MCP server to spawn, handshake, and list. An entry is keyed on a
-//! fingerprint of the server configs, so editing aster.yaml invalidates it
-//! without a TTL; a server that changes its own list is caught when the live
-//! connect rewrites the cache.
+//! for every MCP server to spawn and list. Entries are keyed on a fingerprint
+//! of the server configs, and the live connect rewrites them when it lands.
 
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -57,8 +55,6 @@ pub(crate) fn fingerprint(servers: &BTreeMap<String, ServerConfig>) -> u64 {
     hasher.finish()
 }
 
-/// One cache file per folder, named by the repo root so parallel sessions in
-/// different projects never contend for the same entry.
 fn cache_path(repo_root: &Path) -> Option<PathBuf> {
     let dir = crate::persist::home().ok()?.join("mcp-cache");
     let mut hasher = DefaultHasher::new();

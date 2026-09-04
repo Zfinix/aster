@@ -1,16 +1,6 @@
-//! Run the review harness on a real diff *with* an in-memory symbol index, so
-//! the verify stage receives retrieved evidence instead of reasoning blind.
-//!
-//! It walks the repo root, extracts symbols (tree-sitter-tags), builds a
-//! SQLite/FTS index, then runs the same hypothesize -> retrieve -> verify -> shape
-//! pipeline with `index: Some(..)` wired in.
-//!
-//! Usage:
-//!   cargo run -p aster-harness --example run_review_indexed -- <diff-file | ->
-//!
-//! Config via env (same as run_review, plus):
-//!   ASTER_REPO_ROOT  repo to index (default: current dir)
-//!   ASTER_INDEX_DB   sqlite path for the index (default: a temp file)
+//! Run the review harness on a real diff with a symbol index built from
+//! `ASTER_REPO_ROOT`, so verify sees retrieved evidence. Same env as run_review.
+//! Usage: `cargo run -p aster-harness --example run_review_indexed -- <diff | ->`
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -108,8 +98,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Walk the repo, skipping VCS/build dirs, and extract symbols from every file
-/// the extractor recognizes.
 fn collect_symbols(root: &Path) -> Vec<IndexSymbol> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];

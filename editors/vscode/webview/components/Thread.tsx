@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { post } from "../lib/host";
+import { openFilePreview } from "../lib/filePreview";
 import type { LoginState } from "../lib/login";
 import type { Turn } from "../lib/thread";
 import { useStickToBottom } from "../lib/useStickToBottom";
@@ -170,7 +171,7 @@ export function Thread({
                       <button
                         key={path}
                         className="edit-chip"
-                        onClick={() => post({ type: "openFile", path })}
+                        onClick={() => openFilePreview(path)}
                       >
                         {path}
                       </button>

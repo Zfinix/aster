@@ -20,7 +20,6 @@ pub const SPEC_VERSION: &str = "1.0.0";
 pub const MANIFEST_FILE: &str = "plugin.json";
 pub const MCP_FILE: &str = "mcp.json";
 pub const SKILLS_DIR: &str = "skills";
-/// The instruction file an Agent Skill directory must contain.
 pub const SKILL_FILE: &str = "SKILL.md";
 
 /// One loaded plugin. `warnings` holds everything that was reported and skipped
@@ -29,9 +28,7 @@ pub const SKILL_FILE: &str = "SKILL.md";
 pub struct Plugin {
     pub manifest: Manifest,
     pub root: PathBuf,
-    /// Client-managed writable state, kept across updates.
     pub data_dir: PathBuf,
-    /// Skill directories under `skills/`, each holding a `SKILL.md`.
     pub skills: Vec<PathBuf>,
     pub servers: Vec<Server>,
     pub warnings: Vec<String>,

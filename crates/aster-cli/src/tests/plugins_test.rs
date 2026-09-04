@@ -102,8 +102,6 @@ fn summarizes_what_a_plugin_contributes() {
     assert!(line.ends_with("A demo plugin"), "{line}");
 }
 
-/// Nothing is bundled today, so the machinery is exercised against a fixture:
-/// it is the shipping path for a future bundle, not dead weight.
 const BUNDLED: Builtin = Builtin {
     name: "demo",
     manifest: MANIFEST,

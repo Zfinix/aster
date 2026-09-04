@@ -2,7 +2,6 @@ use super::*;
 
 use image::{ImageBuffer, Rgb};
 
-/// A solid image of the given size, written where the turn will mention it.
 fn write_image(dir: &Path, name: &str, width: u32, height: u32) -> PathBuf {
     let buffer = ImageBuffer::from_fn(width, height, |_, _| Rgb([120u8, 40, 200]));
     let path = dir.join(name);
@@ -122,4 +121,42 @@ fn an_absolute_path_resolves_outside_the_repo() {
     let content = attach(&format!("@{}", path.display()), dir.path());
 
     assert_eq!(parts(&content).len(), 2);
+}
+
+#[test]
+fn a_mention_under_a_folder_with_a_space_in_its_name_still_attaches() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let folder = outside.path().join("Application Support");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = write_image(&folder, "mtn9lm4c-image.png", 8, 8);
+
+    let content = attach(
+        &format!("im tired of this @{} sub agents need icons", path.display()),
+        dir.path(),
+    );
+
+    assert_eq!(parts(&content).len(), 2);
+}
+
+#[test]
+fn a_spaced_mention_and_a_plain_one_attach_once_each_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("my shots");
+    std::fs::create_dir_all(&folder).unwrap();
+    let first = write_image(&folder, "first.png", 4, 4);
+    write_image(dir.path(), "second.png", 6, 6);
+
+    let content = attach(
+        &format!(
+            "@{} then @second.png then @{}",
+            first.display(),
+            first.display()
+        ),
+        dir.path(),
+    );
+
+    assert_eq!(parts(&content).len(), 3);
+    assert_eq!(decoded(&content, 1).width(), 4);
+    assert_eq!(decoded(&content, 2).width(), 6);
 }

@@ -7,17 +7,13 @@ interface SkillEntry {
   description: string;
 }
 
-/** `aster skills list --json`: skills grouped by scope, project before global,
- *  plus the ones installed plugins contribute under their own name. */
 interface SkillsList {
   scopes?: { scope: string; skills: SkillEntry[] }[];
   plugins?: { plugin: string; skills: SkillEntry[] }[];
 }
 
-/**
- * Every skill the session can see, project scope first so it shadows global,
- * and plugin-contributed skills last under the plugin that brought them.
- */
+/** Every skill the session can see, project scope first so it shadows global,
+ *  and plugin-contributed skills last under the plugin that brought them. */
 export async function skillCommands(cwd: string | undefined): Promise<SkillCommand[]> {
   if (!cwd) {
     return [];
@@ -45,21 +41,16 @@ function command(skill: SkillEntry, plugin?: string): SkillCommand {
   return { name: skill.name, detail: firstLine(skill.description), plugin };
 }
 
-/** Skill descriptions run to a paragraph of trigger phrases; a menu row has
- *  room for a sentence. */
 function firstLine(description: string): string {
   const sentence = description.split(/(?<=\.)\s/)[0] ?? description;
   return sentence.length > 120 ? `${sentence.slice(0, 117)}…` : sentence;
 }
 
-/** Directories no search should ever walk into. */
 export const IGNORED = "**/{node_modules,target,dist,.git}/**";
 
-/**
- * Workspace files and folders matching a fuzzy query, for @ mentions. Folders
- * keep a trailing slash so the picker can tell the two apart; `findFiles` only
- * yields files, so the folders are read back off the paths under them.
- */
+/** Workspace files and folders matching a fuzzy query, for @ mentions. Folders
+ *  keep a trailing slash so the picker can tell the two apart; `findFiles` only
+ *  yields files, so the folders are read back off the paths under them. */
 export async function searchFiles(query: string): Promise<string[]> {
   const [files, nested] = await Promise.all([
     vscode.workspace.findFiles(query ? `**/*${query}*` : "**/*", IGNORED, 50),
@@ -84,7 +75,6 @@ function relative(uris: vscode.Uri[]): string[] {
   });
 }
 
-/** Every folder on the way to `path`, outermost first. */
 function folders(path: string): string[] {
   const parts = path.split("/").slice(0, -1);
   return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
@@ -94,7 +84,6 @@ function matches(path: string, query: string): boolean {
   return path.slice(path.lastIndexOf("/") + 1).toLowerCase().includes(query.toLowerCase());
 }
 
-/** Root entries before anything nested, then alphabetical, as the tree reads. */
 function shallowestFirst(a: string, b: string): number {
   const left = a.replace(/\/$/, "");
   const right = b.replace(/\/$/, "");

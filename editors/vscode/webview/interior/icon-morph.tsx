@@ -6,12 +6,9 @@ import { CELL, INSTANT } from "./springs";
 export type MorphShape = {
   d: readonly string[];
   rotate?: number;
-  /** Fill the shape as well as stroking it, e.g. the solid stop square. */
   fill?: boolean;
 };
 
-/** Send and stop as two three-point polylines each, so one morphs into the
- *  other point for point. */
 export const sendStop: readonly MorphShape[] = [
   { d: ["M 8 13 L 8 8 L 8 3", "M 3.5 7.5 L 8 3 L 12.5 7.5"] },
   // The two polylines close across the same diagonal, so filled they tile the

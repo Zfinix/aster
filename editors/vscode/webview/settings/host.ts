@@ -6,8 +6,6 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
-/** Like the chat panel's bridge: the editor's API when there is one, and the
- *  `aster serve` endpoints when the page is just a page. */
 const api = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
 
 const HOST = "/api/settings";

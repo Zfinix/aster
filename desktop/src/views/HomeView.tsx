@@ -7,8 +7,6 @@ import { Mark } from "../components/Mark";
 import { Tip } from "../components/Tip";
 import { CHAT_OPENERS, REVIEW_OPENERS, TIPS, useRotation } from "../lib/greeting";
 
-/** Long enough that a tip is never gone before it has been read, short enough
- *  that a window left on the home screen shows more than one. */
 const TIP_MS = 11000;
 
 export function HomeView({

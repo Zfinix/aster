@@ -8,11 +8,8 @@ import { Select } from "./controls/Select";
 import { TextInput } from "./controls/TextInput";
 import { Toggle } from "./controls/Toggle";
 
-/** Options wider than this stop reading as a row of choices and start pushing
- *  the label off the card, so they collapse into a dropdown. */
 const SEGMENTED_BUDGET = 34;
 
-/** Keys whose value is a model id, whatever section they sit in. */
 const MODEL_KEYS = new Set([
   "review.model",
   "review.hypothesis_model",
@@ -106,8 +103,6 @@ export function Control({
   }
 }
 
-/** What one entry looks like, since a rule's syntax is not guessable from the
- *  label and an empty list has nothing to copy from. */
 function placeholderFor(key: string): string {
   switch (key) {
     case "permissions.allow":

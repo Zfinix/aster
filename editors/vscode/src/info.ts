@@ -2,10 +2,6 @@ import { exec } from "child_process";
 import { runCli } from "./asterCli";
 import { ApiKey, ChatMessage, InfoRow, McpServer, Provider, SetupInfo, TranscriptTurn } from "./protocol";
 
-/** `aster <args> --json`, parsed. Throws with the CLI's own error when it fails,
- *  since `--json` turns those into `{ok: false, error}` rather than stderr.
- *  Only the command and subcommand go into the fallback message: later args can
- *  hold values that must not be echoed into the UI. */
 async function json<T>(
   args: string[],
   cwd: string,

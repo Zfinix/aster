@@ -7,8 +7,6 @@ use ratatui::text::Span;
 
 use super::theme;
 
-/// Words that read as control flow or declarations across C-likes, Rust,
-/// Python, Go and shell.
 const KEYWORDS: &[&str] = &[
     "as",
     "async",
@@ -76,7 +74,6 @@ const KEYWORDS: &[&str] = &[
     "yield",
 ];
 
-/// Words that read as values rather than names.
 const LITERALS: &[&str] = &[
     "true",
     "false",
@@ -91,7 +88,6 @@ const LITERALS: &[&str] = &[
     "Err",
 ];
 
-/// Comment openers, by the language families that use them.
 const LINE_COMMENTS: &[&str] = &["//", "#", "--"];
 
 /// Split `src` into styled spans. `src` is one display line; multi-line
@@ -167,8 +163,6 @@ pub(super) fn highlight(src: &str) -> Vec<Span<'static>> {
     out
 }
 
-/// Consume a quoted run, tolerating backslash escapes and an unterminated
-/// quote at end of line.
 fn string_from(chars: &[char], start: usize, quote: char) -> (Span<'static>, usize) {
     let mut i = start + 1;
     while i < chars.len() {
@@ -214,7 +208,6 @@ fn starts_upper(word: &str) -> bool {
     word.chars().next().is_some_and(char::is_uppercase)
 }
 
-/// True when only whitespace precedes the word, i.e. it opens the line.
 fn is_leading(before: &[char]) -> bool {
     before.iter().all(|c| c.is_whitespace())
 }

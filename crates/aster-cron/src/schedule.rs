@@ -8,13 +8,9 @@ use chrono::{Datelike, Timelike};
 #[serde(deny_unknown_fields)]
 pub struct Schedule {
     pub name: String,
-    /// Five-field cron expression, in the repo's local time.
     pub cron: String,
-    /// The agent to run, as known to the agent registry.
     pub agent: String,
-    /// The task handed to the agent.
     pub task: String,
-    /// Post a native notification when the run finishes.
     #[serde(default)]
     pub notify: bool,
 }
@@ -68,18 +64,14 @@ pub fn validate_cron(expr: &str) -> Result<()> {
 pub struct CalendarInterval {
     pub minute: u32,
     pub hour: u32,
-    /// 1-based day of month; `None` matches every day.
     pub day: Option<u32>,
-    /// 1-based month; `None` matches every month.
     pub month: Option<u32>,
-    /// 1=Sunday..7=Saturday; `None` matches every weekday.
     pub weekday: Option<u32>,
 }
 
 /// Parse a five-field cron expression into the calendar intervals it fires on.
 /// Steps (`*/5`) and ranges (`1-5`) are rejected: launchd has no equivalent,
-/// and a schedule that silently fires at the wrong cadence is worse than one
-/// that refuses to install.
+/// and firing at the wrong cadence is worse than refusing to install.
 pub fn calendar_intervals(expr: &str) -> Result<Vec<CalendarInterval>> {
     let fields: Vec<&str> = expr.split_whitespace().collect();
     anyhow::ensure!(
@@ -121,8 +113,6 @@ pub fn calendar_intervals(expr: &str) -> Result<Vec<CalendarInterval>> {
 
 const WILDCARD: u32 = u32::MAX;
 
-/// Expand one cron field into its matching values. `*` collapses to the
-/// sentinel [`WILDCARD`] so downstream code can tell "every" from a list.
 fn field_values(field: &str, min: u32, max: u32) -> Result<Vec<u32>> {
     let field = field.trim();
     if field == "*" {

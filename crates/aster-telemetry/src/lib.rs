@@ -12,10 +12,8 @@ use tracing::Subscriber;
 use tracing_subscriber::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
-/// The standard OTLP variable. Its presence is what turns export on.
 pub const ENDPOINT_VAR: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 
-/// The per-signal override, which the spec says is already a full URL.
 pub const TRACES_ENDPOINT_VAR: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
 
 const TRACES_PATH: &str = "/v1/traces";
@@ -46,9 +44,6 @@ fn var(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// An endpoint passed programmatically is used verbatim by the exporter, so
-/// the signal path has to be appended here. Idempotent, so an endpoint that
-/// already names it is left alone.
 fn traces_url(endpoint: &str) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     match endpoint.ends_with(TRACES_PATH) {

@@ -203,8 +203,6 @@ pub async fn run(args: SkillsArgs) -> Result<()> {
     }
 }
 
-/// With names: install those bundled skills. Without: list the bundle, marking
-/// what is already installed in either root.
 fn bundled(names: Vec<String>, project: bool, force: bool) -> Result<()> {
     let scope = scope_of(project);
     if names.is_empty() {
@@ -247,9 +245,6 @@ enum Scope {
     Global,
 }
 
-/// Global is the default: the agent reads both roots on every run, so a skill
-/// installed once is available in every repo. `--project` opts into pinning a
-/// skill to this checkout, where it shadows the global copy of the same name.
 fn scope_of(project: bool) -> Scope {
     if project {
         Scope::Project
@@ -282,7 +277,6 @@ fn other_scope(scope: Scope) -> Scope {
     }
 }
 
-/// The flag that would have targeted the other root, for error messages.
 fn other_scope_flag(scope: Scope) -> &'static str {
     match scope {
         Scope::Project => "--global",
@@ -290,7 +284,6 @@ fn other_scope_flag(scope: Scope) -> &'static str {
     }
 }
 
-/// Reads as a phrase in a sentence, unlike [`scope_word`].
 fn scope_phrase(scope: Scope) -> &'static str {
     match scope {
         Scope::Project => "in this project",
@@ -405,7 +398,6 @@ fn add(opts: AddOpts) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a source and enumerate its skills, with a spinner in a terminal.
 fn resolve_and_list(source: &str, full_depth: bool, tty: bool) -> Result<(Source, Vec<Skill>)> {
     let spinner = tty.then(|| {
         let s = cliclack::spinner();
@@ -460,7 +452,6 @@ fn select_skills(
     bail!("specify --skill <names> or --all when not attached to a terminal");
 }
 
-/// Download the chosen skills, install them, and record their origin for updates.
 fn fetch_and_install(
     src: &Source,
     chosen: &[Skill],
@@ -506,9 +497,6 @@ fn print_available(skills: &[Skill]) {
     }
 }
 
-/// Both scopes by default, because that is what the agent loads. `-p` or `-g`
-/// narrows to one. A project skill shadowing a global one is called out, since
-/// otherwise the global copy looks active when it is not.
 fn list(project_only: bool, global_only: bool) -> Result<()> {
     let scopes: &[Scope] = match (project_only, global_only) {
         (true, _) => &[Scope::Project],
@@ -591,8 +579,6 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
     Ok(())
 }
 
-/// Skills installed plugins contribute, grouped by plugin. They are not in a
-/// skills root, but the agent sees them in the same index.
 fn plugin_skills() -> Vec<(String, Vec<Skill>)> {
     let (plugins, _) = crate::plugins::installed(None);
     plugins
@@ -703,7 +689,6 @@ fn use_skill(target: &str, skill: Option<&str>, full_depth: bool) -> Result<()> 
     Ok(())
 }
 
-/// Print one skill's body pulled straight from a source, without installing.
 fn print_from_source(pkg: &str, skill: Option<&str>, full_depth: bool) -> Result<()> {
     let src = resolve_source(pkg)?;
     let mut skills = src.list(full_depth);
@@ -724,7 +709,6 @@ fn print_from_source(pkg: &str, skill: Option<&str>, full_depth: bool) -> Result
     Ok(())
 }
 
-/// Read an installed skill's body, project scope shadowing global.
 fn read_installed(name: &str) -> Result<String> {
     for scope in [Scope::Project, Scope::Global] {
         let root = scope_root(scope)?;
@@ -736,7 +720,6 @@ fn read_installed(name: &str) -> Result<String> {
     bail!("no installed skill named {name:?}")
 }
 
-/// A skill's instructions: raw markdown, or wrapped in JSON for a caller.
 fn emit_body(name: &str, body: &str) {
     if crate::json_mode() {
         emit_json(serde_json::json!({ "name": name, "body": body }));
@@ -1045,7 +1028,6 @@ fn prompt_source() -> Result<Option<String>> {
     Ok(Some(source))
 }
 
-/// Pick which other agent to import from, listing where its skills live.
 fn prompt_agent(others: &[&'static Agent]) -> Result<Option<String>> {
     let cwd = std::env::current_dir().ok();
     let mut menu = select::<usize>("Import from which agent?");
@@ -1061,7 +1043,6 @@ fn prompt_agent(others: &[&'static Agent]) -> Result<Option<String>> {
     Ok(or_cancel(menu.interact())?.map(|i| others[i].key.to_string()))
 }
 
-/// Paths read better in a picker with the home directory back as `~`.
 fn display_home(path: &Path) -> String {
     let shown = path.display().to_string();
     match dirs::home_dir() {
@@ -1073,7 +1054,6 @@ fn display_home(path: &Path) -> String {
     }
 }
 
-/// The shared multi-select over the source's skills, none preselected.
 fn choose_skills(title: &str, skills: &[Skill]) -> Result<Option<Vec<Skill>>> {
     let items: Vec<crate::picker::Item> = skills
         .iter()
@@ -1086,14 +1066,9 @@ fn choose_skills(title: &str, skills: &[Skill]) -> Result<Option<Vec<Skill>>> {
         .map(|chosen| chosen.into_iter().map(|i| skills[i].clone()).collect()))
 }
 
-/// A git source is a treeless partial clone with only `SKILL.md` files checked
-/// out, so listing is cheap; a chosen skill's contents are fetched on demand.
 enum Source {
-    /// One or more local roots; an agent import can have both a global and a
-    /// project root.
     Local(Vec<PathBuf>),
     Git {
-        /// Kept alive so the clone survives until installation finishes.
         _guard: tempfile::TempDir,
         root: PathBuf,
         subpath: Option<String>,
@@ -1108,12 +1083,10 @@ impl Source {
         }
     }
 
-    /// The skills this source offers, deduped by name with earlier roots winning.
     fn list(&self, full_depth: bool) -> Vec<Skill> {
         self.list_report(full_depth).0
     }
 
-    /// Like [`Source::list`], but also returns the manifests that failed to parse.
     fn list_report(&self, full_depth: bool) -> (Vec<Skill>, Vec<String>) {
         let mut skills: Vec<Skill> = Vec::new();
         let mut skipped = Vec::new();
@@ -1129,7 +1102,6 @@ impl Source {
         (skills, skipped)
     }
 
-    /// When a repo subpath was given, keep only skills beneath it.
     fn filter(&self, skills: &mut Vec<Skill>) {
         if let Source::Git {
             root,
@@ -1142,8 +1114,6 @@ impl Source {
         }
     }
 
-    /// A git source expands its sparse checkout to the chosen directories, which
-    /// lazily downloads only those blobs; local sources already have everything.
     fn materialize(&self, chosen: &[Skill]) -> Result<()> {
         let Source::Git { root, .. } = self else {
             return Ok(());
@@ -1162,9 +1132,6 @@ impl Source {
 
 const MANIFEST_PATTERN: &str = "**/SKILL.md";
 
-/// A local path is used as-is and an agent key expands to that agent's skills
-/// roots; a `owner/repo` shorthand or git URL becomes a treeless partial clone.
-/// A trailing `/subpath` narrows browsing to that subtree.
 fn resolve_source(source: &str) -> Result<Source> {
     let source = source.trim();
 
@@ -1236,7 +1203,6 @@ pub(crate) fn checkout(source: &str) -> Result<Checkout> {
     Ok(Checkout::Clone { _guard: tmp, root })
 }
 
-/// Recognises full git URLs and `owner/repo[/subpath]` GitHub shorthands.
 fn git_source(source: &str) -> Option<(String, Option<String>)> {
     if source.starts_with("http://")
         || source.starts_with("https://")
@@ -1259,8 +1225,6 @@ fn is_ghslug(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
-/// Clone without blobs so only the tree is fetched; blobs arrive on demand. Falls
-/// back to a shallow clone for remotes that do not support partial clone.
 fn partial_clone(url: &str, into: &Path) -> Result<()> {
     let dest = into.to_str().context("clone path is not valid UTF-8")?;
     let filtered = git_try(&[
@@ -1281,8 +1245,6 @@ fn partial_clone(url: &str, into: &Path) -> Result<()> {
         .with_context(|| format!("git clone failed for {url}"))
 }
 
-/// Point the sparse checkout at `patterns`; in a partial clone this fetches
-/// exactly the blobs the new patterns need.
 fn sparse_set(dir: &Path, patterns: &[String]) -> Result<()> {
     let d = dir.to_str().context("checkout path is not valid UTF-8")?;
     let mut args = vec!["-C", d, "sparse-checkout", "set", "--no-cone"];
@@ -1290,7 +1252,6 @@ fn sparse_set(dir: &Path, patterns: &[String]) -> Result<()> {
     git(&args)
 }
 
-/// Output captured so nothing corrupts an active spinner.
 fn git(args: &[&str]) -> Result<()> {
     if !git_try(args)? {
         bail!("git {} failed", args.join(" "));
@@ -1298,7 +1259,6 @@ fn git(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Returns `false` on a non-zero exit rather than erroring.
 fn git_try(args: &[&str]) -> Result<bool> {
     let output = Command::new("git")
         .args(args)
@@ -1318,8 +1278,6 @@ fn git_try(args: &[&str]) -> Result<bool> {
     Ok(true)
 }
 
-/// Resolve another agent's `--agent` key to the skills roots it has on disk.
-/// An unknown key is not an agent, so the caller falls through to git.
 fn agent_roots(source: &str) -> Result<Option<Vec<PathBuf>>> {
     let Some(agent) = agent_by_key(source) else {
         return Ok(None);
@@ -1334,7 +1292,6 @@ fn agent_roots(source: &str) -> Result<Option<Vec<PathBuf>>> {
     Ok(Some(roots))
 }
 
-/// The agents with skills on this machine, for the wizard's import list.
 fn importable_agents() -> Vec<&'static Agent> {
     let cwd = std::env::current_dir().ok();
     installed_agents(cwd.as_deref())
@@ -1351,7 +1308,6 @@ fn is_tty() -> bool {
     !crate::json_mode() && io::stdout().is_terminal() && io::stdin().is_terminal()
 }
 
-/// One JSON object on stdout, the shape every `--json` skills command returns.
 fn emit_json(value: serde_json::Value) {
     println!("{value}");
 }
@@ -1363,7 +1319,6 @@ fn skill_values(skills: &[Skill]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Terminal width for laying out plain output, with a sane fallback when piped.
 fn width() -> usize {
     let w = Term::stdout().size().1 as usize;
     if w == 0 { 100 } else { w }

@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReviewData } from "../lib/thread";
 import type { ToWebview } from "../../src/protocol";
 import { onHostMessage, post } from "../lib/host";
+import { openFilePreview } from "../lib/filePreview";
 import { Disclosure } from "../interior/disclosure";
 import { LoadingButton, type LoadingStatus } from "../interior/loading-button";
 import { TaskSteps, type TaskStep } from "../interior/task-steps";
@@ -21,8 +22,6 @@ const FIX_STATUS: Record<FixAllStatus, LoadingStatus> = {
   done: "success",
 };
 
-/** The indexing phase renames itself when it lands and the verify phase streams
- *  a line per candidate; folding both keeps the list one row per stage. */
 function stepId(phase: string): string {
   if (phase.startsWith("Verifying")) return "verify";
   if (phase.startsWith("Index")) return "index";
@@ -222,8 +221,8 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
                 <li key={file}>
                   <button
                     className="link"
-                    onClick={() => post({ type: "openFile", path: file })}
-                    title="Open file"
+                    onClick={() => openFilePreview(file)}
+                    title="Preview file"
                   >
                     {file}
                   </button>

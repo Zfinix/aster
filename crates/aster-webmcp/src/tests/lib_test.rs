@@ -15,11 +15,8 @@ use tokio_tungstenite::tungstenite::Message;
 use super::*;
 
 struct State {
-    /// The `/json/list` response body.
     targets: String,
-    /// What the page's `__asterWebmcp.list()` returns.
     tools: String,
-    /// What a `__asterWebmcp.call()` returns.
     call_result: String,
     fail_calls: bool,
 }
@@ -108,8 +105,6 @@ async fn start_fake_browser(state: State) -> FakeBrowser {
     }
 }
 
-/// The WebSocket side of the fake: answers the three commands the bridge
-/// sends, keyed off the expression text the way the shim would behave.
 async fn serve_cdp(stream: tokio::net::TcpStream, state: Arc<Mutex<State>>) {
     let mut ws = accept_async(stream).await.expect("websocket upgrade");
     while let Some(Ok(Message::Text(text))) = ws.next().await {

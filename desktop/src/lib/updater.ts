@@ -10,19 +10,15 @@ export type UpdateStage =
   | { kind: "ready"; version: string }
   | { kind: "error"; message: string };
 
-/**
- * Ask the release endpoint whether a newer signed build exists. Returns the
- * pending `Update` handle (to download later) or `null` when up to date.
- */
+/** Ask the release endpoint whether a newer signed build exists. Returns the
+ *  pending `Update` handle (to download later) or `null` when up to date. */
 export async function checkForUpdate(): Promise<Update | null> {
   return check();
 }
 
-/**
- * Download and install a pending update, reporting byte progress through
- * `onStage`, then relaunch into the new version. The caller owns the `Update`
- * handle from {@link checkForUpdate}.
- */
+/** Download and install a pending update, reporting byte progress through
+ *  `onStage`, then relaunch into the new version. The caller owns the `Update`
+ *  handle from {@link checkForUpdate}. */
 export async function installUpdate(
   update: Update,
   onStage: (stage: UpdateStage) => void,

@@ -14,8 +14,6 @@ const SEV_VAR: Record<Severity, string> = {
   info: "var(--faint)",
 };
 
-/** One finding as a flat row: severity dot · title · location. Clicking the
- *  row reveals the why; the diff jump lives inside the expansion. */
 function FindingRow({ f, onFocus }: { f: Finding; onFocus: (f: Finding) => void }) {
   const [open, setOpen] = useState(false);
   const sev = severityOf(f.severity);
@@ -47,8 +45,6 @@ function FindingRow({ f, onFocus }: { f: Finding; onFocus: (f: Finding) => void 
   );
 }
 
-/** The review summary with a light word-by-word entrance. The space lives
- *  outside each animated span — inside an inline-block it would collapse. */
 function Say({ text }: { text: string }) {
   return (
     <p className="say">

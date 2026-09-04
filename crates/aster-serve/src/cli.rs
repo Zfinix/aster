@@ -9,9 +9,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 pub struct Cli {
-    /// The binary turns are spawned from: this one, unless `ASTER_BIN` says
-    /// otherwise. `aster serve` is the CLI, so a turn runs the build the
-    /// browser is already talking to.
     pub bin: PathBuf,
     pub root: PathBuf,
 }

@@ -15,12 +15,8 @@ use tokio::time::timeout;
 
 const SESSION_HEADER: &str = "mcp-session-id";
 const PROTOCOL_HEADER: &str = "mcp-protocol-version";
-/// A remote round trip is not a local pipe, so the era probe waits longer than
-/// the stdio one before deciding a server predates per-request metadata.
 pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Redirects followed inside one origin. Crossing origins would leak the
-/// configured headers to a host the user never named.
 const MAX_REDIRECTS: usize = 5;
 
 pub(super) enum Remote {
@@ -93,7 +89,6 @@ pub(super) struct Streamable {
     client: Client,
     url: String,
     headers: HeaderMap,
-    /// Assigned by the server on the first response, then echoed back.
     session: Option<HeaderValue>,
     protocol: Option<HeaderValue>,
 }
@@ -158,8 +153,6 @@ impl Streamable {
         check(name, response).await
     }
 
-    /// Best-effort session teardown. A server that does not implement it says
-    /// so with 405, which is not a failure worth reporting.
     async fn end_session(&mut self) {
         let Some(session) = self.session.take() else {
             return;
@@ -250,7 +243,6 @@ impl Sse {
         Ok(())
     }
 
-    /// Returns a reply only when the server answered the POST directly.
     async fn post(&mut self, name: &str, body: &Value) -> Result<Option<Value>> {
         let response = self
             .client
@@ -270,8 +262,6 @@ impl Sse {
     }
 }
 
-/// Drain the event stream for the life of the connection: the first `endpoint`
-/// event names the POST target, and every message event is a JSON-RPC frame.
 async fn read_events(
     name: String,
     base: Url,
@@ -314,7 +304,6 @@ async fn read_events(
     }
 }
 
-/// Read a POST's `text/event-stream` reply until the answer to `id` arrives.
 async fn read_stream(name: &str, response: Response, id: i64) -> Result<Value> {
     let mut parser = Parser::default();
     let mut stream = response.bytes_stream();
@@ -332,8 +321,6 @@ async fn read_stream(name: &str, response: Response, id: i64) -> Result<Value> {
     bail!("MCP server `{name}` closed the stream without answering request {id}")
 }
 
-/// A non-2xx response, turned into a reason a person can act on. The body is
-/// included because MCP servers explain refusals there.
 async fn check(name: &str, response: Response) -> Result<Response> {
     let status = response.status();
     if status.is_success() {
@@ -362,7 +349,6 @@ fn content_type(response: &Response) -> String {
         .to_ascii_lowercase()
 }
 
-/// The JSON-RPC message answering `id`, from a single frame or a batch.
 fn matching(text: &str, id: i64) -> Option<Value> {
     let value: Value = serde_json::from_str(text.trim()).ok()?;
     if let Some(batch) = value.as_array() {
@@ -384,8 +370,6 @@ fn client() -> Result<Client> {
         .context("building the HTTP client for MCP")
 }
 
-/// Configured headers may carry credentials, so a redirect that leaves the
-/// origin is refused rather than followed.
 fn same_origin_only() -> redirect::Policy {
     redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() > MAX_REDIRECTS {

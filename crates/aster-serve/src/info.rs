@@ -222,8 +222,6 @@ async fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(stdout)
 }
 
-/// Skill descriptions run to a paragraph of trigger phrases; a menu row has
-/// room for a sentence.
 fn first_sentence(description: &str) -> &str {
     match description.split_once(". ") {
         Some((first, _)) => first,

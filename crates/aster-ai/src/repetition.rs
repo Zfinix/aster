@@ -3,17 +3,11 @@
 
 use std::fmt;
 
-/// Length of the trailing slice the guard keeps re-searching for.
 const REPETITION_WINDOW: usize = 40;
-/// How much recently streamed text the guard keeps around to search.
 const REPETITION_BUF: usize = 256;
-/// Consecutive repeated windows that trigger the guard.
 const REPETITION_STOP_AFTER: usize = 4;
-/// A window with fewer alphabetic characters is ignored; a wall of separators
-/// (----, ====) repeats without being degenerate.
 const MIN_CHUNK_LETTERS: usize = 8;
 
-/// User-facing reason attached to [`DegenerateOutput`].
 pub const DEGENERATE_MSG: &str = "the model's reply degenerated into repeated text and was stopped; \
      switch to a stronger model or higher effort and retry";
 
@@ -67,9 +61,6 @@ impl RepetitionGuard {
     }
 }
 
-/// The first char boundary at or after `index`. Both cuts are computed from byte
-/// lengths, so a multi-byte character straddling one would panic mid-stream:
-/// rounding forward shortens the window instead of splitting a char.
 fn boundary(text: &str, index: usize) -> usize {
     let mut index = index.min(text.len());
     while index < text.len() && !text.is_char_boundary(index) {

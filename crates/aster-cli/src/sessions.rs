@@ -304,8 +304,6 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
     Ok(())
 }
 
-/// The folder a session was started in, as a column: the last path component,
-/// which is what tells two checkouts apart without spending the width.
 fn project_name(repo_root: &str) -> String {
     Path::new(repo_root)
         .file_name()
@@ -314,9 +312,6 @@ fn project_name(repo_root: &str) -> String {
         .unwrap_or_else(|| repo_root.to_string())
 }
 
-/// The checkout that owns a session: this one when the id is local, otherwise
-/// whichever project holds it. Sessions are filed per project, so an id from a
-/// sibling folder is invisible to a plain lookup however recent it is.
 fn owner_of(store: &aster_persist::Store, repo_root: &Path, id: &str) -> Result<PathBuf> {
     if store.resume(repo_root, id).is_ok() {
         return Ok(repo_root.to_path_buf());
@@ -485,7 +480,6 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
     Ok(())
 }
 
-/// Compact relative age: "now", "16m", "5h", "3d", "6w", "2y".
 fn time_ago(created: &chrono::DateTime<chrono::Utc>) -> String {
     let secs = (chrono::Utc::now() - *created).num_seconds().max(0);
     if secs < 60 {
@@ -510,13 +504,10 @@ fn time_ago(created: &chrono::DateTime<chrono::Utc>) -> String {
     format!("{}y", w / 52)
 }
 
-/// Flatten a title to one line. A preview holding a newline otherwise wraps and
-/// breaks every column below it.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Usable columns, falling back to a sane width when stdout is not a terminal.
 fn terminal_width() -> usize {
     crossterm::terminal::size()
         .map(|(cols, _)| cols as usize)

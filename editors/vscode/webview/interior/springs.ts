@@ -1,5 +1,3 @@
-/** Shared motion curves from interior.dev, so every micro-interaction lands
- *  with the same weight. */
 export const EASE = [0.23, 1, 0.32, 1] as const;
 export const CELL = { type: "spring", stiffness: 520, damping: 34, mass: 0.45 } as const;
 export const CROSSFADE = { type: "spring", stiffness: 260, damping: 34, mass: 0.8 } as const;

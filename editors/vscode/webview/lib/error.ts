@@ -1,8 +1,6 @@
-/**
- * A turn-level failure, split into a plain-language label, a sentence saying
- * what it means and what to do, and the raw detail, so the panel renders a
- * readable boxed error instead of dumping the provider string verbatim.
- */
+/** A turn-level failure, split into a plain-language label, a sentence saying
+ *  what it means and what to do, and the raw detail, so the panel renders a
+ *  readable boxed error instead of dumping the provider string verbatim. */
 export interface ParsedError {
   label: string;
   hint?: string;
@@ -24,7 +22,6 @@ const NOT_SIGNED_IN: Explanation = {
   hint: "Sign in to your model provider, or add its API key, then send again.",
 };
 
-/** The turn never started: the CLI found no key and no login for the endpoint. */
 const NOT_CONFIGURED = /not signed in to chatgpt|no api key found/i;
 
 const CONNECTION: Explanation = {
@@ -64,19 +61,12 @@ const STATUS_LABELS: Record<string, Explanation> = {
   "529": PROVIDER_DOWN,
 };
 
-/** Transport failures: stalls, drops, and timeouts that read as plumbing. */
 const NETWORKISH = /timed out|time out|connection|network|dropped mid-reply|decoding response body|stream chunk/i;
 
-/** Connect failures: the provider never answered, usually DNS or a refused
- *  socket. Distinct from a mid-stream drop, which is what NETWORKISH covers. */
 const UNREACHABLE_ISH = /dns error|failed to lookup address|nodename nor servname|client error \(connect\)|connection refused|unreachable/i;
 
-/** Wrappers like `aster chat exited with code 1: <detail>` add plumbing the
- *  reader doesn't need; the detail is what actually went wrong. */
 const EXIT_PREFIX = /^aster(?: \w+)? exited with code \d+[.:]?\s*/i;
 
-/** A status code stated as one, e.g. `model endpoint returned 429`. The
- *  context word keeps line numbers and byte counts from reading as statuses. */
 const STATUS_ANYWHERE = /\b(?:status|returned|error|code|http)\D{0,4}\b(400|401|403|404|408|429|500|502|503|529)\b/i;
 
 export function parseError(message: string): ParsedError {

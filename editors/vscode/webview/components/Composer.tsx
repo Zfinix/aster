@@ -49,13 +49,8 @@ import {
 
 const MAX_ROWS = 10;
 
-/** Only one popup can occupy the slot above the composer. */
 type Menu = "none" | "add" | "commands" | "permission" | "settings" | "model" | "provider" | "mcp";
 
-/** Unfiltered, the skills list would bury every other action; the filter is one
- *  keystroke away, and the note says so. */
-/** One glyph a command, so the list reads as a column of actions rather than a
- *  wall of sentences. */
 const ICONS: Record<string, ReactElement> = {
   new: <NewChatIcon />,
   clear: <TrashIcon />,
@@ -82,11 +77,8 @@ const SKILLS_SHOWN = 5;
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
 
-/** Past this a thumbnail is not worth holding in memory for a chip. */
 const MAX_THUMB_BYTES = 4 * 1024 * 1024;
 
-/** An image attached to the message: shown as a chip above the box rather
- *  than as a mention in it, and sent as the mention the host handed back. */
 interface Attachment {
   mention: string;
   name: string;
@@ -135,17 +127,14 @@ export function Composer({
   onRefreshModels: () => void;
   permissionMode: PermissionMode;
   effort: Effort | null;
-  /** Characters the next turn would send, against the CLI's compact budget. */
   contextUsed: number;
   contextBudget: number;
   skills: SkillCommand[];
   mcpServers: McpServer[];
   providers: Provider[];
   fileResults: string[];
-  /** Set when the host asks for the menu, e.g. from the VS Code palette. */
   openMenu: boolean;
   onMenuOpened: () => void;
-  /** Text pushed in from the editor, e.g. an @-mention of the selection. */
   insertText: string | null;
   onInserted: () => void;
   onSearchFiles: (query: string) => void;
@@ -162,28 +151,18 @@ export function Composer({
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  /** Bytes seen at paste time, by file name, so the chip the host's mention
-   *  produces can show the picture it stands for. */
   const thumbs = useRef(new Map<string, string>());
   const [menu, setMenu] = useState<Menu>("none");
-  /** Escape on a typed `/name` puts the menu away without taking the text with
-   *  it; it comes back when the caret next lands on a fresh one. */
   const [dismissed, setDismissed] = useState(false);
-  /** True while a drag hovers the composer, so it reads as a drop target. */
   const [dropping, setDropping] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const addRef = useRef<HTMLButtonElement>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
-  /** `@basename` shown in the box -> `@full/path` actually sent. */
   const mentions = useRef(new Map<string, string>());
-  /** The level in force before thinking was switched off, so switching it back
-   *  on lands where it was rather than on the default. */
   const lastEffort = useRef<Effort | null>(null);
   if (effort !== "off") lastEffort.current = effort;
 
-  /** The mirror paints the text, so it must follow the textarea's scroll or
-   *  everything past the visible rows types blind. */
   const syncScroll = () => {
     const area = areaRef.current;
     const mirror = mirrorRef.current;
@@ -273,9 +252,6 @@ export function Composer({
     setCaret(el.selectionStart);
   };
 
-  /** A drop or clipboard that carries no URI (a file dragged from the OS, say)
-   *  gives up bytes and a name, so it goes through the paste pipeline: the host
-   *  matches it back to the workspace or writes it to storage. */
   const sendPasted = (files: File[]) =>
     void Promise.all(files.map(readPasted)).then((pasted) => {
       for (const file of pasted) {
@@ -308,11 +284,6 @@ export function Composer({
     }
   };
 
-  /**
-   * A paste is the drop's poorer cousin: the OS clipboard rarely carries a URI,
-   * so the file arrives as bytes and a bare name and the host has to work out
-   * which file that was. Plain text is left to the textarea.
-   */
   const onPaste = (e: React.ClipboardEvent) => {
     const uris = fileUris(e.clipboardData);
     if (uris.length) {
@@ -334,7 +305,6 @@ export function Composer({
     write(applyTrigger(text, trigger, item.value), trigger.start + item.value.length + 1);
   };
 
-  /** Put `next` in the box and leave the caret where the next word goes. */
   const write = (next: string, at = next.length) => {
     setText(next);
     setCaret(at);
@@ -362,14 +332,6 @@ export function Composer({
       if (at !== undefined) area.setSelectionRange(at, at);
     });
 
-  /** Closing any popup hands the keyboard back, so the next keystroke types
-   *  instead of landing on nothing. */
-  /**
-   * Toggles on mousedown and keeps the event to itself. Every popup closes on a
-   * mousedown outside it, so a click that bubbled would shut the menu on the
-   * way down and this handler would reopen it on the way back up, which reads
-   * as a blink and never as "off".
-   */
   const toggle = (next: Menu) => (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -382,20 +344,11 @@ export function Composer({
     focusInput();
   };
 
-  /** Append to what is already typed, for the rows that start a message rather
-   *  than doing something. The caret follows so an inserted `@` opens the file
-   *  list straight away. */
   const compose = (value: string, base = text) => {
     const head = base.replace(/\s*$/, "");
     write(head ? `${head} ${value}` : value);
   };
 
-  /**
-   * Tab, a row that takes an argument, or a `/name` typed mid-sentence all
-   * complete the name into the box so the rest of the line can follow it.
-   * Enter on anything else runs the row and takes the name back out, which is
-   * what the CLI does with the same keystroke.
-   */
   const runItem = (item: MenuItem, complete: boolean) => {
     if (item.kind !== "action") return;
     if (!command) {
@@ -419,7 +372,6 @@ export function Composer({
     if (!menuOpen) return [];
     const enabled = mcpServers.filter((s) => !s.disabled).length;
     const provider = providers.find((p) => p.current);
-    /** Mirrors one of the CLI's own commands, under the same name. */
     const action = (id: string, label: string, hint?: string) => ({
       kind: "action" as const,
       id,
@@ -429,7 +381,6 @@ export function Composer({
       slash: `/${id}`,
       run: () => onCommand(id),
     });
-    /** Opens another surface, so it must not be run by completing its name. */
     const opens = (id: string, label: string, next: Menu, hint?: string) => ({
       kind: "action" as const,
       id,
@@ -535,7 +486,6 @@ export function Composer({
     }
   };
 
-  /** One popup at a time, and one place that says which. */
   const popup = menuOpen ? (
     <CommandMenu sections={sections} query={command ? command.query : null} onRun={runItem} />
   ) : menu === "add" ? (
@@ -743,11 +693,6 @@ export function Composer({
   );
 }
 
-/**
- * The file URIs a transfer carries, under whichever flavour the source used:
- * VS Code's own explorer and editor tabs write `resourceurls` (JSON, and
- * percent-encoded), everything else the standard `text/uri-list`.
- */
 function fileUris(data: DataTransfer): string[] {
   const resources = data.getData("resourceurls");
   if (resources) {
@@ -786,15 +731,8 @@ function fileUris(data: DataTransfer): string[] {
   );
 }
 
-/** Past this the bytes are not worth pushing through the message channel; the
- *  host still gets the name and can match it against the workspace. */
 const MAX_PASTE_BYTES = 10 * 1024 * 1024;
 
-/**
- * A pasted image comes back from the host as `@<stamp>-<name>` (or a repo
- * path when it matched a file there). Both become a chip named for the file,
- * with the pasted bytes as its picture when they were seen on the way out.
- */
 function attachmentFor(token: string, thumbs: Map<string, string>): Attachment | null {
   if (!token.startsWith("@") || token.includes("#") || !IMAGE.test(token)) return null;
   const base = basename(token.slice(1));
@@ -820,17 +758,11 @@ function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-/** The folder holding `path`, or nothing when it sits at the repo root. */
 function dirname(path: string): string | undefined {
   const at = path.lastIndexOf("/");
   return at === -1 ? undefined : path.slice(0, at);
 }
 
-/**
- * Split the raw text so @mentions can be drawn as chips in the mirror layer.
- * The trailing zero-width space keeps a text node present on an empty line so
- * the mirror's height never collapses below the textarea's.
- */
 function renderMentions(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /@[^\s]+/g;
@@ -853,10 +785,6 @@ function renderMentions(text: string): ReactNode[] {
   return nodes;
 }
 
-/**
- * Swap each `@basename` back to the path it was picked from, so the composer
- * stays readable while the agent still gets an unambiguous location.
- */
 function expandMentions(text: string, mentions: Map<string, string>): string {
   let out = text;
   for (const [shown, full] of mentions) {

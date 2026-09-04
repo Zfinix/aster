@@ -6,10 +6,9 @@ use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
 
-/// Files and directories under `base` whose repo-relative path or name matches
-/// `pattern`, up to `max_hits`; directories end with `/`. A `.gitignore` entry
-/// hides a path from the fast pass but must not make it unreachable, so an
-/// empty filtered pass is retried without it.
+/// Files and directories under `base` matching `pattern`, up to `max_hits`;
+/// directories end with `/`. A `.gitignore` entry hides a path from the fast
+/// pass but must not make it unreachable, so an empty pass is retried without it.
 pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Result<String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
@@ -32,8 +31,6 @@ pub fn find(repo_root: &Path, base: &Path, pattern: &str, max_hits: usize) -> Re
     ))
 }
 
-/// Collect matching repo-relative paths, sorted. `respect_ignore` drives the
-/// two passes in [`find`]; the unfiltered one still skips [`crate::SKIP_DIRS`].
 fn walk(
     repo_root: &Path,
     base: &Path,
@@ -77,8 +74,6 @@ fn walk(
 
 const MAX_NO_MATCH_SUGGESTIONS: usize = 5;
 
-/// A wrong glob is usually a near-miss on a real name, so answer with the
-/// closest ones instead of a dead end.
 fn no_match(repo_root: &Path, pattern: &str) -> String {
     let target: String = pattern
         .rsplit('/')
@@ -104,8 +99,6 @@ fn no_match(repo_root: &Path, pattern: &str) -> String {
     )
 }
 
-/// A bare name like `chat.rs` should match at any depth, so every pattern
-/// without a leading `**/` gets that variant too.
 fn matchers(pattern: &str) -> Result<Vec<GlobMatcher>> {
     let build = |p: &str| {
         Glob::new(p)

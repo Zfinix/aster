@@ -6,13 +6,9 @@ interface Key {
   preventDefault: () => void;
 }
 
-/**
- * The keyboard half of a list: an active row, arrows that wrap around it, and
- * Enter that picks it. The caller decides where the keys come from, so one
- * list reads them off its own input and another off the document. The pointer
- * moves the same cursor, and takes it with it when it leaves: a highlight
- * left behind reads as a selection that nobody made.
- */
+/** The keyboard half of a list: an active row, arrows that wrap, Enter that
+ *  picks. The caller decides where the keys come from. The pointer moves the
+ *  same cursor and takes it along when it leaves, so no highlight is left behind. */
 export function useListNav<T extends HTMLElement>({
   count,
   onPick,
@@ -20,13 +16,10 @@ export function useListNav<T extends HTMLElement>({
   tabCompletes = false,
 }: {
   count: number;
-  /** `complete` is Tab: fill the name in rather than run the row. */
   onPick: (index: number, complete: boolean) => void;
-  /** The cursor goes back to the top whenever this changes. */
   resetOn?: unknown;
   tabCompletes?: boolean;
 }) {
-  /** -1 once the pointer has left, so no row is lit. */
   const [active, setActive] = useState(0);
   const activeRef = useRef<T>(null);
 
@@ -36,7 +29,6 @@ export function useListNav<T extends HTMLElement>({
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  /** True when the key was the list's to take. */
   const onKey = (e: Key): boolean => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
@@ -54,7 +46,6 @@ export function useListNav<T extends HTMLElement>({
     return false;
   };
 
-  /** The ref for row `index`, so the active row scrolls into view. */
   const seat = (index: number): RefObject<T | null> | undefined =>
     index === active ? activeRef : undefined;
 

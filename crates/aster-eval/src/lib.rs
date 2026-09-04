@@ -21,9 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
-    /// Only sessions created at or after this instant.
     pub since: Option<DateTime<Utc>>,
-    /// Only sessions recorded against this model.
     pub model: Option<String>,
 }
 

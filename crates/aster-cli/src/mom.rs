@@ -85,9 +85,6 @@ pub(crate) fn target_for_model(model_id: &str, current_base_url: &str) -> Option
     })
 }
 
-/// The endpoint-picking rule behind [`target_for_model`], pure so tests can
-/// drive it: OpenRouter serves any prefixed id, the current endpoint keeps ids
-/// it lists, and otherwise the prefix names the provider to switch to.
 fn pick_model_endpoint(
     model_id: &str,
     current_base_url: &str,

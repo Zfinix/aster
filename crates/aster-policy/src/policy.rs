@@ -16,11 +16,7 @@ pub struct Policy {
     allow: Vec<Rule>,
     ask: Vec<Rule>,
     deny: Vec<Rule>,
-    /// Built-ins, consulted only after every user rule has missed, so an
-    /// `allow` entry is all it takes to override one.
     default_ask: Vec<Rule>,
-    /// Built-in command confirmations. `edit` trusts commands and skips these;
-    /// pausing on them is the whole difference between `auto` and `edit`.
     default_ask_commands: Vec<Rule>,
     default_deny: Vec<Rule>,
 }
@@ -128,7 +124,6 @@ impl Policy {
         self.by_mode(action)
     }
 
-    /// Nothing matched, so the mode decides.
     fn by_mode(&self, action: &Action) -> Decision {
         match (self.mode, action) {
             (Mode::Yolo, _) => Decision::Allow,
@@ -147,7 +142,6 @@ impl Policy {
     }
 }
 
-/// The action as it reads in a reason: `` `src/lib.rs` `` or `` `cargo test` ``.
 fn subject(action: &Action) -> String {
     match action {
         Action::Edit { path } | Action::Read { path } => format!("`{path}`"),
@@ -167,8 +161,6 @@ fn bare_preview(action: &Action) -> String {
     }
 }
 
-/// The full command for approval previews, capped so a huge argument list
-/// cannot flood a prompt.
 fn command_line(binary: &str, args: &[&str]) -> String {
     const PREVIEW_LIMIT: usize = 200;
     let mut line = binary.to_string();

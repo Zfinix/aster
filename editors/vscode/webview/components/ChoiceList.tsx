@@ -1,7 +1,6 @@
 export interface Choice {
   key: string;
   label: string;
-  /** Hover text, where the label is a name and the detail is a URL or an id. */
   title?: string;
   checked: boolean;
   onSelect: () => void;

@@ -1,19 +1,15 @@
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLayer } from "../lib/layer";
 
-/**
- * Anything that opens above the composer. The scrim takes the click meant to
- * put it away, so nothing in the thread underneath gets it too; the panel
- * brings its own chrome, this only decides where it hangs and how it leaves.
- */
+/** Anything that opens above the composer. The scrim takes the click meant to
+ *  put it away, so nothing in the thread underneath gets it too; the panel
+ *  brings its own chrome, this only decides where it hangs and how it leaves. */
 export function Popover({
   onClose,
   anchor,
   children,
 }: {
   onClose: () => void;
-  /** The button the panel hangs off, left edges aligned. Without one the panel
-   *  spans the composer. */
   anchor?: RefObject<HTMLElement | null>;
   children: ReactNode;
 }) {

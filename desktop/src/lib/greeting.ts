@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 
-/** Openers for a review: the home screen asks what to look at, not always in
- *  the same words. */
 export const REVIEW_OPENERS = [
   "What should we review next?",
   "What are we looking at?",
@@ -11,7 +9,6 @@ export const REVIEW_OPENERS = [
   "Where should I start?",
 ];
 
-/** Openers for a chat, which is the other half of the same box. */
 export const CHAT_OPENERS = [
   "What are we building?",
   "What's the task?",
@@ -21,9 +18,6 @@ export const CHAT_OPENERS = [
   "Ready when you are.",
 ];
 
-/** One-line reminders of what the app can do; most of it lives behind a menu,
- *  so the home screen is where it gets said. Anything bracketed is drawn as a
- *  chip: a key to press, or a control to go and find. */
 export const TIPS = [
   "[@] picks a file from the repo",
   "The mode menu switches chat and review",
@@ -40,7 +34,6 @@ export const TIPS = [
 
 export interface Part {
   text: string;
-  /** Drawn as a chip rather than prose. */
   chip: boolean;
 }
 
@@ -63,11 +56,9 @@ export function itemAt<T>(items: readonly T[], index: number): T {
   return items[((index % items.length) + items.length) % items.length];
 }
 
-/**
- * Holds a line from `items`, stepping on after `everyMs` when that is set. The
- * start is random so launches differ; the order after it is not, so a rotation
- * never repeats itself before the list is out.
- */
+/** Holds a line from `items`, stepping on after `everyMs` when that is set. The
+ *  start is random so launches differ; the order after it is not, so a rotation
+ *  never repeats itself before the list is out. */
 export function useRotation(items: readonly string[], everyMs = 0): string {
   const [at, setAt] = useState(() => Math.floor(Math.random() * items.length));
   useEffect(() => {

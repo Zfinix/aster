@@ -19,7 +19,6 @@ import {
 } from "./icons";
 import { Markdown } from "./Markdown";
 
-/** Persona faces for the built-in agents; unknown names get the generic mark. */
 const AVATARS: Record<string, ComponentType> = {
   scout: CompassIcon,
   cartographer: RouteIcon,
@@ -29,7 +28,6 @@ const AVATARS: Record<string, ComponentType> = {
   prism: SparkleIcon,
 };
 
-/** One wire of the graph, in pixel coordinates relative to `.agent-net-graph`. */
 interface Wire {
   d: string;
   x1: number;
@@ -45,8 +43,6 @@ export function AgentGroup({ tasks }: { tasks: AgentTaskState[] }) {
   return tasks.length === 1 ? <AgentSolo task={tasks[0]} /> : <AgentSwarm tasks={tasks} />;
 }
 
-/** A batch of one has no swarm to wire, so the card is the node, a live tail
- *  of what it is doing, and its report. */
 function AgentSolo({ task }: { task: AgentTaskState }) {
   const [open, setOpen] = useState(false);
   const report = task.report?.trim() ? task.report : null;
@@ -240,7 +236,6 @@ function AgentNode({
   selected: boolean;
   onSelect: () => void;
   nodeRef?: (el: HTMLButtonElement | null) => void;
-  /** Off where a live tail is already visible, so the line isn't shown twice. */
   showLive?: boolean;
 }) {
   const hasReport = Boolean(task.report?.trim());

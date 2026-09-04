@@ -5,11 +5,8 @@ import { languageFromPath } from "../lib/highlight";
 import { inEditor, post } from "../lib/host";
 import { DiffView } from "./DiffView";
 
-/** The preview opens with `edit <path>:`, which is the only clue to what
- *  language the lines below it are. */
 const HEADER = /^\w+ (\S+?):?$/;
 
-/** What the CLI is asking about, from the verb its preview opens with. */
 function question(ask: ApprovalAsk): string {
   if (ask.kind === "plan") return "Approve this plan and start editing?";
   const verb = ask.preview.trimStart().split(/\s/)[0];
@@ -19,11 +16,9 @@ function question(ask: ApprovalAsk): string {
   return "Allow this?";
 }
 
-/**
- * Shown inline while the CLI blocks on an approval. The choices are numbered
- * and answer to their digit: the keyboard is where the reader already is, and
- * a decision that stops the turn should not need the mouse.
- */
+/** Shown inline while the CLI blocks on an approval. The choices are numbered
+ *  and answer to their digit: the keyboard is where the reader already is, and
+ *  a decision that stops the turn should not need the mouse. */
 export function ApprovalPrompt({
   ask,
   onRespond,
@@ -31,7 +26,6 @@ export function ApprovalPrompt({
 }: {
   ask: ApprovalAsk;
   onRespond: (allow: boolean, always?: boolean) => void;
-  /** Reject, and tell the agent what to do instead. */
   onRedirect: (instead: string) => void;
 }) {
   const [instead, setInstead] = useState("");

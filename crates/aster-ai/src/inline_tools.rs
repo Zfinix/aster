@@ -6,7 +6,6 @@ use serde_json::{Map, Value};
 
 use crate::models::{ToolCall, ToolCallFunction};
 
-/// Tag openers that mean the model has started writing a tool call.
 const OPENERS: &[&str] = &["tool_calls>", "invoke ", "function_calls>"];
 
 /// Split inline tool calls off `content`, returning the text the user should
@@ -30,8 +29,6 @@ pub fn split_inline_tool_calls(content: &str) -> (String, Vec<ToolCall>) {
     (normalized[..start].trim_end().to_string(), calls)
 }
 
-/// Strip the fullwidth-bar noise the delimiters are wrapped in, so what is left
-/// is plain `<tag ...>` markup.
 fn normalize(content: &str) -> String {
     content.replace("\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}", "")
 }
@@ -85,7 +82,6 @@ fn parse_parameters(body: &str) -> Map<String, Value> {
     args
 }
 
-/// `string="false"` marks a number, boolean, or array the model wrote unquoted.
 fn typed(head: &str, value: &str) -> Value {
     let value = value.trim();
     if attr(head, "string").as_deref() == Some("false")
@@ -106,7 +102,6 @@ fn attr(head: &str, key: &str) -> Option<String> {
 /// markup never reaches the UI. One gate per message.
 #[derive(Default)]
 pub struct TokenGate {
-    /// Text held back because it could still turn into a tag opener.
     pending: String,
     closed: bool,
 }
@@ -144,8 +139,6 @@ impl TokenGate {
         }
     }
 
-    /// Emit `pending` up to `at`, holding back the trailing whitespace: if the
-    /// markup starts on the next line, that blank line must not reach the UI.
     fn emit_through(&mut self, at: usize, emit: &mut impl FnMut(&str)) {
         let safe = self.pending[..at].trim_end().len();
         if safe > 0 {
@@ -164,16 +157,11 @@ impl TokenGate {
 }
 
 enum Tag {
-    /// A tool call has started: everything from here on is markup.
     Complete,
-    /// Could still become one once more text arrives.
     Partial,
-    /// Ordinary text.
     No,
 }
 
-/// `tag` starts at a `<`. A half-written opener (`<`, `<\u{ff5c}\u{ff5c}DSML`,
-/// `<tool_`) counts as partial: the rest of it may be in the next delta.
 fn classify(tag: &str) -> Tag {
     let stripped = tag[1..].replace('\u{ff5c}', "");
     if !stripped.is_empty() && "DSML".starts_with(&stripped) {

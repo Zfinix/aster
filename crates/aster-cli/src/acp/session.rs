@@ -19,8 +19,6 @@ use tokio::sync::Notify;
 use crate::chat::{self, ChatEventSink, Limits, SessionCtx, SwarmLimits, UiSender};
 
 const TITLE_TIMEOUT: Duration = Duration::from_secs(10);
-/// The provider's model list is fetched once per thread; a slow endpoint must
-/// not hold the thread open.
 const MODELS_TIMEOUT: Duration = Duration::from_secs(5);
 
 const EFFORTS: [Effort; 7] = [
@@ -33,7 +31,6 @@ const EFFORTS: [Effort; 7] = [
     Effort::Ultra,
 ];
 
-/// Permission modes as the editor's mode picker shows them.
 const MODES: [(Mode, &str, &str, &str); 5] = [
     (
         Mode::Plan,
@@ -82,8 +79,6 @@ async fn fetch_models(client: &AiClient) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// "google/gemini-3.1-flash-lite" -> "Gemini 3.1 Flash Lite", the same
-/// naming as the desktop and VS Code pickers.
 fn model_short(id: &str) -> String {
     let slug = id.rsplit('/').next().unwrap_or(id);
     slug.split('-')
@@ -381,8 +376,6 @@ impl Session {
         }
     }
 
-    /// Repoint the client at another endpoint, start from that provider's
-    /// example model, and reload its model list. Mirrors the TUI's switch.
     async fn switch_provider(&self, base_url: &str) -> Result<()> {
         let want = base_url.trim_end_matches('/');
         let key = match aster_ai::keys::resolve_key(want) {

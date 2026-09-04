@@ -47,8 +47,6 @@ fn empty_result_serializes() {
     assert!(json.contains("\"num_urls\":0"));
 }
 
-/// Which providers a backend has keys for. Building from this rather than from
-/// the environment keeps the dispatch tests independent of each other.
 #[derive(Default)]
 struct Configured {
     exa: bool,

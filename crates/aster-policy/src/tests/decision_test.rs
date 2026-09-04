@@ -40,8 +40,6 @@ fn deserializes_every_mode_name() {
     }
 }
 
-/// The names dropped in the collapse. A stale config should stop the run
-/// rather than silently resolve to something else.
 #[test]
 fn the_retired_mode_names_no_longer_parse() {
     for text in ["\"ask\"", "\"deny\""] {

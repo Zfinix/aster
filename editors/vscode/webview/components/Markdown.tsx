@@ -2,11 +2,9 @@ import type { ReactElement, ReactNode } from "react";
 import { CodeBlock } from "./CodeBlock";
 import { Link } from "./Link";
 
-/**
- * Markdown rendering for assistant replies. Deliberately hand-rolled rather
- * than a library: the webview runs under a strict CSP and this covers what the
- * agent actually emits — fences, headings, lists, quotes, links, and emphasis.
- */
+/** Markdown rendering for assistant replies. Deliberately hand-rolled rather
+ *  than a library: the webview runs under a strict CSP and this covers what the
+ *  agent actually emits — fences, headings, lists, quotes, links, and emphasis. */
 export function Markdown({ text, doc }: { text: string; doc?: boolean }) {
   const blocks: ReactElement[] = [];
   const fence = /```(\w*)\n([\s\S]*?)```/g;
@@ -28,7 +26,6 @@ export function Markdown({ text, doc }: { text: string; doc?: boolean }) {
 }
 
 const BULLET = /^\s*[-*+]\s+(.*)$/;
-/** GFM task list: `- [ ] item`. Without this the box renders as literal text. */
 const TASK = /^\[([ xX])\]\s+(.*)$/;
 const NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
@@ -36,10 +33,7 @@ const QUOTE = /^\s*>\s?/;
 const RULE = /^\s*([-*_])\1{2,}\s*$/;
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const TABLE_SEP = /^\s*\|[\s:|-]+\|\s*$/;
-/** Panel headings start at h3: the thread is a transcript, not a document. */
 const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
-/** A document is read on its own, so it keeps the levels it was written with
- *  and the page gives them a document's scale. */
 const DOC_HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
 function isBlockStart(line: string): boolean {
@@ -186,7 +180,6 @@ function Prose({ text, doc }: { text: string; doc?: boolean }) {
   return <>{out}</>;
 }
 
-/** Splits a `| a | b | c |` row into trimmed cells, dropping the outer pipes. */
 function splitRow(line: string): string[] {
   return line
     .trim()
@@ -196,12 +189,6 @@ function splitRow(line: string): string[] {
     .map((c) => c.trim());
 }
 
-/**
- * Splits on ``code``, `code`, **bold**, *italic*, [text](url), and bare URLs.
- * Double backticks come first: matching the inner pair of a ``…`` span would
- * leave stray backticks beside the styled chip. A bare URL comes last, so a
- * URL already inside a markdown link is not matched twice.
- */
 function inline(text: string): ReactNode[] {
   const parts: ReactNode[] = [];
   const pattern =

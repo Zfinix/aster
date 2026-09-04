@@ -155,10 +155,8 @@ pub(super) fn elapsed(secs: u64) -> String {
     crate::util::elapsed(secs)
 }
 
-/// Names a header list spells out before the rest collapse to `+N more`.
 pub(super) const LIST_MAX: usize = 8;
 
-/// Marks where a `listed` value stops naming and starts counting.
 pub(super) const MORE: &str = "… +";
 
 /// Join names with commas, keeping the first `LIST_MAX` and counting the rest.

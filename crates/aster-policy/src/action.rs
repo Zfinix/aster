@@ -10,9 +10,6 @@ pub enum Action<'a> {
     Read {
         path: &'a str,
     },
-    /// Run a command. `binary` is the program name (e.g. "cargo", "rg"),
-    /// `args` are the arguments. The policy decides whether to allow,
-    /// prompt, or deny based on the command.
     Exec {
         binary: &'a str,
         args: &'a [&'a str],

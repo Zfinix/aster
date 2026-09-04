@@ -131,9 +131,6 @@ pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
     })
 }
 
-/// `auto` resolves through OpenRouter's benchmark rankings. The tier comes from
-/// `ASTER_ROUTER_TIER` (cheap | balanced | strong, default balanced). Any
-/// failure falls back to the built-in default with a note, never a hard error.
 fn resolve_auto_model(api_key: &str) -> String {
     use aster_ai::router::{self, Tier};
     let tier = env_or("ASTER_ROUTER_TIER", None)
@@ -177,9 +174,6 @@ fn resolve_auto_model(api_key: &str) -> String {
     }
 }
 
-/// `--effort` wins, then `ASTER_EFFORT`/`ASTER_REASONING_EFFORT`, then
-/// aster.yaml, then the client default. An unparseable value is ignored rather
-/// than fatal: a typo should not stop a run, but it is said out loud.
 fn resolve_effort(review: &Review) -> Effort {
     crate::effort_flag()
         .or_else(|| {
@@ -205,8 +199,6 @@ fn resolve_effort(review: &Review) -> Effort {
         .unwrap_or_default()
 }
 
-/// `ASTER_WEB_SEARCH` wins, then aster.yaml, then off: a search the turn did not
-/// ask for spends money and drags unrelated pages into the context.
 fn resolve_web_search(review: &Review) -> bool {
     env_or("ASTER_WEB_SEARCH", None)
         .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))

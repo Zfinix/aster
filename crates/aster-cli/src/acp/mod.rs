@@ -247,7 +247,6 @@ fn initialize_response() -> InitializeResponse {
         .agent_info(Implementation::new("aster", env!("CARGO_PKG_VERSION")))
 }
 
-/// Skills double as slash commands; the chat loop expands `/name` itself.
 fn announce_commands(cx: &ConnectionTo<Client>, session: &Session) {
     let commands: Vec<AvailableCommand> = session
         .ctx
@@ -277,8 +276,6 @@ fn replay(cx: &ConnectionTo<Client>, session_id: &SessionId, prior: &[ChatMessag
     }
 }
 
-/// Flatten the editor's prompt: typed text, `@` mentions as links, and any
-/// embedded file contents as context blocks after the text.
 fn prompt_text(blocks: &[ContentBlock]) -> String {
     let mut text = String::new();
     let mut context = Vec::new();

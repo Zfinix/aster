@@ -2,14 +2,11 @@ import type { ToolCall } from "./thread";
 
 /** Verb plus the salient argument, split so the argument can be styled apart. */
 export interface ToolDescription {
-  /** Absent when the detail is a whole sentence that reads worse behind a verb. */
   verb?: string;
   detail?: string;
-  /** Rendered monospace: a path or glob rather than prose. */
   code?: boolean;
 }
 
-/** Arguments stream in, so a partial parse is normal rather than an error. */
 function args(call: ToolCall): Record<string, unknown> {
   try {
     const parsed = JSON.parse(call.arguments) as unknown;
@@ -24,14 +21,11 @@ function arg(call: ToolCall, key: string): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-/** `explore` and `update_plan` both carry their work in a `steps` array. */
 function steps(call: ToolCall): unknown[] {
   const value = args(call).steps;
   return Array.isArray(value) ? value : [];
 }
 
-/** Tools whose id does not say what they do. Both search backends read the
- *  same on purpose: which provider served it is not the reader's concern. */
 const TOOL_NAMES: Record<string, string> = {
   "websearch/search": "Web Search",
   "websearch/fetch_content": "Web Fetch",
@@ -42,7 +36,6 @@ const TOOL_NAMES: Record<string, string> = {
   "web/screenshot": "Screenshot",
 };
 
-/** Past this the server has crowded out the verb, so the verb wins. */
 const LABEL_MAX = 24;
 
 function titleCase(segment: string): string {
@@ -53,12 +46,9 @@ function titleCase(segment: string): string {
     .join(" ");
 }
 
-/**
- * A tool id as a person would say it: `linear/save_issue` reads "Linear Save
- * Issue". The server stays, since two servers often carry the same verb, but it
- * is dropped once the pair grows too long to scan: `chrome-devtools/
- * take_screenshot` is "Take Screenshot", not its full address.
- */
+/** A tool id as a person would say it: `linear/save_issue` reads "Linear Save
+ *  Issue". The server stays, since two servers often carry the same verb, but
+ *  is dropped once the pair grows too long to scan. */
 export function humanize(name: string): string {
   const parts = name.split("/").map((part) => part.trim()).filter(Boolean);
   const tool = parts.pop() ?? name;
@@ -73,8 +63,6 @@ export function humanize(name: string): string {
   return full.length <= LABEL_MAX ? full : label;
 }
 
-/** Keys worth putting in a header, most identifying first. A label the tool
- *  wrote for itself leads: it is the only argument meant to be read. */
 const SALIENT = [
   "title",
   "label",
@@ -91,19 +79,15 @@ const SALIENT = [
   "text",
 ];
 
-/** Past this an argument has stopped naming the call and started reciting it. */
 const DETAIL_MAX = 72;
 
-/** An unnamed argument this long is the call's payload, not a name for it. */
 const PAYLOAD_MIN = 200;
 
-/** One line, capped. A header that wraps is no longer a header. */
 function asLabel(value: string): string {
   const line = value.split("\n", 1)[0].replace(/\s+/g, " ").trim();
   return line.length <= DETAIL_MAX ? line : `${line.slice(0, DETAIL_MAX - 1).trimEnd()}…`;
 }
 
-/** The one argument that says what an MCP call was about. */
 function salientArg(values: Record<string, unknown>): string | undefined {
   const strings = (key: string) => {
     const value = values[key];
@@ -150,9 +134,6 @@ export function mcpTarget(call: ToolCall): string | undefined {
     : undefined;
 }
 
-/** Web tools whose result is prose in Markdown: a fetched page or a search's
- *  hits. The card reads those as text rather than showing the markup as
- *  source. JSON results (a search that returned structured data) stay code. */
 const PROSE_TOOLS = new Set([
   "web/search",
   "web/extract",
@@ -172,7 +153,6 @@ export function rendersAsMarkdown(call: ToolCall): boolean {
 
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "fish"]);
 
-/** The command as the user would type it: shell wrappers (`bash -lc`) elided. */
 function commandLine(call: ToolCall): string | undefined {
   const binary = arg(call, "command");
   if (!binary) return undefined;
@@ -185,10 +165,8 @@ function commandLine(call: ToolCall): string | undefined {
   return [binary, ...rest].join(" ");
 }
 
-/**
- * The result without the stdout/stderr/exit markers the model needs but the
- * reader does not. A nonzero exit code is kept: that line is the story.
- */
+/** The result without the stdout/stderr/exit markers the model needs but the
+ *  reader does not. A nonzero exit code is kept: that line is the story. */
 export function displayOutput(call: ToolCall): string | undefined {
   // Agent reports render in the `agents` block; the raw JSON is for the model.
   if (call.name === "agent") return undefined;
@@ -204,10 +182,8 @@ export function displayOutput(call: ToolCall): string | undefined {
 }
 
 
-/**
- * The command a step ran, for the card's `in` cell. Long command lines belong in
- * a block the reader can scan, not smeared across the header.
- */
+/** The command a step ran, for the card's `in` cell. Long command lines belong in
+ *  a block the reader can scan, not smeared across the header. */
 export function toolInput(call: ToolCall): string | undefined {
   return call.name === "run_command" || call.name === "run_tests"
     ? commandLine(call)
@@ -329,10 +305,8 @@ export function describeTool(call: ToolCall): ToolDescription {
   }
 }
 
-/**
- * A one-line result gloss, so a collapsed row still says what happened. Counting
- * lines beats echoing the head of the output, which is usually a path or a brace.
- */
+/** A one-line result gloss, so a collapsed row still says what happened. Counting
+ *  lines beats echoing the head of the output, which is usually a path or a brace. */
 export function resultHint(call: ToolCall): string | undefined {
   const result = call.result;
   if (result === undefined) return undefined;
@@ -369,17 +343,14 @@ export interface ToolRun {
   calls: ToolCall[];
 }
 
-/** Below this a run is shorter than the header that would hide it. */
 const RUN_MIN = 3;
 
 export function isRun(item: ToolCall | ToolRun): item is ToolRun {
   return "calls" in item;
 }
 
-/**
- * Folds consecutive calls to the same tool into runs, so eighteen reads read as
- * one line. Mixed sequences are left alone: the interleaving is the story.
- */
+/** Folds consecutive calls to the same tool into runs, so eighteen reads read as
+ *  one line. Mixed sequences are left alone: the interleaving is the story. */
 export function groupRuns(calls: ToolCall[]): (ToolCall | ToolRun)[] {
   const out: (ToolCall | ToolRun)[] = [];
   let i = 0;

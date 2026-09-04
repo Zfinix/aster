@@ -156,8 +156,6 @@ async fn a_listening_port_passes_the_probe() {
     probe(port).await.expect("the port is open");
 }
 
-/// Drives the whole tool with a launcher that records instead of opening a
-/// window, so the success path is exercised without a browser appearing.
 async fn opened(dir: &Path, ctx: &SessionCtx, target: &str) -> String {
     fn noop(_: &str) -> anyhow::Result<()> {
         Ok(())

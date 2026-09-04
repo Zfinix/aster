@@ -1,13 +1,6 @@
 import * as path from "node:path";
 import { setRoot, stub } from "./vscodeStub";
 
-/**
- * Runs the panel in a browser against the real CLI. The webview never knew it
- * was in an editor — it posts JSON to a host that spawns `aster` — so serving
- * the same bundle with a host that answers the same protocol is enough.
- *
- *   bun run dev:web -- --cwd ../.. --port 4123
- */
 function arg(name: string, fallback?: string): string | undefined {
   const at = process.argv.indexOf(`--${name}`);
   return at !== -1 && process.argv[at + 1] ? process.argv[at + 1] : fallback;

@@ -16,35 +16,24 @@ use tokio::task::AbortHandle;
 use crate::bridge::{Answer, Turn, TurnEvent, TurnOutcome, WireMessage, run_turn};
 use crate::markdown;
 
-/// Telegram caps messages at 4096 chars; leave headroom for tags.
 const CHUNK_LIMIT: usize = 4000;
 
-/// Steps one activity message holds before the next batch starts its own, so a
-/// long turn reads as progress in the chat instead of one mutating block.
 const ACTIVITY_WINDOW: usize = 6;
 
-/// Minimum gap between edits of the activity message (Telegram rate limit).
 const ACTIVITY_EDIT_GAP: Duration = Duration::from_millis(1500);
 
-/// How many busy-turn messages a chat may queue before new ones are refused.
 const MAX_QUEUED: usize = 10;
 
-/// Reply-keyboard row that answers an agent question with "no answer".
 const SKIP_LABEL: &str = "Skip";
 
 pub struct TelegramConfig {
-    /// Bot token from @BotFather.
     pub token: String,
-    /// Telegram user ids allowed to drive the agent. Empty rejects everyone
-    /// while telling senders their id, which is the onboarding path.
     pub allowed_users: Vec<i64>,
     pub bin: PathBuf,
     pub repo_root: PathBuf,
     pub mode: String,
 }
 
-/// Injected ahead of each turn so the agent writes for a phone chat, not a
-/// terminal. Sent as an extra system message on the wire.
 const TELEGRAM_SYSTEM: &str = "\
 The user is talking to you through a Telegram chat on their phone (via aster \
 remote), not a terminal. Adjust how you answer: \
@@ -68,11 +57,8 @@ through send_code_page and be sent as a private attachment in this chat, never \
 published to a public page and never pasted into the chat. \
 Under 40 lines, paste inline.";
 
-/// A prompt waiting for the user. Approvals resolve via inline buttons;
-/// questions resolve via the next text message (reply-keyboard tap or typed).
 enum Pending {
     Approval {
-        /// What is being approved, e.g. `git status`, kept to render the outcome.
         subject: String,
         respond: oneshot::Sender<Answer>,
     },
@@ -84,25 +70,19 @@ struct ChatState {
     history: Vec<WireMessage>,
     pending: Option<Pending>,
     running: Option<AbortHandle>,
-    /// User messages sent while a turn was busy, run in order when it finishes.
-    /// Each holds the sender's message id so the turn can reference it over MCP.
     queued: VecDeque<(i64, String)>,
-    /// Per-chat overrides set with /mode, /model, and /effort.
     mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
-    /// Saved settings are read from disk the first time a chat is touched.
     loaded: bool,
     pending_commit: Option<PendingCommit>,
 }
 
 struct PendingCommit {
     message: String,
-    /// Nothing was staged when the draft was made, so committing stages first.
     stage_all: bool,
 }
 
-/// Get a chat's state, restoring its saved settings on first use.
 fn chat_state<T>(chats: &Chats, chat_id: i64, act: impl FnOnce(&mut ChatState) -> T) -> T {
     let mut chats = chats.lock().expect("chats lock");
     let state = chats.entry(chat_id).or_default();
@@ -118,7 +98,6 @@ fn chat_state<T>(chats: &Chats, chat_id: i64, act: impl FnOnce(&mut ChatState) -
 
 type Chats = Arc<Mutex<HashMap<i64, ChatState>>>;
 
-/// Where a chat's mode/model/effort live between bridge restarts.
 fn settings_path(chat_id: i64) -> Option<PathBuf> {
     let home = env::var("HOME").ok()?;
     Some(
@@ -128,8 +107,6 @@ fn settings_path(chat_id: i64) -> Option<PathBuf> {
     )
 }
 
-/// Load a chat's saved settings, if any. Missing or unreadable files are
-/// simply "no overrides".
 fn load_settings(chat_id: i64) -> (Option<String>, Option<String>, Option<String>) {
     let Some(path) = settings_path(chat_id) else {
         return (None, None, None);
@@ -144,8 +121,6 @@ fn load_settings(chat_id: i64) -> (Option<String>, Option<String>, Option<String
     (field("mode"), field("model"), field("effort"))
 }
 
-/// Persist a chat's settings so a bridge restart does not silently drop the
-/// user back to the default mode.
 fn save_settings(chats: &Chats, chat_id: i64) {
     let Some(path) = settings_path(chat_id) else {
         return;
@@ -166,7 +141,6 @@ fn save_settings(chats: &Chats, chat_id: i64) {
     }
 }
 
-/// An installed skill surfaced as a Telegram /command.
 struct SkillCommand {
     name: String,
     description: String,
@@ -174,8 +148,6 @@ struct SkillCommand {
 
 type Skills = Arc<HashMap<String, SkillCommand>>;
 
-/// Discover skills from the repo and global roots, keyed by a valid Telegram
-/// command name (lowercase, `a-z0-9_`, hyphens folded to underscores).
 fn discover_skill_commands(repo_root: &std::path::Path) -> HashMap<String, SkillCommand> {
     let mut roots = vec![repo_root.join(".aster").join("skills")];
     if let Ok(home) = env::var("HOME") {
@@ -201,7 +173,6 @@ fn discover_skill_commands(repo_root: &std::path::Path) -> HashMap<String, Skill
     commands
 }
 
-/// The provider's model catalog, fetched once per process for /model search.
 async fn model_catalog() -> Result<&'static Vec<String>> {
     static MODEL_CACHE: OnceLock<Vec<String>> = OnceLock::new();
     if let Some(models) = MODEL_CACHE.get() {
@@ -352,7 +323,6 @@ async fn handle_message(
     start_turn(api, cfg, chats, chat_id, message_id, trimmed);
 }
 
-/// One /command, mirroring the TUI's command set where it makes sense remotely.
 #[allow(clippy::too_many_arguments)]
 async fn handle_command(
     api: &Api,
@@ -511,16 +481,12 @@ async fn handle_command(
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
 
-/// Models shown per page of the /model picker.
 const MODEL_PAGE: usize = 8;
 
-/// Skills listed in Telegram's command menu; the rest live behind /skills.
 const SKILL_MENU_LIMIT: usize = 15;
 
-/// Skills shown per page of the /skills picker.
 const SKILL_PAGE: usize = 8;
 
-/// Browse installed skills as buttons; tapping one runs it.
 async fn send_skill_picker(
     api: &Api,
     skills: &Skills,
@@ -591,11 +557,8 @@ async fn send_skill_picker(
     }
 }
 
-/// How much diff the commit-message prompt carries.
 const COMMIT_DIFF_LIMIT: usize = 12_000;
 
-/// Draft a commit message from the current diff in one model call, then offer
-/// to commit it. A full agent turn would spend rounds re-reading the diff.
 async fn send_commit_proposal(
     api: &Api,
     cfg: &Arc<TelegramConfig>,
@@ -679,7 +642,6 @@ async fn send_commit_proposal(
     let _ = subject;
 }
 
-/// Stage if needed and commit, reporting what git said.
 async fn run_commit(repo_root: &std::path::Path, commit: &PendingCommit) -> String {
     let run = |args: Vec<String>| {
         let mut command = tokio::process::Command::new("git");
@@ -715,7 +677,6 @@ async fn run_commit(repo_root: &std::path::Path, commit: &PendingCommit) -> Stri
     }
 }
 
-/// One tool-free model call in the bridge's repo.
 async fn aster_remote_ask(cfg: &Arc<TelegramConfig>, prompt: &str) -> Result<String> {
     crate::bridge::ask_once(&cfg.bin, &cfg.repo_root, prompt).await
 }
@@ -731,8 +692,6 @@ fn skill_prompt(skill: &SkillCommand, input: &str) -> String {
     prompt
 }
 
-/// Show the model catalog as tappable buttons, paged. `filter` narrows the
-/// list; `edit` replaces an existing picker message instead of sending a new one.
 async fn send_model_picker(
     api: &Api,
     chats: &Chats,
@@ -821,7 +780,6 @@ async fn send_model_picker(
     }
 }
 
-/// One button per option, the current one marked with a dot.
 fn choice_keyboard(prefix: &str, options: &[&str], current: &str) -> Value {
     let buttons: Vec<Value> = options
         .iter()
@@ -838,7 +796,6 @@ fn choice_keyboard(prefix: &str, options: &[&str], current: &str) -> Value {
     Value::Array(buttons.chunks(3).map(|row| json!(row)).collect())
 }
 
-/// Validate and store a /mode-style override; `None` means "show usage".
 fn set_override(
     chats: &Chats,
     chat_id: i64,
@@ -863,9 +820,6 @@ fn get_override<T>(chats: &Chats, chat_id: i64, read: impl FnOnce(&ChatState) ->
     chat_state(chats, chat_id, |state| read(state))
 }
 
-/// Kick off one agent turn for this chat unless one is already running. A plain
-/// `fn`, not `async`: it only locks state and spawns, which keeps its callers free
-/// of a non-`Send` future when they run inside `tokio::spawn`.
 fn start_turn(
     api: &Api,
     cfg: &Arc<TelegramConfig>,
@@ -960,7 +914,6 @@ fn start_turn(
     });
 }
 
-/// Pump turn events into Telegram while the turn runs, then return its result.
 async fn drive_turn(
     api: &Api,
     chats: &Chats,
@@ -1134,8 +1087,6 @@ async fn finish_turn(
     }
 }
 
-/// Run the next busy-turn message, one per successful completion. A turn
-/// started here clears `running`, so this only ever runs one at a time.
 async fn drain_queued(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
     loop {
         let next = {
@@ -1325,7 +1276,6 @@ async fn handle_callback(
     }
 }
 
-/// The live "what the agent is doing" message, edited in place as tools run.
 struct Activity {
     api: Api,
     chat_id: i64,
@@ -1334,11 +1284,7 @@ struct Activity {
     last_flush: Instant,
 }
 
-/// One step in the activity list, ticked off when its tool call returns.
-/// The leading emoji is stored apart from the label so a finished step swaps
-/// its tool emoji for a check rather than carrying both.
 struct Step {
-    /// Tool call id, so the matching result can complete this step.
     id: String,
     emoji: String,
     label: String,
@@ -1433,7 +1379,6 @@ impl Activity {
         }
         text
     }
-    /// Send or edit the activity message; unforced calls are rate-limited.
     async fn flush(&mut self, force: bool) {
         if self.lines.is_empty() {
             return;
@@ -1449,7 +1394,6 @@ impl Activity {
         self.last_flush = Instant::now();
     }
 
-    /// Settle the message on its final state once the turn ends.
     async fn finish(&mut self, ok: bool) {
         if self.lines.is_empty() {
             return;
@@ -1467,12 +1411,8 @@ impl Activity {
     }
 }
 
-/// Diff budget for the post-edit message; longer diffs go out as a code page.
 const DIFF_INLINE_LIMIT: usize = 3_000;
 
-/// Show what actually changed. A list of file names says an edit happened; the
-/// diff says whether it was the right one, which is the thing worth reviewing
-/// from a phone.
 async fn send_edit_diff(
     api: &Api,
     chat_id: i64,
@@ -1527,7 +1467,6 @@ async fn send_edit_diff(
     }
 }
 
-/// Render an `update_plan` call as its own checklist message.
 fn plan_message(arguments: &str) -> Option<String> {
     let args: Value = serde_json::from_str(arguments).ok()?;
     let steps = args.get("steps")?.as_array()?;
@@ -1562,7 +1501,6 @@ fn plan_message(arguments: &str) -> Option<String> {
     Some(text)
 }
 
-/// One activity line for a tool call: emoji, verb, and the interesting argument.
 fn tool_line(name: &str, arguments: &str) -> String {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let field = |keys: &[&str]| {
@@ -1641,7 +1579,6 @@ fn tool_line(name: &str, arguments: &str) -> String {
     }
 }
 
-/// Friendly label for an MCP tool id like `telegram/send_code_page`.
 fn mcp_line(id: &str, args: &Value, step: &dyn Fn(&str, &str, &str) -> String) -> String {
     let arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or_default();
     match id {
@@ -1658,7 +1595,6 @@ fn mcp_line(id: &str, args: &Value, step: &dyn Fn(&str, &str, &str) -> String) -
     }
 }
 
-/// Turn a raw tool id like `giphy/get_trending_gifs` into `giphy: get trending gifs`.
 fn humanize_tool_name(name: &str) -> String {
     match name.split_once('/') {
         Some((server, tool)) => format!("{}: {}", server, tool.replace('_', " ")),
@@ -1666,7 +1602,6 @@ fn humanize_tool_name(name: &str) -> String {
     }
 }
 
-/// Reaction emoji Telegram accepts, offered to the agent via the react tool.
 pub(crate) const REACTIONS: &[&str] = &[
     "👍",
     "👎",
@@ -1732,12 +1667,8 @@ pub(crate) const REACTIONS: &[&str] = &[
     "😈",
 ];
 
-/// How many gifs one reply may attach.
 const GIF_LIMIT: usize = 3;
 
-/// Pull gif URLs out of a reply so they can render as animations.
-/// Lines that are only a gif URL (bare or markdown image) leave the text;
-/// inline mentions stay in place but still attach.
 fn extract_gifs(reply: &str) -> (String, Vec<String>) {
     let mut gifs: Vec<String> = Vec::new();
     let mut kept = Vec::new();
@@ -1772,8 +1703,6 @@ fn is_gif_url(url: &str) -> bool {
             || url.contains("media.tenor.com"))
 }
 
-/// The thing being approved, without the policy's framing: `run \`git status\``
-/// becomes `git status`, `edit src/lib.rs (protected path)` keeps its note.
 fn approval_subject(preview: &str) -> String {
     let subject = preview.strip_prefix("run ").unwrap_or(preview).trim();
     match subject.strip_prefix('`').and_then(|s| s.split_once('`')) {
@@ -1782,7 +1711,6 @@ fn approval_subject(preview: &str) -> String {
     }
 }
 
-/// Just the file name; full paths read as noise on a phone.
 fn short_path(path: &str) -> String {
     path.trim_end_matches('/')
         .rsplit('/')
@@ -1791,8 +1719,6 @@ fn short_path(path: &str) -> String {
         .to_string()
 }
 
-/// Regex alternations read as noise in the feed; show the first term and count
-/// the rest: `request_approval +2 more`.
 fn pretty_query(query: &str) -> String {
     let terms: Vec<&str> = query
         .split('|')
@@ -1805,7 +1731,6 @@ fn pretty_query(query: &str) -> String {
     }
 }
 
-/// Truncate on a char boundary, marking the cut with an ellipsis.
 fn truncate(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_string();
@@ -1817,13 +1742,11 @@ fn truncate(text: &str, limit: usize) -> String {
     format!("{}…", &text[..cut])
 }
 
-/// Collapse whitespace and cap a prompt so it prints on one console line.
 fn console_text(text: &str, limit: usize) -> String {
     let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
     truncate(&flattened, limit)
 }
 
-/// One plain console line for a tool call: name and the interesting argument.
 fn console_tool(name: &str, arguments: &str) -> String {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let field = |keys: &[&str]| {
@@ -1854,7 +1777,6 @@ fn callback_message_ids(callback: &Value) -> Option<(i64, i64)> {
     Some((chat_id, message_id))
 }
 
-/// Unwrap the Bot API's `{ok, result, description}` envelope.
 fn unwrap_result(method: &str, response: Value) -> Result<Value> {
     if !response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
         let description = response
@@ -1961,7 +1883,6 @@ impl Api {
         unwrap_result("sendDocument", response)
     }
 
-    /// Show /new, /stop, and /help in Telegram's command menu.
     async fn register_commands(&self, skills: &Skills) {
         let mut commands = vec![
             json!({"command": "new", "description": "Start a fresh conversation"}),
@@ -2016,7 +1937,6 @@ impl Api {
         }
     }
 
-    /// Send HTML and return the new message id, or `None` on failure.
     async fn send_html(&self, chat_id: i64, html: &str) -> Option<i64> {
         let payload = json!({
             "chat_id": chat_id,
@@ -2033,7 +1953,6 @@ impl Api {
         }
     }
 
-    /// Send HTML, falling back to plain text if Telegram rejects the markup.
     async fn send_html_or_plain(&self, chat_id: i64, html: &str) {
         if self.send_html(chat_id, html).await.is_none() {
             self.send_text(chat_id, html).await;
@@ -2064,7 +1983,6 @@ impl Api {
         }
     }
 
-    /// Render a gif by URL; Telegram fetches and plays it inline.
     async fn send_animation(&self, chat_id: i64, url: &str) {
         let payload = json!({ "chat_id": chat_id, "animation": url });
         if let Err(e) = self.call("sendAnimation", payload).await {
@@ -2085,7 +2003,6 @@ impl Api {
         }
     }
 
-    /// Remove a prompt once it has served its purpose.
     async fn delete_callback_message(&self, callback: &Value) {
         if let Some((chat_id, message_id)) = callback_message_ids(callback) {
             let payload = json!({ "chat_id": chat_id, "message_id": message_id });
@@ -2093,7 +2010,6 @@ impl Api {
         }
     }
 
-    /// Replace a message's text and its inline keyboard in one call.
     async fn edit_html_keyboard(&self, chat_id: i64, message_id: i64, html: &str, keyboard: Value) {
         let payload = json!({
             "chat_id": chat_id,
@@ -2107,7 +2023,6 @@ impl Api {
         }
     }
 
-    /// Send text with a native reply keyboard (options above the text field).
     async fn send_reply_keyboard(&self, chat_id: i64, html: &str, keyboard: Value) {
         let payload = json!({
             "chat_id": chat_id,
@@ -2120,7 +2035,6 @@ impl Api {
         }
     }
 
-    /// Replace the tapped message's text with the outcome; buttons go away.
     async fn settle_callback_message(&self, callback: &Value, text: &str) {
         if let Some((chat_id, message_id)) = callback_message_ids(callback) {
             let payload = json!({ "chat_id": chat_id, "message_id": message_id, "text": text });

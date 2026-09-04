@@ -1,9 +1,6 @@
-/**
- * The slice of the `vscode` module the CLI-facing sources touch, so `asterCli`,
- * `repo`, and `commands` load unchanged outside an editor. Anything the browser
- * host does not reach is deliberately absent: a missing property throws where it
- * is used, which is louder than a stub that quietly does nothing.
- */
+/** The slice of the `vscode` module the CLI-facing sources touch, so they load
+ *  unchanged outside an editor. Anything else is absent on purpose: a missing
+ *  property throws where it is used, louder than a stub that does nothing. */
 
 const settings: Record<string, unknown> = {
   binaryPath: process.env.ASTER_BINARY || "aster",

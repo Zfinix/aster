@@ -1,7 +1,6 @@
 import { runCli } from "./asterCli";
 import { ConfigKey, ConfigKind, ConfigPaths, ConfigScope } from "./protocol";
 
-/** `aster config <args> --json`, parsed, with the CLI's own error on failure. */
 async function json<T>(args: string[], cwd: string): Promise<T> {
   const { stdout, stderr, code } = await runCli(["config", ...args, "--json"], cwd);
   let parsed: unknown;
@@ -17,8 +16,6 @@ async function json<T>(args: string[], cwd: string): Promise<T> {
   return parsed as T;
 }
 
-/** A CLI older than the settings panel omits `kind`, so the control a row gets
- *  is inferred from what the value and the documented default look like. */
 function inferKind(row: Partial<ConfigKey>): ConfigKind {
   const sample = row.value ?? row.default;
   if (Array.isArray(row.value)) return "list";
@@ -56,7 +53,6 @@ export async function paths(cwd: string): Promise<ConfigPaths> {
   return await json<ConfigPaths>(["path"], cwd);
 }
 
-/** A list key takes its value comma-separated; an empty string empties it. */
 function encode(value: string | number | boolean | string[]): string {
   return Array.isArray(value) ? value.join(",") : String(value);
 }

@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
-//! Apple Shortcuts tools for Aster. [`ShortcutsBackend`] lists shortcuts with
-//! `/usr/bin/shortcuts` and runs one by name with `/usr/bin/osascript` via
-//! `Shortcuts Events`, so the Shortcuts app stays closed and focus is not
-//! stolen. [`register_tools`] is the catalog agents discover.
+//! Apple Shortcuts tools. [`ShortcutsBackend`] lists shortcuts with
+//! `/usr/bin/shortcuts` and runs one via `Shortcuts Events` over osascript, so
+//! the Shortcuts app stays closed. [`register_tools`] is the catalog.
 
 use aster_mcp::McpTool;
 use serde_json::{Value, json};
@@ -36,13 +35,9 @@ impl ShortcutsBackend {
             .collect())
     }
 
-    /// Run a shortcut by name in the background. `input` becomes the shortcut's
-    /// input when provided, so a shortcut that would otherwise prompt for text
-    /// can be driven without a dialog.
-    ///
-    /// Some shortcuts write output to the clipboard instead of returning it.
-    /// We snapshot the clipboard before running and include any new clipboard
-    /// content in the result so those shortcuts work without modification.
+    /// Run a shortcut by name; `input` stands in for the text it would prompt
+    /// for. Some shortcuts write to the clipboard instead of returning, so the
+    /// clipboard is snapshotted first and anything new is added to the result.
     pub async fn run(&self, name: &str, input: Option<&str>) -> anyhow::Result<String> {
         let prev_clipboard = clipboard_content().await;
 
@@ -115,12 +110,10 @@ impl ShortcutsBackend {
     }
 }
 
-/// Escape a string for embedding inside an AppleScript double-quoted literal.
 fn escape_applescript(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Read the current macOS clipboard content, or None if it can't be read.
 async fn clipboard_content() -> Option<String> {
     let out = tokio::process::Command::new("/usr/bin/pbpaste")
         .output()

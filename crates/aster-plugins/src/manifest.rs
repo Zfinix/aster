@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use serde_json::{Map, Value};
 
-/// The one manifest schema this client implements.
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
 
 const MAX_NAME_LEN: usize = 64;
@@ -35,7 +34,6 @@ pub struct Manifest {
     pub repository: Option<String>,
     pub license: Option<String>,
     pub keywords: Vec<String>,
-    /// Client-specific data keyed by reverse-domain namespace, kept unvalidated.
     pub extensions: BTreeMap<String, Value>,
 }
 
@@ -128,8 +126,6 @@ fn author(object: &Map<String, Value>) -> Result<Option<Author>> {
     }))
 }
 
-/// A non-object `extensions` is reported and dropped rather than fatal, and
-/// namespaces this client does not implement are carried through unread.
 fn extensions(object: &Map<String, Value>, warnings: &mut Vec<String>) -> BTreeMap<String, Value> {
     let Some(value) = object.get("extensions") else {
         return BTreeMap::new();
@@ -144,8 +140,6 @@ fn extensions(object: &Map<String, Value>, warnings: &mut Vec<String>) -> BTreeM
         .collect()
 }
 
-/// Lowercase alphanumerics, hyphens, and periods, bounded, alphanumeric at both
-/// ends, with no doubled separator (§5.5).
 fn validate_name(name: &str) -> Result<()> {
     let count = name.chars().count();
     if count == 0 || count > MAX_NAME_LEN {

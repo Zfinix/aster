@@ -13,9 +13,6 @@ pub enum Query {
     Definitions,
 }
 
-/// One live server per (kind, repo) for the process lifetime; startup is
-/// 1-2s per call otherwise. A client whose query fails is dropped so the next
-/// call restarts it.
 static CLIENTS: LazyLock<Mutex<HashMap<(ServerKind, PathBuf), Client>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -103,8 +100,6 @@ fn resolve(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(file)
 }
 
-/// A missing server is not a failure: the Err carries the plain message the
-/// tool returns so the model falls back to text search or a build.
 fn server_for(file: &Path) -> std::result::Result<ServerKind, String> {
     match supported(file) {
         Some(kind) if aster_lsp::installed(kind) => Ok(kind),

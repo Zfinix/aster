@@ -121,7 +121,14 @@ fn the_catalogs_own_endpoints_all_resolve() {
 fn catalog_models_reads_the_codex_shortlist_and_skips_unknown_hosts() {
     assert_eq!(
         catalog_models("https://chatgpt.com/backend-api/codex"),
-        ["gpt-5.6-terra"]
+        [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4-mini"
+        ]
     );
     assert!(catalog_models("https://example.com/v1").is_empty());
 }

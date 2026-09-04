@@ -3,10 +3,8 @@ import { closePlan, onPlanAnswer, onPlanChange, readPlan, sendPlanAnswer } from 
 import { Mark } from "./Mark";
 import { Markdown } from "./Markdown";
 
-/**
- * The `/plan` tab: a plan read as a document, with the decision at the foot of
- * it. Only `aster serve` opens this — an editor has tabs of its own.
- */
+/** The `/plan` tab: a plan read as a document, with the decision at the foot of
+ *  it. Only `aster serve` opens this — an editor has tabs of its own. */
 export function PlanPage() {
   const [markdown, setMarkdown] = useState(readPlan);
   const [answered, setAnswered] = useState<boolean | null>(null);

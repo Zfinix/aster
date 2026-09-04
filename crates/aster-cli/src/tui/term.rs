@@ -39,9 +39,6 @@ pub(super) struct InlineTerm {
     current: usize,
     viewport: Rect,
     screen: Size,
-    /// Blank rows a shrinking pane opened at the top of the screen. They are
-    /// padding, not transcript, so the next upward scroll drops them instead
-    /// of filing them in scrollback.
     blank_top: u16,
 }
 
@@ -167,8 +164,6 @@ impl InlineTerm {
         Ok(())
     }
 
-    /// Open `rows` blank rows below the region above the viewport, handing what
-    /// leaves the top to scrollback via line feeds at the bottom margin.
     fn scroll_into_scrollback(&mut self, region_bottom: u16, rows: u16) -> Result<()> {
         use std::io::Write;
         if region_bottom == 0 || rows == 0 {
@@ -193,9 +188,6 @@ impl InlineTerm {
         Ok(())
     }
 
-    /// Move the transcript back down into the rows a shrinking pane gave up, the
-    /// inverse of [`Self::scroll_into_scrollback`]. Scrollback cannot be pulled back,
-    /// so the rows opened at the top are blank and counted, not filed as history.
     fn reclaim_above(&mut self, region_bottom: u16, rows: u16) -> Result<()> {
         if region_bottom == 0 || rows == 0 {
             return Ok(());
@@ -223,10 +215,9 @@ impl InlineTerm {
         Ok(())
     }
 
-    /// The terminal was resized: the screen rewrapped under us, dragging the
-    /// old pane image with it. Repaint where the pane belongs and clear every
-    /// row its old image can now occupy; anything less leaves pane fragments
-    /// littered through the transcript.
+    /// The terminal was resized and the screen rewrapped under us. Repaint the
+    /// pane where it belongs and clear every row its old image can occupy, or
+    /// fragments of it litter the transcript.
     pub(super) fn resized(&mut self) -> Result<()> {
         let old = self.viewport;
         let old_screen = self.screen;
@@ -243,8 +234,6 @@ impl InlineTerm {
         Ok(())
     }
 
-    /// Draw cells onto rows known to be blank (just scrolled clear). `stride`
-    /// is the source buffer's row width, which the screen may exceed.
     fn draw_cleared<'a>(
         &mut self,
         y: u16,
@@ -276,13 +265,6 @@ impl InlineTerm {
     }
 }
 
-/// Which cells of a rendered buffer are real glyphs, not the blank continuation
-/// cell a wide grapheme leaves behind (ratatui stores a literal space there).
-/// Printing those spaces pushes every following column one cell right, so a run
-/// of CJK or emoji would come out as `字 字 字`. The filter tracks the columns a
-/// wide grapheme already covers and drops its continuation cells; the column-0
-/// reset keeps a wide grapheme that lands in a row's last column from eating
-/// the first cell of the next row.
 fn keeps_cell(width: usize) -> impl FnMut(&(usize, &Cell)) -> bool {
     let mut skip = 0usize;
     move |(i, cell)| {
@@ -299,19 +281,13 @@ fn keeps_cell(width: usize) -> impl FnMut(&(usize, &Cell)) -> bool {
     }
 }
 
-/// What the rows above the viewport do when its boundary moves.
 #[derive(Debug, PartialEq, Eq)]
 enum Shift {
     None,
-    /// Transcript scrolls up, the top rows passing into scrollback.
     Up(u16),
-    /// Transcript scrolls back down into the rows the pane gave up.
     Down(u16),
 }
 
-/// Where the viewport lands at `height`, and what the transcript above does to get
-/// there. Growing takes free rows below before any from the transcript, and
-/// shrinking hands them back the same way, leaving no band of dead rows.
 fn reflow(old: Rect, height: u16, screen: Size) -> (u16, Shift) {
     if height == old.height {
         return (old.y, Shift::None);
@@ -331,12 +307,6 @@ fn reflow(old: Rect, height: u16, screen: Size) -> (u16, Shift) {
     (old.y - need_above, Shift::Up(need_above))
 }
 
-/// Where the viewport lands after a terminal resize, and the first row to
-/// clear. Painted rows carry their padding, so on a narrowing each old pane
-/// row rewraps into exactly `ceil(old_w / new_w)` rows ending at the screen
-/// bottom; on a widening the unwrap above shrinks, lifting the old image to
-/// at best `old.y * old_w / new_w`. Clearing from the lower of the two bounds
-/// covers the old image whichever way the width moved.
 fn reflow_on_resize(old: Rect, old_screen: Size, screen: Size) -> (u16, u16) {
     let height = clamp_height(old.height, screen);
     let (old_w, new_w) = (old_screen.width.max(1), screen.width.max(1));
@@ -353,13 +323,9 @@ fn reflow_on_resize(old: Rect, old_screen: Size, screen: Size) -> (u16, u16) {
     (top, top.min(sunk).min(risen))
 }
 
-/// Share of the screen the viewport may take. Growing it scrolls the transcript
-/// away, so an unbounded pane walks the conversation off the top. A view taller
-/// than its share clips instead.
 const MAX_VIEWPORT_NUM: u16 = 3;
 const MAX_VIEWPORT_DEN: u16 = 5;
 
-/// Always leave rows of screen for the transcript to sit in.
 fn clamp_height(height: u16, screen: Size) -> u16 {
     let share = (screen.height * MAX_VIEWPORT_NUM / MAX_VIEWPORT_DEN).max(1);
     let ceiling = share.min(screen.height.saturating_sub(1).max(1));
@@ -398,8 +364,6 @@ mod tests {
         assert!(clamp_height(4, screen(1)) >= 1);
     }
 
-    /// A pane sitting on the screen bottom, the state it is in once there is
-    /// any transcript at all.
     fn anchored(height: u16, screen: Size) -> Rect {
         Rect::new(0, screen.height - height, screen.width, height)
     }
@@ -416,9 +380,6 @@ mod tests {
         assert_eq!(reflow(anchored(20, s), 3, s), (37, Shift::Down(17)));
     }
 
-    /// The bug this pairing exists for: opening a picker and closing it used
-    /// to leave the transcript 17 rows higher than it started, with the gap
-    /// standing open above the pane.
     #[test]
     fn a_grow_and_shrink_round_trip_puts_the_transcript_back() {
         let s = screen(40);
@@ -430,8 +391,6 @@ mod tests {
         assert_eq!((up, down), (Shift::Up(17), Shift::Down(17)));
     }
 
-    /// Before there is enough transcript to reach the bottom, the pane grows
-    /// into the empty rows below and nothing above it moves.
     #[test]
     fn a_floating_pane_grows_downward_without_touching_the_transcript() {
         let s = screen(40);
@@ -440,10 +399,6 @@ mod tests {
         assert_eq!(reflow(floating, 2, s), (5, Shift::None));
     }
 
-    /// Only the rows that could not come from below are taken from the
-    /// transcript.
-    /// Narrowing 100 → 60 doubles every painted row, so a six-row pane leaves
-    /// a twelve-row image ending at the screen bottom; all of it is cleared.
     #[test]
     fn narrowing_clears_the_whole_rewrapped_pane_image() {
         let old_screen = Size {
@@ -459,8 +414,6 @@ mod tests {
         assert_eq!(clear_from, 18);
     }
 
-    /// Widening 60 → 100 lets the unwrap above pull the old pane image up, to
-    /// at best old.y scaled by the width ratio; clear from there down.
     #[test]
     fn widening_clears_down_from_where_the_old_image_may_have_risen() {
         let old_screen = Size {
@@ -476,8 +429,6 @@ mod tests {
         assert_eq!(clear_from, 24 * 60 / 100);
     }
 
-    /// A height-only change keeps the pane image at the bottom; only that
-    /// band needs clearing.
     #[test]
     fn a_height_only_resize_clears_only_the_bottom_band() {
         let old_screen = Size {

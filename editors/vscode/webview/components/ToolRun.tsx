@@ -3,11 +3,9 @@ import { runLabel, type ToolRun as Run } from "../lib/tools";
 import { ToolCallRow } from "./ToolCallRow";
 import { AlertIcon, ChevronIcon, LayersIcon } from "./icons";
 
-/**
- * A folded run of same-tool steps. Open while it is still working, so progress
- * stays visible, then closed once it lands — until the reader says otherwise,
- * after which their choice sticks.
- */
+/** A folded run of same-tool steps. Open while it is still working, so progress
+ *  stays visible, then closed once it lands — until the reader says otherwise,
+ *  after which their choice sticks. */
 export function ToolRun({ run }: { run: Run }) {
   const [choice, setChoice] = useState<boolean>();
   const running = run.calls.some((call) => call.result === undefined && !call.stopped);
