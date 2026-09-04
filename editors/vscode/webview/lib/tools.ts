@@ -276,6 +276,8 @@ export function describeTool(call: ToolCall): ToolDescription {
       return { verb: "Remember", detail: arg(call, "fact") };
     case "recall":
       return { verb: "Recall", detail: arg(call, "query") };
+    case "forget":
+      return { verb: "Forget", detail: arg(call, "name") };
     case "read_skill":
       return { verb: "Skill", detail: arg(call, "name"), code: true };
     case "update_plan":

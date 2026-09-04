@@ -2832,6 +2832,20 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "forget",
+                "description": "Delete a memory block by name when the user says a remembered fact is wrong or no longer wanted. This removes the block outright; never overwrite a block with a placeholder to retire it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "The memory block name, as listed under Recallable memory" }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "read_skill",
                 "description": "Load a skill's full instructions by name. The system prompt lists skills as name and description only; call this to read a skill's body before following it, once a request matches its description.",
                 "parameters": {
@@ -3178,6 +3192,9 @@ async fn exec_tool(
         "recall" => str_arg("name")
             .context("recall needs a `name`")
             .and_then(|name| recall(ctx, &name)),
+        "forget" => str_arg("name")
+            .context("forget needs a `name`")
+            .and_then(|name| forget(ctx, &name)),
         "read_skill" => str_arg("name")
             .context("read_skill needs a `name`")
             .and_then(|name| read_skill(ctx, &name)),
@@ -4381,6 +4398,18 @@ fn recall(ctx: &SessionCtx, name: &str) -> Result<String> {
         .as_ref()
         .context("memory is unavailable; no store is open")?;
     store.memory().read_block(name)
+}
+
+fn forget(ctx: &SessionCtx, name: &str) -> Result<String> {
+    let store = ctx
+        .store
+        .as_ref()
+        .context("memory is unavailable; no store is open")?;
+    if store.memory().forget(name)? {
+        Ok(format!("forgot \"{name}\""))
+    } else {
+        anyhow::bail!("no memory block named {name:?}; see Recallable memory for the list")
+    }
 }
 
 fn read_skill(ctx: &SessionCtx, name: &str) -> Result<String> {

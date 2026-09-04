@@ -882,6 +882,7 @@ fn step_label(name: &str, args: &str) -> String {
         },
         "remember" => "Saved to memory".to_string(),
         "recall" => format!("Recalled {}", s("name")),
+        "forget" => format!("Forgot {}", s("name")),
         "read_skill" => format!("Read skill {}", s("name")),
         "agent" => {
             let names: Vec<&str> = parsed["tasks"]

@@ -1632,6 +1632,7 @@ fn tool_line(name: &str, arguments: &str) -> String {
         "edit_file" => step("✍️", "Edit", &short_path(&field(&["path"]))),
         "remember" => step("🧠", "Remember", &field(&["name"])),
         "recall" => step("🧠", "Recall", &field(&["name"])),
+        "forget" => step("🧠", "Forget", &field(&["name"])),
         "read_skill" => step("📚", "Skill", &field(&["name"])),
         "update_plan" => "📋 <b>Updating the plan</b>".into(),
         "exit_plan_mode" => "📋 <b>Plan ready</b>".into(),

@@ -140,6 +140,8 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return "Saved to memory";
     case "recall":
       return `Recalled ${s(args.name)}`;
+    case "forget":
+      return `Forgot ${s(args.name)}`;
     case "read_skill":
       return `Read skill ${s(args.name)}`;
     case "agent": {

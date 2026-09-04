@@ -191,9 +191,11 @@ pattern):
   without one it appends the note to `ASTER.md`.
 - **`recall(name)`** reads one block's full body on demand, using a name from the
   index in the system prompt.
+- **`forget(name)`** deletes one block, so a wrong or unwanted fact can be
+  taken back without overwriting it with a placeholder.
 
-Both tools carry their guidance in their own descriptions rather than in the
-system prompt.
+All three tools carry their guidance in their own descriptions rather than in
+the system prompt.
 
 ### Populating memory
 
