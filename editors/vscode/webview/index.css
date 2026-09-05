@@ -1,4 +1,5 @@
 @import "./tokens.css";
+@import "./slider.css";
 
 /* Chat-panel geometry; the shared theme tokens live in tokens.css. */
 :root {
@@ -3836,96 +3837,6 @@ code {
 
 .cmd-row-choice {
   cursor: default;
-}
-
-/* A knob on a track of stops: the setting reads as a position, and moving it
-   is a slide rather than a swap, so the eye follows the value across. */
-.slider {
-  --slider-step: 13px;
-  position: relative;
-  display: flex;
-  align-items: center;
-  flex: none;
-  height: 18px;
-  padding: 0 var(--s1);
-  border-radius: 999px;
-  background: var(--code-bg);
-  cursor: pointer;
-  touch-action: none;
-  user-select: none;
-}
-
-.slider-stop {
-  position: relative;
-  flex: none;
-  width: var(--slider-step);
-  height: 100%;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-
-.slider-stop::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--fg-dim);
-  opacity: 0.55;
-  transform: translate(-50%, -50%);
-  transition: opacity 0.14s ease-out;
-}
-
-.slider-stop:hover::before {
-  opacity: 1;
-}
-
-/* The far end of the dial carries its own color, so the most expensive step is
-   marked before it is chosen. */
-.slider-stop[data-top="true"]::before {
-  background: var(--vscode-charts-purple, #c586c0);
-  opacity: 0.8;
-}
-
-.slider-stop[data-on="true"]::before {
-  opacity: 0;
-}
-
-.slider-stop:focus-visible {
-  outline: none;
-}
-
-.slider:has(.slider-stop:focus-visible) .slider-knob {
-  outline: 1px solid var(--vscode-focusBorder, var(--fg));
-  outline-offset: 2px;
-}
-
-.slider-knob {
-  position: absolute;
-  top: 50%;
-  left: calc(var(--s1) + var(--at) * var(--slider-step) + var(--slider-step) / 2);
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--fg);
-  pointer-events: none;
-  transform: translate(-50%, -50%);
-  transition: left 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.16s ease-out;
-}
-
-.slider-knob[data-top="true"] {
-  background: var(--vscode-charts-purple, #c586c0);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .slider-stop::before,
-  .slider-knob {
-    transition: none;
-  }
 }
 
 .cmd-row-choice .slider,

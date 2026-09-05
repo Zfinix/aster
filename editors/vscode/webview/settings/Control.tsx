@@ -1,5 +1,7 @@
 import type { ConfigKey, ConfigValue, Provider } from "../../src/protocol";
 import { asList } from "./sections";
+import { ChoiceSlider } from "../components/ChoiceSlider";
+import { EFFORT_OPTIONS } from "../lib/effort";
 import { ChipList } from "./controls/ChipList";
 import { Combo } from "./controls/Combo";
 import { NumberInput } from "./controls/NumberInput";
@@ -17,21 +19,38 @@ const MODEL_KEYS = new Set([
   "agents.collector_model",
 ]);
 
+const EFFORT_KEYS = new Set(["effort", "review.effort"]);
+
 export function Control({
   keyRow,
   shown,
   models,
   providers,
   onCommit,
+  onUnset,
 }: {
   keyRow: ConfigKey;
   shown: ConfigValue;
   models: string[];
   providers: Provider[];
   onCommit: (next: Exclude<ConfigValue, null>) => void;
+  onUnset: () => void;
 }) {
   const label = keyRow.label;
   const text = typeof shown === "string" ? shown : "";
+
+  // The same effort dial the chat panel uses, so one ladder everywhere; the
+  // "Default" stop clears the key instead of writing an empty value.
+  if (EFFORT_KEYS.has(keyRow.key)) {
+    return (
+      <ChoiceSlider
+        label={label}
+        options={EFFORT_OPTIONS}
+        value={text}
+        onSelect={(next) => (next ? onCommit(next) : onUnset())}
+      />
+    );
+  }
 
   if (MODEL_KEYS.has(keyRow.key)) {
     return (

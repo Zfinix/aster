@@ -1,4 +1,5 @@
 @import "./tokens.css";
+@import "./slider.css";
 
 /* The settings tab is an editor, not a sidebar: it gets the editor's own
    background and a fixed rail beside a column that stops at a readable width.

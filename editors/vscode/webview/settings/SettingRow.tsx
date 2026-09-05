@@ -71,6 +71,7 @@ export function SettingRow({
           models={models}
           providers={providers}
           onCommit={onSet}
+          onUnset={onUnset}
         />
       </div>
     </div>
