@@ -26,3 +26,6 @@ _archive/
 # Node
 node_modules/
 .playwright-mcp/
+
+# Zed extension build artifacts
+editors/zed/target/
