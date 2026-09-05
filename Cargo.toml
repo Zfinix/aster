@@ -15,6 +15,7 @@ members = [
     "crates/aster-telemetry",
     "crates/aster-skills",
     "crates/aster-agents",
+    "crates/aster-acp",
     "crates/aster-mcp",
     "crates/aster-plugins",
     "crates/aster-tools",

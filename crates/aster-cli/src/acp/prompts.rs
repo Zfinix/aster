@@ -13,7 +13,7 @@ use agent_client_protocol::{Client, ConnectionTo};
 use aster_policy::Mode;
 use tokio::sync::mpsc;
 
-use super::session::{Session, mode_id};
+use super::session::Session;
 use crate::chat::{Answer, ApprovalRequest, QuestionRequest, UiRequest, UiSender};
 
 const MAX_TITLE_CHARS: usize = 80;
@@ -63,7 +63,8 @@ fn promote(cx: &ConnectionTo<Client>, session_id: &SessionId, session: &Session)
         tracing::warn!("acp: could not promote the session: {err:#}");
         return;
     }
-    let update = SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(mode_id(Mode::Edit)));
+    let update =
+        SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(aster_acp::mode_id(Mode::Edit)));
     let _ = cx.send_notification(agent_client_protocol::schema::v1::SessionNotification::new(
         session_id.clone(),
         update,

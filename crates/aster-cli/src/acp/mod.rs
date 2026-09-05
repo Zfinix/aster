@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest, AuthenticateResponse,
-    AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentBlock, ContentChunk,
-    EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
-    PromptCapabilities, PromptRequest, PromptResponse, SessionConfigOptionValue, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentChunk, Implementation,
+    InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
+    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
+    SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 use anyhow::Result;
@@ -156,7 +156,7 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                 let Some(session) = mode_server.get(&request.session_id) else {
                     return responder.respond_with_error(unknown_session());
                 };
-                let Some(mode) = session::mode_from_id(request.mode_id.0.as_ref()) else {
+                let Some(mode) = aster_acp::mode_from_id(request.mode_id.0.as_ref()) else {
                     return responder.respond_with_error(Error::invalid_params());
                 };
                 match session.set_mode(mode) {
@@ -193,13 +193,15 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                 let Some(session) = prompt_server.get(&request.session_id) else {
                     return responder.respond_with_error(unknown_session());
                 };
-                let prompt = prompt_text(&request.prompt);
+                let prompt = aster_acp::prompt_text(&request.prompt);
                 let spawned = cx.clone();
                 cx.spawn(async move {
                     let sink = Sink::new(
                         spawned.clone(),
                         request.session_id.clone(),
                         session.repo_root.clone(),
+                        false,
+                        Arc::new(aster_acp::Calls::default()),
                     );
                     let sink = Arc::new(sink.into_chat_sink());
                     let approver = prompts::spawn_approver(spawned, session.clone());
@@ -274,39 +276,6 @@ fn replay(cx: &ConnectionTo<Client>, session_id: &SessionId, prior: &[ChatMessag
         };
         let _ = cx.send_notification(SessionNotification::new(session_id.clone(), update));
     }
-}
-
-fn prompt_text(blocks: &[ContentBlock]) -> String {
-    let mut text = String::new();
-    let mut context = Vec::new();
-    for block in blocks {
-        match block {
-            ContentBlock::Text(t) => text.push_str(&t.text),
-            ContentBlock::ResourceLink(link) => {
-                let uri = link.uri.strip_prefix("file://").unwrap_or(&link.uri);
-                text.push_str(&format!("[{}]({uri})", link.name));
-            }
-            ContentBlock::Resource(resource) => {
-                if let EmbeddedResourceResource::TextResourceContents(contents) = &resource.resource
-                {
-                    let uri = contents
-                        .uri
-                        .strip_prefix("file://")
-                        .unwrap_or(&contents.uri);
-                    context.push(format!(
-                        "<context path=\"{uri}\">\n{}\n</context>",
-                        contents.text
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-    if !context.is_empty() {
-        text.push_str("\n\n");
-        text.push_str(&context.join("\n\n"));
-    }
-    text
 }
 
 fn unknown_session() -> Error {

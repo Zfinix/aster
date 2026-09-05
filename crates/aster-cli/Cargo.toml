@@ -13,6 +13,7 @@ agent-client-protocol = "2.1"
 anydoc = { workspace = true }
 anyhow = { workspace = true }
 aster-agents = { path = "../aster-agents" }
+aster-acp = { path = "../aster-acp" }
 aster-analyzers = { path = "../aster-analyzers" }
 aster-cron = { path = "../aster-cron" }
 aster-lsp = { path = "../aster-lsp" }

@@ -1,0 +1,12 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "aster-acp"
+version.workspace = true
+
+[dependencies]
+agent-client-protocol = "2.1"
+aster-policy = { path = "../aster-policy" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

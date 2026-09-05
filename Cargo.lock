@@ -245,6 +245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-acp"
+version = "0.5.0"
+dependencies = [
+ "agent-client-protocol",
+ "aster-policy",
+ "serde_json",
+]
+
+[[package]]
 name = "aster-agents"
 version = "0.5.0"
 dependencies = [
@@ -300,6 +309,7 @@ dependencies = [
  "agent-client-protocol",
  "anydoc",
  "anyhow",
+ "aster-acp",
  "aster-agents",
  "aster-ai",
  "aster-analyzers",

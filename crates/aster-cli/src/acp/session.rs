@@ -31,46 +31,6 @@ const EFFORTS: [Effort; 7] = [
     Effort::Ultra,
 ];
 
-const MODES: [(Mode, &str, &str, &str); 5] = [
-    (
-        Mode::Plan,
-        "plan",
-        "Plan",
-        "Explore the code and present a plan before editing",
-    ),
-    (
-        Mode::Manual,
-        "manual",
-        "Manual",
-        "Ask for approval before each edit and command",
-    ),
-    (
-        Mode::Auto,
-        "auto",
-        "Auto",
-        "Apply edits and run commands, pausing on the risky ones",
-    ),
-    (
-        Mode::Edit,
-        "edit",
-        "Edit",
-        "As auto, but commands are trusted; only a rule stops one",
-    ),
-    (
-        Mode::Yolo,
-        "yolo",
-        "Yolo",
-        "Skip the rules and isolation entirely. Use with extreme caution",
-    ),
-];
-
-pub(super) fn mode_id(mode: Mode) -> &'static str {
-    MODES
-        .iter()
-        .find(|(m, ..)| *m == mode)
-        .map_or("auto", |(_, id, ..)| id)
-}
-
 async fn fetch_models(client: &AiClient) -> Vec<String> {
     tokio::time::timeout(MODELS_TIMEOUT, client.fetch_models())
         .await
@@ -118,13 +78,6 @@ fn effort_label(effort: Effort) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => id.to_string(),
     }
-}
-
-pub(super) fn mode_from_id(id: &str) -> Option<Mode> {
-    MODES
-        .iter()
-        .find(|(_, mode_id, ..)| *mode_id == id)
-        .map(|(mode, ..)| *mode)
 }
 
 pub(super) struct OpenOptions {
@@ -414,13 +367,10 @@ impl Session {
     }
 
     pub fn mode_state(&self) -> SessionModeState {
-        let available = MODES
-            .iter()
-            .map(|(_, id, name, description)| {
-                SessionMode::new(*id, *name).description(*description)
-            })
+        let available = aster_acp::modes()
+            .map(|(_, id, name, description)| SessionMode::new(id, name).description(description))
             .collect();
-        SessionModeState::new(mode_id(self.mode()), available)
+        SessionModeState::new(aster_acp::mode_id(self.mode()), available)
     }
 
     pub fn cancel(&self) {
