@@ -1,114 +1,144 @@
-import { useEffect, useRef, useState } from "react";
-import { Button, Input } from "@heroui/react";
-import { modelShort } from "../lib/session";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { Effort, Provider } from "../lib/types";
+import { EFFORT_OPTIONS } from "../lib/effort";
+import { modelChip } from "../lib/model";
+import { ChoiceList } from "./ChoiceList";
+import { ChoiceSlider } from "./ChoiceSlider";
+import { CloudIcon, CubeIcon, GaugeIcon } from "./icons";
+import { ModelPicker } from "./ModelPicker";
 
-/** Model picker: a name-only list of vetted models, a checkmark on the current
-    one, and a "+" row to type any custom model id. */
+type Pane = "model" | "provider";
+
+/** The model chip's menu: three rows, each opening its list beside them under
+ *  the pointer. One list is out at a time, so the panel reads as one surface
+ *  changing shape rather than every setting shouting at once. */
 export function ModelMenu({
+  pane: initial,
   model,
   models,
-  onModel,
-  onAddModel,
-  direction = "up",
+  recommended,
+  recent,
+  loading,
+  error,
+  effort,
+  providers,
+  onSelect,
+  onRefresh,
+  onRefreshProviders,
+  onEffort,
+  onProvider,
+  onClose,
 }: {
-  model: string;
+  pane: Pane | null;
+  model: string | null;
   models: string[];
-  onModel: (value: string) => void;
-  onAddModel: (value: string) => void;
-  direction?: "up" | "down";
+  recommended: string[];
+  recent: string[];
+  loading: boolean;
+  error?: string;
+  effort: Effort | null;
+  providers: Provider[];
+  onSelect: (model: string) => void;
+  onRefresh: () => void;
+  onRefreshProviders: () => void;
+  onEffort: (effort: Effort | null) => void;
+  onProvider: (provider: Provider) => void;
+  onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
+  const [pane, setPane] = useState<Pane | null>(initial);
+  const [height, setHeight] = useState(0);
 
   useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) {
-        setOpen(false);
-        setAdding(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        setAdding(false);
-      }
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+    onRefreshProviders();
+  }, []);
 
-  useEffect(() => {
-    if (adding) inputRef.current?.focus();
-  }, [adding]);
+  useLayoutEffect(() => {
+    const box = inner.current;
+    if (!box) return;
+    const observer = new ResizeObserver(([entry]) => setHeight(entry.contentRect.height));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [pane]);
 
-  const commitAdd = () => {
-    const value = inputRef.current?.value.trim();
-    if (value) onAddModel(value);
-    setAdding(false);
-    setOpen(false);
+  const current = providers.find((p) => p.current);
+
+  const row = (id: Pane, icon: React.ReactNode, label: string, value: string) => (
+    <button
+      className="picker-row model-row"
+      data-active={pane === id}
+      aria-haspopup="menu"
+      aria-expanded={pane === id}
+      onMouseEnter={() => setPane(id)}
+      onFocus={() => setPane(id)}
+      onClick={() => setPane(id)}
+    >
+      {icon}
+      <span className="picker-body">
+        <span className="picker-label">{label}</span>
+      </span>
+      <span className="model-row-value">{value}</span>
+    </button>
+  );
+
+  const leave = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(document.activeElement)) return;
+    setPane(null);
   };
 
   return (
-    <div className="dd-wrap" ref={wrapRef}>
-      <Button
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onPress={() => setOpen((o) => !o)}
-      >
-        <span className="pill model-pill">
-          <span>{modelShort(model)}</span>
-        </span>
-      </Button>
-      {open && (
-        <div className={`dd ${direction}`} role="menu">
-          {models.map((m) => (
-            <Button
-              key={m}
-              data-active={m === model}
-              onPress={() => {
-                onModel(m);
-                setOpen(false);
-              }}
-              render={(props) => (
-                <button
-                  {...props}
-                  role="menuitemradio"
-                  aria-checked={m === model}
-                  title={m}
-                />
-              )}
-            >
-              <span>{modelShort(m)}</span>
-            </Button>
-          ))}
-          {adding ? (
-            <Input
-              ref={inputRef}
-              className="dd-input"
-              spellCheck={false}
-              placeholder="provider/model-name"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitAdd();
-              }}
-              onBlur={commitAdd}
+    <div className="model-menu" onMouseLeave={leave}>
+      <div className="picker model-root" role="menu" aria-label="Turn settings">
+        {row("model", <CubeIcon />, "Model", modelChip(model))}
+        {row("provider", <CloudIcon />, "Provider", current?.name ?? "")}
+        <div className="picker-row model-row model-row-choice">
+          <GaugeIcon />
+          <span className="picker-body">
+            <span className="picker-label">Effort</span>
+          </span>
+          <ChoiceSlider
+            label="Effort"
+            options={EFFORT_OPTIONS}
+            value={effort ?? ""}
+            onSelect={(value) => onEffort((value || null) as Effort | null)}
+          />
+        </div>
+      </div>
+
+      <div className="model-flyout" data-open={pane !== null} style={{ height: pane ? height : 0 }}>
+        <div className="model-flyout-inner" key={pane ?? "none"} ref={inner}>
+          {pane === "model" && (
+            <ModelPicker
+              model={model}
+              models={models}
+              recommended={recommended}
+              recent={recent}
+              loading={loading}
+              error={error}
+              onSelect={onSelect}
+              onRefresh={onRefresh}
+              onClose={onClose}
             />
-          ) : (
-            <Button
-              className="dd-add"
-              onPress={() => setAdding(true)}
-            >
-              <span>+ Add model</span>
-            </Button>
+          )}
+
+          {pane === "provider" && (
+            <ChoiceList
+              label="Provider"
+              empty="Loading the catalog…"
+              choices={providers.map((provider) => ({
+                key: provider.base_url,
+                label: provider.name,
+                title: provider.base_url,
+                checked: provider.current,
+                onSelect: () => {
+                  onProvider(provider);
+                  onClose();
+                },
+              }))}
+            />
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -17,9 +17,10 @@ import { EmptyState } from "./components/EmptyState";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { InfoModal } from "./components/InfoModal";
 import { FilePreview } from "./components/FilePreview";
+import { FindBar } from "./components/FindBar";
 import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
-import { onHostMessage, persist, post, restore } from "./lib/host";
+import { inEditor, nativeFind, onHostMessage, persist, post, restore } from "./lib/host";
 import { type LoginState, loginLine } from "./lib/login";
 import { modelShort, recentsFor } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
@@ -83,7 +84,10 @@ export function App() {
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [fileResults, setFileResults] = useState<string[]>([]);
-  const [pendingMention, setPendingMention] = useState<string | null>(null);
+  const [pendingMention, setPendingMention] = useState<{
+    text: string;
+    mentions?: string[];
+  } | null>(null);
   const [queued, setQueued] = useState<string[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -262,7 +266,7 @@ export function App() {
         break;
 
       case "insertMention":
-        setPendingMention(message.text);
+        setPendingMention({ text: message.text, mentions: message.mentions });
         break;
 
       case "openCommandMenu":
@@ -498,6 +502,7 @@ export function App() {
             error: event.error,
             done: event.done,
             total: event.total,
+            ...(event.status === "running" ? { startedAt: Date.now() } : { endedAt: Date.now() }),
           })
         );
         break;
@@ -613,6 +618,60 @@ export function App() {
     });
   };
 
+  // Edit, rewind, and fork all cut the transcript at a user message. Trimming
+  // here is display-level: the CLI keeps the full transcript on disk, and the
+  // next `chat` post simply carries the shorter history.
+  const cutAt = (id: string): { history: Turn[]; at: number } | null => {
+    const at = turns.findIndex((turn) => turn.id === id && turn.role === "user");
+    if (at === -1) return null;
+    return { history: turns.slice(0, at + 1), at };
+  };
+
+  const resendFrom = (id: string, text: string) => {
+    if (busy) return;
+    setEditing(null);
+    const cut = cutAt(id);
+    if (!cut) return;
+    const replaced: Turn[] = [...cut.history];
+    replaced[cut.at] = { id, role: "user", text };
+    const tid = nextId();
+    const history: Turn[] = [...replaced, newTurn(tid)];
+    setTurns(history);
+    setBusy(true);
+    activeRef.current = tid;
+    post({
+      type: "chat",
+      id: tid,
+      messages: buildMessages(history),
+      model: init?.model ?? null,
+      permissionMode,
+      effort,
+      session,
+    });
+  };
+
+  const rewindTo = (id: string) => {
+    if (busy) return;
+    setEditing(null);
+    const cut = cutAt(id);
+    if (!cut) return;
+    setQueued([]);
+    setTurns(cut.history);
+  };
+
+  const forkFrom = (id: string) => {
+    if (busy) return;
+    setEditing(null);
+    const cut = cutAt(id);
+    if (!cut) return;
+    setQueued([]);
+    setSession(newSessionId());
+    setSessionTitle(null);
+    setTurns(cut.history);
+  };
+
+  const [editing, setEditing] = useState<string | null>(null);
+
   // Flushed one at a time so history stays ordered.
   const onSend = (text: string) => {
     if (busy) {
@@ -641,7 +700,7 @@ export function App() {
     post({ type: "review", id, source });
   };
 
-  const askInfo = (topic: "status" | "memory" | "diff") => {
+  const askInfo = (topic: "status" | "memory" | "diff" | "mom") => {
     const id = nextId();
     setInfo({ id, title: infoTitle(topic), pending: true });
     post({ type: "info", id, topic });
@@ -683,6 +742,14 @@ export function App() {
       case "clear":
         setTurns([]);
         setQueued([]);
+        break;
+      case "mom":
+        askInfo("mom");
+        break;
+      // Answered here rather than by the host: the command list is the
+      // webview's own menu, so nothing needs to leave the panel for it.
+      case "help":
+        setInfo({ id: nextId(), title: "Commands", body: HELP_BODY, doc: true });
         break;
     }
   };
@@ -751,6 +818,12 @@ export function App() {
             }
           }}
           onUnqueue={(index) => setQueued((prev) => prev.filter((_, i) => i !== index))}
+          editing={editing}
+          onEditStart={(id) => setEditing(id)}
+          onEditCancel={() => setEditing(null)}
+          onEditSend={resendFrom}
+          onFork={forkFrom}
+          onRewind={rewindTo}
         />
       )}
       <Composer
@@ -772,7 +845,8 @@ export function App() {
         fileResults={fileResults}
         openMenu={openMenu}
         onMenuOpened={closeMenuRequest}
-        insertText={pendingMention}
+        insertText={pendingMention?.text ?? null}
+        insertMentions={pendingMention?.mentions}
         onInserted={() => setPendingMention(null)}
         onSearchFiles={onSearchFiles}
         onSend={onSend}
@@ -813,7 +887,8 @@ export function App() {
         }}
       />
       {info && <InfoModal card={info} onClose={() => setInfo(null)} />}
-      <FilePreview />
+      {!inEditor && <FilePreview />}
+      {!nativeFind && <FindBar />}
 
       {showHistory && (
         <HistoryPanel
@@ -856,9 +931,35 @@ function sessionRows(turns: Turn[]): InfoRow[] {
   return rows;
 }
 
-function infoTitle(topic: "status" | "memory" | "diff"): string {
-  return topic === "diff" ? "Uncommitted changes" : topic === "memory" ? "Memory" : "Status";
+function infoTitle(topic: "status" | "memory" | "diff" | "mom"): string {
+  return topic === "diff"
+    ? "Uncommitted changes"
+    : topic === "memory"
+      ? "Memory"
+      : topic === "mom"
+        ? "Model policy"
+        : "Status";
 }
+
+const HELP_BODY = `| Command | What it does |
+| --- | --- |
+| /new | Start a new conversation |
+| /clear | Clear this conversation |
+| /goal <condition> | Keep going until a judge says it is met |
+| /compact | Fold earlier turns down to free context |
+| /resume | Reopen a saved session |
+| /model | Switch the active model |
+| /provider | Switch the endpoint |
+| /effort | Set the reasoning budget |
+| /mode | Choose what the agent may do |
+| /review | Review the working tree |
+| /review-pr | Review a GitHub PR |
+| /diff | Show uncommitted changes |
+| /status | Show model and token usage |
+| /memory | List what Aster remembers |
+| /mom | Show the mom.yaml model policy |
+| /mcp | Turn MCP servers on and off |
+| /mention | Attach a file to the next message |`;
 
 type ReviewEvent = Extract<ToWebview, { type: "reviewEvent" }>["event"];
 

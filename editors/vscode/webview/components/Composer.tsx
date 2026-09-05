@@ -8,11 +8,13 @@ import type {
   SkillCommand,
 } from "../../src/protocol";
 import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
-import { post } from "../lib/host";
+import { inEditor, onHostMessage, post } from "../lib/host";
+import { fileUrisFromTransfer, filesFromTransfer } from "../lib/dataTransfer";
 import { useListNav } from "../lib/listnav";
 import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
 import { modelChip, modelShort } from "../lib/model";
 import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicker";
+import { displayName, fileIconKind, fileUrl, splitMentions } from "./UserText";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
@@ -30,18 +32,19 @@ import {
   CubeIcon,
   DiffIcon,
   FileIcon,
+  FileTypeIcon,
   GaugeIcon,
   GearIcon,
   GitCommitIcon,
   GitPullRequestIcon,
   HistoryIcon,
-  ImageIcon,
   MinimizeIcon,
   NewChatIcon,
   PlugIcon,
   PlusIcon,
   ReviewIcon,
   ShieldIcon,
+  TargetIcon,
   TrashIcon,
   UploadIcon,
   XIcon,
@@ -105,6 +108,7 @@ export function Composer({
   openMenu,
   onMenuOpened,
   insertText,
+  insertMentions,
   onInserted,
   onSearchFiles,
   onSend,
@@ -136,6 +140,7 @@ export function Composer({
   openMenu: boolean;
   onMenuOpened: () => void;
   insertText: string | null;
+  insertMentions?: string[];
   onInserted: () => void;
   onSearchFiles: (query: string) => void;
   onSend: (text: string) => void;
@@ -212,16 +217,62 @@ export function Composer({
     onPick: (index) => pick(suggestions[index]),
   });
 
+  const pendingThumbs = useRef(new Set<string>());
+
+  // A dropped image has no bytes in the webview yet: pasted ones arrive with
+  // their data, dropped ones are only a path. In a browser the server hands
+  // the file over; in the editor the host reads it and answers with a data URI.
+  const requestThumb = (mention: string, path: string) => {
+    if (pendingThumbs.current.has(mention)) return;
+    pendingThumbs.current.add(mention);
+    const put = (src: string) => {
+      thumbs.current.set(path, src);
+      setAttachments((prev) =>
+        prev.map((a) => (a.mention === mention && !a.thumb ? { ...a, thumb: src } : a))
+      );
+    };
+    if (!inEditor) {
+      put(fileUrl(path));
+      return;
+    }
+    const requestId = `thumb-${Math.random().toString(36).slice(2)}`;
+    const off = onHostMessage((message) => {
+      if (message.type === "filePreview" && message.requestId === requestId) {
+        if (message.file?.image) put(message.file.image);
+        off();
+      }
+    });
+    post({ type: "readFile", path, requestId });
+  };
+
   // Images go above the box as chips; everything else lands in the text as a
   // mention, the way it always has.
   useEffect(() => {
     if (!insertText) return;
     const words: string[] = [];
     const pictures: Attachment[] = [];
-    for (const token of insertText.split(" ")) {
-      const picture = attachmentFor(token, thumbs.current);
-      if (picture) pictures.push(picture);
-      else if (token) words.push(token);
+    const parts = insertMentions?.length
+      ? insertMentions.map((mention) => ({ kind: "image" as const, path: mention.slice(1) }))
+      : splitMentions(insertText);
+    for (const part of parts) {
+      if (part.kind === "text") {
+        for (const token of part.text.split(" ")) {
+          const picture = attachmentFor(token, thumbs.current);
+          if (picture) pictures.push(picture);
+          else if (token) words.push(token);
+        }
+      } else {
+        const mention = `@${part.path}`;
+        const picture = attachmentFor(mention, thumbs.current);
+        if (picture) pictures.push(picture);
+        else words.push(mention);
+      }
+    }
+    for (const picture of pictures) {
+      const path = picture.mention.slice(1);
+      if (!picture.thumb && IMAGE.test(path)) {
+        requestThumb(picture.mention, path);
+      }
     }
     if (pictures.length) {
       setAttachments((prev) => [
@@ -235,7 +286,7 @@ export function Composer({
     }
     onInserted();
     requestAnimationFrame(() => areaRef.current?.focus());
-  }, [insertText, onInserted]);
+  }, [insertText, insertMentions, onInserted]);
 
   useEffect(() => {
     const area = areaRef.current;
@@ -265,12 +316,19 @@ export function Composer({
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDropping(false);
-    const uris = fileUris(e.dataTransfer);
+    const uris = editorFileUris(e.dataTransfer);
     if (uris.length) {
       post({ type: "dropFiles", uris });
       return;
     }
-    const files = Array.from(e.dataTransfer.files);
+    // Prefer URIs over bytes: an OS drag carries both, and only the URI has
+    // the original path, so it must win or the file gets re-staged to tmp.
+    const fileUris = fileUrisFromTransfer(e.dataTransfer);
+    if (fileUris.length) {
+      post({ type: "dropFiles", uris: fileUris });
+      return;
+    }
+    const files = filesFromTransfer(e.dataTransfer);
     if (files.length) {
       sendPasted(files);
       return;
@@ -285,13 +343,13 @@ export function Composer({
   };
 
   const onPaste = (e: React.ClipboardEvent) => {
-    const uris = fileUris(e.clipboardData);
+    const uris = editorFileUris(e.clipboardData);
     if (uris.length) {
       e.preventDefault();
       return post({ type: "dropFiles", uris });
     }
 
-    const files = Array.from(e.clipboardData.files);
+    const files = filesFromTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     sendPasted(files);
@@ -396,6 +454,18 @@ export function Composer({
         items: [
           action("new", "New conversation"),
           action("clear", "Clear conversation"),
+          {
+            kind: "action" as const,
+            id: "goal",
+            label: "Run to a goal…",
+            hint: "Keep going until a judge says it is met",
+            icon: <TargetIcon />,
+            slash: "/goal",
+            // The CLI parses `/goal <condition>` from the last message, so this
+            // only has to land in the box and go out as a normal send.
+            takesArg: true,
+            run: (rest: string) => compose("/goal", rest),
+          },
           action("compact", "Compact conversation"),
           action("resume", "Resume a session…"),
           {
@@ -412,6 +482,7 @@ export function Composer({
             icon: ICONS.settings,
             run: () => post({ type: "runCommand", command: "aster.openSettings" }),
           },
+          action("help", "List commands"),
         ],
       },
       {
@@ -448,6 +519,7 @@ export function Composer({
           action("diff", "Show uncommitted changes"),
           action("status", "Status"),
           action("memory", "Memory"),
+          action("mom", "Model policy"),
           opens(
             "mcp",
             "MCP servers…",
@@ -586,9 +658,7 @@ export function Composer({
                 {file.thumb ? (
                   <img className="file-chip-thumb" src={file.thumb} alt="" />
                 ) : (
-                  <span className="file-chip-glyph">
-                    <ImageIcon />
-                  </span>
+                  <FileTypeIcon kind={fileIconKind(file.mention)} />
                 )}
                 <span className="file-chip-name">{file.name}</span>
                 <button
@@ -693,7 +763,7 @@ export function Composer({
   );
 }
 
-function fileUris(data: DataTransfer): string[] {
+function editorFileUris(data: DataTransfer): string[] {
   const resources = data.getData("resourceurls");
   if (resources) {
     try {
@@ -720,29 +790,30 @@ function fileUris(data: DataTransfer): string[] {
     }
   }
 
-  const list = data.getData("text/uri-list") || data.getData("text/plain");
-  return (
-    list
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      // `#` opens a comment line in uri-list, and a bare path is not something
-      // we can resolve; only real file URIs go to the host.
-      .filter((line) => line.startsWith("file://"))
-  );
+  return [];
 }
 
 const MAX_PASTE_BYTES = 10 * 1024 * 1024;
 
+// Images get downscaled by the host before they are sent, so a large
+// screenshot is worth reading; only a genuinely huge one is refused.
+const MAX_IMAGE_PASTE_BYTES = 64 * 1024 * 1024;
+
 function attachmentFor(token: string, thumbs: Map<string, string>): Attachment | null {
-  if (!token.startsWith("@") || token.includes("#") || !IMAGE.test(token)) return null;
-  const base = basename(token.slice(1));
-  const unstamped = base.replace(/^[0-9a-z]{6,10}-/, "");
-  const name = thumbs.has(unstamped) ? unstamped : base;
-  return { mention: token, name, thumb: thumbs.get(name) };
+  if (!token.startsWith("@") || token.includes("#")) return null;
+  const path = token.slice(1);
+  const name = displayName(path);
+  if (IMAGE.test(path)) {
+    // Host thumbs are keyed by the full path; staged pastes by the name they
+    // were given, which may be all the token has.
+    return { mention: token, name, thumb: thumbs.get(path) ?? thumbs.get(name) };
+  }
+  return { mention: token, name };
 }
 
 async function readPasted(file: File): Promise<PastedFile & { type: string }> {
-  if (file.size > MAX_PASTE_BYTES) {
+  const limit = file.type.startsWith("image/") ? MAX_IMAGE_PASTE_BYTES : MAX_PASTE_BYTES;
+  if (file.size > limit) {
     return { name: file.name, size: file.size, type: file.type };
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -765,21 +836,24 @@ function dirname(path: string): string | undefined {
 
 function renderMentions(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /@[^\s]+/g;
+  // Space-aware the way the real renderer is, so a macOS path like
+  // ".../Screenshot 2026-09-01 at 1.33.55 PM.png" stays one mention.
+  const pattern = /(^|\s)@([^\s@]+(?: [^\s@]+)*?\.(?:[a-z0-9]+))(?=\s|$)/gi;
   let cursor = 0;
   let match: RegExpExecArray | null;
   let key = 0;
 
   while ((match = pattern.exec(text)) !== null) {
-    if (match.index > cursor) {
-      nodes.push(text.slice(cursor, match.index));
+    const at = match.index + match[1].length;
+    if (at > cursor) {
+      nodes.push(text.slice(cursor, at));
     }
     nodes.push(
       <span key={key++} className="mention">
-        {match[0]}
+        {`@${match[2]}`}
       </span>
     );
-    cursor = match.index + match[0].length;
+    cursor = at + match[2].length + 1;
   }
   nodes.push(`${text.slice(cursor)}​`);
   return nodes;

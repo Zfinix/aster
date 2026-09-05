@@ -1,6 +1,6 @@
 import { exec } from "child_process";
 import { runCli } from "./asterCli";
-import { ApiKey, ChatMessage, InfoRow, McpServer, Provider, SetupInfo, TranscriptTurn } from "./protocol";
+import { ApiKey, ChatMessage, EnvVar, InfoRow, McpServer, Provider, SetupInfo, TranscriptTurn } from "./protocol";
 
 async function json<T>(
   args: string[],
@@ -79,6 +79,30 @@ export async function memoryBlocks(cwd: string): Promise<InfoRow[]> {
     cwd
   );
   return (parsed.blocks ?? []).map((b) => ({ label: b.name, value: b.description }));
+}
+
+interface MomJson {
+  name?: string | null;
+  path?: string | null;
+  start_with?: string;
+  router?: boolean;
+  rules?: number;
+  entries?: { name: string; model: string | null }[];
+}
+
+/** The TUI's `/mom`: the mom.yaml policy and where each entry resolves. */
+export async function momPolicy(cwd: string): Promise<InfoRow[]> {
+  const m = await json<MomJson>(["mom", "check"], cwd);
+  const rows: InfoRow[] = [];
+  if (m.name) rows.push({ label: "policy", value: m.name });
+  if (m.path) rows.push({ label: "manifest", value: m.path });
+  if (m.start_with) rows.push({ label: "start-with", value: m.start_with });
+  rows.push({ label: "router", value: m.router ? "on" : "off" });
+  for (const e of m.entries ?? []) {
+    rows.push({ label: e.name, value: e.model ?? "unresolvable" });
+  }
+  rows.push({ label: "switch rules", value: `${m.rules ?? 0}` });
+  return rows;
 }
 
 export async function mcpServers(cwd: string): Promise<McpServer[]> {
@@ -164,6 +188,38 @@ export async function unsetApiKey(
 /** The live value, for the settings page's reveal button. */
 export async function revealApiKey(cwd: string, name: string): Promise<string | null> {
   const parsed = await json<{ value?: string | null }>(["key", "get", name], cwd);
+  return parsed.value ?? null;
+}
+
+/** Every ASTER_* variable the CLI reads, set or not, with its live value. */
+export async function envVars(cwd: string): Promise<EnvVar[]> {
+  const parsed = await json<{ vars?: EnvVar[] }>(["env", "list"], cwd);
+  return parsed.vars ?? [];
+}
+
+/** The value travels on stdin, never argv, so it stays off the process list. */
+export async function setEnv(
+  cwd: string,
+  name: string,
+  value: string,
+  scope: "global" | "local"
+): Promise<void> {
+  const args = ["env", "set", name, "--stdin"];
+  if (scope === "local") args.push("--local");
+  await json(args, cwd, undefined, value);
+}
+
+export async function unsetEnv(
+  cwd: string,
+  name: string,
+  scope: "global" | "local"
+): Promise<void> {
+  await json(["env", "unset", name, `--${scope}`], cwd);
+}
+
+/** The live value, for the settings page's reveal button. */
+export async function revealEnv(cwd: string, name: string): Promise<string | null> {
+  const parsed = await json<{ value?: string | null }>(["env", "get", name], cwd);
   return parsed.value ?? null;
 }
 

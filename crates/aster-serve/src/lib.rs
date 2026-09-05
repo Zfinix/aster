@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tokio::net::TcpListener;
@@ -99,7 +100,11 @@ impl Server {
 fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/events", get(host::events))
-        .route("/api/host", post(host::message))
+        .route(
+            "/api/host",
+            post(host::message).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route("/api/file", get(host::file))
         .fallback(get(assets::serve))
         // Not `route_layer`: that would leave the page itself, which is every
         // request that is not an API call, outside the guard.

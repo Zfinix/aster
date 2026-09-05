@@ -1,193 +1,194 @@
 import { useEffect, useState } from "react";
-import { Button, Card } from "@heroui/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReviewData } from "../lib/session";
-import type { Finding, Severity } from "../lib/types";
-import { severityOf } from "../lib/severity";
-import { money, reviewMessage } from "../lib/review-format";
-import { Mark } from "./Mark";
+import type { Finding } from "../lib/types";
+import { severityOf, SEV_RANK } from "../lib/severity";
+import { Disclosure } from "../interior/disclosure";
+import { TaskSteps, type TaskStep } from "../interior/task-steps";
+import { ARRIVE, CROSSFADE, INSTANT } from "../interior/springs";
+import { ErrorBox } from "./ErrorBox";
+import { FindingRow } from "./FindingRow";
+import { CheckIcon, ChevronIcon, ShieldIcon } from "./icons";
 
-const SEV_VAR: Record<Severity, string> = {
-  critical: "var(--sev-crit)",
-  high: "var(--sev-high)",
-  medium: "var(--sev-med)",
-  low: "var(--sev-low)",
-  info: "var(--faint)",
-};
+const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
 
-function FindingRow({ f, onFocus }: { f: Finding; onFocus: (f: Finding) => void }) {
-  const [open, setOpen] = useState(false);
-  const sev = severityOf(f.severity);
-  return (
-    <li
-      className="f rise"
-      style={{ ["--sev" as string]: SEV_VAR[sev] }}
-    >
-      <button
-        className="f-row"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <span className="f-dot" />
-        <span className="f-name">{f.title}</span>
-        <span className="f-loc">
-          {f.file_path.split("/").pop()}:{f.line}
-        </span>
-      </button>
-      {open && (
-        <div className="f-why rise">
-          <p>{f.description}</p>
-          <button className="rt-link" onClick={() => onFocus(f)}>
-            Show in diff →
-          </button>
-        </div>
-      )}
-    </li>
-  );
+function stepId(phase: string): string {
+  if (phase.startsWith("Verifying")) return "verify";
+  if (phase.startsWith("Index")) return "index";
+  if (/candidates? to verify$/.test(phase)) return "hypothesize";
+  return phase;
 }
 
-function Say({ text }: { text: string }) {
-  return (
-    <p className="say">
-      {text.split(" ").map((w, i) => (
-        <span key={i}>
-          <span
-            className="say-w"
-            style={{ animationDelay: `${Math.min(i * 26, 1100)}ms` }}
-          >
-            {w}
-          </span>{" "}
-        </span>
-      ))}
-    </p>
-  );
+function formatTokens(total: number): string {
+  return total >= 1000 ? `${(total / 1000).toFixed(1)}k` : String(total);
 }
 
 export function ReviewTurn({
   data,
   onOpenDiff,
   onFocusFinding,
+  onApplyFix,
   onRetry,
 }: {
   data: ReviewData;
   onOpenDiff: () => void;
   onFocusFinding: (finding: Finding) => void;
+  onApplyFix: (finding: Finding) => Promise<boolean>;
   onRetry: () => void;
 }) {
-  const [refutedOpen, setRefutedOpen] = useState(false);
-  const [findingsOpen, setFindingsOpen] = useState(true);
-  const [elapsed, setElapsed] = useState(0);
+  const reduced = useReducedMotion() === true;
+  const [open, setOpen] = useState(true);
+  const [showRefuted, setShowRefuted] = useState(false);
+  const [steps, setSteps] = useState<TaskStep[]>([]);
+
+  useEffect(() => {
+    const phase = data.phase;
+    if (!phase) return;
+    const id = stepId(phase);
+    setSteps((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.id === id) {
+        return last.label === phase ? prev : [...prev.slice(0, -1), { id, label: phase }];
+      }
+      return [...prev, { id, label: phase }];
+    });
+  }, [data.phase]);
+
+  const findings = [...data.findings].sort(
+    (a, b) => SEV_RANK[severityOf(a.severity)] - SEV_RANK[severityOf(b.severity)],
+  );
 
   const running = data.status === "running";
-  useEffect(() => {
-    if (!running) return;
-    const t0 = Date.now();
-    const id = window.setInterval(
-      () => setElapsed((Date.now() - t0) / 1000),
-      100,
-    );
-    return () => window.clearInterval(id);
-  }, [running]);
-
-  if (data.status === "running") {
-    return (
-      <div className="pipe">
-        <div className="a-run">
-          <Mark px={1.5} className="a-run-mark" label="Aster working" />
-          <span className="run-shimmer">{data.phase || "Reading the diff"}</span>
-          <span className="run-dot">·</span>
-          <span className="run-timer">{elapsed.toFixed(1)}s</span>
-        </div>
-        {data.findings.length > 0 && (
-          <ul className="flist">
-            {data.findings.map((f, i) => (
-              <FindingRow key={i} f={f} onFocus={onFocusFinding} />
-            ))}
-          </ul>
-        )}
-        {data.refuted.length > 0 && (
-          <div className="pipe-kills">
-            {data.refuted.map((r, i) => (
-              <div key={i} className="pipe-kill rise">
-                <span className="x">✕</span>
-                <span className="rt">{r.title}</span>
-                <span className="why">refuted</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (data.status === "error") {
-    return (
-      <Card className="err-card">
-        <div className="err-head">Review failed</div>
-        <pre className="err-body">{data.errorMsg || "aster exited with an error"}</pre>
-        <Button className="btn btn-line" onPress={onRetry}>
-          Retry
-        </Button>
-      </Card>
-    );
-  }
-
-  const adds = data.files.reduce((n, f) => n + f.additions, 0);
-  const dels = data.files.reduce((n, f) => n + f.deletions, 0);
-  const n = data.findings.length;
+  const done = data.status === "done";
+  const failed = data.status === "error";
+  const adds = data.files.reduce((s, f) => s + f.additions, 0);
+  const dels = data.files.reduce((s, f) => s + f.deletions, 0);
 
   return (
-    <div className="a-turn review-done">
-      <button
-        className="rt-label"
-        aria-expanded={findingsOpen}
-        onClick={() => setFindingsOpen((o) => !o)}
-      >
-        {n > 0 ? `Findings · ${n}` : "Clean diff"}
-        <span className="rt-chev" data-open={findingsOpen}>
-          ›
+    <div className="review-card" data-status={data.status}>
+      <button type="button" className="review-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className="review-title">
+          <ShieldIcon />
+          Review
+        </span>
+        <span className="review-state">
+          <AnimatePresence initial={false}>
+            <motion.span
+              key={data.status}
+              className="review-state-face"
+              initial={reduced ? { opacity: 0 } : { opacity: 0, y: 5, filter: "blur(3px)" }}
+              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+              exit={
+                reduced
+                  ? { opacity: 0, transition: INSTANT }
+                  : { opacity: 0, y: -5, filter: "blur(3px)", transition: CROSSFADE }
+              }
+              transition={reduced ? INSTANT : CROSSFADE}
+            >
+              {running ? (
+                <span className="review-phase shimmer">{data.phase || "Reading the diff"}</span>
+              ) : failed ? (
+                "Review failed"
+              ) : findings.length === 0 ? (
+                <span className="review-clean">
+                  <CheckIcon />
+                  No issues found
+                </span>
+              ) : (
+                <>
+                  {findings.length} finding{findings.length === 1 ? "" : "s"}
+                  {SEVERITY_ORDER.filter(
+                    (s) => s !== "info" && findings.some((f) => severityOf(f.severity) === s),
+                  ).map((s) => (
+                    <span key={s} className="review-sev" data-severity={s}>
+                      {findings.filter((f) => severityOf(f.severity) === s).length} {s}
+                    </span>
+                  ))}
+                </>
+              )}
+            </motion.span>
+          </AnimatePresence>
+        </span>
+        <span className="review-caret">
+          <ChevronIcon open={open} />
         </span>
       </button>
 
-      <Say text={reviewMessage(data.findings, data.refuted.length)} />
+      <Disclosure open={open}>
+        <div className="review-body">
+          <Disclosure open={!done && steps.length > 0}>
+            <div className="review-progress">
+              <TaskSteps steps={steps} current={steps.length - 1} failed={failed} label="Review progress" />
+            </div>
+          </Disclosure>
 
-      {findingsOpen && n > 0 && (
-        <ul className="flist">
-          {data.findings.map((f, i) => (
-            <FindingRow key={i} f={f} onFocus={onFocusFinding} />
-          ))}
-        </ul>
-      )}
+          {failed && (
+            <ErrorBox message={data.errorMsg || "aster exited with an error"}>
+              <button type="button" className="btn" onClick={onRetry}>
+                Try again
+              </button>
+            </ErrorBox>
+          )}
 
-      <div className="rt-foot">
-        {data.files.length > 0 && (
-          <button className="rt-link" onClick={onOpenDiff}>
-            {data.files.length} file{data.files.length === 1 ? "" : "s"} · +{adds}{" "}
-            −{dels}
-          </button>
-        )}
-        {data.usage?.estimated_cost_usd != null && (
-          <span>{money(data.usage.estimated_cost_usd)}</span>
-        )}
-      </div>
+          {data.summary && !running && <p className="review-summary">{data.summary}</p>}
 
-      {data.refuted.length > 0 && (
-        <div className={`refuted ${refutedOpen ? "open" : ""}`}>
-          <Button className="refuted-toggle" onPress={() => setRefutedOpen((o) => !o)}>
-            Refuted by verifier · {data.refuted.length} <span className="f-chev">▾</span>
-          </Button>
-          {refutedOpen && (
-            <div className="refuted-list">
-              {data.refuted.map((r, i) => (
-                <div key={i} className="refuted-row">
-                  <span className="x">✕</span>
-                  <span className="rt">{r.title}</span>
-                  <span className="why">{r.reason}</span>
-                </div>
+          {findings.length > 0 && (
+            <div className="finding-list">
+              {findings.map((finding) => (
+                <motion.div
+                  key={`${finding.file_path}:${finding.line}:${finding.title}`}
+                  layout={reduced ? undefined : "position"}
+                  initial={reduced ? false : { opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={reduced ? INSTANT : ARRIVE}
+                >
+                  <FindingRow finding={finding} onFocus={onFocusFinding} onApplyFix={onApplyFix} />
+                </motion.div>
               ))}
             </div>
           )}
+
+          {!running && !failed && (
+            <div className="review-foot">
+              <span className="review-meta">
+                {data.files.length > 0 && (
+                  <button type="button" className="review-meta-toggle" onClick={onOpenDiff}>
+                    {data.files.length} file{data.files.length === 1 ? "" : "s"} · +{adds} −{dels}
+                  </button>
+                )}
+                {data.refuted.length > 0 && (
+                  <button
+                    type="button"
+                    className="review-meta-toggle"
+                    onClick={() => setShowRefuted(!showRefuted)}
+                    aria-expanded={showRefuted}
+                  >
+                    <ChevronIcon open={showRefuted} />
+                    {data.refuted.length} refuted
+                  </button>
+                )}
+                {data.usage && (
+                  <span className="review-usage">
+                    {formatTokens(data.usage.total_tokens)} tokens
+                    {data.usage.estimated_cost_usd != null && ` · ~$${data.usage.estimated_cost_usd.toFixed(4)}`}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
+          <Disclosure open={showRefuted}>
+            <div className="refuted-list">
+              {data.refuted.map((r, i) => (
+                <div key={i} className="refuted-item">
+                  <span className="refuted-title">{r.title}</span>
+                  <span className="refuted-reason">{r.reason}</span>
+                </div>
+              ))}
+            </div>
+          </Disclosure>
         </div>
-      )}
+      </Disclosure>
     </div>
   );
 }

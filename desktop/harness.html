@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Aster harness</title>
+    <script>
+      const listeners = new Map();
+      let cbId = 0;
+      const repo = "/Users/chizi/projects/work-projects/aster";
+      const msg = (role, content, extra = {}) => ({ type: "message", role, content, ts: new Date().toISOString(), ...extra });
+      const sessions = [
+        { id: "s1", created_at: new Date(Date.now() - 3600e3).toISOString(), model: "anthropic/claude-sonnet-5", turns: 4, title: "Make the sidebar collapse remember its state" },
+        { id: "s2", created_at: new Date(Date.now() - 86400e3).toISOString(), model: "anthropic/claude-sonnet-5", turns: 2, title: "Why does the diff panel flash on focus" },
+        { id: "s3", created_at: new Date(Date.now() - 3 * 86400e3).toISOString(), model: null, turns: 6, title: "Review working tree" },
+      ];
+      const transcripts = {
+        s1: [
+          msg("user", "Make the sidebar collapse remember its state across restarts"),
+          msg("assistant", "", { tool_calls: [
+            { id: "c1", function: { name: "search_files", arguments: JSON.stringify({ query: "sidebar-collapsed" }) } },
+            { id: "c2", function: { name: "read_file", arguments: JSON.stringify({ path: "desktop/src/App.tsx" }) } },
+          ], reasoning: { text: "The collapse state lives in App. localStorage is the simplest persistence, and the app already uses it for the model.", tokens: 212, duration_ms: 4100 } }),
+          msg("tool", "desktop/src/App.tsx:891: localStorage.getItem(\"sidebar-collapsed\")", { tool_call_id: "c1" }),
+          msg("tool", "  1 | import { useCallback, useEffect } from \"react\";\n  2 | \n  3 | const KEY = \"sidebar-collapsed\";\n  4 | export function useSidebar() {\n  5 |   return localStorage.getItem(KEY) !== \"1\";\n  6 | }", { tool_call_id: "c2" }),
+          msg("assistant", "", { tool_calls: [
+            { id: "c3", function: { name: "edit_file", arguments: JSON.stringify({ path: "desktop/src/App.tsx" }) } },
+            { id: "c4", function: { name: "run_command", arguments: JSON.stringify({ command: "bunx tsc --noEmit", description: "Typecheck the desktop app" }) } },
+          ] }),
+          msg("tool", "ok", { tool_call_id: "c3" }),
+          msg("tool", "", { tool_call_id: "c4" }),
+          msg("assistant", "Done. The collapse state now persists through `localStorage` under the `sidebar-collapsed` key.\n\n- `toggleSidebar` writes the flag as it flips\n- the initial state reads it back on mount\n\n```ts\nconst [sidebarOpen, setSidebarOpen] = useState(\n  () => localStorage.getItem(\"sidebar-collapsed\") !== \"1\",\n);\n```\n\nTypecheck passes."),
+        ],
+        s2: [
+          msg("user", "Why does the diff panel flash on focus?"),
+          msg("assistant", "The flash is intentional: `FindingCard` sets `data-flash` when a finding is focused from the thread, and the CSS animates the border for 1.4s so your eye lands on the right card."),
+        ],
+        s3: [ msg("user", "Review the working tree") ],
+      };
+      function emit(event, payload) {
+        for (const cb of listeners.get(event) ?? []) cb({ event, id: 0, payload });
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      async function streamChat() {
+        const send = (o) => emit("aster://chat-event", JSON.stringify(o));
+        await sleep(400);
+        send({ type: "reasoning_delta", content: "The composer already reads the mode; the ring colour comes from CSS.", tokens: 40 });
+        await sleep(500);
+        send({ type: "reasoning_done", tokens: 80, duration_ms: 900 });
+        send({ type: "tool_call", id: "t1", name: "read_file", arguments: JSON.stringify({ path: "desktop/src/styles/composer.css" }) });
+        await sleep(700);
+        send({ type: "tool_result", id: "t1", name: "read_file", result: "  1 | .composer {\n  2 |   --ring: var(--border);\n  3 | }", error: false });
+        send({ type: "tool_call", id: "t2", name: "search_files", arguments: JSON.stringify({ query: "data-mode" }) });
+        await sleep(700);
+        send({ type: "tool_result", id: "t2", name: "search_files", result: "src/components/Composer.tsx:212", error: false });
+        await sleep(400);
+        for (const w of "The ring colour is set per permission mode in `composer.css`, so the box you type into says what the turn may do.".split(" ")) {
+          send({ type: "token", content: w + " " });
+          await sleep(40);
+        }
+        send({ type: "done", reply: "The ring colour is set per permission mode in `composer.css`, so the box you type into says what the turn may do.", edits: [] });
+      }
+      async function streamReview() {
+        const send = (o) => emit("aster://event", JSON.stringify(o));
+        await sleep(300);
+        send({ type: "diff", content: "diff --git a/desktop/src/App.tsx b/desktop/src/App.tsx\n--- a/desktop/src/App.tsx\n+++ b/desktop/src/App.tsx\n@@ -1,3 +1,4 @@\n import x from \"y\";\n-const a = 1;\n+const a = 2;\n+const b = a;\n", repo_name: "aster", base_branch: "main" });
+        send({ type: "phase", name: "Reading the diff" });
+        await sleep(500);
+        send({ type: "phase", name: "Hypothesizing" });
+        await sleep(500);
+        send({ type: "hypothesized", count: 3 });
+        await sleep(400);
+        send({ type: "verifying", index: 1, total: 3, title: "Unused variable b" });
+        await sleep(500);
+        send({ type: "finding", file_path: "desktop/src/App.tsx", line: 3, severity: "medium", category: "correctness", title: "b is assigned but never read", description: "`b` is declared from `a` and never used, so the assignment is dead code.", suggestion: "Remove the declaration, or use `b` where `a` was meant.", confidence: 0.82 });
+        await sleep(400);
+        send({ type: "verifying", index: 2, total: 3, title: "Magic number" });
+        await sleep(400);
+        send({ type: "finding", file_path: "desktop/src/App.tsx", line: 2, severity: "low", category: "style", title: "Magic number replaces a named constant", description: "The literal 2 has no name; the previous value did.", suggestion: "Name it.", confidence: 0.6 });
+        send({ type: "refuted", title: "Import is unused", reason: "x is referenced on line 9" });
+        await sleep(400);
+        send({ type: "done", summary: "Two small issues, nothing blocking.", total: 2, usage: { prompt_tokens: 2100, completion_tokens: 400, total_tokens: 2500, requests: 3, estimated_cost_usd: 0.0121, estimated: true } });
+      }
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+        transformCallback(cb) { const id = ++cbId; window[`_${id}`] = cb; return id; },
+        async invoke(cmd, args) {
+          switch (cmd) {
+            case "plugin:event|listen": {
+              const cb = window[`_${args.handler}`];
+              listeners.set(args.event, [...(listeners.get(args.event) ?? []), cb]);
+              return args.handler;
+            }
+            case "plugin:event|unlisten": return null;
+            case "plugin:app|version": return "0.5.0";
+            case "startup_info": return { defaultRepo: repo, binPath: "/Users/chizi/.cargo/bin/aster" };
+            case "auth_status": return { hasKey: true, baseUrl: null, model: "anthropic/claude-sonnet-5" };
+            case "list_sessions": return sessions;
+            case "show_session": return { id: args.id, events: transcripts[args.id] ?? [] };
+            case "list_providers": return { providers: [
+              { name: "Anthropic", base_url: "https://api.anthropic.com/v1", example_model: "anthropic/claude-sonnet-5", current: true, key_env: ["ANTHROPIC_API_KEY"] },
+              { name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", example_model: "anthropic/claude-sonnet-5", current: false, key_env: ["OPENROUTER_API_KEY"] },
+            ] };
+            case "list_models": return ["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "google/gemini-3.1-flash-lite", "openai/gpt-5.5", "qwen/qwen3-next-80b-a3b-instruct"];
+            case "list_repo_files": return ["desktop/src/App.tsx", "desktop/src/index.css", "crates/aster-serve/src/lib.rs"];
+            case "config_list": return { ok: true, keys: [{ key: "review.model", value: "anthropic/claude-sonnet-5", source: "global" }, { key: "review.effort", value: "medium", source: "default" }] };
+            case "chat": streamChat(); return null;
+            case "run_review": await streamReview(); return null;
+            default: return null;
+          }
+        },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

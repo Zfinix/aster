@@ -2095,6 +2095,9 @@ pub(crate) async fn agent_loop(
         }
         wire.push(assistant);
         for call in &msg.tool_calls {
+            if internal_call(&ctx.skills, &call.function.name, &call.function.arguments) {
+                continue;
+            }
             emit(json!({
                 "type": "tool_call",
                 "id": call.id,
@@ -2214,14 +2217,16 @@ pub(crate) async fn agent_loop(
             if !result.starts_with("error: ") {
                 round_all_errors = false;
             }
-            emit(json!({
-                "type": "tool_result",
-                "id": call.id,
-                "name": call.function.name,
-                "result": result,
-                "error": result.starts_with("error: "),
-                "images": images.len(),
-            }));
+            if !internal_call(&ctx.skills, &call.function.name, &call.function.arguments) {
+                emit(json!({
+                    "type": "tool_result",
+                    "id": call.id,
+                    "name": call.function.name,
+                    "result": result,
+                    "error": result.starts_with("error: "),
+                    "images": images.len(),
+                }));
+            }
             ctx.record(MessageEvent::tool(&call.id, &result));
             wire.push(json!({
                 "role": "tool",
@@ -2577,7 +2582,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file, with line numbers. Optionally a line range. Document formats (PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, RTF) are converted to Markdown, so their line numbers do not map to bytes on disk. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
+                "description": "Read a file, with line numbers. Optionally a line range. Document formats (PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, RTF) are converted to Markdown, so their line numbers do not map to bytes on disk. Image files (PNG, JPEG, GIF, WebP) are not readable here: an image the user mentioned with @path is already attached to the conversation as an image part, so look at it instead of calling this tool. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2951,7 +2956,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
 
 const JSON_ESCAPES: &str = "\"\\/bfnrtu";
 
-fn parse_arguments(raw: &str) -> Result<Value> {
+pub(crate) fn parse_arguments(raw: &str) -> Result<Value> {
     match serde_json::from_str(raw) {
         Ok(value) => Ok(value),
         Err(original) => {
@@ -3539,6 +3544,16 @@ fn read_only_call(
         _ => return None,
     };
     Some(result.unwrap_or_else(|e| format!("error: {e:#}")))
+}
+
+/// Reading an internal skill is never shown as a step: the user sees the
+/// behaviour, not the manual behind it.
+fn internal_call(skills: &aster_skills::SkillSet, name: &str, arguments: &str) -> bool {
+    name == "read_skill"
+        && serde_json::from_str::<Value>(arguments)
+            .ok()
+            .and_then(|v| v["name"].as_str().map(str::to_string))
+            .is_some_and(|skill| skills.is_internal(&skill))
 }
 
 pub(crate) fn tool_names(allow_edits: bool, has_approver: bool) -> Vec<String> {
@@ -4393,39 +4408,8 @@ fn cached_read(
     Ok(body)
 }
 
-fn read_text_or_document(target: &Path) -> Result<String> {
-    let format = target
-        .extension()
-        .and_then(|e| e.to_str())
-        .and_then(anydoc::Format::from_extension);
-    if let Some(format) = format
-        && !matches!(format, anydoc::Format::Csv)
-    {
-        return anydoc::to_markdown(target)
-            .map_err(|e| anyhow::anyhow!("converting {} to Markdown: {e}", target.display()));
-    }
-    match fs::read_to_string(target) {
-        Ok(text) => Ok(text),
-        // A document with a missing or misleading extension: sniff the bytes.
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-            let bytes =
-                fs::read(target).with_context(|| format!("reading {}", target.display()))?;
-            match anydoc::Format::from_bytes(&bytes) {
-                Some(format) => anydoc::to_markdown_bytes(&bytes, format).map_err(|e| {
-                    anyhow::anyhow!("converting {} to Markdown: {e}", target.display())
-                }),
-                None => bail!(
-                    "{} is a binary file, not readable as text",
-                    target.display()
-                ),
-            }
-        }
-        Err(e) => Err(e).with_context(|| format!("reading {}", target.display())),
-    }
-}
-
 fn read_numbered(target: &Path, start: Option<usize>, end: Option<usize>) -> Result<String> {
-    let content = read_text_or_document(target)?;
+    let content = crate::images::read_text_or_document(target)?;
     let lines: Vec<&str> = content.lines().collect();
     let from = start.unwrap_or(1).max(1) - 1;
     // An open-ended read is windowed rather than truncated mid-file, so the

@@ -396,3 +396,24 @@ fn config_defaults_are_reasonable() {
     let config = WebConfig::default();
     assert_eq!(config.defaults.timeout_ms, 120000);
 }
+
+#[tokio::test]
+async fn sitemap_reads_the_domain_the_schema_names() {
+    let err = backend(Configured::default())
+        .call("sitemap", &serde_json::json!({ "domain": "docs.rs" }))
+        .await
+        .expect_err("no sitemap provider without a key");
+    assert!(err.to_string().contains("CONTEXT_DEV_API_KEY"), "{err}");
+}
+
+#[tokio::test]
+async fn crawl_rejects_options_that_break_the_schema() {
+    let err = backend(Configured::default())
+        .call(
+            "crawl",
+            &serde_json::json!({ "url": "https://example.com", "max_pages": "many" }),
+        )
+        .await
+        .expect_err("a string page count is not an option");
+    assert!(err.to_string().contains("crawl options"), "{err}");
+}

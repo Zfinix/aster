@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 const GRID = 16;
 const SIZE = 14;
 
@@ -81,6 +83,36 @@ export function FileIcon() {
     <svg {...base}>
       <path d="M9.4 1.4 H4.2 A1.6 1.6 0 0 0 2.6 3 v10 a1.6 1.6 0 0 0 1.6 1.6 h7.7 a1.6 1.6 0 0 0 1.6 -1.6 V5.4 L9.4 1.4 z" />
       <path d="M9.4 1.4 v4.1 h4.1" />
+    </svg>
+  );
+}
+
+/** The file glyph for an attachment, varied by kind: an image gets mountains,
+ *  a document gets text lines, an archive gets the zipper. */
+export type FileKind = "file" | "image" | "doc" | "zip";
+
+const FILE_KIND_MARKS: Record<FileKind, ReactNode> = {
+  file: null,
+  image: (
+    <>
+      <circle cx="6.2" cy="7.4" r="0.9" />
+      <path d="M5 12.6 l2.2 -2.8 1.8 2.2 1.4 -1.6 2.1 2.2" />
+    </>
+  ),
+  doc: (
+    <>
+      <path d="M5.4 8.2 h5.2 M5.4 10.4 h5.2 M5.4 12.6 h3.4" />
+    </>
+  ),
+  zip: <path d="M6.2 7 v1.4 M7.8 8.4 v1.4 M6.2 9.8 v1.4 M7.8 11.2 v1.4" />,
+};
+
+export function FileTypeIcon({ kind }: { kind: FileKind }) {
+  return (
+    <svg {...base}>
+      <path d="M9.4 1.4 H4.2 A1.6 1.6 0 0 0 2.6 3 v10 a1.6 1.6 0 0 0 1.6 1.6 h7.7 a1.6 1.6 0 0 0 1.6 -1.6 V5.4 L9.4 1.4 z" />
+      <path d="M9.4 1.4 v4.1 h4.1" />
+      {FILE_KIND_MARKS[kind]}
     </svg>
   );
 }

@@ -105,6 +105,9 @@ async fn call(tools: &WebBackend, params: &Value, id: Value) -> Value {
         .unwrap_or_else(|| json!({}));
 
     match tools.call(name, &arguments).await {
+        // A tool that already shaped MCP content parts (a screenshot with its
+        // image) is passed through rather than wrapped as text.
+        Ok(value) if value.get("content").is_some_and(Value::is_array) => result(id, value),
         Ok(value) => {
             let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
             result(id, json!({ "content": [{ "type": "text", "text": text }] }))

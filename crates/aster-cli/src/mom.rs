@@ -467,16 +467,17 @@ pub struct MomArgs {
 
 #[derive(Subcommand)]
 enum MomCmd {
-    Check,
-    /// Ask the router which entry it would pick for a message.
-    Route {
-        message: Vec<String>,
+    Check {
+        #[arg(long)]
+        json: bool,
     },
+    /// Ask the router which entry it would pick for a message.
+    Route { message: Vec<String> },
 }
 
 pub async fn run_mom(args: MomArgs) -> Result<()> {
     match args.cmd {
-        MomCmd::Check => check(),
+        MomCmd::Check { json } => check(json),
         MomCmd::Route { message } => route(&message.join(" ")).await,
     }
 }
@@ -512,13 +513,44 @@ async fn route(message: &str) -> Result<()> {
     Ok(())
 }
 
-fn check() -> Result<()> {
+fn check(json: bool) -> Result<()> {
     let repo_root = std::env::current_dir().unwrap_or_default();
     let Some(session) = MomSession::load(&repo_root) else {
-        println!("no mom.yaml found (looked in the project root, .agents/, and ~/.aster)");
+        let message = "no mom.yaml found (looked in the project root, .agents/, and ~/.aster)";
+        if json {
+            println!("{}", serde_json::json!({ "ok": false, "error": message }));
+        } else {
+            println!("{message}");
+        }
         return Ok(());
     };
     let manifest = session.engine.manifest().clone();
+    let accessible = |id: &str| session.accessible(id);
+    let resolver = Resolver::new(&session.catalog, &accessible, true);
+    let resolved: Vec<(String, Option<String>, Vec<String>)> = manifest
+        .models
+        .iter()
+        .map(|(name, entry)| match resolver.resolve(entry) {
+            Some(r) => (name.clone(), Some(r.model), r.skipped),
+            None => (name.clone(), None, Vec::new()),
+        })
+        .collect();
+    if json {
+        let value = serde_json::json!({
+            "ok": true,
+            "name": manifest.name,
+            "path": manifest.path.as_ref().map(|p| p.display().to_string()),
+            "start_with": manifest.start_with,
+            "router": manifest.router.enabled,
+            "rules": manifest.switch.len(),
+            "entries": resolved
+                .iter()
+                .map(|(name, model, _)| serde_json::json!({ "name": name, "model": model }))
+                .collect::<Vec<_>>(),
+        });
+        println!("{value}");
+        return Ok(());
+    }
     if let Some(path) = &manifest.path {
         println!("manifest: {}", path.display());
     }
@@ -531,13 +563,11 @@ fn check() -> Result<()> {
     }
     println!();
 
-    let accessible = |id: &str| session.accessible(id);
-    let resolver = Resolver::new(&session.catalog, &accessible, true);
-    for (name, entry) in &manifest.models {
-        match resolver.resolve(entry) {
-            Some(r) => {
-                println!("  {name} -> {}", r.model);
-                for skip in &r.skipped {
+    for (name, model, skipped) in &resolved {
+        match model {
+            Some(model) => {
+                println!("  {name} -> {model}");
+                for skip in skipped {
                     println!("      skipped {skip}");
                 }
             }

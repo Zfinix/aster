@@ -241,6 +241,7 @@ async fn chat(
     repo_path: Option<String>,
     model: Option<String>,
     permission_mode: Option<String>,
+    effort: Option<String>,
     session: Option<String>,
 ) -> Result<(), String> {
     let mut args: Vec<String> = vec![
@@ -262,6 +263,10 @@ async fn chat(
     if let Some(session) = session.as_deref().filter(|s| !s.is_empty()) {
         args.push("--session".into());
         args.push(session.into());
+    }
+    if let Some(effort) = effort.as_deref().filter(|e| !e.is_empty()) {
+        args.push("--effort".into());
+        args.push(effort.into());
     }
 
     let mut cmd = Command::new(resolve_bin());
@@ -540,6 +545,55 @@ async fn set_model(model: String) -> Result<(), String> {
         return Ok(());
     }
     cli_json(&["model", "use", &model]).await.map(|_| ())
+}
+
+#[tauri::command]
+async fn list_providers(repo_path: Option<String>) -> Result<serde_json::Value, String> {
+    run_aster_json(
+        &["models", "--providers", "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn use_provider(
+    base_url: String,
+    model: Option<String>,
+    repo_path: Option<String>,
+) -> Result<(), String> {
+    let mut args = vec!["provider", "use", base_url.as_str(), "--json"];
+    if let Some(model) = model.as_deref().filter(|m| !m.trim().is_empty()) {
+        args.push("--model");
+        args.push(model);
+    }
+    run_aster_json(&args, repo_path.as_deref(), None, Vec::new())
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
+async fn list_models(repo_path: Option<String>) -> Result<Vec<String>, String> {
+    let parsed = run_aster_json(
+        &["models", "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await?;
+    match parsed.as_array() {
+        Some(list) => Ok(list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()),
+        None => Err(parsed
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("This endpoint did not list its models.")
+            .to_string()),
+    }
 }
 
 #[tauri::command]
@@ -876,6 +930,9 @@ pub fn run() {
             auth_status,
             save_provider,
             set_model,
+            list_providers,
+            use_provider,
+            list_models,
             config_list,
             config_set,
             config_unset,

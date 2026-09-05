@@ -149,7 +149,7 @@ enum Command {
     Cron(cron::CronArgs),
     /// Print undismissed release announcements as JSON.
     Announce(announce::AnnounceArgs),
-    /// Set a one-shot native notification: `aster remind "text" "in 30m"`.
+    /// Set a one-shot native notification: `aster remind "text" "in 10s"`.
     Remind(remind::RemindArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
     Serve(serve::ServeArgs),

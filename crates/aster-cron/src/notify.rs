@@ -3,8 +3,11 @@
 //! of the Script Editor one; `notify-send` on Linux.
 
 use anyhow::{Context, Result};
+
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 const NOTIFIER_BUNDLE_ID: &str = "dev.aster.notifier";
 
 /// Post a desktop notification. On macOS this is a Notification Center banner;

@@ -2198,3 +2198,24 @@ fn agent_task_batch_rejects_a_call_naming_neither_shape() {
     assert!(agent_task_batch(&json!({"agent": "scout"})).is_none());
     assert!(agent_task_batch(&json!({})).is_none());
 }
+
+#[test]
+fn reading_an_internal_skill_is_never_a_visible_step() {
+    let skills = aster_skills::SkillSet::default().with_builtins();
+    assert!(internal_call(
+        &skills,
+        "read_skill",
+        r#"{"name":"correction-protocol"}"#
+    ));
+    assert!(!internal_call(
+        &skills,
+        "read_skill",
+        r#"{"name":"git-workflow"}"#
+    ));
+    assert!(!internal_call(
+        &skills,
+        "read_file",
+        r#"{"path":"correction-protocol"}"#
+    ));
+    assert!(!internal_call(&skills, "read_skill", "not json"));
+}

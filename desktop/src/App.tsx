@@ -6,6 +6,8 @@ import {
   authStatus,
   cancelChat,
   deleteSession,
+  listModels,
+  listProviders,
   listSessions,
   persistModel,
   pickDiff,
@@ -15,14 +17,17 @@ import {
   saveProvider,
   showSession,
   startupInfo,
+  useProvider,
   type AuthStatus,
   type ChatMessage,
 } from "./lib/aster";
 import { parseUnifiedDiff } from "./lib/diff";
 import type {
   ChatStreamEvent,
+  Effort,
   Finding,
   PermissionMode,
+  Provider,
   ReviewOpts,
   SourceKind,
   StreamEvent,
@@ -45,15 +50,20 @@ import {
   type Turn,
   upsertAgent,
 } from "./lib/session";
+import { branchAtTurn } from "./lib/turn-history";
 import { severityOf } from "./lib/severity";
-import { Dropdown, ToastProvider, useTheme, useToast } from "./components/chrome";
+import { ToastProvider, useTheme, useToast } from "./components/chrome";
+import { Dropdown } from "./components/Dropdown";
+import { Modal } from "./components/Modal";
+import { SettingsPage } from "./components/SettingsPage";
+import { Toolbar } from "./components/Toolbar";
 import { AppSidebar } from "./components/AppSidebar";
 import { DiffPanel } from "./components/DiffPanel";
 import { HomeView } from "./views/HomeView";
 import { ThreadView } from "./views/ThreadView";
 import type { ComposerBinding } from "./components/Composer";
 import { Composer } from "./components/Composer";
-import { DotsIcon, SidebarIcon } from "./components/icons";
+import { DiffIcon, MoreIcon } from "./components/icons";
 import { Mark } from "./components/Mark";
 
 type View = "home" | "thread";
@@ -73,24 +83,20 @@ function InstallPrompt() {
     }
   };
   return (
-    <div className="install-scrim">
-      <div className="install-card" role="alertdialog" aria-label="Aster CLI required">
-        <Mark px={2} />
-        <h2 className="install-title">Aster CLI not found</h2>
-        <p className="install-body">
-          The desktop app runs on the <code>aster</code> command-line binary.
-          Install it, then relaunch Aster.
-        </p>
-        <button className="install-cmd" onClick={copy} title="Copy to clipboard">
-          <span className="install-prompt-glyph">$</span>
-          <code>{INSTALL_CMD}</code>
-          <span className="install-copy">Copy</span>
-        </button>
-        <p className="install-hint">
-          Already installed elsewhere? Set <code>ASTER_BIN</code> to its path.
-        </p>
-      </div>
-    </div>
+    <Modal label="Aster CLI required" className="setup-card" align="center">
+      <Mark px={2} />
+      <h2 className="setup-card-title">Aster CLI not found</h2>
+      <p className="setup-card-body">
+        The desktop app runs on the <code>aster</code> command-line binary. Install it, then relaunch Aster.
+      </p>
+      <button type="button" className="setup-card-cmd" onClick={copy} title="Copy to clipboard">
+        <code>{INSTALL_CMD}</code>
+        <span>Copy</span>
+      </button>
+      <p className="setup-card-hint">
+        Already installed elsewhere? Set <code>ASTER_BIN</code> to its path.
+      </p>
+    </Modal>
   );
 }
 
@@ -228,11 +234,30 @@ function App() {
       return [];
     }
   });
+  const [catalog, setCatalog] = useState<string[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | undefined>();
   const models = [
-    ...RESEARCH_MODELS,
-    ...customModels.filter((m) => !RESEARCH_MODELS.includes(m)),
+    ...(catalog ?? RESEARCH_MODELS),
+    ...customModels.filter((m) => !(catalog ?? RESEARCH_MODELS).includes(m)),
   ];
-  const [prompt, setPrompt] = useState("");
+  const [recent, setRecent] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("aster.recentModels") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [effort, setEffort] = useState<Effort | null>(() => {
+    const e = localStorage.getItem("aster.effort");
+    return e ? (e as Effort) : null;
+  });
+  const onEffort = useCallback((e: Effort | null) => {
+    if (e) localStorage.setItem("aster.effort", e);
+    else localStorage.removeItem("aster.effort");
+    setEffort(e);
+  }, []);
+  const [providers, setProviders] = useState<Provider[]>([]);
   const [view, setView] = useState<View>("home");
   const [homeIntent, setHomeIntent] = useState<"review" | "chat">("chat");
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -253,7 +278,6 @@ function App() {
     markdown?: string;
     plan: boolean;
   } | null>(null);
-  const chatRunning = busy && !reviewing;
 
   useEffect(() => {
     document.body.dataset.state = view;
@@ -277,6 +301,26 @@ function App() {
   const refreshAuth = useCallback(() => {
     authStatus().then(setAuth).catch(() => setAuth(null));
   }, []);
+
+  const refreshProviders = useCallback(() => {
+    listProviders(opts.repoPath || null)
+      .then(setProviders)
+      .catch(() => setProviders([]));
+  }, [opts.repoPath]);
+
+  // Not every endpoint lists its models, so the failure is shown in the
+  // picker, which still takes an id typed by hand.
+  const refreshModels = useCallback(() => {
+    setModelsLoading(true);
+    setModelsError(undefined);
+    listModels(opts.repoPath || null)
+      .then((list) => setCatalog(list.length ? list : null))
+      .catch((e) => {
+        setCatalog(null);
+        setModelsError(String(e));
+      })
+      .finally(() => setModelsLoading(false));
+  }, [opts.repoPath]);
 
   // The CLI config is the source of truth for the model; localStorage only
   // seeds the first paint before auth_status answers.
@@ -629,19 +673,18 @@ function App() {
     cancelChat().catch(() => {});
   }, []);
 
-  const onAsk = useCallback(() => {
-    const text = prompt.trim();
-    if (!text || busy) return;
+  const onAsk = useCallback((raw: string, target?: Conversation) => {
+    const text = raw.trim();
+    if (!text || busy || activeChatRef.current || activeReviewRef.current) return;
 
     const userTurn: Turn = { id: nextId(), role: "user", text, ts: Date.now() };
     const asstId = nextId();
     const asstTurn: Turn = { id: asstId, role: "assistant", text: "", pending: true, ts: Date.now() };
 
-    const isNew = activeId == null;
-    const convoId = activeId ?? nextId();
-    const priorTurns = isNew
-      ? []
-      : (conversations.find((c) => c.id === convoId)?.turns ?? []);
+    const convo = target ?? conversations.find((c) => c.id === activeId) ?? null;
+    const isNew = convo == null;
+    const convoId = convo?.id ?? nextId();
+    const priorTurns = convo?.turns ?? [];
 
     setConversations((cs) =>
       isNew
@@ -657,19 +700,17 @@ function App() {
             ...cs,
           ]
         : cs.map((c) =>
-            c.id === convoId ? { ...c, turns: [...c.turns, userTurn, asstTurn] } : c,
+            c.id === convoId ? { ...(target ?? c), turns: [...priorTurns, userTurn, asstTurn] } : c,
           ),
     );
     setActiveId(convoId);
     setView("thread");
-    setPrompt("");
     setBusy(true);
 
-    const convo = isNew ? null : (conversations.find((c) => c.id === convoId) ?? null);
     const history = buildMessages(priorTurns);
     history.push({ role: "user", content: text });
     activeChatRef.current = { convoId, turnId: asstId };
-    runChat(history, opts.repoPath || null, model, permissionMode, convo?.sessionId ?? null, {
+    runChat(history, (convo?.repoPath ?? opts.repoPath) || null, model, permissionMode, effort, convo?.sessionId ?? null, {
       onEvent: handleChatEvent,
       onLog: () => {},
       onError: (msg) => settleChat(msg, false),
@@ -684,17 +725,7 @@ function App() {
         chatUnlistenRef.current = unlisten;
       })
       .catch((e) => settleChat(String(e), false));
-  }, [
-    prompt,
-    busy,
-    activeId,
-    conversations,
-    opts.repoPath,
-    model,
-    permissionMode,
-    handleChatEvent,
-    settleChat,
-  ]);
+  }, [busy, activeId, conversations, opts.repoPath, model, permissionMode, effort, handleChatEvent, settleChat]);
 
   const handleEvent = useCallback(
     (ev: StreamEvent) => {
@@ -721,11 +752,11 @@ function App() {
   // changed a source (e.g. attaching a diff) pass the updated opts directly,
   // since a `setOpts` in the same tick would not be visible here yet.
   const startReview = useCallback(
-    async (reviewOpts: ReviewOpts, targetId?: string) => {
+    async (reviewOpts: ReviewOpts, targetId?: string, focus = "") => {
       if (!reviewOpts.repoPath || busy) return;
       unlistenRef.current?.();
 
-      const text = prompt.trim();
+      const text = focus.trim();
       const existingId = targetId ?? activeId;
       const isNew = existingId == null;
       const convoId = existingId ?? nextId();
@@ -754,7 +785,6 @@ function App() {
       );
       setActiveId(convoId);
       setView("thread");
-      setPrompt("");
       setBusy(true);
       setReviewing(true);
       activeReviewRef.current = { convoId, turnId: reviewId };
@@ -769,10 +799,10 @@ function App() {
         },
       );
     },
-    [busy, activeId, prompt, model, handleEvent, finalizeReview],
+    [busy, activeId, model, handleEvent, finalizeReview],
   );
 
-  const onReview = useCallback(() => startReview(opts), [startReview, opts]);
+  const onReview = useCallback((focus = "") => startReview(opts, undefined, focus), [startReview, opts]);
 
   const onRepo = useCallback(async (value: string) => {
     if (value === "__browse__") {
@@ -807,25 +837,89 @@ function App() {
     (value: string) => {
       localStorage.setItem("aster.model", value);
       setModel(value);
+      // An id typed by hand is kept so the picker lists it next time.
+      setCustomModels((ms) => {
+        if (ms.includes(value) || RESEARCH_MODELS.includes(value)) return ms;
+        const next = [...ms, value];
+        localStorage.setItem("aster.customModels", JSON.stringify(next));
+        return next;
+      });
+      setRecent((r) => {
+        const next = [value, ...r.filter((m) => m !== value)].slice(0, 5);
+        localStorage.setItem("aster.recentModels", JSON.stringify(next));
+        return next;
+      });
       // Written through the CLI so the terminal and editors agree next turn.
       persistModel(value).then(refreshAuth).catch(() => {});
     },
     [refreshAuth],
   );
 
-  const onAddModel = useCallback(
-    (value: string) => {
-      setCustomModels((ms) => {
-        const next = ms.includes(value) ? ms : [...ms, value];
-        localStorage.setItem("aster.customModels", JSON.stringify(next));
-        return next;
-      });
-      onModel(value);
+  const onProvider = useCallback(
+    (provider: Provider) => {
+      useProvider(provider.base_url, provider.example_model || null, opts.repoPath || null)
+        .then(() => {
+          setCatalog(null);
+          refreshAuth();
+          refreshProviders();
+          toast(`Switched to ${provider.name}`);
+        })
+        .catch((e) => toast(`Could not switch provider: ${e}`));
     },
-    [onModel],
+    [opts.repoPath, refreshAuth, refreshProviders, toast],
+  );
+
+  const onCommand = useCallback(
+    (id: string) => {
+      switch (id) {
+        case "new":
+          setActiveId(null);
+          setView("home");
+          setHomeIntent("chat");
+          break;
+        case "new-review":
+          setActiveId(null);
+          setView("home");
+          setHomeIntent("review");
+          setOpts({ sourceKind: "working", sourceValue: null });
+          break;
+        case "review":
+          setHomeIntent("review");
+          startReview({ ...opts, sourceKind: "working", sourceValue: null });
+          break;
+        case "review-range":
+          setHomeIntent("review");
+          setOpts({ sourceKind: "range", sourceValue: SOURCE_DEFAULT_VALUE.range });
+          break;
+        case "review-pr":
+          setHomeIntent("review");
+          setOpts({ sourceKind: "pr", sourceValue: SOURCE_DEFAULT_VALUE.pr });
+          break;
+        case "diff":
+          onAttach();
+          break;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [opts, startReview],
   );
 
   const activeConvo = conversations.find((c) => c.id === activeId) ?? null;
+  const onTurnAction = (turnId: string, action: "edit" | "fork" | "rewind", text?: string) => {
+    if (!activeConvo || busy || approval || activeChatRef.current || activeReviewRef.current) return;
+    if (action === "edit" && !text?.trim()) return;
+    const next = branchAtTurn(activeConvo, turnId, action, nextId());
+    if (!next) return;
+    if (action === "edit") {
+      onAsk(text!, next);
+      return;
+    }
+    setConversations((cs) => action === "fork"
+      ? [next, ...cs]
+      : cs.map((c) => c.id === next.id ? next : c));
+    setActiveId(next.id);
+    setView("thread");
+  };
   const activeFiles = activeConvo ? (latestReview(activeConvo)?.files ?? []) : [];
   const activeFindings = activeConvo ? (latestReview(activeConvo)?.findings ?? []) : [];
   const [showDiff, setShowDiff] = useState(true);
@@ -840,6 +934,7 @@ function App() {
       nonce: (prev?.nonce ?? 0) + 1,
     }));
   }, []);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => localStorage.getItem("sidebar-collapsed") !== "1",
   );
@@ -859,10 +954,9 @@ function App() {
 
   const onSaveThread = useCallback(() => {
     if (!activeConvo) return;
-    setConversations((cs) =>
-      cs.map((c) => (c.id === activeConvo.id ? { ...c, sessionId: c.id } : c)),
-    );
-    toast("Session saved — this thread now resumes across restarts");
+    toast(activeConvo.sessionId
+      ? "Session saved — this thread now resumes across restarts"
+      : "This thread has no saved backend session");
   }, [activeConvo, toast]);
 
   const onDeleteSession = useCallback(() => {
@@ -974,50 +1068,66 @@ function App() {
 
   const composer: ComposerBinding = useMemo(
     () => ({
+      busy,
       intent: homeIntent,
       onIntent: setHomeIntent,
-      prompt,
-      setPrompt,
-      onAsk,
-      onStop: onStopChat,
-      onReview,
-      busy,
-      reviewing,
-      chatRunning,
-      canReview: !!opts.repoPath,
       opts,
       repoName: repoNameOf(opts.repoPath),
       repoOptions: repos,
       onRepo,
       onSource,
+      onAttach,
+      canReview: !!opts.repoPath,
+      reviewing,
       model,
       models,
-      onModel,
-      onAddModel,
+      recommended: RESEARCH_MODELS,
+      recent,
+      modelsLoading,
+      modelsError,
+      onRefreshModels: refreshModels,
       permissionMode,
+      effort,
+      providers,
+      onRefreshProviders: refreshProviders,
+      onSend: onAsk,
+      onReview,
+      onCommand,
+      onCancel: onStopChat,
       onPermissionMode,
-      onAttach,
+      onModel,
+      onEffort,
+      onProvider,
+      onOpenSettings: () => setSettingsOpen(true),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [homeIntent, prompt, onAsk, onStopChat, onReview, busy, reviewing, chatRunning, opts, repos, onRepo, onSource, model, customModels, onModel, onAddModel, permissionMode, onPermissionMode, onAttach],
+    [busy, homeIntent, opts, repos, onRepo, onSource, onAttach, reviewing, model, customModels, catalog, recent, modelsLoading, modelsError, refreshModels, permissionMode, effort, providers, refreshProviders, onAsk, onReview, onCommand, onStopChat, onPermissionMode, onModel, onEffort, onProvider],
   );
 
+  const threadOptions = activeConvo
+    ? [
+        ...(activeConvo.sessionId
+          ? [{ value: "delete-session", label: "Delete saved session", danger: true }]
+          : [{ value: "save", label: "Save as session" }]),
+        { value: "delete", label: "Delete conversation", danger: true },
+      ]
+    : [];
+
   return (
-    <div className={`shell ${sidebarOpen ? "" : "side-collapsed"}`}>
+    <div className="shell" data-sidebar={sidebarOpen ? "open" : "closed"}>
       <AppSidebar
         conversations={conversations}
         activeId={activeId}
+        repoPath={opts.repoPath}
         onNewChat={() => {
           setActiveId(null);
           setView("home");
-          setPrompt("");
           setHomeIntent("chat");
           setOpts({ sourceKind: "working", sourceValue: null });
         }}
         onNewReview={() => {
           setActiveId(null);
           setView("home");
-          setPrompt("");
           setHomeIntent("review");
           setOpts({ sourceKind: "working", sourceValue: null });
         }}
@@ -1027,111 +1137,61 @@ function App() {
         onRerun={onRerunConvo}
         onCopyBrief={onCopyBriefConvo}
         onCollapse={toggleSidebar}
-        theme={theme}
-        setTheme={setTheme}
-        minConfidence={opts.minConfidence}
-        onSetConfidence={onSetConfidence}
-        model={model}
-        models={models}
-        onModel={onModel}
-        onAddModel={onAddModel}
-        analyzers={opts.analyzers}
-        onToggleAnalyzer={onToggleAnalyzer}
-        repoPath={opts.repoPath}
-        auth={auth}
-        onSaveProvider={onSaveProvider}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <div className="center">
+      <div className="main">
         {view === "thread" && activeConvo ? (
-          <header className="c-head" data-tauri-drag-region>
-            {!sidebarOpen && (
-              <button
-                className="ghost-icon side-reopen"
-                aria-label="Expand sidebar"
-                title="Expand sidebar"
-                onClick={toggleSidebar}
-              >
-                <SidebarIcon />
+          <Toolbar
+            inset={!sidebarOpen}
+            onExpand={toggleSidebar}
+            title={activeConvo.title}
+            sub={`${activeConvo.repoName} · ${activeConvo.whenLabel}`}
+          >
+            {activeFiles.length > 0 && !showDiff && (
+              <button type="button" className="ghost" onClick={() => setShowDiff(true)}>
+                <DiffIcon />
+                Show diff
               </button>
             )}
-            <span className="c-title" data-tauri-drag-region>{activeConvo.title}</span>
-            <span className="c-sub" data-tauri-drag-region>
-              {activeConvo.repoName} · {activeConvo.whenLabel}
-            </span>
             <Dropdown
-              trigger={() => (
-                <span className="ghost-icon" aria-label="Thread options">
-                  <DotsIcon />
-                </span>
-              )}
-              options={[
-                ...(activeConvo.sessionId
-                  ? [
-                      {
-                        value: "delete-session",
-                        label: "Delete saved session",
-                        danger: true,
-                      },
-                    ]
-                  : [{ value: "save", label: "Save as session" }]),
-                { value: "delete", label: "Delete conversation", danger: true },
-              ]}
+              triggerClass="ghost icon-action"
+              label="Conversation options"
+              trigger={() => <MoreIcon />}
+              options={threadOptions}
+              dir="down"
+              align="right"
               onSelect={(v) => {
                 if (v === "delete") onDeleteThread();
                 else if (v === "save") onSaveThread();
                 else if (v === "delete-session") onDeleteSession();
               }}
-              direction="down"
             />
-            <span className="grow" data-tauri-drag-region />
-            {activeFiles.length > 0 && !showDiff && (
-              <button className="btn btn-ghost" onClick={() => setShowDiff(true)}>
-                Show diff
-              </button>
-            )}
-          </header>
+          </Toolbar>
         ) : (
-          <header className="c-head" data-tauri-drag-region>
-            {!sidebarOpen && (
-              <button
-                className="ghost-icon side-reopen"
-                aria-label="Expand sidebar"
-                title="Expand sidebar"
-                onClick={toggleSidebar}
-              >
-                <SidebarIcon />
-              </button>
-            )}
-            <span className="grow" data-tauri-drag-region />
-          </header>
+          <Toolbar inset={!sidebarOpen} onExpand={toggleSidebar} />
         )}
 
-        <div className="c-body">
-          {view === "home" && (
-            <HomeView
-              composer={composer}
-              intent={homeIntent}
-              conversations={conversations}
-              onOpen={onOpenSaved}
-            />
-          )}
-          {view === "thread" && activeConvo && (
+        {view === "home" && (
+          <HomeView composer={composer} intent={homeIntent} conversations={conversations} onOpen={onOpenSaved} />
+        )}
+        {view === "thread" && activeConvo && (
+          <>
             <ThreadView
               conversation={activeConvo}
+              actionsDisabled={busy || !!approval}
+              onEditSend={(id, text) => onTurnAction(id, "edit", text)}
+              onFork={(id) => onTurnAction(id, "fork")}
+              onRewind={(id) => onTurnAction(id, "rewind")}
               approval={approval}
               onRespondApproval={onRespondApproval}
               onOpenDiff={() => setShowDiff((s) => !s)}
               onFocusFinding={onFocusFinding}
-              onRetry={onReview}
+              onApplyFix={onApplyFix}
+              onRetry={() => onReview()}
             />
-          )}
-        </div>
-
-        {view === "thread" && (
-          <div className="c-foot">
             <Composer variant="foot" {...composer} />
-          </div>
+          </>
         )}
       </div>
 
@@ -1140,10 +1200,28 @@ function App() {
           files={activeFiles}
           findings={activeFindings}
           focus={focusFinding}
-          onReverify={onReview}
+          onReverify={() => onReview()}
           onApplyFix={onApplyFix}
           onFixBrief={onFixBrief}
           onClose={() => setShowDiff(false)}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsPage
+          onClose={() => setSettingsOpen(false)}
+          theme={theme}
+          setTheme={setTheme}
+          minConfidence={opts.minConfidence}
+          onSetConfidence={onSetConfidence}
+          model={model}
+          models={models}
+          onModel={onModel}
+          analyzers={opts.analyzers}
+          onToggleAnalyzer={onToggleAnalyzer}
+          repoPath={opts.repoPath}
+          auth={auth}
+          onSaveProvider={onSaveProvider}
         />
       )}
 

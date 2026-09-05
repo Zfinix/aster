@@ -32,3 +32,42 @@ fn the_wrap_up_grace_scales_with_the_budget_within_bounds() {
     assert_eq!(wrap_up_grace(secs(150)), secs(30));
     assert_eq!(wrap_up_grace(secs(3600)), secs(60));
 }
+
+#[test]
+fn a_tool_line_names_what_the_tool_touched() {
+    let ev = serde_json::json!({
+        "type": "tool_call",
+        "name": "read_file",
+        "arguments": "{\"path\":\"src/chat.rs\"}"
+    });
+    assert_eq!(tool_line(&ev).as_deref(), Some("read_file src/chat.rs"));
+}
+
+#[test]
+fn a_tool_line_joins_a_command_with_its_args() {
+    let ev = serde_json::json!({
+        "type": "tool_call",
+        "name": "run_command",
+        "arguments": "{\"command\":\"cargo\",\"args\":[\"test\",\"-p\",\"aster-cli\"]}"
+    });
+    assert_eq!(
+        tool_line(&ev).as_deref(),
+        Some("run_command cargo test -p aster-cli")
+    );
+}
+
+#[test]
+fn a_tool_line_survives_arguments_a_provider_sent_twice() {
+    let ev = serde_json::json!({
+        "type": "tool_call",
+        "name": "search_files",
+        "arguments": "{\"query\":\"Usage\"}{\"query\":\"Usage\"}"
+    });
+    assert_eq!(tool_line(&ev).as_deref(), Some("search_files Usage"));
+}
+
+#[test]
+fn a_tool_line_without_a_known_argument_is_just_the_name() {
+    let ev = serde_json::json!({ "type": "tool_call", "name": "list_files", "arguments": "{}" });
+    assert_eq!(tool_line(&ev).as_deref(), Some("list_files"));
+}

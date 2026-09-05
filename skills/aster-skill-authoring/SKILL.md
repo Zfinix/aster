@@ -41,6 +41,17 @@ aster skills add ./my-skill     # install into .aster/skills to try it
 
 `add -l` against a local path is the fastest lint: a skill that doesn't appear in the listing failed frontmatter validation.
 
+## After writing a skill
+
+Install it right away so it is live for the next turn, without waiting to be asked:
+
+```sh
+aster skills add ./my-skill --all --yes --force      # user-global
+aster skills add ./my-skill --all --yes --force -p   # this project only (.aster/skills)
+```
+
+Re-run the same command after every edit; `--force` replaces the installed copy, and `--all` is required when no terminal is attached (`--yes` alone is refused). Do not save a memory about the skill you wrote: the skill is the record, and a memory that repeats it is noise.
+
 ## Repo layout for publishing
 
 Host multiple skills under a `skills/` directory, one subdirectory per skill:

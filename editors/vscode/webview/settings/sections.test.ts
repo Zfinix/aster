@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { ConfigKey } from "../../src/protocol";
-import { defaultValue, matches, search, shownValue } from "./sections";
+import type { ConfigKey, EnvVar } from "../../src/protocol";
+import {
+  SECTIONS,
+  defaultValue,
+  envGroups,
+  homeFrom,
+  matches,
+  partsFor,
+  search,
+  shortPath,
+  shownValue,
+} from "./sections";
 
 function key(over: Partial<ConfigKey> & { key: string }): ConfigKey {
   return {
@@ -68,13 +78,74 @@ describe("search", () => {
 });
 
 describe("defaultValue", () => {
-  it("reads the words the CLI uses for an unset list as empty", () => {
+  it("reads a list's prose default as empty rather than as an entry", () => {
     expect(defaultValue(key({ key: "permissions.allow", kind: "list", default: "nothing" }))).toEqual([]);
+    expect(
+      defaultValue(key({ key: "permissions.additional_directories", kind: "list", default: "the repo only" }))
+    ).toEqual([]);
   });
 
   it("parses a documented bool and number", () => {
     expect(defaultValue(key({ key: "review.web_search", kind: "bool", default: "false" }))).toBe(false);
     expect(defaultValue(key({ key: "agents.max_concurrent", kind: "number", default: "8" }))).toBe(8);
+  });
+});
+
+describe("partsFor", () => {
+  const permissions = SECTIONS.find((s) => s.id === "permissions")!;
+  const rows = (...names: string[]) => names.map((name) => key({ key: name, group: "Permissions" }));
+
+  it("splits a section into its cards in the declared order", () => {
+    const parts = partsFor(permissions, rows("permissions.deny", "permissions.mode", "permissions.allow"));
+    expect(parts.map((p) => p.title)).toEqual([undefined, "Rules"]);
+    expect(parts[1].keys.map((k) => k.key)).toEqual(["permissions.allow", "permissions.deny"]);
+  });
+
+  it("trails keys no part names in one last card", () => {
+    const parts = partsFor(permissions, rows("permissions.mode", "permissions.new_thing"));
+    expect(parts.at(-1)?.keys.map((k) => k.key)).toEqual(["permissions.new_thing"]);
+  });
+
+  it("keeps a section without parts as a single card", () => {
+    const agent = SECTIONS.find((s) => s.id === "agent")!;
+    const parts = partsFor(agent, [key({ key: "agent.max_tool_rounds", group: "Agent limits" })]);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].title).toBeUndefined();
+  });
+});
+
+describe("envGroups", () => {
+  function env(over: Partial<EnvVar> & { var: string }): EnvVar {
+    return {
+      group: "Toggles",
+      kind: "text",
+      secret: false,
+      set: false,
+      source: "unset",
+      masked: null,
+      value: null,
+      help: "",
+      ...over,
+    };
+  }
+
+  it("keeps the CLI's group order and merges adjacent rows", () => {
+    const groups = envGroups([
+      env({ var: "ASTER_MAX_TOOL_ROUNDS", group: "Turns and limits" }),
+      env({ var: "ASTER_COMMAND_TIMEOUT", group: "Turns and limits" }),
+      env({ var: "ASTER_NO_BROWSER", group: "Toggles" }),
+    ]);
+    expect(groups.map((g) => g.group)).toEqual(["Turns and limits", "Toggles"]);
+    expect(groups[0].vars).toHaveLength(2);
+  });
+
+  it("keeps a repeated group name apart when the CLI lists it twice", () => {
+    const groups = envGroups([
+      env({ var: "ASTER_A", group: "Toggles" }),
+      env({ var: "ASTER_B", group: "Models" }),
+      env({ var: "ASTER_C", group: "Toggles" }),
+    ]);
+    expect(groups.map((g) => g.group)).toEqual(["Toggles", "Models", "Toggles"]);
   });
 });
 
@@ -92,5 +163,29 @@ describe("shownValue", () => {
   it("falls back to the default when nothing sets it at all", () => {
     const row = key({ key: "review.model", default: "openai/gpt-4o-mini" });
     expect(shownValue(row, null)).toBe("openai/gpt-4o-mini");
+  });
+});
+
+describe("shortPath", () => {
+  const home = "/Users/me";
+  const root = "/Users/me/code/app";
+
+  it("starts a workspace file at the folder's name", () => {
+    expect(shortPath("/Users/me/code/app/aster.yaml", home, root)).toBe("app/aster.yaml");
+  });
+
+  it("starts a home file at ~", () => {
+    expect(shortPath("/Users/me/.aster/aster.yaml", home, root)).toBe("~/.aster/aster.yaml");
+  });
+
+  it("leaves a path outside both alone, and a sibling of the root alone", () => {
+    expect(shortPath("/etc/aster.yaml", home, root)).toBe("/etc/aster.yaml");
+    expect(shortPath("/Users/me/code/apple/aster.yaml", null, root)).toBe("/Users/me/code/apple/aster.yaml");
+  });
+
+  it("reads the home directory off the global path", () => {
+    expect(homeFrom("/Users/me/.aster/aster.yaml")).toBe("/Users/me");
+    expect(homeFrom("~/.aster/aster.yaml")).toBe("~");
+    expect(homeFrom(undefined)).toBeNull();
   });
 });

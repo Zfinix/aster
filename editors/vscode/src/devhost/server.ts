@@ -367,6 +367,9 @@ export function start(root: string, port: number): void {
             .map((uri) => path.relative(root, decodeURIComponent(uri.replace(/^file:\/\//, ""))))
             .map((rel) => `@${rel}`)
             .join(" "),
+          mentions: message.uris
+            .map((uri) => path.relative(root, decodeURIComponent(uri.replace(/^file:\/\//, ""))))
+            .map((rel) => `@${rel}`),
         });
         break;
 
@@ -375,10 +378,14 @@ export function start(root: string, port: number): void {
     }
   }
 
-  async function sendInfo(id: string, topic: "status" | "memory" | "diff"): Promise<void> {
+  async function sendInfo(id: string, topic: "status" | "memory" | "diff" | "mom"): Promise<void> {
     try {
       if (topic === "status") {
         post({ type: "infoCard", id, title: "Status", rows: await info.status(root, env()) });
+        return;
+      }
+      if (topic === "mom") {
+        post({ type: "infoCard", id, title: "Model policy", rows: await info.momPolicy(root) });
         return;
       }
       if (topic === "memory") {

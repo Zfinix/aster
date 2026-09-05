@@ -231,6 +231,21 @@ fn tool_call_fragments_with_the_same_index_and_id_merge_into_one() {
 }
 
 #[test]
+fn a_resent_full_argument_string_replaces_the_partial_instead_of_doubling_it() {
+    let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+    merge_tool_call(
+        &mut partials,
+        fragment(0, Some("call_1"), Some("read"), Some("{\"path\"")),
+    );
+    merge_tool_call(&mut partials, fragment(0, None, None, Some(":\"a.rs\"}")));
+    merge_tool_call(
+        &mut partials,
+        fragment(0, Some("call_1"), None, Some("{\"path\":\"a.rs\"}")),
+    );
+    assert_eq!(partials[&0].arguments, "{\"path\":\"a.rs\"}");
+}
+
+#[test]
 fn a_reused_index_with_a_different_id_routes_to_a_fresh_slot() {
     let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
     merge_tool_call(
@@ -296,4 +311,184 @@ fn format_api_error_reads_a_bare_error_string() {
         format_api_error(StatusCode::NOT_FOUND, body),
         "model or endpoint not found (404): model \"qwen3\" not found, try pulling it first"
     );
+}
+
+#[tokio::test]
+async fn images_become_descriptions_when_the_model_takes_no_images() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "id": "mock-model", "architecture": { "input_modalities": ["text"] } }]
+            })),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": "a red square" } }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    assert!(!client.supports_images().await);
+    let mut messages = vec![serde_json::json!({
+        "role": "user",
+        "content": [
+            { "type": "text", "text": "what is this" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } }
+        ]
+    })];
+    assert!(!client.settle_images(&mut messages).await);
+    let content = messages[0]["content"].as_array().unwrap();
+    assert!(
+        content
+            .iter()
+            .all(|p| p["type"].as_str() != Some("image_url"))
+    );
+    assert!(content.iter().any(|p| {
+        p["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("a red square"))
+    }));
+}
+
+#[tokio::test]
+async fn images_past_the_caption_cap_are_marked_omitted() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": "a shape" } }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let urls: Vec<String> = (0..6)
+        .map(|i| format!("data:image/png;base64,{i}"))
+        .collect();
+    let descriptions = client.describe_all(&urls).await.unwrap();
+    assert_eq!(descriptions.len(), 6);
+    assert!(descriptions[3].contains("a shape"));
+    assert_eq!(descriptions[4], IMAGE_OMITTED);
+    assert_eq!(descriptions[5], IMAGE_OMITTED);
+}
+
+#[tokio::test]
+async fn a_failed_description_leaves_the_images_in_place() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "id": "mock-model", "architecture": { "input_modalities": ["text"] } }]
+            })),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("no access"))
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let mut messages = vec![serde_json::json!({
+        "role": "user",
+        "content": [
+            { "type": "text", "text": "what is this" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } }
+        ]
+    })];
+    // The vision model is unreachable, so nothing replaces the image: the
+    // provider gets it and decides, instead of reading an omission note.
+    assert!(client.settle_images(&mut messages).await);
+    let content = messages[0]["content"].as_array().unwrap();
+    assert!(
+        content
+            .iter()
+            .any(|p| p["type"].as_str() == Some("image_url"))
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_image_is_described_instead_of_dropped() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "id": "mock-model", "architecture": { "input_modalities": ["text", "image"] } }]
+            })),
+        )
+        .mount(&server)
+        .await;
+    // The caption call names the vision model; the retried turn carries the
+    // caption text; everything else is the rejected first attempt.
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains(
+            r#""model":"openai/gpt-4o-mini""#,
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": "a red square" } }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+            })),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains(
+            "image: a red square",
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": "done" } }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+            })),
+        )
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": { "message": "image input is not supported for this model" }
+            })),
+        )
+        .with_priority(3)
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let message = client
+        .complete_tools_with(
+            "mock-model",
+            vec![serde_json::json!({
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "what is this" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } }
+                ]
+            })],
+            Vec::new(),
+            0.0,
+        )
+        .await
+        .expect("turn succeeds");
+    assert_eq!(message.content.unwrap_or_default(), "done");
 }

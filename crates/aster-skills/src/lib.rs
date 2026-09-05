@@ -20,6 +20,9 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    /// Guides the agent's own conduct. Indexed for the model, hidden from every
+    /// list the user sees, and never shown as a step when read.
+    pub internal: bool,
     builtin: Option<&'static str>,
 }
 
@@ -43,41 +46,66 @@ impl Skill {
 const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/git-workflow/SKILL.md"),
     include_str!("../builtins/gh-pr-workflow/SKILL.md"),
-    include_str!("../builtins/verify-before-done/SKILL.md"),
-    include_str!("../builtins/plan-and-present/SKILL.md"),
-    include_str!("../builtins/build-triage/SKILL.md"),
-    include_str!("../builtins/batched-bash/SKILL.md"),
-    include_str!("../builtins/cli-toolbox/SKILL.md"),
-    include_str!("../builtins/context-economy/SKILL.md"),
-    include_str!("../builtins/correction-protocol/SKILL.md"),
-    include_str!("../builtins/security-hygiene/SKILL.md"),
     include_str!("../builtins/security-review/SKILL.md"),
-    include_str!("../builtins/web-research/SKILL.md"),
-    include_str!("../builtins/structural-edits/SKILL.md"),
-    include_str!("../builtins/lsp-navigation/SKILL.md"),
     include_str!("../builtins/security-scan/SKILL.md"),
     include_str!("../builtins/skill-creator/SKILL.md"),
 ];
 
+/// Built-ins under `builtins/internal/`: how the agent conducts itself, not
+/// what it can do for the user.
+const INTERNAL_SKILLS: &[&str] = &[
+    include_str!("../builtins/internal/verify-before-done/SKILL.md"),
+    include_str!("../builtins/internal/plan-and-present/SKILL.md"),
+    include_str!("../builtins/internal/build-triage/SKILL.md"),
+    include_str!("../builtins/internal/batched-bash/SKILL.md"),
+    include_str!("../builtins/internal/cli-toolbox/SKILL.md"),
+    include_str!("../builtins/internal/context-economy/SKILL.md"),
+    include_str!("../builtins/internal/correction-protocol/SKILL.md"),
+    include_str!("../builtins/internal/security-hygiene/SKILL.md"),
+    include_str!("../builtins/internal/structural-edits/SKILL.md"),
+    include_str!("../builtins/internal/lsp-navigation/SKILL.md"),
+    include_str!("../builtins/internal/web-research/SKILL.md"),
+];
+
+/// Installed skills under `<root>/internal/<name>/SKILL.md` are internal too.
+const INTERNAL_DIR: &str = "internal";
+
 const OPTIONAL_SKILLS: &[&str] = &[
-    include_str!("../optional-skills/package-managers/SKILL.md"),
-    include_str!("../optional-skills/supply-chain-safety/SKILL.md"),
-    include_str!("../optional-skills/dependency-upgrade/SKILL.md"),
-    include_str!("../optional-skills/debug-systematically/SKILL.md"),
-    include_str!("../optional-skills/refactor-safely/SKILL.md"),
-    include_str!("../optional-skills/write-tests/SKILL.md"),
-    include_str!("../optional-skills/background-processes/SKILL.md"),
-    include_str!("../optional-skills/i-have-adhd/SKILL.md"),
     include_str!("../optional-skills/macos-harness/SKILL.md"),
     include_str!("../optional-skills/shortcuts/SKILL.md"),
 ];
 
+/// Optional skills under `optional-skills/internal/`: turned on by the user,
+/// then followed silently like the internal built-ins.
+const OPTIONAL_INTERNAL_SKILLS: &[&str] = &[
+    include_str!("../optional-skills/internal/package-managers/SKILL.md"),
+    include_str!("../optional-skills/internal/supply-chain-safety/SKILL.md"),
+    include_str!("../optional-skills/internal/dependency-upgrade/SKILL.md"),
+    include_str!("../optional-skills/internal/debug-systematically/SKILL.md"),
+    include_str!("../optional-skills/internal/refactor-safely/SKILL.md"),
+    include_str!("../optional-skills/internal/write-tests/SKILL.md"),
+    include_str!("../optional-skills/internal/background-processes/SKILL.md"),
+    include_str!("../optional-skills/internal/i-have-adhd/SKILL.md"),
+];
+
 /// The bundled optional skills, parsed. Not part of any default index.
 pub fn optional_skills() -> Vec<Skill> {
-    OPTIONAL_SKILLS
-        .iter()
-        .filter_map(|raw| builtin_skill(raw).ok())
+    let visible = OPTIONAL_SKILLS.iter().map(|raw| (raw, false));
+    let internal = OPTIONAL_INTERNAL_SKILLS.iter().map(|raw| (raw, true));
+    visible
+        .chain(internal)
+        .filter_map(|(raw, internal)| builtin_skill(raw, internal).ok())
         .collect()
+}
+
+/// Where a skill lives under a root: internal ones in the `internal/` folder,
+/// so discovery marks them again on the next load.
+fn install_dir(dest_root: &Path, skill: &Skill) -> PathBuf {
+    if skill.internal {
+        dest_root.join(INTERNAL_DIR).join(&skill.name)
+    } else {
+        dest_root.join(&skill.name)
+    }
 }
 
 fn default_skill_names() -> &'static [&'static str] {
@@ -124,7 +152,7 @@ pub fn install_bundled(name: &str, dest_root: &Path, overwrite: bool) -> Result<
         .into_iter()
         .find(|s| s.name == name)
         .with_context(|| format!("no bundled skill named {name}; see `aster skills bundled`"))?;
-    let dest = dest_root.join(&skill.name);
+    let dest = install_dir(dest_root, &skill);
     if dest.exists() && !overwrite {
         bail!("{name} is already installed");
     }
@@ -137,12 +165,13 @@ pub fn install_bundled(name: &str, dest_root: &Path, overwrite: bool) -> Result<
     Ok(dest)
 }
 
-fn builtin_skill(raw: &'static str) -> Result<Skill> {
+fn builtin_skill(raw: &'static str, internal: bool) -> Result<Skill> {
     let (name, description) = parse_frontmatter(raw, "")?;
     Ok(Skill {
         name,
         description,
         path: PathBuf::new(),
+        internal,
         builtin: Some(raw),
     })
 }
@@ -183,8 +212,18 @@ impl SkillSet {
         self.skills.len()
     }
 
+    /// Every skill, internal ones included: what the model is told about.
     pub fn iter(&self) -> impl Iterator<Item = &Skill> {
         self.skills.iter()
+    }
+
+    /// The skills a user may be shown or offered.
+    pub fn visible(&self) -> impl Iterator<Item = &Skill> {
+        self.skills.iter().filter(|s| !s.internal)
+    }
+
+    pub fn is_internal(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|s| s.internal)
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
@@ -201,7 +240,7 @@ impl SkillSet {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            match load_skill(&manifest, &dir_name) {
+            match load_skill(&manifest, &dir_name, false) {
                 Ok(skill) if self.skills.iter().all(|s| s.name != skill.name) => {
                     self.skills.push(skill);
                 }
@@ -217,8 +256,10 @@ impl SkillSet {
 
     /// Append every built-in that no installed skill shadows.
     pub fn with_builtins(mut self) -> Self {
-        for raw in BUILTIN_SKILLS {
-            match builtin_skill(raw) {
+        let visible = BUILTIN_SKILLS.iter().map(|raw| (raw, false));
+        let internal = INTERNAL_SKILLS.iter().map(|raw| (raw, true));
+        for (raw, internal) in visible.chain(internal) {
+            match builtin_skill(raw, internal) {
                 Ok(skill) if self.skills.iter().all(|s| s.name != skill.name) => {
                     self.skills.push(skill);
                 }
@@ -321,7 +362,7 @@ fn walk(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        match load_skill(&manifest, &dir_name) {
+        match load_skill(&manifest, &dir_name, false) {
             Ok(skill) => out.push(skill),
             Err(e) => {
                 tracing::warn!(path = %manifest.display(), "skipping skill: {e:#}");
@@ -363,7 +404,7 @@ pub fn install_skill(skill: &Skill, dest_root: &Path, overwrite: bool) -> Result
         .path
         .parent()
         .context("skill manifest has no parent directory")?;
-    let dest = dest_root.join(&skill.name);
+    let dest = install_dir(dest_root, skill);
     if dest.exists() {
         if !overwrite {
             bail!("{} is already installed", skill.name);
@@ -371,18 +412,22 @@ pub fn install_skill(skill: &Skill, dest_root: &Path, overwrite: bool) -> Result
         fs::remove_dir_all(&dest)
             .with_context(|| format!("removing existing {}", dest.display()))?;
     }
-    fs::create_dir_all(dest_root).with_context(|| format!("creating {}", dest_root.display()))?;
+    let parent = dest.parent().unwrap_or(dest_root);
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     copy_dir(src, &dest)?;
     Ok(dest)
 }
 
 /// Delete an installed skill directory. Returns `false` when it was not present.
 pub fn remove_skill(dest_root: &Path, name: &str) -> Result<bool> {
-    let dest = dest_root.join(name);
-    if !dest.exists() {
+    let candidates = [
+        dest_root.join(name),
+        dest_root.join(INTERNAL_DIR).join(name),
+    ];
+    let Some(dest) = candidates.iter().find(|d| d.exists()) else {
         return Ok(false);
-    }
-    fs::remove_dir_all(&dest).with_context(|| format!("removing {}", dest.display()))?;
+    };
+    fs::remove_dir_all(dest).with_context(|| format!("removing {}", dest.display()))?;
     Ok(true)
 }
 
@@ -407,6 +452,12 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
 }
 
 fn scan_root(root: &Path) -> Vec<Skill> {
+    let mut skills = scan_dir(root, false);
+    skills.extend(scan_dir(&root.join(INTERNAL_DIR), true));
+    skills
+}
+
+fn scan_dir(root: &Path, internal: bool) -> Vec<Skill> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
@@ -424,7 +475,7 @@ fn scan_root(root: &Path) -> Vec<Skill> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        match load_skill(&manifest, &dir_name) {
+        match load_skill(&manifest, &dir_name, internal) {
             Ok(skill) => skills.push(skill),
             Err(e) => tracing::warn!(path = %manifest.display(), "skipping skill: {e:#}"),
         }
@@ -432,7 +483,7 @@ fn scan_root(root: &Path) -> Vec<Skill> {
     skills
 }
 
-fn load_skill(manifest: &Path, dir_name: &str) -> Result<Skill> {
+fn load_skill(manifest: &Path, dir_name: &str, internal: bool) -> Result<Skill> {
     let raw =
         fs::read_to_string(manifest).with_context(|| format!("reading {}", manifest.display()))?;
     let (name, description) = parse_frontmatter(&raw, dir_name)?;
@@ -440,6 +491,7 @@ fn load_skill(manifest: &Path, dir_name: &str) -> Result<Skill> {
         name,
         description,
         path: manifest.to_path_buf(),
+        internal,
         builtin: None,
     })
 }

@@ -1,7 +1,14 @@
+import { inEditor, post } from "./host";
+
 const EVENT = "aster:file-preview";
 
-/** Ask for a peek at a file instead of throwing it at the OS. */
-export function openFilePreview(path: string): void {
+/** In the editor a file opens as a real tab; the browser has none, so it
+ *  peeks at the file over the thread instead. */
+export function openFilePreview(path: string, line?: number): void {
+  if (inEditor) {
+    post({ type: "openFile", path, line });
+    return;
+  }
   window.dispatchEvent(new CustomEvent(EVENT, { detail: path }));
 }
 

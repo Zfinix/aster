@@ -3,8 +3,11 @@ import { Code } from "./Code";
 import { Modal } from "./Modal";
 import { onHostMessage, post } from "../lib/host";
 import { onFilePreviewOpen } from "../lib/filePreview";
+import { DocCard, fileUrl, formatBytes, type PreviewFile } from "./UserText";
+import { inEditor } from "../lib/host";
 
-type PreviewFile = { path: string; lang?: string; content: string; truncated: boolean };
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+const DOC_EXT = /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|epub|zip|gz|tar|rar|7z)$/i;
 
 const LANG_BY_EXT: Record<string, string> = {
   rs: "rust",
@@ -24,6 +27,16 @@ export function FilePreview() {
     () =>
       onFilePreviewOpen((path) => {
         setOpen(true);
+        // In a browser an image is one GET away and a document is only its
+        // card; text still needs the host to read it.
+        if (!inEditor && IMAGE_EXT.test(path)) {
+          setFile({ path, content: "", truncated: false, image: fileUrl(path) });
+          return;
+        }
+        if (!inEditor && DOC_EXT.test(path)) {
+          setFile({ path, content: "", truncated: false });
+          return;
+        }
         setFile(null);
         post({ type: "readFile", path, requestId: `preview-${Date.now()}` });
       }),
@@ -48,9 +61,22 @@ export function FilePreview() {
     >
       {file ? (
         <>
-          <pre className="file-preview-code">
-            <Code code={file.content} lang={file.lang && LANG_BY_EXT[file.lang]} />
-          </pre>
+          {file.image ? (
+            <img className="file-preview-image" src={file.image} alt={file.path} />
+          ) : file.doc || DOC_EXT.test(file.path) ? (
+            <div className="file-preview-doc">
+              <DocCard file={file} path={file.path} />
+              {file.size != null && (
+                <div className="file-preview-note">
+                  No inline preview for this format. {formatBytes(file.size)}.
+                </div>
+              )}
+            </div>
+          ) : (
+            <pre className="file-preview-code">
+              <Code code={file.content} lang={file.lang && LANG_BY_EXT[file.lang]} />
+            </pre>
+          )}
           {file.truncated && (
             <div className="file-preview-note">Showing the head of the file.</div>
           )}

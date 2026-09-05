@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { configList, configSet, type ConfigValue } from "../lib/aster";
 import { useToast } from "./chrome";
+import { SettingsRow } from "./SettingsRow";
 
 function toText(value: ConfigValue): string {
   if (value == null) return "";
@@ -8,36 +9,21 @@ function toText(value: ConfigValue): string {
   return String(value);
 }
 
-const REVIEW_KEYS = [
-  "review.model",
-  "review.hypothesis_model",
-  "review.verify_model",
-  "review.min_confidence",
-  "review.max_diff_bytes",
-  "review.analyzers",
-  "review.focus_areas",
-  "review.include",
-  "review.exclude",
-  "review.effort",
-  "review.web_search",
-] as const;
-
-const LABELS: Record<string, string> = {
-  "review.model": "Model",
-  "review.hypothesis_model": "First-pass model",
-  "review.verify_model": "Verify model",
-  "review.min_confidence": "Confidence floor (0-1)",
-  "review.max_diff_bytes": "Largest diff (bytes)",
-  "review.analyzers": "Static analyzers (comma separated)",
-  "review.focus_areas": "Focus areas (comma separated)",
-  "review.include": "Only review (globs, comma separated)",
-  "review.exclude": "Never review (globs, comma separated)",
-  "review.effort": "Reasoning effort (off/low/medium/high)",
-  "review.web_search": "Web search (true/false)",
-};
+const KEYS: { key: string; label: string; help: string }[] = [
+  { key: "review.model", label: "Model", help: "Used for the whole review unless a stage sets its own." },
+  { key: "review.hypothesis_model", label: "First-pass model", help: "Finds candidate issues." },
+  { key: "review.verify_model", label: "Verify model", help: "Checks each candidate before it reaches you." },
+  { key: "review.effort", label: "Reasoning effort", help: "off, low, medium or high." },
+  { key: "review.max_diff_bytes", label: "Largest diff", help: "In bytes. Bigger diffs are skipped." },
+  { key: "review.analyzers", label: "Static analyzers", help: "Comma separated." },
+  { key: "review.focus_areas", label: "Focus areas", help: "Comma separated." },
+  { key: "review.include", label: "Only review", help: "Globs, comma separated." },
+  { key: "review.exclude", label: "Never review", help: "Globs, comma separated." },
+  { key: "review.web_search", label: "Web search", help: "true or false." },
+];
 
 /** Review pipeline settings, read and written through `aster config` so the
- *  desktop, terminal, and editors share one `aster.yaml`. */
+ *  desktop, terminal, and editors share one aster.yaml. */
 export function ReviewSettings({ repoPath }: { repoPath?: string | null }) {
   const toast = useToast();
   const [values, setValues] = useState<Record<string, string>>({});
@@ -49,11 +35,7 @@ export function ReviewSettings({ repoPath }: { repoPath?: string | null }) {
       .then((entries) => {
         if (!live) return;
         const next: Record<string, string> = {};
-        for (const e of entries) {
-          if ((REVIEW_KEYS as readonly string[]).includes(e.key)) {
-            next[e.key] = toText(e.value);
-          }
-        }
+        for (const e of entries) next[e.key] = toText(e.value);
         setValues(next);
         setLoaded(true);
       })
@@ -66,7 +48,7 @@ export function ReviewSettings({ repoPath }: { repoPath?: string | null }) {
   const save = async (key: string) => {
     try {
       await configSet(key, values[key] ?? "", { repoPath: repoPath ?? null });
-      toast("Review setting saved");
+      toast("Saved");
     } catch (e) {
       toast(`Save failed: ${String(e)}`);
     }
@@ -76,23 +58,24 @@ export function ReviewSettings({ repoPath }: { repoPath?: string | null }) {
 
   return (
     <div className="settings-section">
-      <div className="menu-label">Code review</div>
-      {REVIEW_KEYS.map((key) => (
-        <label className="menu-field" key={key}>
-          <span className="menu-field-label">{LABELS[key]}</span>
-          <input
-            className="menu-input"
-            spellCheck={false}
-            value={values[key] ?? ""}
-            placeholder={key}
-            onChange={(e) =>
-              setValues((v) => ({ ...v, [key]: e.target.value }))
-            }
-            onBlur={() => save(key)}
-          />
-        </label>
-      ))}
-      <div className="menu-hint">Empty clears a key back to its default.</div>
+      <h2>Pipeline</h2>
+      <p className="settings-note">Stored in aster.yaml, so the terminal and editors read the same values. Empty resets a key.</p>
+      <div className="settings-card">
+        {KEYS.map(({ key, label, help }) => (
+          <SettingsRow key={key} label={label} help={help}>
+            <input
+              className="field-input"
+              data-mono="true"
+              spellCheck={false}
+              value={values[key] ?? ""}
+              placeholder={key}
+              aria-label={label}
+              onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+              onBlur={() => save(key)}
+            />
+          </SettingsRow>
+        ))}
+      </div>
     </div>
   );
 }

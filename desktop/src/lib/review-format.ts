@@ -1,29 +1,5 @@
-import type { ComponentType } from "react";
 import type { Finding, Severity } from "./types";
 import { severityOf, SEV_RANK } from "./severity";
-import {
-  SevCriticalIcon,
-  SevHighIcon,
-  SevMediumIcon,
-  SevLowIcon,
-  SevInfoIcon,
-} from "../components/icons";
-
-export const SEV_CLS: Record<Severity, string> = {
-  critical: "crit",
-  high: "high",
-  medium: "med",
-  low: "low",
-  info: "info",
-};
-
-export const SEV_ICON: Record<Severity, ComponentType<{ size?: number }>> = {
-  critical: SevCriticalIcon,
-  high: SevHighIcon,
-  medium: SevMediumIcon,
-  low: SevLowIcon,
-  info: SevInfoIcon,
-};
 
 export const SEV_WORD: Record<Severity, string> = {
   critical: "critical",
@@ -57,9 +33,9 @@ export function reviewMessage(findings: Finding[], refutedCount: number): string
     if (refutedCount > 0) {
       return `This diff looks good. I chased ${num(refutedCount)} possible issue${
         refutedCount === 1 ? "" : "s"
-      }, but ${refutedCount === 1 ? "it" : "none of them"} held up under verification — nothing needs your attention.`;
+      }, but ${refutedCount === 1 ? "it" : "none of them"} held up under verification. Nothing needs your attention.`;
     }
-    return "This diff looks good — I didn't find anything worth flagging.";
+    return "This diff looks good. I didn't find anything worth flagging.";
   }
 
   const of = (sev: Severity) => findings.filter((f) => severityOf(f.severity) === sev);
@@ -81,10 +57,10 @@ export function reviewMessage(findings: Finding[], refutedCount: number): string
     sentences.push(`I found ${num(n)} issues in this diff, and I'd hold off merging.`);
     sentences.push(
       crit.length === 1
-        ? `The serious one is ${names} — fix that first.`
-        : `${cap(num(crit.length))} are outright critical — ${names}${
-            crit.length > 2 ? ", among others" : ""
-          } — so start there.`,
+        ? `The serious one is ${names}. Fix that first.`
+        : `${cap(num(crit.length))} are outright critical, ${names}${
+            crit.length > 2 ? " among others" : ""
+          }, so start there.`,
     );
     if (rest + high.length > 0) {
       sentences.push(`The rest are smaller and can wait until those are handled.`);
@@ -96,7 +72,7 @@ export function reviewMessage(findings: Finding[], refutedCount: number): string
     if (rest > 0) sentences.push(`The other ${rest === 1 ? "one is" : `${num(rest)} are`} routine.`);
   } else {
     sentences.push(
-      `I found ${num(n)} smaller issues — nothing urgent, mostly cleanups worth doing while you're in here.`,
+      `I found ${num(n)} smaller issues. Nothing urgent, mostly cleanups worth doing while you're in here.`,
     );
   }
 
@@ -106,9 +82,4 @@ export function reviewMessage(findings: Finding[], refutedCount: number): string
     );
   }
   return sentences.join(" ");
-}
-
-export function clause(text: string): string {
-  const first = text.split(/(?<=[.!?])\s/)[0] ?? text;
-  return first.length > 110 ? `${first.slice(0, 107)}…` : first;
 }

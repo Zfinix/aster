@@ -170,6 +170,18 @@ export interface ApiKey {
   help: string;
 }
 
+export interface EnvVar {
+  var: string;
+  group: string;
+  kind: "text" | "bool" | "number" | "json";
+  secret: boolean;
+  set: boolean;
+  source: string;
+  masked: string | null;
+  value: string | null;
+  help: string;
+}
+
 export interface ConfigPaths {
   global: string;
   global_exists: boolean;
@@ -188,6 +200,7 @@ export interface EditorSettings {
 export interface SettingsSnapshot {
   keys: ConfigKey[];
   apiKeys: ApiKey[];
+  envVars: EnvVar[];
   paths: ConfigPaths | null;
   editor: EditorSettings;
   servers: McpServer[];
@@ -205,6 +218,9 @@ export type SettingsToHost =
   | { type: "setApiKey"; var: string; value: string; scope: ConfigScope }
   | { type: "unsetApiKey"; var: string; scope: ConfigScope }
   | { type: "revealApiKey"; var: string }
+  | { type: "setEnv"; var: string; value: string; scope: ConfigScope }
+  | { type: "unsetEnv"; var: string; scope: ConfigScope }
+  | { type: "revealEnv"; var: string }
   | { type: "setEditor"; key: keyof EditorSettings; value: ConfigValue }
   | { type: "toggleMcp"; name: string; disabled: boolean }
   | { type: "openConfigFile"; scope: ConfigScope }
@@ -213,6 +229,7 @@ export type SettingsToHost =
 export type SettingsToWebview =
   | { type: "settings"; snapshot: SettingsSnapshot }
   | { type: "apiKeyValue"; var: string; value: string | null }
+  | { type: "envValue"; var: string; value: string | null }
   | { type: "settingsError"; key?: string; message: string };
 
 export type ToHost =
@@ -233,7 +250,7 @@ export type ToHost =
   | { type: "review"; id: string; source: ReviewSource }
   | { type: "cancelReview" }
   | { type: "openFinding"; finding: Finding }
-  | { type: "openFile"; path: string }
+  | { type: "openFile"; path: string; needle?: string; line?: number }
   | { type: "readFile"; path: string; requestId: string }
   | { type: "openSettings" }
   | { type: "openExternal"; url: string }
@@ -250,7 +267,7 @@ export type ToHost =
   | { type: "deleteSession"; id: string }
   | { type: "renameSession"; id: string; title: string }
   | { type: "fetchModels" }
-  | { type: "info"; id: string; topic: "status" | "memory" | "diff" }
+  | { type: "info"; id: string; topic: "status" | "memory" | "diff" | "mom" }
   | { type: "attachFiles" }
   | { type: "dropFiles"; uris: string[] }
   | { type: "pasteFiles"; files: PastedFile[] }
@@ -294,14 +311,14 @@ export type ToWebview =
   | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "sessionLoaded"; id: string; title: string | null; turns: TranscriptTurn[] }
   | { type: "newConversation" }
-  | { type: "insertMention"; text: string }
+  | { type: "insertMention"; text: string; mentions?: string[] }
   | { type: "openCommandMenu" }
   | { type: "scratch"; content: string; lang?: string; title?: string; doc?: boolean }
   | { type: "fileResults"; requestId: string; paths: string[] }
   | {
       type: "filePreview";
       requestId: string;
-      file: { path: string; lang?: string; content: string; truncated: boolean } | null;
+      file: { path: string; lang?: string; content: string; truncated: boolean; image?: string; doc?: string; size?: number } | null;
     }
   | { type: "reviewStarted"; id: string; source: ReviewSource }
   | { type: "reviewEvent"; id: string; event: StreamEvent }

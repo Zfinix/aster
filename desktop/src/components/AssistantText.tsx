@@ -1,58 +1,20 @@
-import { useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
-// Turn ids whose reply has already been typed out, so re-renders and thread
-// switches show the full text instead of re-animating.
-const typedTurns = new Set<string>();
-
-const shikiTheme: Parameters<typeof Streamdown>[0]["shikiTheme"] = [
-  "github-light",
-  "github-dark",
-];
+const shikiTheme: Parameters<typeof Streamdown>[0]["shikiTheme"] = ["github-light", "github-dark"];
 const plugins = { code };
 
-/** An assistant reply: fades in word by word on first appearance, then renders
- *  as static markdown. The whole text goes to Streamdown at once; re-parsing a
- *  growing substring every frame was the streaming stutter. */
-export function AssistantText({
-  id,
-  text,
-  error,
-}: {
-  id: string;
-  text: string;
-  error?: boolean;
-}) {
-  const reduceMotion =
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const animate = !error && !reduceMotion && !typedTurns.has(id);
-
-  const [animating, setAnimating] = useState(animate);
-  const timer = useRef<number>(0);
-
-  useEffect(() => {
-    typedTurns.add(id);
-    if (!animate) return;
-    const ms = Math.min(2600, Math.max(600, text.length * 6));
-    timer.current = window.setTimeout(() => setAnimating(false), ms);
-    return () => window.clearTimeout(timer.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
+/** An assistant reply as markdown. Streaming appends text and the block
+ *  re-renders in place. */
+export function AssistantText({ text, error }: { text: string; error?: boolean }) {
   return (
-    <div
-      className={`a-text md${animating ? " typing" : ""}`}
-      style={error ? { color: "var(--red)" } : undefined}
-    >
+    <div className="prose" data-error={error || undefined}>
       <Streamdown
         plugins={plugins}
         shikiTheme={shikiTheme}
-        animated={animate ? { animation: "fadeIn", sep: "word", stagger: 14 } : false}
-        isAnimating={animating}
+        animated={false}
         parseIncompleteMarkdown={false}
         remarkPlugins={[remarkMath]}
         rehypePlugins={[rehypeKatex]}

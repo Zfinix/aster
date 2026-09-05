@@ -355,8 +355,159 @@ code {
 
 .turn-user-text {
   white-space: pre-wrap;
-  word-break: break-word;
+  /* anywhere, not break-word: it also shrinks the run's min-content size, so a
+     long pasted path wraps inside the bubble instead of stretching it past the
+     panel edge. */
+  overflow-wrap: anywhere;
   line-height: 1.5;
+}
+
+/* Hover actions on a sent message: three faint glyphs under the bubble, only
+   visible while the message is hovered or one is focused. */
+.turn-user-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.turn-hover {
+  display: flex;
+  gap: 2px;
+  margin-left: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.turn-user-wrap:hover .turn-hover,
+.turn-hover:focus-within {
+  opacity: 1;
+}
+
+.turn-hover .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+/* Edit reuses the message bubble as the input, so resending reads as the same
+   message changing, not a form appearing. */
+.turn-edit-area {
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  min-width: 240px;
+  max-width: min(70ch, 100%);
+}
+
+.turn-edit-hint {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s1);
+  font-size: 0.85em;
+  color: var(--fg-dim);
+}
+
+.turn-edit-cancel {
+  border: none;
+  background: none;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.turn-edit-cancel:hover {
+  color: var(--fg);
+}
+
+/* An @-mentioned image renders in place of its path; the chip holds the line
+   open until the host answers with the bytes. Capped to a thumbnail: a
+   full-size render filled the panel and shoved the message off screen. Click
+   still opens the preview modal at full size. */
+.mention-chip {
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.mention-image {
+  display: block;
+  width: auto;
+  max-width: min(640px, 100%);
+  max-height: 200px;
+  margin: var(--s2) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
+/* An @-mentioned document: a badge, the name, and the size, clickable through
+   to the preview modal. Block-level, so each asset drops to its own line inside
+   the bubble and several mentions stack instead of riding the text's last line
+   and shoving past the edge. */
+.doc-card {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--s2);
+  margin: var(--s2) 0;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.doc-card:hover {
+  border-color: var(--fg-dim);
+}
+
+.doc-card > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-dim);
+}
+
+.doc-card-badge {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--border);
+  font-size: 0.75em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.doc-card-meta {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.doc-card-name {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-card-size {
+  color: var(--fg-dim);
+  font-size: 0.8em;
 }
 
 /* A message the running turn absorbed, sitting where it landed in the flow. */
@@ -879,6 +1030,70 @@ code {
   color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
 
+.md-path {
+  cursor: pointer;
+}
+
+/* Find in the sidebar, painted with the editor's own find colors. */
+::highlight(aster-find) {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+}
+
+::highlight(aster-find-current) {
+  background: var(--vscode-editor-findMatchBackground, rgba(168, 172, 148, 0.8));
+  color: var(--fg);
+}
+
+.find-bar {
+  position: absolute;
+  top: var(--s2);
+  right: var(--s3);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s1) var(--s2);
+  background: var(--vscode-editorWidget-background, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.find-bar input {
+  width: 150px;
+  min-width: 0;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.find-bar input::placeholder {
+  color: var(--fg-dim);
+}
+
+.find-count {
+  min-width: 5ch;
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.find-count[data-empty] {
+  color: var(--vscode-errorForeground, var(--fg-dim));
+}
+
+.find-bar .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.md-path:hover {
+  text-decoration: underline;
+}
+
 /* A document read on its own: a plan, a report. The transcript flattens
    headings so no reply can shout over the conversation; here the levels are
    the structure, so they get a document's scale and its air. */
@@ -1277,16 +1492,74 @@ code {
   text-transform: capitalize;
 }
 
-.agent-node-task {
+.agent-node-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+/* Status, action count, and clock in one quiet run after the name, so a node
+   answers "how far along" without being opened. */
+.agent-node-meta {
+  flex: none;
   color: var(--fg-dim);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The ask, kept to two lines: it is what tells two nodes of the same agent
+   apart, so it must stay on screen while the live line beneath it changes. */
+.agent-node-task {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-size: 0.92em;
+  line-height: 1.35;
+}
+
+.agent-node-error {
+  color: var(--sev-critical);
   font-size: 0.92em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-node[data-status="error"] .agent-node-task {
-  color: var(--sev-critical);
+.agent-node-live {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+  font-size: 0.92em;
+  color: var(--fg);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.agent-node-live-verb {
+  flex: none;
+  color: var(--sev-low);
+  font-weight: 500;
+}
+
+.agent-node-live-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
+.agent-node-live-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-dim);
+  font-style: italic;
 }
 
 .agent-node-state {
@@ -1452,22 +1725,58 @@ code {
 .agent-net-log {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   padding: var(--s2) var(--s3);
   border-top: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: var(--mono-size);
   color: var(--fg-dim);
 }
 
 .agent-net-log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Verbs line up in a narrow column so the eye reads down the targets. */
+.agent-net-log-verb {
+  flex: none;
+  width: 5.5em;
+  font-size: 0.92em;
+  font-weight: 500;
+}
+
+.agent-net-log-detail {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
+.agent-net-log-note {
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .agent-net-log-line:last-child {
   color: var(--fg);
+}
+
+/* Inside a report the steps are history, not a live tail: no top rule, no
+   highlighted last line, and a little air before the report begins. */
+.agent-net-log-steps {
+  padding: 0 0 var(--s2);
+  margin-bottom: var(--s2);
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-net-log-steps .agent-net-log-line:last-child {
+  color: inherit;
 }
 
 /* The whole header is the toggle, so the hit target is the row rather than a
@@ -3040,35 +3349,36 @@ code {
 .file-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--s1);
-  height: 26px;
+  gap: var(--s2);
+  height: 44px;
   max-width: 100%;
-  padding: 0 2px 0 3px;
+  min-width: 0;
+  padding: 3px 6px 3px 3px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--code-bg);
   font-size: 0.9em;
 }
 
-.file-chip-thumb,
-.file-chip-glyph {
+.file-chip-thumb {
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius);
   object-fit: cover;
 }
 
-.file-chip-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.file-chip > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0 var(--s2);
   color: var(--fg-dim);
 }
 
 .file-chip-name {
   min-width: 0;
-  padding-left: 2px;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3991,6 +4301,14 @@ body.vscode-high-contrast-light .sh {
   font-size: 0.9em;
 }
 
+.file-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0 auto;
+  border-radius: var(--radius);
+}
+
 .file-preview-note {
   color: var(--fg-dim);
   font-size: 0.85em;
@@ -4173,4 +4491,3 @@ body.vscode-high-contrast-light .sh {
   border-radius: var(--radius);
   outline: none;
 }
-

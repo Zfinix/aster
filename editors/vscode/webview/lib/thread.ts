@@ -34,6 +34,8 @@ export interface AgentTaskState {
   done: number;
   total: number;
   log?: string[];
+  startedAt?: number;
+  endedAt?: number;
 }
 
 /** One chronological slice of a turn. Text and tool groups are kept in arrival
@@ -383,7 +385,9 @@ export function upsertAgentState(turn: AssistantTurn, st: AgentTaskState): Assis
   const tasks =
     j === -1
       ? [...block.tasks, st]
-      : block.tasks.map((t, k) => (k === j ? { ...st, log: t.log } : t));
+      : block.tasks.map((t, k) =>
+          k === j ? { ...st, log: t.log, startedAt: t.startedAt ?? st.startedAt } : t
+        );
   return {
     ...turn,
     blocks: [...turn.blocks.slice(0, i), { ...block, tasks }, ...turn.blocks.slice(i + 1)],

@@ -81,6 +81,27 @@ export class SettingsPanel {
         }
         break;
 
+      case "setEnv":
+        await this.write(message.var, () =>
+          info.setEnv(this.root(), message.var, message.value, message.scope)
+        );
+        break;
+
+      case "unsetEnv":
+        await this.write(message.var, () =>
+          info.unsetEnv(this.root(), message.var, message.scope)
+        );
+        break;
+
+      case "revealEnv":
+        try {
+          const value = await info.revealEnv(this.root(), message.var);
+          this.post({ type: "envValue", var: message.var, value });
+        } catch (err) {
+          this.post({ type: "settingsError", key: message.var, message: describe(err) });
+        }
+        break;
+
       case "setEditor":
         await this.write(message.key, async () => {
           await vscode.workspace

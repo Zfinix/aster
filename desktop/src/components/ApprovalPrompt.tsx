@@ -1,6 +1,6 @@
 import { Streamdown } from "streamdown";
 
-/** Inline card while the CLI blocks on an `ask`-mode edit approval. */
+/** Inline card while the CLI blocks on an edit or plan approval. */
 export function ApprovalPrompt({
   preview,
   markdown,
@@ -10,43 +10,30 @@ export function ApprovalPrompt({
   markdown?: string;
   onRespond: (allow: boolean) => void;
 }) {
-  if (markdown) {
-    return (
-      <div className="approval">
-        <div className="approval-head">Approve plan</div>
-        <div className="approval-plan md">
-          <Streamdown parseIncompleteMarkdown={false}>{markdown}</Streamdown>
-        </div>
-        <div className="approval-actions">
-          <button className="btn btn-primary" onClick={() => onRespond(true)}>
-            Approve
-          </button>
-          <button className="btn btn-ghost" onClick={() => onRespond(false)}>
-            Reject
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="approval">
-      <div className="approval-head">Approve command</div>
-      <pre className="approval-preview">
-        <code>
-          {preview.split("\n").map((line, i) => (
-            <span key={i} className={diffClass(line)}>
-              {line}
-              {"\n"}
-            </span>
-          ))}
-        </code>
-      </pre>
+      <div className="approval-head">{markdown ? "Approve this plan?" : "Approve this change?"}</div>
+      {markdown ? (
+        <div className="approval-plan prose">
+          <Streamdown parseIncompleteMarkdown={false}>{markdown}</Streamdown>
+        </div>
+      ) : (
+        <pre className="approval-preview">
+          <code>
+            {preview.split("\n").map((line, i) => (
+              <span key={i} className={diffClass(line)}>
+                {line}
+                {"\n"}
+              </span>
+            ))}
+          </code>
+        </pre>
+      )}
       <div className="approval-actions">
-        <button className="btn btn-primary" onClick={() => onRespond(true)}>
+        <button type="button" className="btn-primary" onClick={() => onRespond(true)}>
           Approve
         </button>
-        <button className="btn btn-ghost" onClick={() => onRespond(false)}>
+        <button type="button" className="btn" onClick={() => onRespond(false)}>
           Reject
         </button>
       </div>

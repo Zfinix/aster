@@ -27,6 +27,26 @@ impl PlainHttpClient {
     }
 }
 
+impl PlainHttpClient {
+    /// Raw bytes and content type of one URL, for binary payloads such as a
+    /// screenshot a provider hands back by link.
+    pub async fn fetch_bytes(&self, url: &str) -> Result<(Vec<u8>, String)> {
+        let res = self.client.get(url).send().await.context("fetching URL")?;
+        let status = res.status();
+        if !status.is_success() {
+            bail!("HTTP {status}");
+        }
+        let ct = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let bytes = res.bytes().await.context("reading response body")?;
+        Ok((bytes.to_vec(), ct))
+    }
+}
+
 #[async_trait]
 impl WebExtract for PlainHttpClient {
     async fn extract(&self, url: &str) -> Result<ExtractedPage> {

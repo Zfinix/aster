@@ -36,6 +36,16 @@ export type StreamEvent =
 /** Mirrors `aster_policy::Mode`; see crates/aster-policy/src/decision.rs. */
 export type PermissionMode = "plan" | "manual" | "auto" | "edit" | "yolo";
 
+export type Effort = "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+export interface Provider {
+  name: string;
+  base_url: string;
+  example_model: string;
+  current: boolean;
+  key_env: string[];
+}
+
 /** One line of `aster chat --stream` output. */
 export type ChatStreamEvent =
   | { type: "token"; content: string }

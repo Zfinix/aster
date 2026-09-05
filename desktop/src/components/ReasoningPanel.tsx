@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { ChevronIcon } from "./icons";
 
-/** The model's thinking for a turn, collapsed by default since it usually runs
- *  longer than the answer. The summary line shows a live token count while it
- *  streams, a duration once it finishes, and a bare "Thought" otherwise. */
+/** The model's thinking, collapsed by default since it usually runs longer
+ *  than the answer. */
 export function ReasoningPanel({
   text,
   tokens,
@@ -24,20 +23,14 @@ export function ReasoningPanel({
       ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
       : "Thought"
     : tokens != null
-      ? `Thinking... ${tokens} tokens`
-      : "Thought";
+      ? `Thinking, ${tokens} tokens`
+      : "Thinking";
 
   return (
     <div className="reasoning">
-      <button
-        className="reasoning-head"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <span className="reasoning-summary">{label}</span>
-        <span className="reasoning-caret" data-open={open}>
-          <ChevronIcon size={12} />
-        </span>
+      <button type="button" className="reasoning-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className={done ? undefined : "shimmer"}>{label}</span>
+        <ChevronIcon open={open} />
       </button>
       {open && <div className="reasoning-body">{body}</div>}
     </div>

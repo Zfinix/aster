@@ -1,44 +1,51 @@
 import type { Turn } from "../lib/session";
 import type { Finding } from "../lib/types";
-import { ActivityPanel } from "./ActivityPanel";
-import { AgentPanel } from "./AgentPanel";
+import { AgentList } from "./AgentList";
 import { AssistantText } from "./AssistantText";
-import { MessageActions } from "./MessageActions";
+import { Mark } from "./Mark";
 import { ReasoningPanel } from "./ReasoningPanel";
 import { ReviewTurn } from "./ReviewTurn";
+import { ToolList } from "./ToolList";
+import { TurnActions } from "./TurnActions";
+import { UserTurnActions, type UserTurnActionHandlers } from "./UserTurnActions";
 
 export function TurnView({
   turn,
   onOpenDiff,
   onFocusFinding,
+  onApplyFix,
   onRetry,
+  actions,
 }: {
   turn: Turn;
+  actions?: UserTurnActionHandlers;
   onOpenDiff: () => void;
   onFocusFinding: (finding: Finding) => void;
+  onApplyFix: (finding: Finding) => Promise<boolean>;
   onRetry: () => void;
 }) {
   if (turn.role === "user") {
-    return (
-      <div className="turn-wrap user">
-        <div className="bubble">{turn.text}</div>
-        <MessageActions text={turn.text} ts={turn.ts} />
-      </div>
-    );
-  }
-  if (turn.role === "assistant") {
-    if (turn.pending && !turn.text) {
+    if (actions) {
       return (
-        <div className="a-typing">
-          <span />
-          <span />
-          <span />
+        <div className="turn">
+          <UserTurnActions text={turn.text} ts={turn.ts} actions={actions} />
         </div>
       );
     }
     return (
-      <div className="turn-wrap">
-        <div className="a-turn">
+      <div className="turn">
+        <div className="turn-user">
+          <div className="turn-user-text">{turn.text}</div>
+        </div>
+        <TurnActions text={turn.text} ts={turn.ts} />
+      </div>
+    );
+  }
+  if (turn.role === "assistant") {
+    const hasBlocks = turn.reasoning || turn.steps?.length || turn.agents?.length || turn.text;
+    return (
+      <div className="turn">
+        <div className="turn-assistant">
           {turn.reasoning && (
             <ReasoningPanel
               text={turn.reasoning}
@@ -47,21 +54,20 @@ export function TurnView({
               done={turn.reasoningDone}
             />
           )}
-          {turn.steps && turn.steps.length > 0 && <ActivityPanel steps={turn.steps} />}
-          {turn.agents && turn.agents.length > 0 && <AgentPanel agents={turn.agents} />}
-          <AssistantText id={turn.id} text={turn.text} error={turn.error} />
-          {turn.stopped && <div className="a-stopped">Stopped</div>}
+          {turn.steps && turn.steps.length > 0 && <ToolList steps={turn.steps} pending={turn.pending} />}
+          {turn.agents && turn.agents.length > 0 && <AgentList agents={turn.agents} />}
+          {turn.text && <AssistantText text={turn.text} error={turn.error} />}
+          {turn.pending && (
+            <div className="status">
+              <Mark px={1} label="Aster working" />
+              <span className="shimmer">{hasBlocks ? "Working" : "Thinking"}</span>
+            </div>
+          )}
+          {turn.stopped && <div className="turn-stopped">Stopped</div>}
         </div>
-        {!turn.pending && <MessageActions text={turn.text} ts={turn.ts} />}
+        {!turn.pending && <TurnActions text={turn.text} ts={turn.ts} />}
       </div>
     );
   }
-  return (
-    <ReviewTurn
-      data={turn.data}
-      onOpenDiff={onOpenDiff}
-      onFocusFinding={onFocusFinding}
-      onRetry={onRetry}
-    />
-  );
+  return <ReviewTurn data={turn.data} onOpenDiff={onOpenDiff} onFocusFinding={onFocusFinding} onApplyFix={onApplyFix} onRetry={onRetry} />;
 }

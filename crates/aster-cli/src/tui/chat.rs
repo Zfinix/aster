@@ -2036,7 +2036,7 @@ impl ChatApp {
         }
         let skills = crate::chat::discover_skills(&self.repo_root);
         if !skills.is_empty() {
-            fields.push(("skills", listed(skills.iter().map(|s| s.name.as_str()))));
+            fields.push(("skills", listed(skills.visible().map(|s| s.name.as_str()))));
         }
         // MCP is deliberately absent: the `mcp connected` note lands on its
         // own once the servers finish starting.
@@ -2802,12 +2802,12 @@ impl ChatApp {
 
     fn open_skills_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
         let skills = crate::chat::discover_skills(&self.repo_root);
-        if skills.is_empty() {
+        if skills.visible().next().is_none() {
             self.note("no skills installed (put SKILL.md folders under .aster/skills/)");
             return;
         }
         let items = skills
-            .iter()
+            .visible()
             .map(|s| SelectionItem {
                 name: s.name.clone(),
                 description: clip_row(&s.description, 60),

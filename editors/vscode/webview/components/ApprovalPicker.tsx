@@ -103,6 +103,14 @@ export function permissionLabel(mode: PermissionMode): string {
   return MODES.find((m) => m.mode === mode)?.label ?? mode;
 }
 
+export function permissionDetail(mode: PermissionMode): string {
+  return MODES.find((m) => m.mode === mode)?.detail ?? "";
+}
+
+export function permissionDanger(mode: PermissionMode): boolean {
+  return MODES.find((m) => m.mode === mode)?.danger === true;
+}
+
 /** The composer's mode button wears the mode it is in, so yolo does not look
  *  like every other setting. */
 export function permissionIcon(mode: PermissionMode): ReactNode {

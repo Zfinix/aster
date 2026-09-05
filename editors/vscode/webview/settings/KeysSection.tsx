@@ -1,8 +1,13 @@
 import type { ApiKey } from "../../src/protocol";
-import { SecretInput } from "./controls/SecretInput";
-import { CloseIcon, EyeIcon } from "./icons";
+import { SecretField } from "./controls/SecretField";
+import { CloseIcon } from "./icons";
+import { StatusLine } from "./StatusLine";
 
-const GROUPS = ["Model", "Web tools"];
+/** The groups the CLI listed, in the order it listed them, so a new provider
+ *  group shows up without this file being told about it. */
+function groups(apiKeys: ApiKey[]): string[] {
+  return [...new Set(apiKeys.map((key) => key.group))];
+}
 
 /** Every key Aster reads, one row each: what is stored (masked, revealable),
  *  where it came from, and a write-only field to set or replace it. */
@@ -25,7 +30,7 @@ export function KeysSection({
 }) {
   return (
     <>
-      {GROUPS.map((group) => {
+      {groups(apiKeys).map((group) => {
         const rows = apiKeys.filter((key) => key.group === group);
         if (rows.length === 0) return null;
         return (
@@ -69,14 +74,12 @@ function KeyRow({
   onReveal: (name: string) => void;
   onHide: (name: string) => void;
 }) {
-  const state = keyRow.set
-    ? `${shown ?? keyRow.masked ?? "set"} · ${sourceLabel(keyRow.source)}`
-    : "not set";
   return (
-    <div className="set-row">
+    <div className={keyRow.set ? "set-row set" : "set-row"}>
       <div className="set-row-text">
         <div className="set-row-head">
           <span className="set-row-label">{keyRow.provider}</span>
+          <code className="set-tag">{keyRow.var}</code>
           {keyRow.set && (
             <button
               type="button"
@@ -88,27 +91,20 @@ function KeyRow({
             </button>
           )}
         </div>
-        <p className="set-row-key mono">
-          {keyRow.var} · {state}
-        </p>
-        {!keyRow.set && keyRow.help && <p className="set-row-help">{keyRow.help}</p>}
+        {keyRow.help && <p className="set-row-help">{keyRow.help}</p>}
+        <StatusLine set={keyRow.set} source={sourceLabel(keyRow.source)} />
         {error && <p className="set-row-note error">{error}</p>}
       </div>
-      <div className="set-row-control set-key-control">
-        {keyRow.set && (
-          <button
-            type="button"
-            className="set-eye"
-            title={shown ? "Hide the key" : "Show the key"}
-            onClick={() => (shown ? onHide(keyRow.var) : onReveal(keyRow.var))}
-          >
-            <EyeIcon off={Boolean(shown)} />
-          </button>
-        )}
-        <SecretInput
-          label={`Set ${keyRow.var}`}
-          placeholder={keyRow.set ? "Replace key…" : "Add key…"}
+      <div className="set-row-control">
+        <SecretField
+          label={`${keyRow.provider} key`}
+          stored={keyRow.set}
+          masked={keyRow.masked}
+          revealed={shown}
+          placeholder="Add key…"
           onCommit={(value) => onSet(keyRow.var, value)}
+          onReveal={() => onReveal(keyRow.var)}
+          onHide={() => onHide(keyRow.var)}
         />
       </div>
     </div>

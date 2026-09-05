@@ -1,6 +1,7 @@
 use super::*;
 
 use std::fs;
+use std::path::Path;
 
 fn repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -76,10 +77,27 @@ fn a_paste_matching_one_repo_file_mentions_that_file() {
 #[test]
 fn a_paste_from_elsewhere_is_written_somewhere_the_agent_can_read() {
     let dir = repo();
-    let staged = stage(dir.path(), "shot.png", 3, b"png").expect("stage");
-    assert!(staged.ends_with("-shot.png"), "{staged}");
+    let staged = stage(dir.path(), "staged-test.png", 3, b"png").expect("stage");
+    assert!(staged.ends_with("staged-test.png"), "{staged}");
+    assert!(
+        Path::new(&staged).starts_with(std::env::temp_dir().join("aster-pasted")),
+        "{staged}"
+    );
     assert_eq!(fs::read(&staged).expect("staged file"), b"png");
     let _ = fs::remove_file(&staged);
+}
+
+#[test]
+fn a_second_paste_of_the_same_name_keeps_both() {
+    let dir = repo();
+    let first = stage(dir.path(), "collision-test.png", 3, b"png").expect("stage");
+    let second = stage(dir.path(), "collision-test.png", 4, b"png!").expect("stage");
+    assert!(first.ends_with("collision-test.png"), "{first}");
+    assert!(second.ends_with("collision-test-1.png"), "{second}");
+    assert_eq!(fs::read(&first).expect("first"), b"png");
+    assert_eq!(fs::read(&second).expect("second"), b"png!");
+    let _ = fs::remove_file(&first);
+    let _ = fs::remove_file(&second);
 }
 
 #[test]
@@ -90,12 +108,73 @@ fn a_pasted_name_cannot_pick_the_directory() {
 }
 
 #[test]
+fn a_staged_paste_outside_the_repo_is_still_previewable() {
+    let dir = repo();
+    let staged = stage(dir.path(), "preview-test.png", 4, b"png!").expect("stage");
+    let file = preview(dir.path(), &staged).expect("preview");
+    assert_eq!(
+        file.image,
+        Some("data:image/png;base64,cG5nIQ==".to_string())
+    );
+}
+
+#[test]
+fn a_staged_document_previews_as_a_data_url_with_its_size() {
+    let dir = repo();
+    let staged = stage(dir.path(), "report.pdf", 5, b"%PDF-").expect("stage");
+    let file = preview(dir.path(), &staged).expect("preview");
+    assert_eq!(
+        file.doc,
+        Some("data:application/pdf;base64,JVBERi0=".to_string())
+    );
+    assert_eq!(file.image, None);
+    assert_eq!(file.size, Some(5));
+}
+
+#[test]
 fn a_preview_survives_a_space_in_the_path() {
     let dir = repo();
     fs::write(dir.path().join("my notes.md"), "# hi\n").expect("file");
     let file = preview(dir.path(), "my notes.md").expect("preview");
     assert_eq!(file.content, "# hi\n");
     assert!(!file.truncated);
+}
+
+#[test]
+fn an_image_preview_is_a_data_url_not_text() {
+    let dir = repo();
+    fs::write(dir.path().join("shot.png"), b"\x89PNG bytes").expect("file");
+    let file = preview(dir.path(), "shot.png").expect("preview");
+    assert_eq!(
+        file.image.as_deref(),
+        Some("data:image/png;base64,iVBORyBieXRlcw==")
+    );
+    assert_eq!(file.content, "");
+}
+
+#[test]
+fn an_image_serves_its_bytes_with_a_mime() {
+    let dir = repo();
+    fs::write(dir.path().join("shot.png"), b"\x89PNG bytes").expect("file");
+    let (mime, bytes) = serve(dir.path(), "shot.png").expect("served");
+    assert_eq!(mime, "image/png");
+    assert_eq!(bytes, b"\x89PNG bytes");
+}
+
+#[test]
+fn a_document_serves_its_bytes_without_rendering_anything() {
+    let dir = repo();
+    let staged = stage(dir.path(), "report.pdf", 5, b"%PDF-").expect("stage");
+    let (mime, bytes) = serve(dir.path(), &staged).expect("served");
+    assert_eq!(mime, "application/pdf");
+    assert_eq!(bytes, b"%PDF-");
+}
+
+#[test]
+fn serving_stays_inside_the_repo() {
+    let dir = repo();
+    assert_eq!(serve(dir.path(), "../outside.txt"), None);
+    assert_eq!(serve(dir.path(), "gone.png"), None);
 }
 
 #[test]

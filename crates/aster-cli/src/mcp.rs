@@ -869,7 +869,9 @@ impl McpRuntime {
         }
         let injector = match McpCatalog::new(tools) {
             Ok(catalog) => match Injector::new(catalog, settings.progressive()) {
-                Ok(injector) => injector,
+                // The built-in web tools are five stable names; listing them
+                // outright saves the search round a large catalogue forces.
+                Ok(injector) => injector.pin_servers(["web"]),
                 Err(e) => {
                     problems.push(format!("MCP injector rejected: {e}"));
                     return (None, problems);

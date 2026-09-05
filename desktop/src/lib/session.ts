@@ -320,24 +320,7 @@ export const RESEARCH_MODELS = [
 
 export const DEFAULT_MODEL = RESEARCH_MODELS[0];
 
-function caseToken(w: string): string {
-  if (/^[0-9.]+$/.test(w)) return w;
-  if (/^v\d+$/i.test(w)) return w.toLowerCase();
-  if (/\d/.test(w) && w.length <= 3) return w.toUpperCase();
-  if (/^[a-z]+$/i.test(w) && !/[aeiouy]/i.test(w)) return w.toUpperCase();
-  return w.charAt(0).toUpperCase() + w.slice(1);
-}
-
-/** "google/gemini-3.1-flash-lite" -> "Gemini 3.1 Flash Lite" */
-export function modelShort(id: string): string {
-  const slug = id.split("/").pop() || id;
-  return slug.split("-").map(caseToken).join(" ");
-}
-
-/** "google/gemini-3.1-flash-lite" -> "google" */
-export function modelProvider(id: string): string {
-  return id.includes("/") ? id.split("/")[0] : "";
-}
+export { modelShort, modelProvider } from "./model";
 
 export const SOURCE_LABELS: Record<SourceKind, string> = {
   working: "working tree",

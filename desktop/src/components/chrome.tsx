@@ -10,13 +10,18 @@ import {
 
 export type Theme = "dark" | "light";
 
+const THEME_KEY = "aster.theme";
+
 export function useTheme(): [Theme, (t: Theme) => void] {
-  const [theme, setThemeState] = useState<Theme>(
-    () =>
-      (document.documentElement.dataset.theme as Theme | undefined) ?? "dark",
-  );
+  const [theme, setThemeState] = useState<Theme>(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    const t: Theme = saved === "light" ? "light" : "dark";
+    document.documentElement.dataset.theme = t;
+    return t;
+  });
   const setTheme = useCallback((t: Theme) => {
     document.documentElement.dataset.theme = t;
+    localStorage.setItem(THEME_KEY, t);
     setThemeState(t);
   }, []);
   return [theme, setTheme];
@@ -42,95 +47,28 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={toast}>
       {children}
-      <div className={`app-toast ${show ? "show" : ""}`} role="status">
+      <div className="toast" data-show={show} role="status">
         {msg}
       </div>
     </ToastCtx.Provider>
   );
 }
 
-export interface DropdownOption {
-  value: string;
-  label: ReactNode;
-  hint?: string;
-  icon?: ReactNode;
-  danger?: boolean;
-}
-
-/** A small, outside-click-aware menu anchored to a trigger. */
-export function Dropdown({
-  trigger,
-  options,
-  value,
-  onSelect,
-  direction = "up",
-  align = "left",
-}: {
-  trigger: (open: boolean) => ReactNode;
-  options: DropdownOption[];
-  value?: string;
-  onSelect: (value: string) => void;
-  direction?: "up" | "down";
-  align?: "left" | "right";
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
+/** Outside-click and Escape dismissal for an anchored popup. */
+export function useDismiss(open: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!ref.current?.contains(e.target as Node)) close();
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
-
-  return (
-    <div className="dd-wrap" ref={wrapRef}>
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        {trigger(open)}
-      </button>
-      {open && (
-        <div
-          className={`dd ${direction}`}
-          role="menu"
-          style={align === "right" ? { left: "auto", right: 0 } : undefined}
-        >
-          {options.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              role="menuitem"
-              data-active={value === o.value}
-              data-danger={o.danger || undefined}
-              onClick={() => {
-                onSelect(o.value);
-                setOpen(false);
-              }}
-            >
-              {o.icon && <span className="dd-ico">{o.icon}</span>}
-              {o.icon || o.hint ? (
-                <span className="dd-col">
-                  <span>{o.label}</span>
-                  {o.hint && <small>{o.hint}</small>}
-                </span>
-              ) : (
-                <span>{o.label}</span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  }, [open, close]);
+  return ref;
 }

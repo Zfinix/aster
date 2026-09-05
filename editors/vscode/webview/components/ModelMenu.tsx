@@ -89,10 +89,17 @@ export function ModelMenu({
     </button>
   );
 
+  // A search that narrows the list shrinks the box under the pointer, which
+  // reads as leaving; while the list has focus the pointer position is moot.
+  const leave = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(document.activeElement)) return;
+    setPane(null);
+  };
+
   return (
     // Leaving the menu puts the list away; leaving a row does not, or the
     // pointer could never travel from the row into the list it opened.
-    <div className="model-menu" onMouseLeave={() => setPane(null)}>
+    <div className="model-menu" onMouseLeave={leave}>
       <div className="picker model-root" role="menu" aria-label="Turn settings">
         {row("model", <CubeIcon />, "Model", modelChip(model))}
         {row("provider", <CloudIcon />, "Provider", current?.name ?? "")}

@@ -56,3 +56,19 @@ export function WarnIcon() {
     </svg>
   );
 }
+
+export function PlusIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 3.5v9M3.5 8h9" {...stroke} />
+    </svg>
+  );
+}
+
+export function OpenIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M7 3.5H3.5v9h9V9M9.5 3.5h3v3M12.5 3.5 7.5 8.5" {...stroke} />
+    </svg>
+  );
+}

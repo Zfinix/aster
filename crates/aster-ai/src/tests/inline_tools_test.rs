@@ -20,9 +20,11 @@ fn inline_calls_are_recovered_and_the_markup_is_dropped() {
     assert_eq!(calls[0].function.name, "search_files");
     assert_eq!(calls[0].function.arguments, r#"{"query":"sh__"}"#);
     assert_eq!(calls[1].function.name, "read_file");
+    // Key order follows serde_json's feature resolution (workspace crates can
+    // enable preserve_order), so compare parsed values rather than strings.
     assert_eq!(
-        calls[1].function.arguments,
-        r#"{"end_line":20,"path":"a/b.ts"}"#
+        serde_json::from_str::<serde_json::Value>(&calls[1].function.arguments).unwrap(),
+        serde_json::json!({"path": "a/b.ts", "end_line": 20})
     );
 }
 

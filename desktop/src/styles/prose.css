@@ -1,0 +1,207 @@
+.prose {
+  line-height: 1.55;
+  font-size: 1em;
+}
+
+.prose[data-error="true"] {
+  color: var(--error);
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.prose p {
+  margin: 0 0 var(--s2);
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  margin: var(--s3) 0 var(--s1);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.prose h1 {
+  font-size: 1.3em;
+}
+
+.prose h2 {
+  font-size: 1.15em;
+}
+
+.prose h3 {
+  font-size: 1.05em;
+}
+
+.prose h4 {
+  font-size: 1em;
+}
+
+.prose ul,
+.prose ol {
+  margin: 0 0 var(--s2);
+  padding-left: 1.4em;
+}
+
+.prose li {
+  margin: 2px 0;
+}
+
+.prose li::marker {
+  color: var(--fg-dim);
+}
+
+.prose strong {
+  font-weight: 600;
+}
+
+.prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose blockquote {
+  margin: 0 0 var(--s2);
+  padding-left: var(--s2);
+  border-left: 2px solid var(--border);
+  color: var(--fg-dim);
+}
+
+.prose hr {
+  margin: var(--s3) 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.prose table {
+  border-collapse: collapse;
+  margin: 0 0 var(--s2);
+}
+
+.prose th,
+.prose td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.prose th {
+  background: var(--code-bg);
+  font-weight: 600;
+}
+
+.prose :not(pre) > code {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--code-bg-strong);
+  color: inherit;
+}
+
+.prose [data-streamdown="code-block"] {
+  position: relative;
+  margin: var(--s2) 0;
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.prose [data-streamdown="code-block-header"] {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  height: auto;
+  padding: 2px var(--s1) 2px var(--s2);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--tabs-bg);
+  font-family: var(--font);
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  text-transform: lowercase;
+}
+
+.prose div:has(> [data-streamdown="code-block-actions"]) {
+  position: absolute;
+  top: 1px;
+  right: var(--s1);
+  margin: 0;
+  height: auto;
+  padding: 0;
+  z-index: 2;
+}
+
+.prose [data-streamdown="code-block-actions"] {
+  display: flex;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.prose [data-streamdown="code-block"]:hover [data-streamdown="code-block-actions"],
+.prose [data-streamdown="code-block-actions"]:focus-within {
+  opacity: 1;
+}
+
+.prose [data-streamdown="code-block-copy-button"],
+.prose [data-streamdown="code-block-download-button"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--fg-dim);
+}
+
+.prose [data-streamdown="code-block-copy-button"]:hover,
+.prose [data-streamdown="code-block-download-button"]:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.prose [data-streamdown="code-block-copy-button"] svg,
+.prose [data-streamdown="code-block-download-button"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+.prose [data-streamdown="code-block-body"] {
+  padding: var(--s2);
+  border: 0;
+  border-radius: 0;
+  background: none;
+  overflow-x: auto;
+}
+
+.prose pre code {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  line-height: 1.5;
+  padding: 0;
+  background: none;
+}
+
+.prose pre code > span::before {
+  width: 1.4rem;
+  margin-right: var(--s2);
+  font-size: 0.9em;
+}

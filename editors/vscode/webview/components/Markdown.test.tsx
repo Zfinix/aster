@@ -112,3 +112,22 @@ describe("Markdown documents", () => {
     expect(html("# Title")).not.toContain("md-doc");
   });
 });
+
+describe("Markdown cited paths", () => {
+  it.each([
+    "src/panel.ts",
+    "src/panel.ts:486",
+    "docs/zai-plan-notes.md",
+    "./Cargo.toml",
+    "~/.aster/config.yaml",
+  ])("makes %s openable", (path) => {
+    expect(html(`See \`${path}\`.`)).toContain('class="md-path"');
+  });
+
+  it.each(["--verbose", "cargo build", "a/b", "foo_bar", "http://localhost:5173", "v1.2.3"])(
+    "leaves %s as plain code",
+    (text) => {
+      expect(html(`Run \`${text}\`.`)).not.toContain("md-path");
+    },
+  );
+});

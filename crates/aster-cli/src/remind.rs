@@ -8,7 +8,7 @@ use clap::Args;
 pub(crate) struct RemindArgs {
     /// What the notification says.
     pub text: Option<String>,
-    /// When to fire: "in 30m", "in 2h", or "at 18:00".
+    /// When to fire: "in 10s", "in 30m", "in 2h", or "at 18:00".
     pub when: Option<String>,
 
     /// Internal: fired by the scheduled entry; posts the notification and
@@ -29,10 +29,10 @@ pub(crate) fn run(args: RemindArgs) -> Result<()> {
     }
 
     let Some(when) = &args.when else {
-        anyhow::bail!("usage: aster remind \"<text>\" \"in 30m\" | \"at 18:00\"");
+        anyhow::bail!("usage: aster remind \"<text>\" \"in 10s\" | \"at 18:00\"");
     };
     let Some(text) = &args.text else {
-        anyhow::bail!("usage: aster remind \"<text>\" \"in 30m\" | \"at 18:00\"");
+        anyhow::bail!("usage: aster remind \"<text>\" \"in 10s\" | \"at 18:00\"");
     };
     let fire_at = aster_cron::remind::parse_when(when)?;
     let id = format!(

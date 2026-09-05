@@ -70,8 +70,14 @@ async fn dropped_paths_come_back_as_mentions() {
         .expect("handled");
 
     let posted: Value = serde_json::from_str(&events.try_recv().expect("a message")).expect("json");
-    assert_eq!(posted["type"], "insertMention");
-    assert_eq!(posted["text"], "@notes.md");
+    assert_eq!(
+        posted,
+        json!({
+            "type": "insertMention",
+            "text": "@notes.md",
+            "mentions": ["@notes.md"],
+        })
+    );
 }
 
 #[tokio::test]

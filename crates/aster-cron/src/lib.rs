@@ -50,9 +50,9 @@ pub fn install_all(schedules: &[Schedule], aster_bin: &Path, repo_root: &Path) -
 }
 
 fn install_one(sched: &Schedule, aster_bin: &Path, repo_root: &Path, logs: &Path) -> Result<()> {
-    let log_path = logs.join(format!("{}.log", sched.name));
     #[cfg(target_os = "macos")]
     {
+        let log_path = logs.join(format!("{}.log", sched.name));
         let intervals = schedule::calendar_intervals(&sched.cron)?;
         launchd::install(
             &sched.name,
@@ -65,6 +65,7 @@ fn install_one(sched: &Schedule, aster_bin: &Path, repo_root: &Path, logs: &Path
     #[cfg(not(target_os = "macos"))]
     {
         let _ = repo_root;
+        let _ = logs;
         crontab::install(
             &sched.name,
             &sched.cron,

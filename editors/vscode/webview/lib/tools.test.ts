@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ToolCall } from "./thread";
 import {
+  describeActivity,
   describeTool,
+  elapsedLabel,
   displayOutput,
   groupRuns,
   isRun,
@@ -381,5 +383,49 @@ describe("describeTool on the MCP bridge", () => {
   it("stays readable while the arguments are still streaming", () => {
     expect(describeTool(call("aster_mcp", '{"action":"exec'))).toEqual({ verb: "MCP" });
     expect(describeTool(call("aster_mcp", { action: "execute" }))).toEqual({ verb: "Run tool" });
+  });
+});
+
+describe("describeActivity", () => {
+  it("turns a tool line into a verb and what it touched", () => {
+    expect(describeActivity("read_file src/chat.rs")).toEqual({
+      kind: "tool",
+      verb: "Read",
+      detail: "src/chat.rs",
+    });
+    expect(describeActivity("run_command cargo test -p aster-cli")).toEqual({
+      kind: "tool",
+      verb: "Run",
+      detail: "cargo test -p aster-cli",
+    });
+  });
+
+  it("keeps a bare tool name as a verb alone", () => {
+    expect(describeActivity("list_files")).toEqual({ kind: "tool", verb: "List", detail: undefined });
+  });
+
+  it("names an unknown tool the way tool rows do", () => {
+    expect(describeActivity("linear/save_issue ASTER-12")).toEqual({
+      kind: "tool",
+      verb: "Linear Save Issue",
+      detail: "ASTER-12",
+    });
+  });
+
+  it("treats the agent's own words as a note", () => {
+    expect(describeActivity("Looking at the config loader next")).toEqual({
+      kind: "note",
+      text: "Looking at the config loader next",
+    });
+    expect(describeActivity("reading the file")).toEqual({ kind: "note", text: "reading the file" });
+  });
+});
+
+describe("elapsedLabel", () => {
+  it("reads like a clock", () => {
+    expect(elapsedLabel(4200)).toBe("4s");
+    expect(elapsedLabel(72_000)).toBe("1m 12s");
+    expect(elapsedLabel(180_000)).toBe("3m");
+    expect(elapsedLabel(11 * 60_000 + 5000)).toBe("11m");
   });
 });

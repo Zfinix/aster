@@ -16,9 +16,14 @@ function args(call: ToolCall): Record<string, unknown> {
   }
 }
 
-function arg(call: ToolCall, key: string): string | undefined {
+export function arg(call: ToolCall, key: string): string | undefined {
   const value = args(call)[key];
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+export function numberArg(call: ToolCall, key: string): number | undefined {
+  const value = args(call)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function steps(call: ToolCall): unknown[] {
@@ -388,4 +393,45 @@ export function runLabel(name: string, count: number): string {
   const verb = describeTool({ id: "", name, arguments: "{}" }).verb;
   const noun = RUN_NOUNS[name] ?? ["step", "steps"];
   return `${verb} ${count} ${count === 1 ? noun[0] : noun[1]}`;
+}
+
+const ACTIVITY_VERBS: Record<string, string> = {
+  read_file: "Read",
+  list_files: "List",
+  search_files: "Search",
+  find_files: "Find",
+  edit_file: "Edit",
+  run_command: "Run",
+  run_tests: "Test",
+  explore: "Explore",
+  read_skill: "Skill",
+  open_preview: "Open",
+  remember: "Remember",
+  recall: "Recall",
+  aster_mcp: "MCP",
+};
+
+export type Activity = { kind: "tool"; verb: string; detail?: string } | { kind: "note"; text: string };
+
+/** A sub-agent's activity line as the card shows it: a tool call becomes a
+ *  verb and what it touched, anything else is the agent's own words. */
+export function describeActivity(line: string): Activity {
+  const trimmed = line.trim();
+  const space = trimmed.indexOf(" ");
+  const head = space === -1 ? trimmed : trimmed.slice(0, space);
+  const isTool = /^[a-z][a-z0-9_-]*(\/[a-z0-9_-]+)*$/.test(head) && (head in ACTIVITY_VERBS || /[_/]/.test(head));
+  if (!isTool) return { kind: "note", text: trimmed };
+  const detail = space === -1 ? undefined : trimmed.slice(space + 1).trim() || undefined;
+  return { kind: "tool", verb: ACTIVITY_VERBS[head] ?? humanize(head), detail };
+}
+
+/** A duration as a person reads it off a clock: seconds until a minute, then
+ *  minutes and seconds, then minutes alone once seconds stop mattering. */
+export function elapsedLabel(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes < 10) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  return `${minutes}m`;
 }

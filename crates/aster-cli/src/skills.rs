@@ -218,13 +218,24 @@ fn bundled(names: Vec<String>, project: bool, force: bool) -> Result<()> {
             .collect();
         println!("bundled optional skills (install with `aster skills bundled <name>`):\n");
         for skill in aster_skills::optional_skills() {
-            let mark = if installed.contains(&skill.name) {
-                " (installed)"
+            let mut marks = Vec::new();
+            if installed.contains(&skill.name) {
+                marks.push("installed");
+            }
+            if skill.internal {
+                marks.push("internal");
+            }
+            let mark = if marks.is_empty() {
+                String::new()
             } else {
-                ""
+                format!(" ({})", marks.join(", "))
             };
             println!("  {}{mark}\n    {}", skill.name, skill.description);
         }
+        println!(
+            "\ninternal skills shape how the agent works; once on, they stay out of \
+             `aster skills list` and the chat."
+        );
         return Ok(());
     }
     let root = scope_root(scope)?;
@@ -508,7 +519,7 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
     for &scope in scopes {
         let root = scope_root(scope)?;
         let set = SkillSet::discover(std::slice::from_ref(&root));
-        sections.push((scope, root, set.iter().cloned().collect::<Vec<Skill>>()));
+        sections.push((scope, root, set.visible().cloned().collect::<Vec<Skill>>()));
     }
 
     let shadowed: Vec<String> = match scopes.len() {

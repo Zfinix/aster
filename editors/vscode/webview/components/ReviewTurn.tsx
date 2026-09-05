@@ -222,7 +222,7 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
                   <button
                     className="link"
                     onClick={() => openFilePreview(file)}
-                    title="Preview file"
+                    title="Open file"
                   >
                     {file}
                   </button>

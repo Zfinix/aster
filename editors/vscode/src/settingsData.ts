@@ -25,6 +25,7 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
   const base: SettingsSnapshot = {
     keys: [],
     apiKeys: [],
+    envVars: [],
     paths: null,
     editor: editorSettings(),
     servers: [],
@@ -38,12 +39,13 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
   }
 
   const cwd = root ?? process.cwd();
-  const [keys, apiKeys, paths, servers, providers] = await Promise.all([
+  const [keys, apiKeys, paths, servers, providers, envVars] = await Promise.all([
     config.list(cwd).catch((err: unknown) => err as Error),
     info.apiKeys(cwd).catch(() => []),
     config.paths(cwd).catch(() => null),
     info.mcpServers(cwd).catch(() => []),
     info.providers(cwd).catch(() => []),
+    info.envVars(cwd).catch(() => []),
   ]);
   const configured = Array.isArray(keys)
     ? keys.find((key) => key.key === "review.model")?.value
@@ -53,6 +55,7 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
     ...base,
     keys: Array.isArray(keys) ? keys : [],
     apiKeys,
+    envVars,
     paths,
     servers,
     providers,

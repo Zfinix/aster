@@ -11,7 +11,6 @@ use agent_client_protocol::schema::v1::{
     ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Client, ConnectionTo};
-use aster_persist::MessageEvent;
 use serde_json::{Value, json};
 
 use crate::chat::ChatEventSink;
@@ -60,45 +59,6 @@ impl Sink {
         let notification = SessionNotification::new(self.session_id.clone(), update);
         if let Err(err) = self.cx.send_notification(notification) {
             tracing::warn!("acp: dropping session update: {err}");
-        }
-    }
-
-    /// Rebuild one recorded message as the updates a live turn would have
-    /// sent, so a resumed thread shows its thoughts and tool rows again.
-    pub fn replay(&self, message: &MessageEvent) -> Vec<SessionUpdate> {
-        let content = message.content.as_deref().unwrap_or("").trim();
-        match message.role.as_str() {
-            "user" => (!content.is_empty())
-                .then(|| SessionUpdate::UserMessageChunk(ContentChunk::new(content.into())))
-                .into_iter()
-                .collect(),
-            "assistant" => {
-                let mut updates = Vec::new();
-                if let Some(reasoning) = &message.reasoning
-                    && !reasoning.text.trim().is_empty()
-                {
-                    updates.push(thought(reasoning.text.clone()));
-                }
-                if !content.is_empty() {
-                    updates.push(message_chunk(content.to_string()));
-                }
-                for call in &message.tool_calls {
-                    updates.extend(self.tool_call(
-                        &call.id,
-                        &call.function.name,
-                        &call.function.arguments,
-                    ));
-                }
-                updates
-            }
-            "tool" => {
-                let Some(id) = message.tool_call_id.as_deref() else {
-                    return Vec::new();
-                };
-                let name = self.calls.name_of(id).unwrap_or_default();
-                self.tool_result(id, &name, content, content.starts_with("error: "))
-            }
-            _ => Vec::new(),
         }
     }
 

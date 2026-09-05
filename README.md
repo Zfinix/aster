@@ -369,13 +369,16 @@ listed by title and read in full only when the agent needs them.
 Skills are folders with a `SKILL.md` telling the agent how to do something
 specific. Aster reads the titles and loads the body only when it is relevant.
 
-Eleven core skills ship built in and are always available: git and GitHub
-workflows, verification before reporting done, build triage, shell batching,
-CLI craft, context economy, taking corrections, security hygiene, security
-review, and web research. Ten more are bundled but off by default (debugging, refactoring,
-tests, dependency upgrades, supply-chain safety, background processes, and
-others);
-`aster skills bundled` lists them. On macOS one bundled skill, macos-harness
+Five core skills ship built in and are always available: git and GitHub
+workflows, security review, security scanning, and skill authoring. Eleven more
+guide the agent's own conduct (verifying before reporting done, build triage,
+shell batching, CLI craft, context economy, web research, taking corrections,
+and so on); those are internal, so they never appear in a skills list or as a
+step in the chat. A skill you install under `<skills root>/internal/<name>/` is
+treated the same way. Ten optional skills are bundled but off by default
+(debugging, refactoring, tests, dependency upgrades, supply-chain safety,
+background processes, and others); `aster skills bundled` lists them and marks
+the internal ones, which install into the `internal/` folder. On macOS one bundled skill, macos-harness
 (drive apps, the browser, and the filesystem from one Python session), is
 installed into your global skills root on first run; removing it with
 `aster skills remove` keeps it removed. Installing any skill with the same

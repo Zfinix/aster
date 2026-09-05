@@ -2,7 +2,7 @@
   "name": "aster-vscode",
   "displayName": "Aster AI",
   "description": "AI coding agent in your editor: chat, verified code review, and one-click fixes",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "publisher": "aster-dev",
   "license": "Apache-2.0",
   "icon": "media/icon.png",

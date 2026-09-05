@@ -2,6 +2,8 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { post } from "../lib/host";
 import type { AgentTaskState } from "../lib/thread";
+import { describeActivity, elapsedLabel } from "../lib/tools";
+import { useNow } from "../lib/useNow";
 import { Disclosure } from "../interior/disclosure";
 import {
   AgentIcon,
@@ -43,8 +45,19 @@ export function AgentGroup({ tasks }: { tasks: AgentTaskState[] }) {
   return tasks.length === 1 ? <AgentSolo task={tasks[0]} /> : <AgentSwarm tasks={tasks} />;
 }
 
+function actionCount(task: AgentTaskState): number {
+  return (task.log ?? []).filter((line) => describeActivity(line).kind === "tool").length;
+}
+
+function elapsed(task: AgentTaskState, now: number): string | undefined {
+  if (!task.startedAt) return undefined;
+  const end = task.status === "running" ? now : (task.endedAt ?? now);
+  return elapsedLabel(end - task.startedAt);
+}
+
 function AgentSolo({ task }: { task: AgentTaskState }) {
   const [open, setOpen] = useState(false);
+  const now = useNow(task.status === "running");
   const report = task.report?.trim() ? task.report : null;
   const tail = task.status === "running" ? (task.log ?? []).slice(-6) : [];
 
@@ -52,21 +65,13 @@ function AgentSolo({ task }: { task: AgentTaskState }) {
     <div className="agent-net agent-net-solo">
       <AgentNode
         task={task}
+        now={now}
         selected={open && Boolean(report)}
         onSelect={() => setOpen(!open)}
-        showLive={false}
       />
-      {tail.length > 0 && (
-        <div className="agent-net-log">
-          {tail.map((line, i) => (
-            <div key={i} className="agent-net-log-line">
-              {line}
-            </div>
-          ))}
-        </div>
-      )}
+      {tail.length > 0 && <ActivityLog lines={tail} />}
       <Disclosure open={open && Boolean(report)}>
-        <AgentReport agent={task.agent} report={report} />
+        <AgentReport agent={task.agent} report={report} log={task.log ?? []} />
       </Disclosure>
     </div>
   );
@@ -83,6 +88,14 @@ function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {
   const running = tasks.filter((t) => t.status === "running").length;
   const failed = tasks.filter((t) => t.status === "error").length;
   const settled = tasks.length - running;
+  const actions = tasks.reduce((sum, t) => sum + actionCount(t), 0);
+  const now = useNow(running > 0);
+  const started = Math.min(...tasks.map((t) => t.startedAt ?? Infinity));
+  const ended = Math.max(...tasks.map((t) => t.endedAt ?? 0));
+  const clock =
+    Number.isFinite(started) && (running > 0 || ended > 0)
+      ? elapsedLabel((running > 0 ? now : ended) - started)
+      : undefined;
 
   // The wires are measured off the rendered nodes rather than computed from
   // layout constants, so wrapped task text and theme fonts can't skew them.
@@ -135,8 +148,10 @@ function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {
           Agents
         </span>
         <span className="agent-net-summary">
-          {settled}/{tasks.length} done
+          {settled} of {tasks.length} done
           {failed > 0 && <span className="agent-net-failed"> · {failed} failed</span>}
+          {actions > 0 && ` · ${actions} ${actions === 1 ? "action" : "actions"}`}
+          {clock && ` · ${clock}`}
         </span>
         <span className="agent-net-caret">
           <ChevronIcon open={open} />
@@ -167,6 +182,7 @@ function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {
                 <AgentNode
                   key={nodeId}
                   task={t}
+                  now={now}
                   selected={selected === nodeId}
                   onSelect={() => setSelected(selected === nodeId ? null : nodeId)}
                   nodeRef={(el) => {
@@ -180,15 +196,9 @@ function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {
         </div>
         <Disclosure open={Boolean(report) || tail.length > 0}>
           {report ? (
-            <AgentReport agent={sel?.agent} report={report} />
+            <AgentReport agent={sel?.agent} report={report} log={sel?.log ?? []} />
           ) : (
-            <div className="agent-net-log agent-net-log-panel">
-              {tail.map((line, i) => (
-                <div key={i} className="agent-net-log-line">
-                  {line}
-                </div>
-              ))}
-            </div>
+            <ActivityLog lines={tail} panel />
           )}
         </Disclosure>
       </Disclosure>
@@ -196,9 +206,56 @@ function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {
   );
 }
 
-function AgentReport({ agent, report }: { agent?: string; report: string | null }) {
+/** The live tail of what an agent did, newest last: each tool call as a verb
+ *  and its target, the agent's own commentary in between. */
+function ActivityLog({
+  lines,
+  panel,
+  steps,
+}: {
+  lines: string[];
+  panel?: boolean;
+  steps?: boolean;
+}) {
+  const className = steps
+    ? "agent-net-log agent-net-log-steps"
+    : panel
+      ? "agent-net-log agent-net-log-panel"
+      : "agent-net-log";
+  return (
+    <div className={className}>
+      {lines.map((line, i) => {
+        const item = describeActivity(line);
+        return item.kind === "tool" ? (
+          <div key={i} className="agent-net-log-line">
+            <span className="agent-net-log-verb">{item.verb}</span>
+            {item.detail && <span className="agent-net-log-detail">{item.detail}</span>}
+          </div>
+        ) : (
+          <div key={i} className="agent-net-log-line agent-net-log-note">
+            {item.text}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The report, with what the agent did to get there listed above it, so the
+ *  conclusion can be checked against the steps. */
+function AgentReport({
+  agent,
+  report,
+  log,
+}: {
+  agent?: string;
+  report: string | null;
+  log: string[];
+}) {
+  const steps = log.filter((line) => describeActivity(line).kind === "tool");
   return (
     <div className="agent-net-report">
+      {steps.length > 0 && <ActivityLog lines={steps} steps />}
       <div className="agent-net-report-head">
         <span className="agent-net-report-title">
           <span className="agent-net-report-name">{agent}</span> report
@@ -225,25 +282,35 @@ function AgentReport({ agent, report }: { agent?: string; report: string | null 
   );
 }
 
+/** One sub-agent: who it is, what it was asked, and what it is doing right
+ *  now. The ask stays put while the live line under it changes. */
 function AgentNode({
   task,
+  now,
   selected,
   onSelect,
   nodeRef,
-  showLive = true,
 }: {
   task: AgentTaskState;
+  now: number;
   selected: boolean;
   onSelect: () => void;
   nodeRef?: (el: HTMLButtonElement | null) => void;
-  showLive?: boolean;
 }) {
   const hasReport = Boolean(task.report?.trim());
   const live = task.status === "running" ? task.log?.at(-1) : undefined;
-  const sub =
-    task.status === "error" ? (task.error ?? "failed") : ((showLive ? live : undefined) ?? task.task);
   const hasBody = hasReport || Boolean(live);
   const Face = AVATARS[task.agent] ?? AgentIcon;
+  const actions = actionCount(task);
+  const time = elapsed(task, now);
+  const meta = [
+    task.status === "error" ? "failed" : task.status === "done" ? "done" : undefined,
+    actions > 0 ? `${actions} ${actions === 1 ? "action" : "actions"}` : undefined,
+    time,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const current = live ? describeActivity(live) : undefined;
 
   return (
     <button
@@ -260,8 +327,30 @@ function AgentNode({
         <span className="agent-avatar-dot" />
       </span>
       <span className="agent-node-text">
-        <span className="agent-node-name">{task.agent}</span>
-        {sub && <span className="agent-node-task">{sub}</span>}
+        <span className="agent-node-head">
+          <span className="agent-node-name">{task.agent}</span>
+          {meta && <span className="agent-node-meta">{meta}</span>}
+        </span>
+        {task.task && (
+          <span className="agent-node-task" title={task.task}>
+            {task.task}
+          </span>
+        )}
+        {task.status === "error" && task.error && (
+          <span className="agent-node-error">{task.error}</span>
+        )}
+        {current && (
+          <span className="agent-node-live">
+            {current.kind === "tool" ? (
+              <>
+                <span className="agent-node-live-verb">{current.verb}</span>
+                {current.detail && <span className="agent-node-live-detail">{current.detail}</span>}
+              </>
+            ) : (
+              <span className="agent-node-live-note">{current.text}</span>
+            )}
+          </span>
+        )}
       </span>
       <span className="agent-node-state">
         {task.status === "running" ? (

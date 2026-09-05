@@ -92,5 +92,5 @@ pub fn run() -> Result<()> {
 }
 
 fn count(repo_root: &Path) -> usize {
-    crate::chat::discover_skills(repo_root).len()
+    crate::chat::discover_skills(repo_root).visible().count()
 }

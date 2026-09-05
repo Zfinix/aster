@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { checkBinary, cliConfig, LoginRun, ProviderOverride, runCli, runLogin } from "./asterCli";
@@ -28,6 +29,56 @@ const CUSTOM_MODELS_KEY = "aster.customModels";
 const RECENT_MODELS_KEY = "aster.recentModels";
 const EFFORT_KEY = "aster.effort";
 const PROVIDER_KEY = "aster.provider";
+
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+};
+
+const DOC_MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  rtf: "application/rtf",
+  epub: "application/epub+zip",
+  mobi: "application/x-mobipocket-ebook",
+  azw: "application/vnd.amazon.ebook",
+  csv: "text/csv",
+  txt: "text/plain",
+  md: "text/markdown",
+  tex: "application/x-tex",
+  xml: "application/xml",
+  json: "application/json",
+  html: "text/html",
+  yaml: "text/yaml",
+  yml: "text/yaml",
+  tsv: "text/tab-separated-values",
+  pages: "application/vnd.apple.pages",
+  numbers: "application/vnd.apple.numbers",
+  key: "application/vnd.apple.keynote",
+  ps: "application/postscript",
+  msg: "application/vnd.ms-outlook",
+  eml: "message/rfc822",
+  dot: "application/msword",
+  dotx: "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+  xlt: "application/vnd.ms-excel",
+  xltx: "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+  pot: "application/vnd.ms-powerpoint",
+  potx: "application/vnd.openxmlformats-officedocument.presentationml.template",
+};
 
 export class AsterPanel implements vscode.WebviewViewProvider {
   static readonly viewType = "asterChat";
@@ -78,15 +129,15 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       this.sidebar = undefined;
       this.detach(view.webview);
     });
-    this.attach(view.webview);
+    this.attach(view.webview, "sidebar");
   }
 
-  private attach(webview: vscode.Webview): void {
+  private attach(webview: vscode.Webview, surface: Surface): void {
     webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
     };
-    webview.html = this.html(webview);
+    webview.html = this.html(webview, surface);
     this.surfaces.add(webview);
     webview.onDidReceiveMessage((message: ToHost) => {
       this.active = webview;
@@ -113,7 +164,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       this.tabs.delete(panel);
       this.detach(panel.webview);
     });
-    this.attach(panel.webview);
+    this.attach(panel.webview, "tab");
     this.active = panel.webview;
   }
 
@@ -122,7 +173,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       AsterPanel.tabViewType,
       "Aster",
       column,
-      { enableScripts: true, retainContextWhenHidden: true }
+      { enableScripts: true, retainContextWhenHidden: true, enableFindWidget: true }
     );
     tab.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "aster.svg");
     this.tabs.add(tab);
@@ -130,7 +181,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       this.tabs.delete(tab);
       this.detach(tab.webview);
     });
-    this.attach(tab.webview);
+    this.attach(tab.webview, "tab");
     // A command that opened a tab meant that tab: `attach` only fills `active`
     // when nothing holds it, which would leave replies going to the old surface.
     this.active = tab.webview;
@@ -227,7 +278,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
 
   private insertPaths(uris: string[]): void {
     const root = workspaceRoot();
-    const storage = this.context.globalStorageUri.fsPath;
     const mentions = uris
       .map((raw) => {
         try {
@@ -239,16 +289,15 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       .filter(Boolean)
       .map((fsPath) => {
         if (root && fsPath.startsWith(`${root}/`)) return fsPath.slice(root.length + 1);
-        // Pasted files live in extension storage, outside the workspace, so
-        // the CLI could never resolve a bare basename against the repo root.
-        // The full path is required; the chip derives its label from it.
-        if (storage && fsPath.startsWith(`${storage}/`)) return fsPath;
+        // Staged pastes live in the OS temp dir, outside the workspace, so the
+        // CLI could never resolve a bare basename against the repo root. The
+        // full path is required; the chip derives its label from it.
         return fsPath;
       })
       .map((p) => `@${p}`);
 
     if (mentions.length > 0) {
-      this.post({ type: "insertMention", text: mentions.join(" ") });
+      this.post({ type: "insertMention", text: mentions.join(" "), mentions });
     }
   }
 
@@ -262,7 +311,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       }
       if (file.data === undefined) {
         void vscode.window.showWarningMessage(
-          `Aster: ${file.name} is too large to paste; mention it with @ instead.`
+          `Aster: ${file.name} is too large to attach (over 64MB); mention it with @ instead.`
         );
         continue;
       }
@@ -285,10 +334,19 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   }
 
   private async writePasted(file: PastedFile, data: string): Promise<vscode.Uri> {
-    const dir = vscode.Uri.joinPath(this.context.globalStorageUri, "pasted");
+    // The OS temp dir, so a staged paste is cleaned up by the OS instead of
+    // accumulating in extension storage forever.
+    const dir = vscode.Uri.file(path.join(os.tmpdir(), "aster-pasted"));
     await vscode.workspace.fs.createDirectory(dir);
-    // Stamped, so a second screenshot never overwrites the one already mentioned.
-    const target = vscode.Uri.joinPath(dir, `${Date.now().toString(36)}-${file.name}`);
+    // The original name, so the agent sees what was dropped. A collision is the
+    // only case that gets a suffix, so a second paste of the same name never
+    // overwrites the one already mentioned.
+    let target = vscode.Uri.joinPath(dir, file.name);
+    let n = 1;
+    while (await fileExists(target)) {
+      target = vscode.Uri.joinPath(dir, numberedName(file.name, n));
+      n += 1;
+    }
     await vscode.workspace.fs.writeFile(target, Buffer.from(data, "base64"));
     return target;
   }
@@ -426,14 +484,38 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         break;
       }
       case "openFile": {
-        const root = workspaceRoot();
-        if (root) {
-          const uri = vscode.Uri.joinPath(vscode.Uri.file(root), message.path);
-          await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+        const uri = resolveWorkspacePath(message.path);
+        if (!uri) break;
+        // Without a spot to land on, vscode.open picks the right viewer for
+        // anything, images included, where a text document would refuse.
+        if (!message.needle && !message.line) {
+          await vscode.commands.executeCommand("vscode.open", uri);
+          break;
         }
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const editor = await vscode.window.showTextDocument(doc);
+        // A needle (the text an edit matched) or a line lands the reader on
+        // the spot, the way a review finding does.
+        const at = message.needle ? doc.getText().indexOf(message.needle) : -1;
+        const position =
+          at >= 0
+            ? doc.positionAt(at)
+            : new vscode.Position(Math.min(Math.max((message.line ?? 1) - 1, 0), doc.lineCount - 1), 0);
+        editor.selection = new vscode.Selection(position, position);
+        editor.revealRange(
+          new vscode.Range(position, position),
+          vscode.TextEditorRevealType.InCenter,
+        );
         break;
       }
       case "openExternal": {
+        // A file link, or one with no scheme at all, is a path the reply
+        // cited: the OS has no application for it, the editor does.
+        const file = fileLink(message.url);
+        if (file) {
+          await this.onMessage({ type: "openFile", ...file }, origin);
+          break;
+        }
         await vscode.env.openExternal(vscode.Uri.parse(message.url));
         break;
       }
@@ -492,20 +574,40 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         });
         break;
       case "readFile": {
-        const root = workspaceRoot();
-        const uri = root ? vscode.Uri.joinPath(vscode.Uri.file(root), message.path) : undefined;
-        let file: { path: string; lang?: string; content: string; truncated: boolean } | null = null;
+        const uri = resolveWorkspacePath(message.path);
+        let file: { path: string; lang?: string; content: string; truncated: boolean; image?: string; doc?: string; size?: number } | null = null;
         if (uri) {
           try {
-            const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-            const lines = text.split("\n");
-            const content = lines.slice(0, 200).join("\n").slice(0, 32000);
-            file = {
-              path: message.path,
-              lang: message.path.split(".").pop(),
-              content,
-              truncated: content.length < text.length,
-            };
+            const ext = message.path.split(".").pop()?.toLowerCase();
+            const mime = IMAGE_MIME[ext ?? ""];
+            const docMime = DOC_MIME[ext ?? ""];
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            if (mime && bytes.byteLength <= 8 * 1024 * 1024) {
+              file = {
+                path: message.path,
+                content: "",
+                truncated: false,
+                image: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
+              };
+            } else if (docMime && bytes.byteLength <= 8 * 1024 * 1024) {
+              file = {
+                path: message.path,
+                content: "",
+                truncated: false,
+                doc: `data:${docMime};base64,${Buffer.from(bytes).toString("base64")}`,
+                size: bytes.byteLength,
+              };
+            } else {
+              const text = new TextDecoder().decode(bytes);
+              const lines = text.split("\n");
+              const content = lines.slice(0, 200).join("\n").slice(0, 32000);
+              file = {
+                path: message.path,
+                lang: message.path.split(".").pop(),
+                content,
+                truncated: content.length < text.length,
+              };
+            }
           } catch {
             file = null;
           }
@@ -722,7 +824,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.post({ type: "mcpServers", servers });
   }
 
-  private async sendInfo(id: string, topic: "status" | "memory" | "diff"): Promise<void> {
+  private async sendInfo(id: string, topic: "status" | "memory" | "diff" | "mom"): Promise<void> {
     const root = workspaceRoot();
     if (!root) {
       this.post({ type: "infoCard", id, title: topic, note: "Open a folder first.", error: true });
@@ -731,6 +833,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     try {
       if (topic === "status") {
         this.post({ type: "infoCard", id, title: "Status", rows: await info.status(root, this.env()) });
+        return;
+      }
+      if (topic === "mom") {
+        this.post({ type: "infoCard", id, title: "Model policy", rows: await info.momPolicy(root) });
         return;
       }
       if (topic === "memory") {
@@ -931,7 +1037,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   }
 
 
-  private html(webview: vscode.Webview): string {
+  private html(webview: vscode.Webview, surface: Surface): string {
     const asset = (...parts: string[]) =>
       webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", ...parts));
     const nonce = nonceString();
@@ -946,11 +1052,32 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     <title>Aster</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" data-surface="${surface}"></div>
     <script type="module" nonce="${nonce}" src="${asset("webview", "index.js")}"></script>
   </body>
 </html>`;
   }
+}
+
+/** A tab gets the editor's own find widget; the sidebar cannot, so the webview
+ *  brings its own there. */
+type Surface = "sidebar" | "tab";
+
+const SCHEME = /^[a-z][a-z0-9+.-]*:(?!\d)/i;
+const LINE = /(?:#L|:)(\d+)(?:[-:,]L?\d+)*$/;
+
+function fileLink(url: string): { path: string; line?: number } | undefined {
+  let target: string;
+  if (url.startsWith("file://")) {
+    target = decodeURIComponent(url.slice("file://".length).replace(/^\/\/[^/]*/, ""));
+  } else if (!SCHEME.test(url) && !url.startsWith("#")) {
+    target = decodeURIComponent(url);
+  } else {
+    return undefined;
+  }
+  const line = LINE.exec(target);
+  const path = line ? target.slice(0, line.index) : target;
+  return path ? { path, line: line ? Number(line[1]) : undefined } : undefined;
 }
 
 function describe(err: unknown): string {
@@ -993,6 +1120,20 @@ interface FixOutput {
   patch?: string;
 }
 
+async function fileExists(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function numberedName(name: string, n: number): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? `${name.slice(0, dot)}-${n}${name.slice(dot)}` : `${name}-${n}`;
+}
+
 async function runFix(
   cwd: string,
   findings: { file_path: string; line: number; severity: string; category: string; title: string; description: string; suggestion: string }[]
@@ -1023,4 +1164,13 @@ async function runFix(
       reason: err instanceof Error ? err.message : String(err),
     }));
   }
+}
+
+/** A pasted file lives outside the workspace, so an absolute or `~` path is
+ *  taken as itself; only relative ones resolve against the root. */
+function resolveWorkspacePath(raw: string): vscode.Uri | undefined {
+  const expanded = raw === "~" || raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(1)) : raw;
+  if (path.isAbsolute(expanded)) return vscode.Uri.file(expanded);
+  const root = workspaceRoot();
+  return root ? vscode.Uri.joinPath(vscode.Uri.file(root), expanded) : undefined;
 }

@@ -14,6 +14,7 @@ export function SettingRow({
   onSet,
   onUnset,
   error,
+  index = 0,
 }: {
   keyRow: ConfigKey;
   scope: ConfigScope;
@@ -22,6 +23,7 @@ export function SettingRow({
   onSet: (value: Exclude<ConfigValue, null>) => void;
   onUnset: () => void;
   error?: string;
+  index?: number;
 }) {
   const own = keyRow.scopes[scope];
   const other: ConfigScope = scope === "global" ? "local" : "global";
@@ -31,7 +33,11 @@ export function SettingRow({
   const inherited = !set && keyRow.source !== "default";
 
   return (
-    <div className={set ? "set-row set" : "set-row"}>
+    <div
+      className={set ? "set-row set" : "set-row"}
+      data-layout={keyRow.kind === "list" ? "stack" : undefined}
+      style={{ "--i": index } as React.CSSProperties}
+    >
       <div className="set-row-text">
         <div className="set-row-head">
           <span className="set-row-label" title={keyRow.key}>

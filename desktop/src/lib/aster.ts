@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatStreamEvent,
+  Effort,
   Finding,
   PermissionMode,
+  Provider,
   ReviewOpts,
   StartupInfo,
   StreamEvent,
@@ -49,6 +51,7 @@ export async function runChat(
   repoPath: string | null,
   model: string | null,
   permissionMode: PermissionMode | null,
+  effort: Effort | null,
   session: string | null,
   handlers: ChatHandlers,
 ): Promise<UnlistenFn> {
@@ -75,7 +78,7 @@ export async function runChat(
 
   const unlistenAll: UnlistenFn = () => unlisteners.forEach((u) => u());
 
-  invoke("chat", { messages, repoPath, model, permissionMode, session })
+  invoke("chat", { messages, repoPath, model, permissionMode, effort, session })
     .catch((err: unknown) => handlers.onError(String(err)));
 
   return unlistenAll;
@@ -181,6 +184,22 @@ export function saveProvider(fields: {
     baseUrl: fields.baseUrl ?? null,
     model: fields.model ?? null,
   });
+}
+
+/** The endpoints the CLI knows, with the one aster.yaml points at marked. */
+export function listProviders(repoPath: string | null): Promise<Provider[]> {
+  return invoke<{ providers?: Provider[] }>("list_providers", { repoPath }).then((r) => r.providers ?? []);
+}
+
+/** Point every surface at an endpoint, written to aster.yaml via the CLI. */
+export function useProvider(baseUrl: string, model: string | null, repoPath: string | null): Promise<void> {
+  return invoke("use_provider", { baseUrl, model, repoPath });
+}
+
+/** What the current endpoint serves. Not every endpoint lists its models, so
+ *  the failure is the caller's to show. */
+export function listModels(repoPath: string | null): Promise<string[]> {
+  return invoke<string[]>("list_models", { repoPath });
 }
 
 /** Save the model where every surface reads it: aster.yaml, via the CLI. */

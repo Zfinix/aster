@@ -196,6 +196,8 @@ pub struct Injection {
     pub bridge_tool: Value,
     pub prompt: String,
     pub inventory: Inventory,
+    /// Tools listed by name even when the inventory fell back to server names.
+    pub pinned: Vec<ToolManifestEntry>,
     pub manifest_tokens: usize,
     pub inventory_budget_tokens: usize,
 }
@@ -205,12 +207,24 @@ pub struct Injection {
 pub struct Injector {
     catalog: McpCatalog,
     config: ProgressiveConfig,
+    pinned_servers: Vec<String>,
 }
 
 impl Injector {
     pub fn new(catalog: McpCatalog, config: ProgressiveConfig) -> Result<Self> {
         config.validate()?;
-        Ok(Self { catalog, config })
+        Ok(Self {
+            catalog,
+            config,
+            pinned_servers: Vec::new(),
+        })
+    }
+
+    /// Servers whose tools stay listed by name when the catalogue is too large
+    /// for the full manifest, so a built-in tool never costs a search round.
+    pub fn pin_servers(mut self, servers: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.pinned_servers = servers.into_iter().map(Into::into).collect();
+        self
     }
 
     pub fn catalog(&self) -> &McpCatalog {
@@ -232,16 +246,27 @@ impl Injector {
             .collect::<Vec<_>>();
         let manifest_tokens = estimated_tokens(&render_tools(&entries));
         let inventory_budget_tokens = self.config.inventory_budget_tokens();
-        let inventory = if manifest_tokens <= inventory_budget_tokens {
-            Inventory::Tools(entries)
+        let (inventory, pinned) = if manifest_tokens <= inventory_budget_tokens {
+            (Inventory::Tools(entries), Vec::new())
         } else {
-            Inventory::Servers(self.catalog.servers().to_vec())
+            let pinned = self
+                .catalog
+                .tools()
+                .iter()
+                .filter(|tool| self.pinned_servers.contains(&tool.server))
+                .map(|tool| ToolManifestEntry {
+                    id: tool.id(),
+                    description: tool.description.clone(),
+                })
+                .collect();
+            (Inventory::Servers(self.catalog.servers().to_vec()), pinned)
         };
-        let prompt = render_inventory(&inventory, self.config.max_search_limit);
+        let prompt = render_inventory(&inventory, &pinned, self.config.max_search_limit);
         Some(Injection {
             bridge_tool: bridge_tool_definition(),
             prompt,
             inventory,
+            pinned,
             manifest_tokens,
             inventory_budget_tokens,
         })
@@ -373,7 +398,11 @@ pub fn estimated_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)
 }
 
-fn render_inventory(inventory: &Inventory, max_search_limit: usize) -> String {
+fn render_inventory(
+    inventory: &Inventory,
+    pinned: &[ToolManifestEntry],
+    max_search_limit: usize,
+) -> String {
     let mut out = String::from(
         "## MCP tools\n\nMCP capabilities are available through the `aster_mcp` bridge. \
         Do not guess argument names: call `aster_mcp` with `action: \"describe\"` \
@@ -387,6 +416,10 @@ fn render_inventory(inventory: &Inventory, max_search_limit: usize) -> String {
             out.push_str(&render_tools(entries));
         }
         Inventory::Servers(servers) => {
+            if !pinned.is_empty() {
+                out.push_str("\nAlways available, call with execute directly:\n");
+                out.push_str(&render_tools(pinned));
+            }
             out.push_str("\nAvailable MCP servers (search their capabilities when needed):\n");
             for server in servers {
                 out.push_str(&format!("- **{}** — {}\n", server.name, server.description));

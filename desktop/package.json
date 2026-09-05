@@ -1,6 +1,6 @@
 {
   "name": "Aster",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Desktop app for the aster coding agent",
   "private": true,
   "type": "module",
@@ -15,9 +15,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@heroui/react": "^3.2.2",
-    "@heroui/styles": "^3.2.2",
-    "@phosphor-icons/react": "^2.1.7",
     "@streamdown/code": "^1.1.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
@@ -29,8 +26,7 @@
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0",
     "streamdown": "^2.5.0",
-    "sugar-high": "^1.2.1",
-    "tailwind-variants": "^3.2.2"
+    "sugar-high": "^1.2.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",

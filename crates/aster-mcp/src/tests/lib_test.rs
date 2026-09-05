@@ -134,3 +134,31 @@ fn invalid_configuration_is_rejected() {
     };
     assert!(Injector::new(McpCatalog::new(Vec::new()).expect("catalog"), config).is_err());
 }
+
+#[test]
+fn pinned_servers_stay_listed_when_the_catalogue_overflows() {
+    let mut tools: Vec<McpTool> = (0..25)
+        .map(|n| tool("github", &format!("issue_{n}"), "Create a detailed issue"))
+        .collect();
+    tools.push(tool("web", "search", "Search the web"));
+    let injection = injector(tools, 50)
+        .pin_servers(["web"])
+        .inject()
+        .expect("injection");
+
+    assert!(matches!(injection.inventory, Inventory::Servers(_)));
+    assert_eq!(injection.pinned.len(), 1);
+    assert!(injection.prompt.contains("web/search"));
+    assert!(!injection.prompt.contains("github/issue_0"));
+}
+
+#[test]
+fn nothing_is_pinned_when_the_full_manifest_fits() {
+    let injection = injector(vec![tool("web", "search", "Search the web")], 10_000)
+        .pin_servers(["web"])
+        .inject()
+        .expect("injection");
+
+    assert!(matches!(injection.inventory, Inventory::Tools(_)));
+    assert!(injection.pinned.is_empty());
+}

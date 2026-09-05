@@ -101,15 +101,35 @@ fn tool_line(ev: &Value) -> Option<String> {
     let args: Value = ev
         .get("arguments")
         .and_then(Value::as_str)
-        .and_then(|s| serde_json::from_str(s).ok())
+        .and_then(|s| crate::chat::parse_arguments(s).ok())
         .unwrap_or(Value::Null);
-    let detail = ["path", "dir", "command", "query", "pattern", "file", "url"]
-        .iter()
-        .find_map(|k| args.get(k).and_then(Value::as_str));
+    let detail = if name == "run_command" {
+        command_line(&args)
+    } else {
+        ["path", "dir", "query", "pattern", "file", "url", "name"]
+            .iter()
+            .find_map(|k| args.get(k).and_then(Value::as_str))
+            .map(str::to_string)
+    };
     Some(match detail {
         Some(d) => clip(&format!("{name} {d}"), 120),
         None => name.to_string(),
     })
+}
+
+fn command_line(args: &Value) -> Option<String> {
+    let command = args.get("command").and_then(Value::as_str)?;
+    let rest = args
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Some(
+        std::iter::once(command)
+            .chain(rest)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn activity_sink(tx: tokio::sync::mpsc::UnboundedSender<String>) -> crate::chat::ChatEventSink {

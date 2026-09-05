@@ -1,5 +1,5 @@
 import type { ConfigValue, EditorSettings } from "../../src/protocol";
-import { ChipList } from "./controls/ChipList";
+import { ListInput } from "./controls/ListInput";
 import { NumberInput } from "./controls/NumberInput";
 import { TextInput } from "./controls/TextInput";
 import { Toggle } from "./controls/Toggle";
@@ -75,7 +75,7 @@ export function EditorSection({
         </div>
       </div>
 
-      <div className="set-row">
+      <div className="set-row" data-layout="stack">
         <div className="set-row-text">
           <div className="set-row-head">
             <span className="set-row-label">Extra arguments</span>
@@ -84,7 +84,7 @@ export function EditorSection({
           <p className="set-row-key mono">aster.extraArgs</p>
         </div>
         <div className="set-row-control">
-          <ChipList
+          <ListInput
             items={editor.extraArgs}
             label="Extra arguments"
             placeholder="--no-index"

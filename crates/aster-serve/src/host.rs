@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
+use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
@@ -32,6 +34,21 @@ pub async fn message(
 /// The live feed. Each tab subscribes to its own instance, so a reloaded tab
 /// is caught up by asking for `ready` again and never sees another tab's
 /// turns.
+/// The bytes of a file the page is allowed to read, so images load as a URL
+/// instead of arriving as base64 inside a JSON message.
+pub async fn file(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let Some((mime, bytes)) = query
+        .get("path")
+        .and_then(|path| files::serve(&state.cli.root, path))
+    else {
+        return (StatusCode::NOT_FOUND, "no such file").into_response();
+    };
+    ([(header::CONTENT_TYPE, mime)], bytes).into_response()
+}
+
 pub async fn events(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -475,7 +492,11 @@ fn mention_paths(state: &Arc<AppState>, instance: &Arc<Instance>, uris: &Value) 
         .map(|path| format!("@{path}"))
         .collect();
     if !mentions.is_empty() {
-        instance.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+        instance.post(json!({
+            "type": "insertMention",
+            "text": mentions.join(" "),
+            "mentions": mentions,
+        }));
     }
 }
 
@@ -521,7 +542,11 @@ fn stage_files(state: &Arc<AppState>, instance: &Arc<Instance>, files: &Value) {
         }
     }
     if !mentions.is_empty() {
-        instance.post(json!({ "type": "insertMention", "text": mentions.join(" ") }));
+        instance.post(json!({
+            "type": "insertMention",
+            "text": mentions.join(" "),
+            "mentions": mentions,
+        }));
     }
 }
 

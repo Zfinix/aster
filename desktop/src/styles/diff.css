@@ -1,0 +1,333 @@
+.diff-panel {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.diff-panel[data-resizing="true"] {
+  user-select: none;
+}
+
+.diff-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+.diff-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.diff-resizer:hover::after,
+.diff-panel[data-resizing="true"] .diff-resizer::after {
+  background: var(--accent);
+}
+
+.diff-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--bar);
+  padding: 0 var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  font-weight: 590;
+  color: var(--fg);
+}
+
+.diff-head-title svg {
+  transition: transform 0.14s ease;
+  color: var(--fg-dim);
+}
+
+.diff-stats {
+  display: inline-flex;
+  gap: var(--s1);
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg-dim);
+}
+
+.diff-add {
+  color: var(--diff-add);
+}
+
+.diff-del {
+  color: var(--diff-del);
+}
+
+.diff-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  user-select: text;
+  cursor: auto;
+}
+
+.file {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.file-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s1) var(--s2);
+  background: var(--tabs-bg);
+  color: var(--fg-dim);
+}
+
+.file-head:hover {
+  color: var(--fg);
+}
+
+.file-head svg {
+  flex: none;
+  transition: transform 0.14s ease;
+}
+
+.file-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  font-size: 0.8em;
+}
+
+.file[data-collapsed="true"] .file-head {
+  border-bottom: 0;
+}
+
+.file[data-collapsed="true"] .file-body {
+  display: none;
+}
+
+.file-body {
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.difftable {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  line-height: 1.6;
+}
+
+.difftable td {
+  vertical-align: top;
+  padding: 0;
+}
+
+.difftable td.ln {
+  width: 40px;
+  min-width: 40px;
+  text-align: right;
+  padding: 0 var(--s2);
+  color: var(--fg-dim);
+  opacity: 0.6;
+  user-select: none;
+}
+
+.difftable td.sign {
+  width: 14px;
+  min-width: 14px;
+  text-align: center;
+  color: var(--fg-dim);
+  user-select: none;
+}
+
+.difftable td.code {
+  width: 100%;
+  padding: 0 var(--s2) 0 var(--s1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.difftable tr.add {
+  background: var(--diff-add-bg);
+}
+
+.difftable tr.add td.sign {
+  color: var(--diff-add);
+}
+
+.difftable tr.del {
+  background: var(--diff-del-bg);
+}
+
+.difftable tr.del td.sign {
+  color: var(--diff-del);
+}
+
+.difftable tr.hunk td {
+  padding: 3px var(--s3);
+  background: var(--code-bg);
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.difftable tr.flag td.code {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.difftable tr.comment > td {
+  padding: var(--s1) var(--s2) var(--s2);
+}
+
+.finding-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  font-family: var(--font);
+  font-size: var(--font-size);
+  white-space: normal;
+  overflow: hidden;
+}
+
+.finding-card[data-flash="true"] {
+  animation: findingFlash 1.4s ease-out;
+}
+
+@keyframes findingFlash {
+  0% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+}
+
+.finding-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  color: var(--fg-dim);
+}
+
+.finding-card-head:hover {
+  background: var(--list-hover);
+}
+
+.finding-card-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finding-card-conf {
+  flex: none;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg-dim);
+}
+
+.finding-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: 0 var(--s3) var(--s3) calc(var(--s3) + var(--glyph) + var(--s2));
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+.finding-card-body p {
+  margin: 0;
+}
+
+.finding-card-fix {
+  padding: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  color: var(--fg);
+}
+
+.finding-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.finding-resolved {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) var(--s3);
+  color: var(--fg-dim);
+  font-family: var(--font);
+  font-size: var(--font-size);
+  white-space: normal;
+}
+
+.finding-resolved-title {
+  flex: 1;
+  min-width: 0;
+  text-decoration: line-through;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-brief {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg-soft);
+  color: var(--fg-dim);
+}
+
+.diff-brief span {
+  flex: 1;
+  min-width: 0;
+}

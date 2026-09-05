@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Duration, Local, Timelike};
 
-/// Parse a reminder time: `in 30m`, `in 2h`, `in 1h30m`, or `at 18:00`
+/// Parse a reminder time: `in 10s`, `in 30m`, `in 2h`, `in 1h30m`, or `at 18:00`
 /// (today, or tomorrow if that time has already passed).
 pub fn parse_when(when: &str) -> Result<DateTime<Local>> {
     let when = when.trim();
@@ -14,7 +14,7 @@ pub fn parse_when(when: &str) -> Result<DateTime<Local>> {
     if let Some(rest) = when.strip_prefix("at ") {
         return at_time(rest.trim());
     }
-    bail!("use \"in 30m\", \"in 2h\", or \"at 18:00\"")
+    bail!("use \"in 10s\", \"in 30m\", \"in 2h\", or \"at 18:00\"")
 }
 
 fn now_plus(spec: &str) -> Result<DateTime<Local>> {
@@ -29,10 +29,11 @@ fn now_plus(spec: &str) -> Result<DateTime<Local>> {
                 .map_err(|_| anyhow::anyhow!("invalid duration {spec:?}"))?;
             number.clear();
             total += match c {
+                's' => Duration::seconds(mins),
                 'm' => Duration::minutes(mins),
                 'h' => Duration::hours(mins),
                 'd' => Duration::days(mins),
-                _ => bail!("invalid duration unit {c:?} in {spec:?} (use m, h, or d)"),
+                _ => bail!("invalid duration unit {c:?} in {spec:?} (use s, m, h, or d)"),
             };
         }
     }

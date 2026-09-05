@@ -4,10 +4,12 @@ import { inEditor, post } from "../lib/host";
 import { openFilePreview } from "../lib/filePreview";
 import type { ToolCall } from "../lib/thread";
 import {
+  arg,
   describeTool,
   displayOutput,
   mcpMatches,
   mcpTarget,
+  numberArg,
   outputTitle,
   rendersAsMarkdown,
   resultHint,
@@ -109,7 +111,13 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const openInEditor = () => {
     if (window.getSelection()?.isCollapsed === false) return;
     if (path) {
-      openFilePreview(path);
+      // An edit lands on the line its search text matched; a read on the
+      // first line of the range it asked for.
+      if (inEditor && call.name === "edit_file") {
+        post({ type: "openFile", path, needle: arg(call, "search") });
+      } else {
+        openFilePreview(path, numberArg(call, "start_line"));
+      }
     } else if (output) {
       post({ type: "openUntitled", content: output, title: outputTitle(call), doc: prose });
     }

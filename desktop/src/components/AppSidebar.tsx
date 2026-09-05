@@ -1,24 +1,34 @@
-import { useEffect, useRef, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
-import { Switch } from "@heroui/react";
+import { useState } from "react";
 import { type Conversation } from "../lib/session";
-import { ModelMenu } from "./ModelMenu";
-import type { AuthStatus } from "../lib/aster";
-import { useToast, type Theme } from "./chrome";
-import { checkForUpdate, installUpdate, type UpdateStage } from "../lib/updater";
-import type { Update } from "@tauri-apps/plugin-updater";
-import { Mark } from "./Mark";
-import { ReviewRow } from "./ReviewRow";
-import { ReviewSettings } from "./ReviewSettings";
-import { ChatIcon, ChevronIcon, CloseIcon, EditIcon, FolderIcon, GearIcon, MoonIcon, SidebarIcon, SunIcon } from "./icons";
-
-const CONFIDENCE_STEPS = [0, 0.25, 0.5, 0.75] as const;
+import { SessionRow } from "./SessionRow";
+import {
+  ChevronIcon,
+  FolderIcon,
+  GearIcon,
+  NewChatIcon,
+  ReviewIcon,
+  SidebarIcon,
+} from "./icons";
 
 const COLLAPSED_KEY = "aster.collapsedRepos";
 
-interface Props {
+export function AppSidebar({
+  conversations,
+  activeId,
+  repoPath,
+  onNewChat,
+  onNewReview,
+  onOpen,
+  onRename,
+  onDelete,
+  onRerun,
+  onCopyBrief,
+  onCollapse,
+  onOpenSettings,
+}: {
   conversations: Conversation[];
   activeId: string | null;
+  repoPath: string;
   onNewChat: () => void;
   onNewReview: () => void;
   onOpen: (id: string) => void;
@@ -27,29 +37,8 @@ interface Props {
   onRerun: (id: string) => void;
   onCopyBrief: (id: string) => void;
   onCollapse: () => void;
-  theme: Theme;
-  setTheme: (t: Theme) => void;
-  minConfidence: number;
-  onSetConfidence: (v: number) => void;
-  model: string;
-  models: string[];
-  onModel: (value: string) => void;
-  onAddModel: (value: string) => void;
-  analyzers: string[];
-  onToggleAnalyzer: (name: string, on: boolean) => void;
-  repoPath: string;
-  auth: AuthStatus | null;
-  onSaveProvider: (fields: {
-    apiKey?: string;
-    baseUrl?: string | null;
-    model?: string | null;
-  }) => void | Promise<void>;
-}
-
-export function AppSidebar(props: Props) {
-  const { conversations, activeId, onOpen, theme, setTheme, minConfidence, model } =
-    props;
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  onOpenSettings: () => void;
+}) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
       return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]"));
@@ -71,65 +60,65 @@ export function AppSidebar(props: Props) {
     groups.set(c.repoName, [...(groups.get(c.repoName) ?? []), c]);
   }
 
+  const repoName = repoPath ? repoPath.split(/[\\/]/).pop() : null;
+
   return (
-    <aside className="side">
-      <div className="side-top" data-tauri-drag-region>
-        <Mark px={1.6} interactive />
-        <span className="name" data-tauri-drag-region>Aster</span>
-        <span className="grow" data-tauri-drag-region />
+    <aside className="sidebar">
+      <div className="sidebar-top" data-tauri-drag-region>
         <button
-          className="ghost-icon"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar"
-          onClick={props.onCollapse}
+          type="button"
+          className="ghost icon-action"
+          aria-label="Hide sidebar"
+          title="Hide sidebar"
+          onClick={onCollapse}
         >
           <SidebarIcon />
         </button>
       </div>
 
-      <button className="side-item" onClick={props.onNewChat}>
-        <ChatIcon />
-        New chat
-      </button>
-      <button className="side-item" onClick={props.onNewReview}>
-        <EditIcon />
-        New review
-      </button>
+      <nav className="sidebar-nav">
+        <button type="button" className="nav-row" onClick={onNewChat}>
+          <NewChatIcon />
+          <span>New chat</span>
+          <kbd className="nav-kbd">⌘N</kbd>
+        </button>
+        <button type="button" className="nav-row" onClick={onNewReview}>
+          <ReviewIcon />
+          <span>New review</span>
+          <kbd className="nav-kbd">⌘R</kbd>
+        </button>
+      </nav>
 
-      <div className="side-label">Recent</div>
-
-      <div className="side-scroll">
+      <div className="sidebar-list">
         {conversations.length === 0 && (
-          <div style={{ padding: "6px 10px", color: "var(--faint)", fontSize: 13 }}>
-            Nothing here yet.
-          </div>
+          <div className="sidebar-empty">Conversations show up here, grouped by project.</div>
         )}
         {[...groups.entries()].map(([repo, list]) => {
-          const isCollapsed = collapsed.has(repo);
+          const open = !collapsed.has(repo);
           return (
-            <div key={repo} className="proj-group">
+            <div key={repo} className="group">
               <button
-                className="proj"
-                data-collapsed={isCollapsed}
+                type="button"
+                className="group-head"
+                aria-expanded={open}
                 onClick={() => toggleGroup(repo)}
-                aria-expanded={!isCollapsed}
               >
-                <ChevronIcon />
                 <FolderIcon />
-                <span className="proj-name">{repo}</span>
-                <span className="proj-count">{list.length}</span>
+                <span className="group-name">{repo}</span>
+                <span className="group-count">{list.length}</span>
+                <ChevronIcon open={open} />
               </button>
-              {!isCollapsed &&
+              {open &&
                 list.map((c) => (
-                  <ReviewRow
+                  <SessionRow
                     key={c.id}
                     convo={c}
                     active={c.id === activeId}
                     onOpen={() => onOpen(c.id)}
-                    onRename={(title) => props.onRename(c.id, title)}
-                    onDelete={() => props.onDelete(c.id)}
-                    onRerun={() => props.onRerun(c.id)}
-                    onCopyBrief={() => props.onCopyBrief(c.id)}
+                    onRename={(title) => onRename(c.id, title)}
+                    onDelete={() => onDelete(c.id)}
+                    onRerun={() => onRerun(c.id)}
+                    onCopyBrief={() => onCopyBrief(c.id)}
                   />
                 ))}
             </div>
@@ -137,368 +126,21 @@ export function AppSidebar(props: Props) {
         })}
       </div>
 
-      <SettingsFoot
-        open={settingsOpen}
-        setOpen={setSettingsOpen}
-        theme={theme}
-        setTheme={setTheme}
-        minConfidence={minConfidence}
-        onSetConfidence={props.onSetConfidence}
-        model={model}
-        models={props.models}
-        onModel={props.onModel}
-        onAddModel={props.onAddModel}
-        analyzers={props.analyzers}
-        onToggleAnalyzer={props.onToggleAnalyzer}
-        repoPath={props.repoPath}
-        auth={props.auth}
-        onSaveProvider={props.onSaveProvider}
-      />
+      <div className="sidebar-foot">
+        <span className="workspace" title={repoPath || "No project open"}>
+          <span className="workspace-dot" data-on={!!repoName} />
+          <span className="workspace-name">{repoName ?? "No project"}</span>
+        </span>
+        <button
+          type="button"
+          className="ghost icon-action"
+          title="Settings"
+          aria-label="Settings"
+          onClick={onOpenSettings}
+        >
+          <GearIcon />
+        </button>
+      </div>
     </aside>
   );
-}
-
-function SettingsFoot({
-  open,
-  setOpen,
-  theme,
-  setTheme,
-  minConfidence,
-  onSetConfidence,
-  model,
-  models,
-  onModel,
-  onAddModel,
-  analyzers,
-  onToggleAnalyzer,
-  repoPath,
-  auth,
-  onSaveProvider,
-}: {
-  open: boolean;
-  setOpen: (open: boolean) => void;
-  theme: Theme;
-  setTheme: (t: Theme) => void;
-  minConfidence: number;
-  onSetConfidence: (v: number) => void;
-  model: string;
-  models: string[];
-  onModel: (value: string) => void;
-  onAddModel: (value: string) => void;
-  analyzers: string[];
-  onToggleAnalyzer: (name: string, on: boolean) => void;
-  repoPath: string;
-  auth: AuthStatus | null;
-  onSaveProvider: (fields: {
-    apiKey?: string;
-    baseUrl?: string | null;
-    model?: string | null;
-  }) => void | Promise<void>;
-}) {
-  const toast = useToast();
-  const ref = useRef<HTMLDivElement>(null);
-  const keyRef = useRef<HTMLInputElement>(null);
-  const modelRef = useRef<HTMLInputElement>(null);
-  const baseUrlRef = useRef<HTMLInputElement>(null);
-  const [version, setVersion] = useState("");
-  const [update, setUpdate] = useState<UpdateStage>({ kind: "idle" });
-  const pending = useRef<Update | null>(null);
-
-  useEffect(() => {
-    getVersion().then(setVersion).catch(() => {});
-  }, []);
-
-  const onCheckUpdate = async () => {
-    setUpdate({ kind: "checking" });
-    try {
-      const found = await checkForUpdate();
-      if (!found) {
-        setUpdate({ kind: "none" });
-        return;
-      }
-      pending.current = found;
-      setUpdate({ kind: "available", version: found.version, notes: found.body });
-    } catch (e) {
-      setUpdate({ kind: "error", message: String(e) });
-    }
-  };
-
-  const onInstallUpdate = async () => {
-    if (!pending.current) return;
-    try {
-      await installUpdate(pending.current, setUpdate);
-    } catch (e) {
-      setUpdate({ kind: "error", message: String(e) });
-    }
-  };
-
-  const saveProviderFields = async () => {
-    const apiKey = keyRef.current?.value.trim();
-    await onSaveProvider({
-      apiKey: apiKey ? apiKey : undefined,
-      model: modelRef.current?.value.trim() || null,
-      baseUrl: baseUrlRef.current?.value.trim() || null,
-    });
-    if (keyRef.current) keyRef.current.value = "";
-    toast("Provider saved");
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
-
-  return (
-    <div className="side-foot" ref={ref}>
-      <button
-        className="ghost-icon"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title="Settings"
-        onClick={() => setOpen(!open)}
-      >
-        <GearIcon />
-      </button>
-      {open && (
-        <div
-          className="settings-backdrop"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setOpen(false);
-          }}
-        >
-        <div className="settings-menu" role="dialog" aria-modal="true" aria-label="Settings">
-          <div className="settings-title">
-            <div className="settings-title-main">
-              <Mark px={1.5} />
-              <div className="settings-title-text">
-                <span className="settings-title-name">Settings</span>
-                <span className="settings-title-sub">
-                  Provider, appearance, analyzers &amp; code review
-                </span>
-              </div>
-            </div>
-            <button
-              className="ghost-icon"
-              aria-label="Close settings"
-              title="Close"
-              onClick={() => setOpen(false)}
-            >
-              <CloseIcon />
-            </button>
-          </div>
-          <div className="settings-grid">
-          <div className="settings-col">
-          <div className="settings-section">
-            <div className="menu-headline">
-              <span className="menu-label">Provider</span>
-              <span
-                className="menu-status"
-                data-on={auth?.hasKey ? "true" : "false"}
-              >
-                {auth?.hasKey ? "Configured" : "Not set"}
-              </span>
-            </div>
-            <label className="menu-field">
-              <span className="menu-field-label">API key</span>
-              <input
-                ref={keyRef}
-                className="menu-input"
-                type="password"
-                spellCheck={false}
-                placeholder={auth?.hasKey ? "Replace key…" : "ASTER_API_KEY"}
-              />
-            </label>
-            <label className="menu-field">
-              <span className="menu-field-label">Model</span>
-              <input
-                ref={modelRef}
-                className="menu-input"
-                spellCheck={false}
-                defaultValue={auth?.model ?? ""}
-                placeholder="openai/gpt-4o-mini"
-              />
-            </label>
-            <label className="menu-field">
-              <span className="menu-field-label">Base URL</span>
-              <input
-                ref={baseUrlRef}
-                className="menu-input"
-                spellCheck={false}
-                defaultValue={auth?.baseUrl ?? ""}
-                placeholder="OpenRouter default"
-              />
-            </label>
-            <div className="menu-save-row">
-              <button className="btn btn-primary menu-save" onClick={saveProviderFields}>
-                Save
-              </button>
-            </div>
-          </div>
-          <div className="settings-section">
-            <div className="menu-label">Appearance</div>
-            <div className="theme-seg" role="group" aria-label="Theme">
-              <button
-                aria-pressed={theme === "light"}
-                onClick={() => setTheme("light")}
-              >
-                <SunIcon size={14} />
-                Light
-              </button>
-              <button
-                aria-pressed={theme === "dark"}
-                onClick={() => setTheme("dark")}
-              >
-                <MoonIcon size={14} />
-                Dark
-              </button>
-            </div>
-          </div>
-          </div>
-          <div className="settings-col">
-          <div className="settings-section">
-            <div className="menu-label">Pipeline</div>
-            <div className="menu-row">
-              <span>Model</span>
-              <ModelMenu
-                model={model}
-                models={models}
-                onModel={onModel}
-                onAddModel={onAddModel}
-                direction="down"
-              />
-            </div>
-            <div className="menu-slider">
-              <div className="menu-slider-head">
-                <span>Confidence gate</span>
-                <span className="val">{minConfidence.toFixed(2)}</span>
-              </div>
-              <input
-                type="range"
-                className="conf-slider"
-                min={0}
-                max={0.95}
-                step={0.05}
-                value={minConfidence}
-                onChange={(e) => onSetConfidence(Number(e.target.value))}
-                style={{
-                  ["--pct" as string]: `${(minConfidence / 0.95) * 100}%`,
-                }}
-                aria-label="Confidence gate"
-              />
-              <div className="menu-slider-ticks" aria-hidden="true">
-                {CONFIDENCE_STEPS.map((v) => (
-                  <span key={v}>{v.toFixed(2)}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="settings-section">
-            <div className="menu-label">Analyzers</div>
-            <div className="menu-toggle" data-on={analyzers.includes("ast-grep")}>
-              <div className="menu-toggle-text">
-                <span className="menu-toggle-name">ast-grep</span>
-                <span className="menu-toggle-sub">Structural pattern matching</span>
-              </div>
-              <Switch
-                size="sm"
-                isSelected={analyzers.includes("ast-grep")}
-                onChange={(on) => onToggleAnalyzer("ast-grep", on)}
-                aria-label="Toggle ast-grep"
-              >
-                <Switch.Content>
-                  <Switch.Control>
-                    <Switch.Thumb />
-                  </Switch.Control>
-                </Switch.Content>
-              </Switch>
-            </div>
-            <div className="menu-toggle" data-on={analyzers.includes("semgrep")}>
-              <div className="menu-toggle-text">
-                <span className="menu-toggle-name">semgrep</span>
-                <span className="menu-toggle-sub">Rule-based static analysis</span>
-              </div>
-              <Switch
-                size="sm"
-                isSelected={analyzers.includes("semgrep")}
-                onChange={(on) => onToggleAnalyzer("semgrep", on)}
-                aria-label="Toggle semgrep"
-              >
-                <Switch.Content>
-                  <Switch.Control>
-                    <Switch.Thumb />
-                  </Switch.Control>
-                </Switch.Content>
-              </Switch>
-            </div>
-          </div>
-          <ReviewSettings repoPath={repoPath || null} />
-          </div>
-          </div>
-          <div className="settings-foot">
-            <Mark px={1.1} />
-            <span>Aster{version ? ` v${version}` : ""}</span>
-            <span className="grow" />
-            <UpdateControl
-              stage={update}
-              onCheck={onCheckUpdate}
-              onInstall={onInstallUpdate}
-            />
-          </div>
-        </div>
-        </div>
-      )}
-      <div className="side-avatar" />
-    </div>
-  );
-}
-
-function UpdateControl({
-  stage,
-  onCheck,
-  onInstall,
-}: {
-  stage: UpdateStage;
-  onCheck: () => void;
-  onInstall: () => void;
-}) {
-  switch (stage.kind) {
-    case "checking":
-      return <span className="update-note">Checking…</span>;
-    case "none":
-      return <span className="update-note">Up to date</span>;
-    case "available":
-      return (
-        <button className="update-btn" onClick={onInstall}>
-          Update to v{stage.version}
-        </button>
-      );
-    case "downloading": {
-      const pct = stage.total
-        ? Math.round((stage.done / stage.total) * 100)
-        : null;
-      return (
-        <span className="update-note">
-          Downloading{pct !== null ? ` ${pct}%` : "…"}
-        </span>
-      );
-    }
-    case "ready":
-      return <span className="update-note">Restarting…</span>;
-    case "error":
-      return (
-        <button className="update-btn" onClick={onCheck} title={stage.message}>
-          Retry
-        </button>
-      );
-    default:
-      return (
-        <button className="update-btn" onClick={onCheck}>
-          Check for updates
-        </button>
-      );
-  }
 }

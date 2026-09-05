@@ -212,6 +212,38 @@ impl WebBackend {
         anyhow::bail!("screenshot requires Context.dev (set CONTEXT_DEV_API_KEY)")
     }
 
+    /// A screenshot as MCP content parts: the image itself, so the model can
+    /// look at it, beside the link. A provider link that cannot be fetched
+    /// falls back to the link alone.
+    async fn screenshot_content(&self, page: &str, shot: Screenshot) -> Value {
+        use base64::Engine;
+        let size = match (shot.width, shot.height) {
+            (Some(w), Some(h)) => format!(" ({w}x{h})"),
+            _ => String::new(),
+        };
+        let caption = format!("Screenshot of {page}{size}: {}", shot.url);
+        match self.plain_http.fetch_bytes(&shot.url).await {
+            Ok((bytes, mime)) if mime.starts_with("image/") => serde_json::json!({
+                "content": [
+                    { "type": "text", "text": caption },
+                    {
+                        "type": "image",
+                        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                        "mimeType": mime,
+                    }
+                ]
+            }),
+            Ok((_, mime)) => {
+                tracing::warn!(mime, "screenshot link did not return an image");
+                serde_json::to_value(shot).unwrap_or(Value::Null)
+            }
+            Err(err) => {
+                tracing::warn!("screenshot link could not be fetched: {err:#}");
+                serde_json::to_value(shot).unwrap_or(Value::Null)
+            }
+        }
+    }
+
     /// Run one tool by its bare name. The single dispatch table, shared by the
     /// in-process server the agent uses and the stdio one `aster mcp serve`
     /// exposes, so the two can never drift.
@@ -234,23 +266,27 @@ impl WebBackend {
             "screenshot" => {
                 let url = arguments["url"].as_str().context("missing url")?;
                 let full_page = arguments["full_page"].as_bool().unwrap_or(false);
-                Ok(serde_json::to_value(
-                    self.screenshot(url, full_page).await?,
-                )?)
+                let shot = self.screenshot(url, full_page).await?;
+                Ok(self.screenshot_content(url, shot).await)
             }
             "sitemap" => {
-                let url = arguments["url"].as_str().context("missing url")?;
+                // The schema says `domain`; `url` is accepted so an older
+                // caller keeps working.
+                let domain = arguments["domain"]
+                    .as_str()
+                    .or_else(|| arguments["url"].as_str())
+                    .context("missing domain")?;
                 let max_links = arguments["max_links"].as_u64().unwrap_or(100) as u32;
                 let url_regex = arguments["url_regex"].as_str();
                 Ok(serde_json::to_value(
-                    self.sitemap(url, max_links, url_regex).await?,
+                    self.sitemap(domain, max_links, url_regex).await?,
                 )?)
             }
             "crawl" => {
                 let url = arguments["url"].as_str().context("missing url")?;
-                Ok(serde_json::to_value(
-                    self.crawl(url, &CrawlOptions::default()).await?,
-                )?)
+                let opts: CrawlOptions = serde_json::from_value(arguments.clone())
+                    .context("crawl options did not match the schema")?;
+                Ok(serde_json::to_value(self.crawl(url, &opts).await?)?)
             }
             other => anyhow::bail!("unknown web tool: {other}"),
         }

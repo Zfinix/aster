@@ -7,9 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-09-04
+## [0.5.0] - 2026-09-05
 
 ### Added
+
+- **Internal skills.** Skills that shape how the agent works, rather than what
+  it can do for you, now live in an `internal/` folder: eleven built-ins
+  (taking corrections, verifying before reporting done, build triage, shell
+  batching, CLI craft, context economy, web research, and others) and eight of
+  the bundled optional skills. They stay in the model's index and load on
+  demand, but never appear in `aster skills list`, the `/skills` picker, the
+  session header, or the status count, and reading one is never shown as a
+  step in the chat. A skill you install under `<skills root>/internal/<name>/`
+  is treated the same way, and `aster skills bundled` marks the internal ones
+  and installs them there.
+
+- **The agent can look at a screenshot.** `web/screenshot` returns the image
+  itself as content the model sees, beside the link, instead of a JSON blob
+  with a URL it could never open.
+
+- **Web tools are one call away.** The five built-in `web/*` tools are pinned
+  into the tool inventory, so a large MCP catalogue no longer forces a search
+  round before the agent can search the web or read a page. The web-research
+  skill tells the agent to execute them directly and names the three keyed
+  tools (`crawl`, `sitemap`, `screenshot`) and their arguments.
+
+- **Images for models that cannot see.** When the session model takes no image
+  input, attached images are described by a vision model and the description
+  takes their place, instead of the images being dropped. `ASTER_VISION_MODEL`
+  picks the model (default `openai/gpt-4o-mini`).
+
+- **The agent can drive `aster` itself.** The prompt tells it the binary is on
+  its PATH: `aster remind` for a reminder, `aster cron` for schedules, `aster
+  skills add` to install, `aster mcp enable|disable`, `aster web crawl` for a
+  scoped crawl. A skill the agent writes is installed the moment it is written
+  rather than saved to memory.
+
+- **Reminders in seconds.** `aster remind "text" "in 10s"` works alongside
+  minutes, hours, and clock times.
+
+- **VS Code and Cursor.** Cmd+F finds text in the conversation: the editor's
+  own find widget in a tab, a find bar of Aster's own in the sidebar, where
+  the editor offers none. Markdown links to files, including `file://` and
+  `#L42` forms, and cited paths in backticks such as `src/panel.ts:486` open
+  the file at that line. Read steps open at the first line of the range they
+  read. Files dragged from the Explorer, an editor tab, or the Finder land in
+  the composer as mentions, pasted images attach with a thumbnail, and image
+  and document mentions render as cards.
+
+- **Browser UI.** Pasted files are staged in the OS temp directory under their
+  original names, with a numbered suffix only on a collision, and image and
+  document mentions show a preview card with the file size.
+
+- **Desktop.** The app's own interface is rebuilt on the design system the
+  editor panel uses: a collapsible sidebar of conversations, a toolbar with
+  the diff view and a command menu, provider and model pickers, a settings
+  page, a home view over saved conversations, an in-app update control, and a
+  setup card with the install command when the CLI is missing.
 
 - **Aster is a Zed agent.** `aster acp` serves the agent over the Agent Client
   Protocol on stdio, so Zed's External Agents menu drives the full agent:
@@ -23,8 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The agent can forget.** A `forget` tool deletes a memory block by name, so
   a wrong or unwanted fact is removed instead of overwritten with a
   placeholder. The TUI, Telegram, desktop, and VS Code label the step.
-
-### Added
 
 - **Web search and page extraction now work on a fresh install, with no key.**
   Firecrawl opened a keyless tier, so `web/search` and `web/extract` go to
@@ -61,47 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shell outranks both `.env` files, `set` says when an export would keep
   winning instead of leaving it to surface as a 401.
 
-### Fixed
-
-- **`aster serve` loads and saves the CLI config instead of keeping its own.**
-  A model or provider picked in the browser was stored in `serve.json` and
-  applied as an environment override on every later serve, silently outranking
-  `aster.yaml`: repointing the CLI with `aster init` or `aster provider use`
-  changed nothing in the browser, which kept running a months-old click. The
-  override layer is gone. A pick in the browser now runs `aster provider use`
-  or `aster model use`, landing in the same `aster.yaml` the terminal reads,
-  and serve resolves every run from that file. `serve.json` keeps only
-  browser-side conveniences: permission mode, effort, and the picker's recent
-  and hand-typed model lists.
-
-- **Aster's editor commands are findable again in the command palette.** Ten of
-  them set the `Aster` prefix as a `category` rather than baking it into the
-  title, and VS Code and Cursor drop the category when they render the palette:
-  `Aster: Open` showed up as a bare `Open`, indistinguishable from every other
-  extension's. The prefix now lives in the title, matching the review commands
-  that always had it.
-
-- **The panel's keyboard tips read the way a Mac keyboard is labelled.** The
-  empty state spelled its chords `cmd alt k`, and `alt` is the one modifier a
-  Mac keycap does not name: that key says `option`, and the convention is the
-  glyph. The tips now draw `⌘ ⌥ ⇧` on macOS and keep `ctrl alt shift` elsewhere,
-  which is the branch the panel already made for `cmd` against `ctrl` and never
-  extended to the other two.
-
-- **Asking for a plan gets you a plan to approve, whatever the mode.**
-  `exit_plan_mode` is offered in every mode now, but it still opened by refusing
-  unless the session sat in `plan`: from yolo, edit, or auto it answered "already
-  in edit mode; the plan has already been approved" and the plan was never put to
-  you. The TUI made it worse in `edit` by answering yes on your behalf without
-  drawing anything. The plan is now presented whatever the mode, since asking to
-  plan is a request to be consulted rather than a mode you have to be in.
-  Approving one no longer narrows the session either: yolo used to drop to
-  `edit`, red theme and all, for saying yes to a plan it wrote. Turning a plan
-  down holds the rest of the turn read-only, so a yolo turn cannot take "no" for
-  an answer and edit anyway, and a plan you already approved is carried out
-  rather than presented a second time.
-
 ### Changed
+
+- `read_file` refuses image files and says why: an image the user mentioned is
+  already attached to the conversation, so the agent looks at it instead.
+- The skill-creator built-in installs a new skill straight away with
+  `aster skills add ./dir --all --yes --force`, global or per project.
+- Skills are the agent's internal reference. It never names one, quotes its
+  headings, or says it consulted one; the user sees the behaviour.
+- `aster skills bundled` explains that internal skills stay out of the skills
+  list and the chat once turned on.
+- The bundled correction protocol opens by saying it is internal.
 
 - **A plan opens in a tab of its own, and the approval keeps only the
   decision.** The whole plan was drawn inside the approval card, so a real plan
@@ -143,6 +165,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool call was what went quiet. A model that stays silent through all of that
   ends the turn with a plain account of it rather than an error, so the session
   and its work survive.
+
+### Fixed
+
+- `web/sitemap` never worked: its schema asked for `domain` while the
+  dispatcher read `url`. It reads `domain` now, with `url` still accepted.
+- `web/crawl` ignored every option it advertised. `max_pages`, `max_depth`,
+  `stop_after_ms`, `url_regex`, `follow_subdomains`, `parse_pdfs`, and
+  `use_main_content_only` all take effect, and a malformed option is an error.
+- VS Code: clicking a file under "Edited", in a review's file list, on a tool
+  row, or on a mention opened a preview inside the panel instead of the file.
+  Every file chip opens the real editor tab now, and images open in the image
+  viewer rather than failing as text.
+- VS Code: a file link in a reply went to the OS opener, which reported "No
+  application found to open URL". File links open in the editor, and the host
+  catches any that still reach the external-link path.
+- VS Code: a link such as `README.md:12` was read as a URL scheme. It is a file
+  and a line.
+- VS Code: the host resolved only paths starting with `/` as absolute. `~` and
+  Windows-style absolute paths resolve too, through one shared helper.
+- The telemetry path dependency pinned a version, so the version bump broke
+  `--locked` builds. It is a plain path dependency now.
+
+- **`aster serve` loads and saves the CLI config instead of keeping its own.**
+  A model or provider picked in the browser was stored in `serve.json` and
+  applied as an environment override on every later serve, silently outranking
+  `aster.yaml`: repointing the CLI with `aster init` or `aster provider use`
+  changed nothing in the browser, which kept running a months-old click. The
+  override layer is gone. A pick in the browser now runs `aster provider use`
+  or `aster model use`, landing in the same `aster.yaml` the terminal reads,
+  and serve resolves every run from that file. `serve.json` keeps only
+  browser-side conveniences: permission mode, effort, and the picker's recent
+  and hand-typed model lists.
+
+- **Aster's editor commands are findable again in the command palette.** Ten of
+  them set the `Aster` prefix as a `category` rather than baking it into the
+  title, and VS Code and Cursor drop the category when they render the palette:
+  `Aster: Open` showed up as a bare `Open`, indistinguishable from every other
+  extension's. The prefix now lives in the title, matching the review commands
+  that always had it.
+
+- **The panel's keyboard tips read the way a Mac keyboard is labelled.** The
+  empty state spelled its chords `cmd alt k`, and `alt` is the one modifier a
+  Mac keycap does not name: that key says `option`, and the convention is the
+  glyph. The tips now draw `⌘ ⌥ ⇧` on macOS and keep `ctrl alt shift` elsewhere,
+  which is the branch the panel already made for `cmd` against `ctrl` and never
+  extended to the other two.
+
+- **Asking for a plan gets you a plan to approve, whatever the mode.**
+  `exit_plan_mode` is offered in every mode now, but it still opened by refusing
+  unless the session sat in `plan`: from yolo, edit, or auto it answered "already
+  in edit mode; the plan has already been approved" and the plan was never put to
+  you. The TUI made it worse in `edit` by answering yes on your behalf without
+  drawing anything. The plan is now presented whatever the mode, since asking to
+  plan is a request to be consulted rather than a mode you have to be in.
+  Approving one no longer narrows the session either: yolo used to drop to
+  `edit`, red theme and all, for saying yes to a plan it wrote. Turning a plan
+  down holds the rest of the turn read-only, so a yolo turn cannot take "no" for
+  an answer and edit anyway, and a plan you already approved is carried out
+  rather than presented a second time.
 
 ## [0.4.0] - 2026-08-21
 
@@ -879,4 +960,5 @@ taught workflows without touching its prompt.
 [0.2.0]: https://github.com/Zfinix/aster/compare/v0.1.0...v0.2.0
 [0.3.0]: https://github.com/Zfinix/aster/compare/v0.2.0...cli-v0.3.0
 [0.4.0]: https://github.com/Zfinix/aster/compare/cli-v0.3.0...cli-v0.4.0
-[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.4.0...HEAD
+[0.5.0]: https://github.com/Zfinix/aster/compare/cli-v0.4.1...cli-v0.5.0
+[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.5.0...HEAD

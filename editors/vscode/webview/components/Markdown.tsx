@@ -1,4 +1,5 @@
 import type { ReactElement, ReactNode } from "react";
+import { openFilePreview } from "../lib/filePreview";
 import { CodeBlock } from "./CodeBlock";
 import { Link } from "./Link";
 
@@ -203,7 +204,7 @@ function inline(text: string): ReactNode[] {
     }
     const code = match[1] ?? match[2];
     if (code !== undefined) {
-      parts.push(<code key={key++}>{code.trim()}</code>);
+      parts.push(codeSpan(code.trim(), key++));
     } else if (match[3] !== undefined) {
       parts.push(<strong key={key++}>{inline(match[3])}</strong>);
     } else if (match[4] !== undefined) {
@@ -231,4 +232,31 @@ function inline(text: string): ReactNode[] {
     parts.push(text.slice(cursor));
   }
   return parts;
+}
+
+// A cited file: segments, a real extension, an optional `:line`. Prose the
+// agent writes in backticks (a flag, a command, `a/b`) does not match.
+const CITED_PATH = /^(?:~\/|\.{1,2}\/|\/)?(?:[\w.@-]+\/)*[\w@-]+\.[a-z0-9]{1,8}(?::(\d+)(?::\d+)?)?$/i;
+
+/** A code span that names a file opens it; any other span is just code. */
+function codeSpan(code: string, key: number): ReactNode {
+  const cited = CITED_PATH.exec(code);
+  if (!cited) return <code key={key}>{code}</code>;
+  const line = cited[1] ? Number(cited[1]) : undefined;
+  const path = line === undefined ? code : code.slice(0, code.indexOf(":"));
+  return (
+    <code
+      key={key}
+      className="md-path"
+      role="link"
+      tabIndex={0}
+      title={`Open ${path}`}
+      onClick={() => openFilePreview(path, line)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") openFilePreview(path, line);
+      }}
+    >
+      {code}
+    </code>
+  );
 }

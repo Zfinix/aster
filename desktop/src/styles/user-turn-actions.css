@@ -1,0 +1,48 @@
+.user-turn-actions,
+.user-turn-controls,
+.user-turn-editor-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+
+.user-turn-actions {
+  min-height: 24px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.turn:hover .user-turn-actions,
+.user-turn-actions:focus-within {
+  opacity: 1;
+}
+
+.user-turn-actions .turn-actions {
+  height: auto;
+  margin-top: 0;
+  opacity: 1;
+}
+
+.turn-user.user-turn-editing {
+  align-self: stretch;
+}
+
+.user-turn-editor textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.user-turn-editor textarea:focus-visible {
+  outline: 1px solid var(--border);
+}
+
+.user-turn-editor-buttons {
+  margin-top: var(--s2);
+}

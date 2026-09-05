@@ -45,13 +45,18 @@ lowercase letters, digits, and hyphens, max 64 characters.
 Scaffold and lint from the CLI:
 
 ```sh
-aster skills init my-skill      # scaffold my-skill/SKILL.md
-aster skills add ./my-skill -l  # validate: listed if it parses, warns if not
-aster skills add ./my-skill     # install into .aster/skills to try it
+aster skills init my-skill                            # scaffold my-skill/SKILL.md
+aster skills add ./my-skill -l                        # validate: listed if it parses, warns if not
+aster skills add ./my-skill --all --yes --force       # install user-global, live next turn
+aster skills add ./my-skill --all --yes --force -p    # or into this project only
 ```
 
 `add -l` against a local path is the fastest check: a skill that does not
 appear in the listing failed frontmatter validation.
+
+Install a skill the moment it is written, and again after every edit; `--all`
+is required when no terminal is attached and `--force` replaces the installed
+copy. Do not save a memory about a skill you wrote: the skill is the record.
 
 To publish a skills repo, host one subdirectory per skill under `skills/`
 (`skills/my-skill/SKILL.md`); consumers install with

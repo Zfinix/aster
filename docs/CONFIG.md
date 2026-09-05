@@ -413,6 +413,7 @@ A few knobs have no `aster.yaml` key.
 | `ASTER_EDITOR` | Editor for `aster config edit`, before `$VISUAL` and `$EDITOR`. | unset |
 | `ASTER_UI_DIR` | Serve `aster serve`'s page from this directory instead of the embedded build, for working on the UI itself. | unset |
 | `ASTER_MCP_EXTRA` | JSON of extra MCP servers a front-end injects for one session. | unset |
+| `ASTER_VISION_MODEL` | Model that describes attached images when the session model takes no image input. | `openai/gpt-4o-mini` |
 | `ASTER_NO_UPDATE_CHECK` | Set it to skip the update check. | unset |
 | `ASTER_TELEGRAM_TOKEN` | Bot token for `aster remote`. | unset |
 | `ASTER_REMOTE_USERS` | Telegram user ids allowed to drive `aster remote`. | unset |

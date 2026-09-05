@@ -13,6 +13,13 @@ const api = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefi
 
 export const inEditor = api !== undefined;
 
+/** Whether the surface already has a find widget: a browser and an editor tab
+ *  do, the sidebar view does not. */
+export const nativeFind =
+  !inEditor ||
+  (typeof document !== "undefined" &&
+    document.getElementById("root")?.dataset.surface !== "sidebar");
+
 export function post(message: ToHost): void {
   api ? api.postMessage(message) : browser.post(message);
 }

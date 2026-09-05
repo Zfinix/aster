@@ -15,6 +15,8 @@ import { ReasoningBlock } from "./ReasoningBlock";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { ReviewTurn } from "./ReviewTurn";
 import { SetupCard } from "./SetupCard";
+import { UserText } from "./UserText";
+import { UserTurnActions, UserTurnEditor } from "./UserTurnActions";
 import { StatusLine } from "./StatusLine";
 import { AgentGroup } from "./AgentGroup";
 import { GoalCard } from "./GoalCard";
@@ -30,6 +32,12 @@ export function Thread({
   onRedirect,
   onAnswer,
   onUnqueue,
+  editing,
+  onEditStart,
+  onEditCancel,
+  onEditSend,
+  onFork,
+  onRewind,
 }: {
   turns: Turn[];
   queued: string[];
@@ -38,6 +46,12 @@ export function Thread({
   onRedirect: (instead: string) => void;
   onAnswer: (choice: string | null) => void;
   onUnqueue: (index: number) => void;
+  editing: string | null;
+  onEditStart: (id: string) => void;
+  onEditCancel: () => void;
+  onEditSend: (id: string, text: string) => void;
+  onFork: (id: string) => void;
+  onRewind: (id: string) => void;
 }) {
   const { viewport, content, atBottom, onScroll, scrollToBottom } = useStickToBottom();
 
@@ -70,8 +84,27 @@ export function Thread({
           {turns.map((turn) => {
             if (turn.role === "user") {
               return (
-                <div key={turn.id} className="turn-user">
-                  <div className="turn-user-text">{turn.text}</div>
+                <div key={turn.id} className="turn-user-wrap">
+                  {editing === turn.id ? (
+                    <UserTurnEditor
+                      text={turn.text}
+                      onSend={(next) => onEditSend(turn.id, next)}
+                      onCancel={onEditCancel}
+                    />
+                  ) : (
+                    <>
+                      <div className="turn-user">
+                        <div className="turn-user-text">
+                          <UserText text={turn.text} />
+                        </div>
+                      </div>
+                      <UserTurnActions
+                        onEdit={() => onEditStart(turn.id)}
+                        onFork={() => onFork(turn.id)}
+                        onRewind={() => onRewind(turn.id)}
+                      />
+                    </>
+                  )}
                 </div>
               );
             }

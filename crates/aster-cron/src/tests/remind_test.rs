@@ -5,6 +5,8 @@ use chrono::{Datelike, Timelike};
 fn parses_durations() {
     let t = parse_when("in 30m").unwrap();
     assert!(t > chrono::Local::now());
+    let t = parse_when("in 10s").unwrap();
+    assert!(t > chrono::Local::now());
     assert!(parse_when("in 0m").is_err());
     assert!(parse_when("in 5x").is_err());
     assert!(parse_when("whenever").is_err());

@@ -61,6 +61,12 @@ const DEFAULT_DEADLINE_SECS: u64 = 180;
 const DEFAULT_PRICE_PROMPT_PER_M: f64 = 0.15;
 const DEFAULT_PRICE_COMPLETION_PER_M: f64 = 0.60;
 
+// Images described per turn when the session model takes no image input.
+// Each description is its own request, so the count is capped.
+const MAX_CAPTIONS: usize = 4;
+
+const CAPTION_PROMPT: &str = "Describe this image in detail: what it shows, any visible text, numbers, or interface elements, and anything that looks like an error or problem.";
+
 #[derive(Default)]
 struct UsageCounter {
     prompt_tokens: AtomicU64,
@@ -399,13 +405,20 @@ impl AiClient {
         let mut messages = messages.to_vec();
         let images = messages.iter().any(|m| m.content.has_images());
         if images && !self.supports_images().await {
-            messages.iter_mut().for_each(|m| m.content.strip_images());
+            self.caption_chat_messages(&mut messages).await;
         }
         let mut request = self.build_request_from(&self.model, messages, temperature, false);
 
         let response = match self.send_with_retry(&request, "chat request").await {
             Err(err) if images && rejected_images(&err) => {
-                strip_images(&mut request.messages);
+                tracing::debug!(model = %self.model, "endpoint rejected the images; describing them instead");
+                self.caption_chat_messages(&mut request.messages).await;
+                if request.messages.iter().any(|m| m.content.has_images()) {
+                    request
+                        .messages
+                        .iter_mut()
+                        .for_each(|m| m.content.strip_images());
+                }
                 self.send_with_retry(&request, "chat request").await?
             }
             result => result?,
@@ -487,8 +500,14 @@ impl AiClient {
 
         let response = match self.send_with_retry(&request, "tool chat request").await {
             Err(err) if images && rejected_images(&err) => {
-                tracing::debug!(model, "endpoint rejected the images; retrying without them");
-                strip_image_parts(&mut request.messages);
+                tracing::debug!(
+                    model,
+                    "endpoint rejected the images; describing them instead"
+                );
+                self.caption_values(&mut request.messages).await;
+                if carries_images(&request.messages) {
+                    strip_image_parts(&mut request.messages);
+                }
                 self.send_with_retry(&request, "tool chat request").await?
             }
             result => result?,
@@ -638,8 +657,14 @@ impl AiClient {
             .await
         {
             Err(err) if images && rejected_images(&err) => {
-                tracing::debug!(model, "endpoint rejected the images; retrying without them");
-                strip_image_parts(&mut request.messages);
+                tracing::debug!(
+                    model,
+                    "endpoint rejected the images; describing them instead"
+                );
+                self.caption_values(&mut request.messages).await;
+                if carries_images(&request.messages) {
+                    strip_image_parts(&mut request.messages);
+                }
                 self.send_with_retry(&request, "streaming tool chat request")
                     .await?
             }
@@ -987,8 +1012,143 @@ impl AiClient {
         if self.supports_images().await {
             return true;
         }
-        strip_image_parts(messages);
-        false
+        // Captioning swaps the images for text. When it fails the images stay
+        // in place: the catalog may simply be wrong, and if the provider does
+        // reject them the retry paths caption again and only then strip.
+        self.caption_values(messages).await;
+        carries_images(messages)
+    }
+
+    /// The model to describe images with when the session model takes no image
+    /// input. Override with `ASTER_VISION_MODEL`.
+    fn vision_model_name() -> String {
+        env::var("ASTER_VISION_MODEL")
+            .ok()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "openai/gpt-4o-mini".to_string())
+    }
+
+    async fn describe_image(&self, url: &str) -> Result<String> {
+        let vision = Self::vision_model_name();
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: CAPTION_PROMPT.to_string(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: url.to_string(),
+                    },
+                },
+            ]),
+        }];
+        let request = self.build_request_from(&vision, messages, 0.0, false);
+        let response = self.send_with_retry(&request, "image description").await?;
+        let body = response.text().await.context("reading response body")?;
+        let parsed: ChatResponse =
+            serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content.text().into_owned())
+            .context("no choices in model response")?;
+        self.record_usage(
+            parsed.usage,
+            CAPTION_PROMPT.len() + url.len(),
+            content.len(),
+        );
+        Ok(content)
+    }
+
+    async fn caption_chat_messages(&self, messages: &mut [ChatMessage]) {
+        let urls: Vec<String> = messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                MessageContent::Parts(parts) => Some(parts),
+                MessageContent::Text(_) => None,
+            })
+            .flatten()
+            .filter_map(|p| match p {
+                ContentPart::ImageUrl { image_url } => Some(image_url.url.clone()),
+                ContentPart::Text { .. } => None,
+            })
+            .collect();
+        let Some(descriptions) = self.describe_all(&urls).await else {
+            // The vision model failed; leave the images for the provider to
+            // take or reject rather than blanking them out.
+            return;
+        };
+        let mut descriptions = descriptions.into_iter();
+        for message in messages.iter_mut() {
+            let MessageContent::Parts(parts) = &mut message.content else {
+                continue;
+            };
+            for part in parts.iter_mut() {
+                if matches!(part, ContentPart::ImageUrl { .. }) {
+                    let text = descriptions.next().unwrap_or_default();
+                    *part = ContentPart::Text { text };
+                }
+            }
+            if !message.content.has_images() {
+                message.content = MessageContent::Text(message.content.text().into_owned());
+            }
+        }
+    }
+
+    async fn caption_values(&self, messages: &mut [serde_json::Value]) {
+        let urls: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.get("content")?.as_array())
+            .flatten()
+            .filter(|p| p.get("type").and_then(serde_json::Value::as_str) == Some("image_url"))
+            .filter_map(|p| p.get("image_url")?.get("url")?.as_str().map(str::to_string))
+            .collect();
+        let Some(descriptions) = self.describe_all(&urls).await else {
+            // The vision model failed; leave the images for the provider to
+            // take or reject rather than blanking them out.
+            return;
+        };
+        let mut descriptions = descriptions.into_iter();
+        for message in messages.iter_mut() {
+            let Some(parts) = message
+                .get_mut("content")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for part in parts.iter_mut() {
+                if part.get("type").and_then(serde_json::Value::as_str) == Some("image_url") {
+                    let text = descriptions.next().unwrap_or_default();
+                    *part = serde_json::json!({"type": "text", "text": text});
+                }
+            }
+        }
+    }
+
+    /// Describe each image with the vision model, in order. Images past
+    /// [`MAX_CAPTIONS`] become [`IMAGE_OMITTED`]. A failed description returns
+    /// [`None`]; callers keep the images in place when that happens, so a
+    /// wrong catalog or a dead vision model never blanks an image the
+    /// provider could have taken.
+    async fn describe_all(&self, urls: &[String]) -> Option<Vec<String>> {
+        let mut out = Vec::with_capacity(urls.len());
+        for url in urls.iter().take(MAX_CAPTIONS) {
+            match self.describe_image(url).await {
+                Ok(description) => out.push(format!("[image: {description}]")),
+                Err(err) => {
+                    tracing::debug!(%err, "vision model failed");
+                    return None;
+                }
+            }
+        }
+        out.extend(
+            urls.iter()
+                .skip(MAX_CAPTIONS)
+                .map(|_| IMAGE_OMITTED.to_string()),
+        );
+        Some(out)
     }
 
     /// Whether this client's model takes image input. Optimistic: only an endpoint
@@ -1019,12 +1179,6 @@ fn rejected_images(err: &anyhow::Error) -> bool {
     ["image", "vision", "multimodal"]
         .iter()
         .any(|word| text.contains(word))
-}
-
-fn strip_images(messages: &mut [ChatMessage]) {
-    for message in messages.iter_mut() {
-        message.content.strip_images();
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1085,7 +1239,14 @@ fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: To
             slot.name = name;
         }
         if let Some(args) = function.arguments {
-            slot.arguments.push_str(&args);
+            // Some endpoints resend the whole argument string in a later chunk
+            // instead of the next piece; a fragment that already begins with
+            // everything gathered so far is that snapshot, not more of it.
+            if !slot.arguments.is_empty() && args.starts_with(slot.arguments.as_str()) {
+                slot.arguments = args;
+            } else {
+                slot.arguments.push_str(&args);
+            }
         }
     }
 }

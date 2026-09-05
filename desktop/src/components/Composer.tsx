@@ -1,78 +1,96 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, TextArea } from "@heroui/react";
-import type { PermissionMode, ReviewOpts, SourceKind } from "../lib/types";
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import type { Effort, PermissionMode, Provider, ReviewOpts, SourceKind } from "../lib/types";
+import { SOURCE_LABELS } from "../lib/session";
 import { listRepoFiles } from "../lib/aster";
-import { Dropdown } from "./chrome";
-import { MentionMenu } from "./MentionMenu";
-import {
-  ChevronIcon,
-  HandIcon,
-  PencilIcon,
-  RepoIcon,
-  ScanIcon,
-  ScrollIcon,
-  SendIcon,
-  ShieldCheckIcon,
-  StopIcon,
-} from "./icons";
+import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
+import { useListNav } from "../lib/listnav";
+import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
+import { modelChip, modelShort } from "../lib/model";
+import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicker";
+import { Autocomplete, type Suggestion } from "./Autocomplete";
+import { ChoiceList } from "./ChoiceList";
+import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
 import { ModelMenu } from "./ModelMenu";
-import { PlusMenu } from "./PlusMenu";
+import { Popover } from "./Popover";
+import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
+import {
+  AtIcon,
+  BrainIcon,
+  CloudIcon,
+  CommandIcon,
+  CubeIcon,
+  DiffIcon,
+  FileIcon,
+  FolderIcon,
+  GaugeIcon,
+  GearIcon,
+  GitCommitIcon,
+  GitPullRequestIcon,
+  NewChatIcon,
+  PlusIcon,
+  ReviewIcon,
+  ShieldIcon,
+  TargetIcon,
+  UploadIcon,
+} from "./icons";
+
+const MAX_ROWS = 10;
+
+type Menu = "none" | "add" | "commands" | "permission" | "settings" | "model" | "provider" | "project" | "source";
+
+const ICONS: Record<string, ReactElement> = {
+  new: <NewChatIcon />,
+  goal: <TargetIcon />,
+  "new-review": <ReviewIcon />,
+  mention: <AtIcon />,
+  model: <CubeIcon />,
+  provider: <CloudIcon />,
+  effort: <GaugeIcon />,
+  mode: <ShieldIcon />,
+  review: <ReviewIcon />,
+  settings: <GearIcon />,
+  project: <FolderIcon />,
+  "review-range": <GitCommitIcon />,
+  "review-pr": <GitPullRequestIcon />,
+  diff: <DiffIcon />,
+  thinking: <BrainIcon />,
+};
 
 export type ComposerBinding = Omit<Props, "variant">;
 
-type ModeEntry = {
-  value: PermissionMode | "review";
-  label: string;
-  hint: string;
-  icon: React.ReactNode;
-};
-
-const MODE_ENTRIES: ModeEntry[] = [
-  {
-    value: "review",
-    label: "Review",
-    hint: "Run a code review on the diff",
-    icon: <ScanIcon size={17} />,
-  },
-  {
-    value: "plan",
-    label: "Plan",
-    hint: "Present a plan before editing",
-    icon: <ScrollIcon size={17} />,
-  },
-  {
-    value: "manual",
-    label: "Manual",
-    hint: "Approve each edit",
-    icon: <HandIcon size={17} />,
-  },
-  {
-    value: "auto",
-    label: "Auto",
-    hint: "Apply safe edits, pause on risky ones",
-    icon: <ShieldCheckIcon size={17} />,
-  },
-  {
-    value: "edit",
-    label: "Edit",
-    hint: "Edit files without asking",
-    icon: <PencilIcon size={17} />,
-  },
-  {
-    value: "yolo",
-    label: "Yolo",
-    hint: "No guardrails: policy and isolation skipped",
-    icon: <ShieldCheckIcon size={17} />,
-  },
-];
-
-function mentionAt(
-  text: string,
-  caret: number,
-): { start: number; query: string } | null {
-  const m = /(^|\s)@([^\s@]*)$/.exec(text.slice(0, caret));
-  if (!m) return null;
-  return { start: caret - m[2].length - 1, query: m[2] };
+interface Props {
+  variant: "home" | "foot";
+  busy: boolean;
+  intent: "review" | "chat";
+  onIntent: (intent: "review" | "chat") => void;
+  opts: ReviewOpts;
+  repoName: string;
+  repoOptions: { value: string; label: string }[];
+  onRepo: (value: string) => void;
+  onSource: (kind: SourceKind) => void;
+  onAttach: () => void;
+  canReview: boolean;
+  reviewing: boolean;
+  model: string;
+  models: string[];
+  recommended: string[];
+  recent: string[];
+  modelsLoading: boolean;
+  modelsError?: string;
+  onRefreshModels: () => void;
+  permissionMode: PermissionMode;
+  effort: Effort | null;
+  providers: Provider[];
+  onRefreshProviders: () => void;
+  onSend: (text: string) => void;
+  onReview: (text: string) => void;
+  onCommand: (name: string) => void;
+  onCancel: () => void;
+  onPermissionMode: (mode: PermissionMode) => void;
+  onModel: (model: string) => void;
+  onEffort: (effort: Effort | null) => void;
+  onProvider: (provider: Provider) => void;
+  onOpenSettings: () => void;
 }
 
 function rankFiles(files: string[], query: string): string[] {
@@ -90,290 +108,570 @@ function rankFiles(files: string[], query: string): string[] {
     scored.push({ path, score });
   }
   scored.sort((a, b) => a.score - b.score || a.path.length - b.path.length);
-  return scored.slice(0, 8).map((s) => s.path);
+  return scored.slice(0, 10).map((s) => s.path);
 }
 
-interface Props {
-  variant: "home" | "foot";
-  intent: "review" | "chat";
-  prompt: string;
-  setPrompt: (s: string) => void;
-  onAsk: () => void;
-  onStop: () => void;
-  onReview: () => void;
-  busy: boolean;
-  reviewing: boolean;
-  chatRunning: boolean;
-  canReview: boolean;
-  opts: ReviewOpts;
-  repoName: string;
-  repoOptions: { value: string; label: string; hint?: string }[];
-  onRepo: (value: string) => void;
-  onSource: (kind: SourceKind) => void;
-  model: string;
-  models: string[];
-  onModel: (value: string) => void;
-  onAddModel: (value: string) => void;
-  permissionMode: PermissionMode;
-  onPermissionMode: (m: PermissionMode) => void;
-  onIntent: (i: "review" | "chat") => void;
-  onAttach: () => void;
-}
-
-export function Composer(props: Props) {
-  const {
-    variant,
-    intent,
-    prompt,
-    setPrompt,
-    onAsk,
-    onStop,
-    onReview,
-    busy,
-    reviewing,
-    chatRunning,
-    canReview,
-    opts,
-    repoName,
-    repoOptions,
-    onRepo,
-    onSource,
-    model,
-    models,
-    onModel,
-    onAddModel,
-    permissionMode,
-    onPermissionMode,
-    onIntent,
-    onAttach,
-  } = props;
-
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const canAsk = !!prompt.trim() && !busy;
-
-  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
-  const [mentionIdx, setMentionIdx] = useState(0);
-  const [files, setFiles] = useState<string[]>([]);
+export function Composer({
+  variant,
+  busy,
+  intent,
+  onIntent,
+  opts,
+  repoName,
+  repoOptions,
+  onRepo,
+  onSource,
+  onAttach,
+  canReview,
+  reviewing,
+  model,
+  models,
+  recommended,
+  recent,
+  modelsLoading,
+  modelsError,
+  onRefreshModels,
+  permissionMode,
+  effort,
+  providers,
+  onRefreshProviders,
+  onSend,
+  onReview,
+  onCommand,
+  onCancel,
+  onPermissionMode,
+  onModel,
+  onEffort,
+  onProvider,
+  onOpenSettings,
+}: Props) {
+  const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [menu, setMenu] = useState<Menu>("none");
+  const [dismissed, setDismissed] = useState(false);
+  const [repoFiles, setRepoFiles] = useState<string[]>([]);
   const filesFor = useRef<string | null>(null);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const projectRef = useRef<HTMLButtonElement>(null);
+  const sourceRef = useRef<HTMLButtonElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
+  const mentions = useRef(new Map<string, string>());
+  const lastEffort = useRef<Effort | null>(null);
+  if (effort !== "off") lastEffort.current = effort;
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
-  }, [prompt]);
+  const syncScroll = () => {
+    const area = areaRef.current;
+    const mirror = mirrorRef.current;
+    if (area && mirror) mirror.scrollTop = area.scrollTop;
+  };
+
+  // A popup opened from a button owns the composer; otherwise what the caret
+  // sits on decides which one is up, the way typing `@` or `/` reads.
+  const triggers = triggersAt(text, caret);
+  const trigger: Trigger | null = menu === "none" ? triggers.mention : null;
+  const command: Trigger | null = menu === "none" && !dismissed ? triggers.command : null;
 
   useEffect(() => {
     const repo = opts.repoPath;
-    if (!mention || !repo || filesFor.current === repo) return;
+    if (!trigger || !repo || filesFor.current === repo) return;
     filesFor.current = repo;
     listRepoFiles(repo)
-      .then(setFiles)
-      .catch(() => setFiles([]));
-  }, [mention, opts.repoPath]);
+      .then(setRepoFiles)
+      .catch(() => setRepoFiles([]));
+  }, [trigger, opts.repoPath]);
 
-  const matches = useMemo(
-    () => (mention ? rankFiles(files, mention.query) : []),
-    [files, mention],
+  const typingCommand = triggers.command !== null;
+  useEffect(() => {
+    if (!typingCommand) setDismissed(false);
+  }, [typingCommand]);
+
+  const suggestions: Suggestion[] = useMemo(
+    () =>
+      trigger
+        ? rankFiles(repoFiles, trigger.query).map((path) => ({
+            value: `@${basename(path)}`,
+            label: basename(path),
+            detail: dirname(path),
+            full: path,
+          }))
+        : [],
+    [trigger, repoFiles],
   );
 
-  const onChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setPrompt(e.target.value);
-    setMention(mentionAt(e.target.value, e.target.selectionStart ?? e.target.value.length));
-    setMentionIdx(0);
+  const files = useListNav<HTMLButtonElement>({
+    count: suggestions.length,
+    resetOn: trigger?.query,
+    tabCompletes: true,
+    onPick: (index) => pick(suggestions[index]),
+  });
+
+  useEffect(() => {
+    const area = areaRef.current;
+    if (!area) return;
+    area.style.height = "auto";
+    const max = parseFloat(getComputedStyle(area).lineHeight) * MAX_ROWS;
+    area.style.height = `${Math.min(area.scrollHeight, max)}px`;
+    syncScroll();
+  }, [text]);
+
+  const sync = (el: HTMLTextAreaElement) => {
+    setText(el.value);
+    setCaret(el.selectionStart);
   };
 
-  const insertMention = (path: string) => {
-    if (!mention) return;
-    const end = mention.start + 1 + mention.query.length;
-    setPrompt(`${prompt.slice(0, mention.start)}@${path} ${prompt.slice(end)}`);
-    setMention(null);
-    const caret = mention.start + path.length + 2;
-    requestAnimationFrame(() => {
-      const el = ref.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(caret, caret);
-      }
-    });
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (mention && matches.length > 0) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const delta = e.key === "ArrowDown" ? 1 : -1;
-        setMentionIdx((i) => (i + delta + matches.length) % matches.length);
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        insertMention(matches[mentionIdx]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setMention(null);
-        return;
-      }
+  const pick = (item: Suggestion) => {
+    if (!trigger) return;
+    if (item.full) {
+      mentions.current.set(item.value, `@${item.full}`);
     }
-    if (e.key === "Enter" && !e.shiftKey && canAsk) {
-      e.preventDefault();
-      onAsk();
-    }
+    write(applyTrigger(text, trigger, item.value), trigger.start + item.value.length + 1);
   };
 
-  const activeModeValue: PermissionMode | "review" =
-    intent === "review" ? "review" : permissionMode;
-  const activeMode =
-    MODE_ENTRIES.find((m) => m.value === activeModeValue) ?? MODE_ENTRIES[0];
+  const write = (next: string, at = next.length) => {
+    setText(next);
+    setCaret(at);
+    focusInput(at);
+  };
 
-  const onModeSelect = (v: string) => {
-    if (v === "review") {
-      onIntent("review");
+  const send = () => {
+    const trimmed = text.trim();
+    if (busy) return;
+    if (intent === "review") {
+      if (!canReview) return;
+      onReview(expandMentions(trimmed, mentions.current));
     } else {
-      onIntent("chat");
-      onPermissionMode(v as PermissionMode);
+      if (!trimmed) return;
+      onSend(expandMentions(trimmed, mentions.current));
+    }
+    setText("");
+    setCaret(0);
+  };
+
+  const canSend = intent === "review" ? canReview : text.trim().length > 0;
+
+  const focusInput = (at?: number) =>
+    requestAnimationFrame(() => {
+      const area = areaRef.current;
+      if (!area) return;
+      area.focus();
+      if (at !== undefined) area.setSelectionRange(at, at);
+    });
+
+  const toggle = (next: Menu) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu((open) => (open === next ? "none" : next));
+  };
+
+  const closeMenu = () => {
+    setMenu("none");
+    setDismissed(true);
+    focusInput();
+  };
+
+  const compose = (value: string, base = text) => {
+    const head = base.replace(/\s*$/, "");
+    write(head ? `${head} ${value}` : value);
+  };
+
+  const runItem = (item: MenuItem, complete: boolean) => {
+    if (item.kind !== "action") return;
+    if (!command) {
+      item.run(text);
+      if (!item.keepOpen) closeMenu();
+      return;
+    }
+    if (item.slash && (complete || item.takesArg || text.slice(0, command.start).trim())) {
+      write(applyTrigger(text, command, item.slash), command.start + item.slash.length + 1);
+      return;
+    }
+    const rest = dropTrigger(text, command);
+    write(rest, command.start);
+    item.run(rest);
+  };
+
+  const menuOpen = menu === "commands" || command !== null;
+  const sections: MenuSection[] = useMemo(() => {
+    if (!menuOpen) return [];
+    const provider = providers.find((p) => p.current);
+    const action = (id: string, label: string, hint?: string) => ({
+      kind: "action" as const,
+      id,
+      label,
+      hint,
+      icon: ICONS[id],
+      slash: `/${id}`,
+      run: () => onCommand(id),
+    });
+    const opens = (id: string, label: string, next: Menu, hint?: string) => ({
+      kind: "action" as const,
+      id,
+      label,
+      hint,
+      icon: ICONS[id],
+      keepOpen: true,
+      run: () => setMenu(next),
+    });
+
+    return [
+      {
+        items: [
+          action("new", "New conversation"),
+          action("new-review", "New review"),
+          {
+            ...action("goal", "Set goal…"),
+            takesArg: true,
+            run: (rest: string) => compose("/goal ", rest),
+          },
+          {
+            kind: "action" as const,
+            id: "mention",
+            label: "Mention a file…",
+            icon: ICONS.mention,
+            run: (rest: string) => compose("@", rest),
+          },
+          opens("project", "Switch project…", "project", repoName || undefined),
+          {
+            kind: "action" as const,
+            id: "settings",
+            label: "Settings",
+            icon: ICONS.settings,
+            run: () => onOpenSettings(),
+          },
+        ],
+      },
+      {
+        title: "Model",
+        items: [
+          opens("model", "Switch model…", "model", modelShort(model)),
+          opens("provider", "Switch provider…", "provider", provider?.name),
+          {
+            kind: "choice" as const,
+            id: "effort",
+            label: "Effort",
+            icon: ICONS.effort,
+            value: effort ?? "",
+            options: EFFORT_OPTIONS,
+            onSelect: (value: string) => onEffort((value || null) as Effort | null),
+          },
+          {
+            kind: "toggle" as const,
+            id: "thinking",
+            label: "Thinking",
+            icon: ICONS.thinking,
+            on: effort !== "off",
+            onToggle: (on: boolean) => onEffort(on ? lastEffort.current : "off"),
+          },
+          opens("mode", "Mode…", "permission", intent === "review" ? "Review" : permissionLabel(permissionMode)),
+        ],
+      },
+      {
+        title: "Repository",
+        items: [
+          action("review", "Review the working tree"),
+          action("review-range", "Review a git range…"),
+          action("review-pr", "Review a GitHub PR…"),
+          action("diff", "Review a diff file…"),
+        ],
+      },
+    ];
+  }, [menuOpen, model, providers, effort, permissionMode, intent, repoName, onCommand, onEffort, onOpenSettings]);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (command) return;
+    if (suggestions.length > 0 && files.onKey(e)) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
     }
   };
 
-  const modePill = (
-    <Dropdown
-      trigger={() => (
-        <span className="pill">
-          {activeMode.icon}
-          {activeMode.label}
-          <ChevronIcon size={11} />
+  const sourceLabel =
+    opts.sourceKind === "diff" && opts.sourceValue
+      ? opts.sourceValue.split("/").pop()
+      : opts.sourceKind === "range" && opts.sourceValue
+        ? opts.sourceValue
+        : SOURCE_LABELS[opts.sourceKind];
+
+  const popup: ReactNode = menuOpen ? (
+    <CommandMenu sections={sections} query={command ? command.query : null} onRun={runItem} />
+  ) : menu === "add" ? (
+    <div className="picker" role="menu" aria-label="Add a file">
+      <button
+        className="picker-row"
+        role="menuitem"
+        onClick={() => {
+          closeMenu();
+          onAttach();
+        }}
+      >
+        <UploadIcon />
+        <span className="picker-body">
+          <span className="picker-label">Attach a diff file</span>
+          <span className="picker-detail">Review a patch from disk</span>
         </span>
-      )}
-      options={MODE_ENTRIES}
-      value={activeModeValue}
-      onSelect={onModeSelect}
-      direction="up"
+      </button>
+      <button
+        className="picker-row"
+        role="menuitem"
+        onClick={() => {
+          setMenu("none");
+          compose("@");
+        }}
+      >
+        <FileIcon />
+        <span className="picker-body">
+          <span className="picker-label">Mention a file in this repo</span>
+        </span>
+      </button>
+    </div>
+  ) : menu === "permission" ? (
+    <ApprovalPicker
+      mode={permissionMode}
+      reviewing={intent === "review"}
+      onSelect={(mode) => {
+        onIntent("chat");
+        onPermissionMode(mode);
+      }}
+      onClose={closeMenu}
+      onReview={() => onIntent("review")}
     />
-  );
-
-  const plusMenu = (
-    <PlusMenu
-      opts={opts}
-      repoOptions={repoOptions}
-      onRepo={onRepo}
-      onSource={onSource}
-      onAttach={onAttach}
-      direction="up"
-    />
-  );
-
-  const modelPill = (
+  ) : menu === "settings" || menu === "model" || menu === "provider" ? (
     <ModelMenu
+      pane={menu === "settings" ? null : menu}
       model={model}
       models={models}
-      onModel={onModel}
-      onAddModel={onAddModel}
-      direction="up"
+      recommended={recommended}
+      recent={recent}
+      loading={modelsLoading}
+      error={modelsError}
+      effort={effort}
+      providers={providers}
+      onSelect={onModel}
+      onRefresh={onRefreshModels}
+      onRefreshProviders={onRefreshProviders}
+      onEffort={onEffort}
+      onProvider={onProvider}
+      onClose={closeMenu}
     />
-  );
+  ) : menu === "project" ? (
+    <ChoiceList
+      label="Project"
+      choices={[
+        ...repoOptions.map((r) => ({
+          key: r.value,
+          label: r.label,
+          title: r.value,
+          checked: r.value === opts.repoPath,
+          onSelect: () => {
+            onRepo(r.value);
+            closeMenu();
+          },
+        })),
+        {
+          key: "__browse__",
+          label: "Open a folder…",
+          checked: false,
+          onSelect: () => {
+            onRepo("__browse__");
+            closeMenu();
+          },
+        },
+      ]}
+    />
+  ) : menu === "source" ? (
+    <ChoiceList
+      label="What to review"
+      choices={(Object.keys(SOURCE_LABELS) as SourceKind[]).map((k) => ({
+        key: k,
+        label: SOURCE_LABELS[k],
+        checked: k === opts.sourceKind,
+        onSelect: () => {
+          if (k === "diff") onAttach();
+          else onSource(k);
+          closeMenu();
+        },
+      }))}
+    />
+  ) : null;
+
+  const anchor =
+    menu === "add"
+      ? addRef
+      : menu === "settings" || menu === "model" || menu === "provider"
+        ? chipRef
+        : menu === "project"
+          ? projectRef
+          : menu === "source"
+            ? sourceRef
+            : undefined;
+
+  const placeholder =
+    intent === "review"
+      ? reviewing
+        ? "Reviewing…"
+        : "Add a focus for the review, or press Enter to run it"
+      : busy
+        ? "Aster is working…"
+        : variant === "foot"
+          ? "Ask a follow-up, @ for files, / for commands"
+          : "Ask Aster, @ for files, / for commands";
 
   return (
-    <div className={variant === "home" ? "home-composer" : ""}>
-      <div className="composer">
-        {mention && (
-          <MentionMenu
-            items={matches}
-            activeIndex={mentionIdx}
-            onSelect={insertMention}
-            onHover={setMentionIdx}
-          />
-        )}
-        <TextArea
-          ref={ref}
-          value={prompt}
-          rows={1}
-          spellCheck={false}
-          placeholder={
-            variant === "foot"
-              ? "Ask a follow-up, or give Aster the next task"
-              : intent === "review"
-                ? "Set a focus and hit Review, or ask anything"
-                : "Ask a question, or describe a change to make"
-          }
-          aria-label="Message Aster"
-          onChange={onChange}
-          onKeyDown={onKeyDown}
-          onBlur={() => setMention(null)}
-        />
-
-        {variant === "home" ? (
-          <div className="composer-row">
-            {plusMenu}
-            {modePill}
-            {modelPill}
-            <span className="spacer" />
-            {chatRunning ? (
-              <Button className="btn btn-ghost" onPress={onStop}>
-                Stop
-              </Button>
-            ) : (
-              <Button
-                className={intent === "chat" ? "btn btn-primary" : "btn btn-ghost"}
-                isDisabled={!canAsk}
-                onPress={onAsk}
-              >
-                Ask
-              </Button>
-            )}
-            <Button
-              className={intent === "chat" ? "btn btn-ghost" : "btn btn-primary"}
-              isDisabled={!canReview || busy}
-              onPress={onReview}
-            >
-              {reviewing ? "Reviewing" : "Review"}
-            </Button>
-          </div>
-        ) : (
-          <div className="composer-row">
-            {plusMenu}
-            {modePill}
-            {modelPill}
-            <span className="spacer" />
-            <Button
-              className="btn btn-ghost"
-              isDisabled={!canReview || busy}
-              onPress={onReview}
-            >
-              {reviewing ? "Reviewing" : "Review"}
-            </Button>
-            {chatRunning ? (
-              <Button className="send stop" aria-label="Stop turn" onPress={onStop}>
-                <StopIcon />
-              </Button>
-            ) : (
-              <Button
-                className="send"
-                aria-label="Send message"
-                isDisabled={!canAsk}
-                onPress={onAsk}
-              >
-                <SendIcon />
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {variant === "foot" && (
-        <div className="under-row">
-          <span className="u-item">
-            <RepoIcon />
-            {repoName || "no repo"}
-          </span>
-          <span className="grow" />
-          <span className="u-item mono">{opts.repoPath}</span>
-          {/* <span className="u-item mono">
-            confidence ≥ {opts.minConfidence.toFixed(2)}
-          </span> */}
-        </div>
+    <div className="composer-wrap" data-variant={variant}>
+      {popup ? (
+        <Popover onClose={closeMenu} anchor={anchor}>
+          {popup}
+        </Popover>
+      ) : (
+        <Autocomplete items={suggestions} active={files.active} onPick={pick} />
       )}
+
+      <div className="composer" data-permission-mode={permissionMode} data-intent={intent}>
+        <div className="input-wrap">
+          <div className="input-mirror" aria-hidden="true" ref={mirrorRef}>
+            {renderMentions(text)}
+          </div>
+          <textarea
+            ref={areaRef}
+            className="composer-input"
+            rows={1}
+            value={text}
+            spellCheck={false}
+            placeholder={placeholder}
+            aria-label="Message Aster"
+            onChange={(e) => sync(e.currentTarget)}
+            onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
+            onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+            onKeyDown={onKeyDown}
+            onScroll={syncScroll}
+          />
+        </div>
+        <div className="composer-foot">
+          <button
+            ref={addRef}
+            className="ghost foot-btn"
+            onMouseDown={toggle("add")}
+            title="Add a file"
+            aria-label="Add a file"
+            aria-haspopup="menu"
+            aria-expanded={menu === "add"}
+          >
+            <PlusIcon />
+          </button>
+
+          <button
+            className="ghost foot-btn"
+            onMouseDown={toggle("commands")}
+            title="Show command menu (/)"
+            aria-label="Show command menu"
+            aria-haspopup="dialog"
+            aria-expanded={menu === "commands"}
+          >
+            <CommandIcon />
+          </button>
+
+          <button
+            ref={chipRef}
+            className="ghost model-btn"
+            onMouseDown={toggle("settings")}
+            title={effort ? `${model} · ${effort} effort` : model}
+            aria-haspopup="menu"
+            aria-expanded={menu === "settings"}
+          >
+            <span className="model-label">{modelChip(model)}</span>
+            {effort && <span className="model-effort">{effortShort(effort)}</span>}
+          </button>
+
+          <button
+            ref={projectRef}
+            className="ghost mode-btn mode-btn-project"
+            onMouseDown={toggle("project")}
+            title={opts.repoPath || "Pick a project"}
+            aria-haspopup="menu"
+            aria-expanded={menu === "project"}
+          >
+            <FolderIcon />
+            <span>{repoName || "Project"}</span>
+          </button>
+
+          {intent === "review" && (
+            <button
+              ref={sourceRef}
+              className="ghost mode-btn"
+              onMouseDown={toggle("source")}
+              title="What to review"
+              aria-haspopup="menu"
+              aria-expanded={menu === "source"}
+            >
+              <span>{sourceLabel}</span>
+            </button>
+          )}
+
+          <span className="grow" />
+
+          <button
+            className="ghost mode-btn"
+            onMouseDown={toggle("permission")}
+            title="Mode"
+            aria-expanded={menu === "permission"}
+          >
+            {intent === "review" ? <ReviewIcon /> : permissionIcon(permissionMode)}
+            <span>{intent === "review" ? "Review" : permissionLabel(permissionMode)}</span>
+          </button>
+
+          <button
+            className={busy ? "send stop" : "send"}
+            onClick={busy ? onCancel : send}
+            disabled={!busy && !canSend}
+            title={busy ? "Stop" : intent === "review" ? "Run the review" : "Send"}
+            aria-label={busy ? "Stop" : intent === "review" ? "Run the review" : "Send"}
+          >
+            <IconMorphGlyph shapes={sendStop} active={busy ? 1 : 0} />
+          </button>
+        </div>
+      </div>
     </div>
   );
+}
+
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function dirname(path: string): string | undefined {
+  const at = path.lastIndexOf("/");
+  return at === -1 ? undefined : path.slice(0, at);
+}
+
+function renderMentions(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /@[^\s]+/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) {
+      nodes.push(text.slice(cursor, match.index));
+    }
+    nodes.push(
+      <span key={key++} className="mention">
+        {match[0]}
+      </span>,
+    );
+    cursor = match.index + match[0].length;
+  }
+  nodes.push(`${text.slice(cursor)}​`);
+  return nodes;
+}
+
+function expandMentions(text: string, mentions: Map<string, string>): string {
+  let out = text;
+  for (const [shown, full] of mentions) {
+    out = out.split(shown).join(full);
+  }
+  return out;
 }

@@ -9,7 +9,7 @@ fn write_skill(root: &Path, name: &str, body: &str) {
 #[test]
 fn builtins_load_with_parseable_bodies() {
     let set = SkillSet::default().with_builtins();
-    assert_eq!(set.len(), BUILTIN_SKILLS.len());
+    assert_eq!(set.len(), BUILTIN_SKILLS.len() + INTERNAL_SKILLS.len());
     for skill in set.iter() {
         assert!(skill.is_builtin(), "{}", skill.name);
         assert!(!skill.description.is_empty(), "{}", skill.name);
@@ -49,9 +49,18 @@ fn install_bundled_materializes_a_discoverable_skill() {
     let tmp = tempfile::tempdir().unwrap();
     let dest = install_bundled("debug-systematically", tmp.path(), false).unwrap();
     assert!(dest.join(SKILL_FILE).is_file());
+    assert_eq!(
+        dest,
+        tmp.path().join("internal").join("debug-systematically")
+    );
     let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
     let skill = set.get("debug-systematically").unwrap();
     assert!(!skill.is_builtin());
+    assert!(skill.internal);
+    assert!(set.visible().all(|s| s.name != "debug-systematically"));
+    assert!(remove_skill(tmp.path(), "debug-systematically").unwrap());
+    assert!(!dest.exists());
+    install_bundled("debug-systematically", tmp.path(), false).unwrap();
     assert!(skill.load_body().unwrap().starts_with('#'));
     let err = install_bundled("debug-systematically", tmp.path(), false).unwrap_err();
     assert!(err.to_string().contains("already installed"), "{err:#}");
@@ -251,4 +260,41 @@ fn install_copies_bundled_resources() {
 
     assert!(remove_skill(dest.path(), "pdf").unwrap());
     assert!(!remove_skill(dest.path(), "pdf").unwrap());
+}
+
+#[test]
+fn internal_builtins_are_indexed_but_never_visible() {
+    let set = SkillSet::default().with_builtins();
+    assert_eq!(set.visible().count(), BUILTIN_SKILLS.len());
+    assert!(set.is_internal("correction-protocol"));
+    assert!(!set.is_internal("git-workflow"));
+    assert!(set.get("correction-protocol").is_some());
+    let index = set.render_index().expect("index");
+    assert!(index.contains("correction-protocol"));
+}
+
+#[test]
+fn an_installed_internal_folder_marks_its_skills_internal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("internal").join("house-rules")).unwrap();
+    fs::write(
+        root.join("internal").join("house-rules").join("SKILL.md"),
+        "---\ndescription: How the agent behaves here.\n---\nBe brief.\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("deploy")).unwrap();
+    fs::write(
+        root.join("deploy").join("SKILL.md"),
+        "---\ndescription: Deploy the service.\n---\nRun deploy.\n",
+    )
+    .unwrap();
+
+    let set = SkillSet::discover(&[root.to_path_buf()]);
+    assert_eq!(set.len(), 2);
+    assert!(set.is_internal("house-rules"));
+    assert_eq!(
+        set.visible().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["deploy"]
+    );
 }

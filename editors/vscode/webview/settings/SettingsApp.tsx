@@ -6,14 +6,16 @@ import type {
   SettingsSnapshot,
 } from "../../src/protocol";
 import { EditorSection } from "./EditorSection";
+import { EnvSection } from "./EnvSection";
 import { KeysSection } from "./KeysSection";
 import { McpSection } from "./McpSection";
 import { SettingRow } from "./SettingRow";
 import { SettingsNav } from "./SettingsNav";
 import { ScopeSwitcher } from "./ScopeSwitcher";
 import { SettingsSearch } from "./SettingsSearch";
+import { SettingsSkeleton } from "./SettingsSkeleton";
 import { onHostMessage, post } from "./host";
-import { SECTIONS, keysFor, search, type Section } from "./sections";
+import { SECTIONS, keysFor, partsFor, search, type Section } from "./sections";
 
 const INSTALL_CMD = "curl -fsSL https://withaster.dev/install | sh";
 
@@ -33,7 +35,7 @@ export function SettingsApp() {
         // so whatever failed last time no longer describes what is on screen.
         setErrors({});
         setRevealed({});
-      } else if (message.type === "apiKeyValue") {
+      } else if (message.type === "apiKeyValue" || message.type === "envValue") {
         if (message.value !== null) {
           setRevealed((prev) => ({ ...prev, [message.var]: message.value as string }));
         }
@@ -56,30 +58,33 @@ export function SettingsApp() {
   const counts = useMemo(() => {
     const out: Record<string, number> = {};
     for (const entry of SECTIONS) {
-      out[entry.id] = keysFor(entry, snapshot?.keys ?? []).filter(
-        (key) => key.scopes[scope] !== null
-      ).length;
+      out[entry.id] =
+        entry.id === "env"
+          ? (snapshot?.envVars ?? []).filter((v) => v.source === scope).length
+          : keysFor(entry, snapshot?.keys ?? []).filter(
+              (key) => key.scopes[scope] !== null
+            ).length;
     }
     return out;
   }, [snapshot, scope]);
 
   if (!snapshot) {
-    return <div className="set-shell loading">Reading configuration…</div>;
+    return <SettingsSkeleton />;
   }
 
   if (!snapshot.binaryOk) {
     return <MissingCli path={snapshot.editor.binaryPath} />;
   }
 
-  const rows = keysFor(section, snapshot.keys);
   const results = query ? search(snapshot.keys, query) : [];
   const found = results.reduce((total, group) => total + group.keys.length, 0);
   const setEditor = (key: keyof EditorSettings, value: ConfigValue) =>
     post({ type: "setEditor", key, value });
-  const rowFor = (keyRow: (typeof snapshot.keys)[number]) => (
+  const rowFor = (keyRow: (typeof snapshot.keys)[number], index: number) => (
     <SettingRow
       key={keyRow.key}
       keyRow={keyRow}
+      index={index}
       scope={scope}
       models={snapshot.models ?? []}
       providers={snapshot.providers ?? []}
@@ -115,6 +120,7 @@ export function SettingsApp() {
             <ScopeSwitcher
               scope={scope}
               paths={snapshot.paths}
+              workspaceRoot={snapshot.workspaceRoot}
               hasWorkspace={hasWorkspace}
               onChange={setScope}
               onOpenFile={() => post({ type: "openConfigFile", scope })}
@@ -162,8 +168,29 @@ export function SettingsApp() {
               })
             }
           />
+        ) : section.id === "env" ? (
+          <EnvSection
+            vars={snapshot.envVars ?? []}
+            errors={errors}
+            revealed={revealed}
+            onSet={(name, value) => post({ type: "setEnv", var: name, value, scope })}
+            onUnset={(name) => post({ type: "unsetEnv", var: name, scope })}
+            onReveal={(name) => post({ type: "revealEnv", var: name })}
+            onHide={(name) =>
+              setRevealed((prev) => {
+                const next = { ...prev };
+                delete next[name];
+                return next;
+              })
+            }
+          />
         ) : (
-          <div className="set-card">{rows.map(rowFor)}</div>
+          partsFor(section, snapshot.keys).map((part, i) => (
+            <section key={part.title ?? i}>
+              {part.title && <h2 className="set-group-title">{part.title}</h2>}
+              <div className="set-card">{part.keys.map(rowFor)}</div>
+            </section>
+          ))
         )}
 
         {!query && section.id === "mcp" && (

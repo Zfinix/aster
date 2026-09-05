@@ -2,8 +2,9 @@ import type { ConfigKey, ConfigValue, Provider } from "../../src/protocol";
 import { asList } from "./sections";
 import { ChoiceSlider } from "../components/ChoiceSlider";
 import { EFFORT_OPTIONS } from "../lib/effort";
-import { ChipList } from "./controls/ChipList";
 import { Combo } from "./controls/Combo";
+import { ListInput } from "./controls/ListInput";
+import { ModeChoice } from "./controls/ModeChoice";
 import { NumberInput } from "./controls/NumberInput";
 import { Segmented } from "./controls/Segmented";
 import { Select } from "./controls/Select";
@@ -76,6 +77,10 @@ export function Control({
     );
   }
 
+  if (keyRow.key === "permissions.mode") {
+    return <ModeChoice choices={keyRow.choices} value={text} label={label} onChange={onCommit} />;
+  }
+
   switch (keyRow.kind) {
     case "bool":
       return <Toggle checked={shown === true} label={label} onChange={onCommit} />;
@@ -83,7 +88,12 @@ export function Control({
     case "choice": {
       const width = keyRow.choices.join("").length;
       return width <= SEGMENTED_BUDGET ? (
-        <Segmented options={keyRow.choices} value={text} label={label} onChange={onCommit} />
+        <Segmented
+          options={keyRow.choices.map((choice) => ({ value: choice, label: choice }))}
+          value={text}
+          label={label}
+          onChange={onCommit}
+        />
       ) : (
         <Select options={keyRow.choices} value={text} label={label} onChange={onCommit} />
       );
@@ -101,7 +111,7 @@ export function Control({
 
     case "list":
       return (
-        <ChipList
+        <ListInput
           items={asList(shown)}
           label={label}
           placeholder={placeholderFor(keyRow.key)}
@@ -125,11 +135,15 @@ export function Control({
 function placeholderFor(key: string): string {
   switch (key) {
     case "permissions.allow":
-    case "permissions.ask":
-    case "permissions.deny":
       return "Bash(cargo test:*)";
+    case "permissions.ask":
+      return "Bash(git push:*)";
+    case "permissions.deny":
+      return "Edit(infra/**)";
     case "permissions.additional_directories":
       return "../shared";
+    case "permissions.allow_credentials":
+      return "gh:~/.config/gh";
     case "review.include":
     case "review.exclude":
       return "src/**/*.rs";
