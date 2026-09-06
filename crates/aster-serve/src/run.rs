@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::oneshot;
 
+use crate::info;
 use crate::state::{AppState, Instance};
 
 /// A live child. Cancelling drops the sender, which the waiter reads as a kill.
@@ -269,6 +270,7 @@ pub async fn login(
         let _ = previous.send(());
     }
     let instance = instance.clone();
+    let state = state.clone();
     tokio::spawn(async move {
         let Some(code) = wait(child, cancelled).await else {
             return;
@@ -279,9 +281,174 @@ pub async fn login(
             (_, false) => last,
             (code, true) => format!("aster login exited with code {code}."),
         };
+        // The credentials landed, so a fresh init no longer asks for setup. It
+        // goes first, so the tab carries the new model before it acts on the result.
+        if code == 0 {
+            instance.post(crate::host::init(&state).await);
+        }
         instance.post(json!({ "type": "loginDone", "ok": code == 0, "message": message }));
     });
     Ok(())
+}
+
+/// Onboarding from the panel: the endpoint is checked with the key it is
+/// about to be given before anything is written, then made current. A fresh
+/// init follows, which is what turns the card into the greeting.
+pub async fn connect(
+    state: &Arc<AppState>,
+    instance: &Arc<Instance>,
+    message: &Value,
+) -> Result<(), String> {
+    let base_url = message["baseUrl"].as_str().unwrap_or_default().to_string();
+    let auth = &message["auth"];
+    let failed = |message: String| {
+        instance.post(json!({ "type": "connectDone", "ok": false, "message": message }));
+    };
+
+    let catalog = info::providers(&state.cli).await;
+    let Some(provider) = catalog
+        .as_array()
+        .and_then(|catalog| catalog.iter().find(|p| p["base_url"] == json!(base_url)))
+        .cloned()
+    else {
+        failed("That provider is not in the catalog.".into());
+        return Ok(());
+    };
+    let model = message["model"]
+        .as_str()
+        .filter(|m| !m.is_empty())
+        .or_else(|| provider["example_model"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let key_env: Vec<String> = provider["key_env"]
+        .as_array()
+        .map(|vars| {
+            vars.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if auth["kind"] == "login" {
+        if let Err(message) = use_provider(&state.cli, &base_url, &model).await {
+            failed(message);
+            return Ok(());
+        }
+        return login(state, instance, auth["target"].as_str().unwrap_or_default()).await;
+    }
+
+    let key = (auth["kind"] == "key")
+        .then(|| {
+            auth["value"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .filter(|key| !key.is_empty());
+    if let Err(raw) = probe(&state.cli, &base_url, &key_env, key.as_deref()).await {
+        failed(explain(&provider, &base_url, key.is_some(), &raw));
+        return Ok(());
+    }
+    if let Err(message) = use_provider(&state.cli, &base_url, &model).await {
+        failed(message);
+        return Ok(());
+    }
+    // A local server gets the placeholder `aster init` would store, but only
+    // if the CLI still asks for a key once the endpoint is current.
+    let stored = match (key.as_deref(), key_env.first()) {
+        (Some(key), Some(var)) => Some((var.as_str(), key)),
+        (None, _) if info::setup(&state.cli).await != Value::Null => {
+            Some(("ASTER_API_KEY", LOCAL_KEY))
+        }
+        _ => None,
+    };
+    if let Some((var, value)) = stored
+        && let Err(message) = state
+            .cli
+            .json_in(&["key", "set", var, "--stdin"], Some(value))
+            .await
+    {
+        failed(message);
+        return Ok(());
+    }
+    instance.post(crate::host::init(state).await);
+    instance.post(json!({ "type": "connectDone", "ok": true, "message": "Connected." }));
+    Ok(())
+}
+
+async fn use_provider(cli: &crate::cli::Cli, base_url: &str, model: &str) -> Result<(), String> {
+    let mut args = vec!["provider", "use", base_url];
+    if !model.is_empty() {
+        args.extend(["--model", model]);
+    }
+    cli.json(&args).await.map(|_| ())
+}
+
+/// What a server on this machine gets instead of a key: the CLI resolves a key
+/// for every endpoint, so `aster init` stores this placeholder for local ones.
+const LOCAL_KEY: &str = "local";
+
+/// Asks the endpoint for its model list with the key it is about to be given,
+/// writing nothing. The key rides in as `ASTER_API_KEY` and as the provider's
+/// own vars, since those win and the CLI would otherwise fill them from an
+/// older env file.
+async fn probe(
+    cli: &crate::cli::Cli,
+    base_url: &str,
+    key_env: &[String],
+    key: Option<&str>,
+) -> Result<(), String> {
+    let value = key.unwrap_or(LOCAL_KEY);
+    let mut set = vec![("ASTER_BASE_URL", base_url), ("ASTER_API_KEY", value)];
+    set.extend(key_env.iter().map(|var| (var.as_str(), value)));
+    let out = cli.run_env(&["models", "--json"], &set, &[]).await?;
+    if out.code == 0 {
+        return Ok(());
+    }
+    let parsed: Option<Value> = serde_json::from_str(out.stdout.trim()).ok();
+    let error = parsed
+        .as_ref()
+        .and_then(|p| p["error"].as_str())
+        .filter(|e| !e.is_empty())
+        .map(str::to_string)
+        .or_else(|| Some(out.stderr.trim().to_string()).filter(|e| !e.is_empty()))
+        .unwrap_or_else(|| format!("aster exited with code {}", out.code));
+    Err(error)
+}
+
+fn explain(provider: &Value, base_url: &str, had_key: bool, raw: &str) -> String {
+    let name = provider["name"].as_str().unwrap_or(base_url);
+    let name = name.split(" (").next().unwrap_or(name);
+    let lower = raw.to_lowercase();
+    let rejected = [
+        "authentication failed",
+        "unauthorized",
+        "unauthorised",
+        "invalid api key",
+        "incorrect api key",
+        "401",
+    ];
+    if rejected.iter().any(|needle| lower.contains(needle)) {
+        return format!("{name} rejected that key. Check it and try again.");
+    }
+    let unreachable = [
+        "error sending request",
+        "connection refused",
+        "dns error",
+        "could not connect",
+        "timed out",
+        "no route",
+        "network",
+    ];
+    if unreachable.iter().any(|needle| lower.contains(needle)) {
+        return match had_key {
+            true => format!("Nothing answered at {base_url}. Check your connection and try again."),
+            false => format!("Nothing answered at {base_url}. Start it and try again."),
+        };
+    }
+    raw.lines().next().unwrap_or(raw).to_string()
 }
 
 fn relay<R>(instance: &Arc<Instance>, pipe: Option<R>, last: Arc<std::sync::Mutex<String>>)
