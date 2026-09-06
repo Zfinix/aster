@@ -11,6 +11,7 @@ Cargo.lock.orig
 *.key
 
 # Editor / OS
+.aster/
 .idea/
 .vscode/
 .DS_Store
