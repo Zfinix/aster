@@ -18,8 +18,17 @@ real data.
    the browser harness) or `desktop/` for Tauri surfaces.
 2. **Serve it in the browser harness.** From `editors/vscode/`, run
    `bun run dev:web` (builds the webview, then runs `out/devhost/main.js`, a
-   real browser-runnable host with a stubbed `vscode` API). Background it and
-   note the port (default 4327).
+   real browser-runnable host with a stubbed `vscode` API). The devhost is a
+   long-lived server: never run it directly through `run_command`, or the tool
+   hangs until the process is killed. Fire and forget through a shell:
+
+   ```sh
+   bash -lc "cd editors/vscode && bun run dev:web > /tmp/devhost.log 2>&1 &"
+   ```
+
+   Note the port (default 4327). If the port does not come up, read
+   `/tmp/devhost.log` in a later round instead of chaining a wait onto the
+   start command.
 3. **Click through it yourself first.** Use browser automation to exercise the
    feature before the user sees it: open the panel, trigger the feature, resize
    narrow (300px) to check layout. Fix what breaks.

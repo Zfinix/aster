@@ -99,9 +99,14 @@ act → report.**
 - It needs something to open. A dev server has to be running before you point
   at its port; a static page has to be built before you point at its file.
 - A dev server, a watcher, anything that does not exit on its own: start it,
-  do not wait on it. Redirect it to a log and background it in a single line,
+  do not wait on it. `run_command` runs one binary with no shell: `&`, `>`,
+  and `&&` are not interpreted, so a server started directly hangs the tool
+  until the process is killed. Background it through a shell in a single line,
   `bash -lc "npm run dev > /tmp/dev.log 2>&1 &"`, and it keeps running after
-  the call returns.
+  the call returns. This applies to every long-lived process: servers,
+  watchers, daemons, anything that listens on a port or tails a file. There is
+  no point in starting something the user cannot see: once the server is up,
+  always open it with `open_preview` before ending the turn.
 - Do not build a wait loop into that command. One short `sleep` to let the port
   come up is fine. `sleep`, then `tail`, then `curl` is a round spent watching
   something boot: `open_preview` refuses a port nothing is listening on, so it
