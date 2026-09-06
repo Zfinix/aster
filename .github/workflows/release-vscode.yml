@@ -1,0 +1,115 @@
+name: Release VS Code extension
+
+# One package per platform, each carrying the CLI for that platform, so a first
+# run needs no download. The binaries come from a published `cli-v*` release
+# rather than being rebuilt here: those are the ones already tested and shipped.
+# A universal package goes out alongside them for the platforms none of these
+# cover, and falls back to the extension's own install card.
+
+on:
+  push:
+    tags:
+      - 'vscode-v*'
+  workflow_dispatch:
+    inputs:
+      cli_tag:
+        description: 'CLI release to take the binaries from (default: the latest cli-v*)'
+        required: false
+      dry_run:
+        description: 'Build the packages without publishing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: package · publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve the versions
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          CLI_TAG="${{ github.event.inputs.cli_tag }}"
+          if [ -z "$CLI_TAG" ]; then
+            CLI_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+              --json tagName --jq '[.[] | select(.tagName | startswith("cli-v"))][0].tagName')"
+          fi
+          [ -n "$CLI_TAG" ] || { echo "no cli-v* release to take binaries from" >&2; exit 1; }
+          # A tagged run must ship the version the tag names, or the marketplace
+          # would take a package that says something else.
+          TAG="${GITHUB_REF_NAME#vscode-v}"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$TAG" != "$VERSION" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
+          echo "Packaging $VERSION with the CLI from $CLI_TAG"
+
+      - name: Build
+        run: bun run build
+
+      - name: Package every platform
+        env:
+          CLI_TAG: ${{ steps.ver.outputs.cli_tag }}
+        run: |
+          set -euo pipefail
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            node scripts/bundle-cli.mjs "$target" --release "$CLI_TAG"
+            file bin/aster*
+            bunx vsce package --no-dependencies --target "$target"
+          done
+          # The fallback carries no binary, so it must not inherit one.
+          rm -rf bin
+          bunx vsce package --no-dependencies
+          ls -la ./*.vsix
+
+      - name: Publish to the VS Code Marketplace
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          set -euo pipefail
+          for vsix in ./*.vsix; do
+            bunx vsce publish --no-dependencies --packagePath "$vsix"
+          done
+
+      - name: Publish to Open VSX
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          for vsix in ./*.vsix; do
+            bunx ovsx publish "$vsix" --pat "$OVSX_PAT"
+          done
+
+      - name: Attach the packages to the release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: editors/vscode/*.vsix
+
+      - name: Keep the packages when nothing was published
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ steps.ver.outputs.version }}
+          path: editors/vscode/*.vsix
+          retention-days: 7
