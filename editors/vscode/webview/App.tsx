@@ -71,6 +71,7 @@ interface Init {
   binaryOk: boolean;
   skills: SkillCommand[];
   setup: SetupInfo | null;
+  announcements?: { id: string; text: string }[];
 }
 
 export function App() {
@@ -88,7 +89,7 @@ export function App() {
     text: string;
     mentions?: string[];
   } | null>(null);
-  const [queued, setQueued] = useState<string[]>([]);
+  const [queued, setQueued] = useState<{ id: string; text: string }[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [info, setInfo] = useState<InfoCardData | null>(null);
@@ -124,6 +125,12 @@ export function App() {
   const activeRef = useRef<string | null>(null);
   const fileRequestRef = useRef<string>("");
   const planApprovalRef = useRef(false);
+  // Steers shown before the CLI confirms them, so the echo that follows is not
+  // written into the transcript twice.
+  const steeredRef = useRef<string[]>([]);
+  // Set on every render so the message handler, mounted once, resends with
+  // the current thread rather than the one it closed over.
+  const resendAfterSetupRef = useRef<() => void>(() => {});
 
   const modelRef = useRef<string | null>(null);
   const markModelChange = useCallback((next: string | null) => {
@@ -172,6 +179,7 @@ export function App() {
           binaryOk: message.binaryOk,
           skills: message.skills,
           setup: message.setup ?? null,
+          announcements: message.announcements,
         });
         setPermissionMode(message.permissionMode);
         setEffort(message.effort);
@@ -189,6 +197,11 @@ export function App() {
 
       case "loginDone":
         setLogin((prev) => ({ ...(prev ?? { lines: [] }), done: true, ok: message.ok, message: message.message }));
+        if (message.ok) resendAfterSetupRef.current();
+        break;
+
+      case "connectDone":
+        if (message.ok) resendAfterSetupRef.current();
         break;
 
       case "chatError":
@@ -512,14 +525,15 @@ export function App() {
         patchAssistant(id, (turn) => appendText(turn, `_${event.message}_`, "\n\n"));
         break;
       case "injected": {
-        // The turn absorbed a queued message; move it from the queue into the
-        // transcript at the spot it actually landed.
-        const content = event.content;
-        setQueued((prev) => {
-          const at = prev.indexOf(content);
-          return at === -1 ? prev : prev.filter((_, i) => i !== at);
-        });
-        patchAssistant(id, (turn) => appendInjected(turn, content));
+        // The running turn absorbed a steer. One sent from the queue is already
+        // in the transcript, put there the moment it was sent, so this echo
+        // only confirms it; anything else lands where the CLI reached it.
+        const at = steeredRef.current.indexOf(event.content);
+        if (at !== -1) {
+          steeredRef.current.splice(at, 1);
+          break;
+        }
+        patchAssistant(id, (turn) => appendInjected(turn, event.content));
         break;
       }
       case "title":
@@ -562,6 +576,7 @@ export function App() {
   useEffect(() => {
     const unsubscribe = onHostMessage(handle);
     post({ type: "ready" });
+    post({ type: "listProviders" });
     return unsubscribe;
   }, [handle]);
 
@@ -593,7 +608,8 @@ export function App() {
 
   const redirectApproval = (instead: string) => {
     answerApproval(false);
-    setQueued((prev) => [...prev, instead]);
+    // Steers the live turn directly; the `injected` event puts it in the
+    // transcript where the CLI actually picks it up.
     post({ type: "inject", text: instead });
   };
 
@@ -618,9 +634,9 @@ export function App() {
     });
   };
 
-  // Edit, rewind, and fork all cut the transcript at a user message. Trimming
-  // here is display-level: the CLI keeps the full transcript on disk, and the
-  // next `chat` post simply carries the shorter history.
+  // Edit and fork both cut the transcript at a user message. Trimming here is
+  // display-level: the CLI keeps the full transcript on disk, and the next
+  // `chat` post simply carries the shorter history.
   const cutAt = (id: string): { history: Turn[]; at: number } | null => {
     const at = turns.findIndex((turn) => turn.id === id && turn.role === "user");
     if (at === -1) return null;
@@ -650,13 +666,16 @@ export function App() {
     });
   };
 
-  const rewindTo = (id: string) => {
-    if (busy) return;
-    setEditing(null);
-    const cut = cutAt(id);
-    if (!cut) return;
-    setQueued([]);
-    setTurns(cut.history);
+  // A turn that stopped for want of a key goes again on its own once the key
+  // is in, so finishing setup never ends on "now send that again".
+  resendAfterSetupRef.current = () => {
+    const at = turns.findIndex((turn) => turn.role === "assistant" && turn.setup);
+    if (at === -1) return;
+    const user = turns
+      .slice(0, at)
+      .reverse()
+      .find((turn) => turn.role === "user");
+    if (user && user.role === "user") resendFrom(user.id, user.text);
   };
 
   const forkFrom = (id: string) => {
@@ -675,21 +694,58 @@ export function App() {
   // Flushed one at a time so history stays ordered.
   const onSend = (text: string) => {
     if (busy) {
-      // Queue locally and offer it to the running turn; the CLI absorbs it at
-      // the next round boundary and answers with an `injected` event. Anything
-      // not absorbed by turn end flushes as its own turn below.
-      setQueued((prev) => [...prev, text]);
-      post({ type: "inject", text });
+      // A local holding list, ordered and editable: Steer pushes one into the
+      // running turn early, and the rest flush as their own turns when the
+      // run ends or is stopped.
+      setQueued((prev) => [...prev, { id: nextId(), text }]);
       return;
     }
     startTurn(text);
   };
 
+  // Pushes a queued message into the running turn now; the CLI joins it at the
+  // next round boundary and the `injected` event records where it landed.
+  const steerQueued = (qid: string) => {
+    const item = queued.find((q) => q.id === qid);
+    if (!item) return;
+    post({ type: "inject", text: item.text });
+    setQueued((prev) => prev.filter((q) => q.id !== qid));
+    // The CLI only echoes a steer once it reaches a round boundary, which can
+    // be a while: show it in the thread now, where the sender is looking.
+    const running = activeRef.current;
+    if (!running) return;
+    steeredRef.current.push(item.text);
+    patchAssistant(running, (turn) => appendInjected(turn, item.text));
+  };
+
+  const editQueued = (qid: string, text: string) => {
+    if (!text.trim()) return;
+    setQueued((prev) => prev.map((q) => (q.id === qid ? { ...q, text } : q)));
+  };
+
+  const reorderQueued = (from: number, to: number) => {
+    setQueued((prev) => {
+      if (from === to || from < 0 || to < 0 || from >= prev.length || to >= prev.length) {
+        return prev;
+      }
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  // When the run ends, or is stopped, the next queued message takes over. The
+  // short beat matters: a stale "nothing is running" echo can trail the chat
+  // the flush itself is about to start, so flush only once the echo settles.
   useEffect(() => {
     if (busy || queued.length === 0) return;
-    const [next, ...rest] = queued;
-    setQueued(rest);
-    startTurn(next);
+    const timer = setTimeout(() => {
+      const [next, ...rest] = queued;
+      setQueued(rest);
+      startTurn(next.text);
+    }, 300);
+    return () => clearTimeout(timer);
   }, [busy, queued]);
 
   const startReview = (source: ReviewSource) => {
@@ -756,12 +812,11 @@ export function App() {
 
   // The host cancels whichever run is live and echoes the real state back, so
   // the webview no longer has to guess which kind is in flight. The thread is
-  // closed out here rather than on the echo, so Stop reads as instant, and the
-  // queue is dropped because flushing it would start a new turn right away.
+  // closed out here rather than on the echo, so Stop reads as instant. The
+  // queue survives the stop; the flush below sends its next message.
   const onCancel = () => {
     activeRef.current = null;
     setBusy(false);
-    setQueued([]);
     setTurns(stopUnfinished);
     post({ type: "cancelReview" });
   };
@@ -798,17 +853,18 @@ export function App() {
       />
       {turns.length === 0 ? (
         <EmptyState
-          repoName={init?.repoName ?? null}
-          branch={init?.branch ?? null}
           binaryOk={init?.binaryOk ?? true}
           setup={init?.setup ?? null}
+          announcements={init?.announcements ?? null}
           login={login}
+          providers={providers}
         />
       ) : (
         <Thread
           turns={turns}
-          queued={queued}
           login={login}
+          providers={providers}
+          busy={busy}
           onApproval={answerApproval}
           onRedirect={redirectApproval}
           onAnswer={(choice) => {
@@ -817,75 +873,82 @@ export function App() {
               patchAssistant(activeRef.current, (turn) => ({ ...turn, question: undefined }));
             }
           }}
-          onUnqueue={(index) => setQueued((prev) => prev.filter((_, i) => i !== index))}
           editing={editing}
           onEditStart={(id) => setEditing(id)}
           onEditCancel={() => setEditing(null)}
           onEditSend={resendFrom}
           onFork={forkFrom}
-          onRewind={rewindTo}
         />
       )}
-      <Composer
-        busy={busy}
-        model={init?.model ?? null}
-        models={init?.models ?? []}
-        recommended={init?.recommended ?? []}
-        recent={recentsFor(init?.recent ?? [], catalog)}
-        modelsLoading={modelsLoading}
-        modelsError={modelsError}
-        onRefreshModels={refreshModels}
-        permissionMode={permissionMode}
-        effort={effort}
-        contextUsed={contextUsed}
-        contextBudget={effectiveBudget ?? init?.contextBudget ?? 0}
-        skills={init?.skills ?? []}
-        mcpServers={mcpServers}
-        providers={providers}
-        fileResults={fileResults}
-        openMenu={openMenu}
-        onMenuOpened={closeMenuRequest}
-        insertText={pendingMention?.text ?? null}
-        insertMentions={pendingMention?.mentions}
-        onInserted={() => setPendingMention(null)}
-        onSearchFiles={onSearchFiles}
-        onSend={onSend}
-        onCommand={onCommand}
-        onCancel={onCancel}
-        onReview={() => startReview({ kind: "working" })}
-        onPermissionMode={choosePermissionMode}
-        onEffort={(next) => {
-          setEffort(next);
-          post({ type: "setEffort", effort: next });
-        }}
-        onProvider={(provider) =>
-          post({ type: "setProvider", baseUrl: provider.base_url, model: provider.example_model })
-        }
-        onToggleMcp={(name, disabled) => post({ type: "toggleMcp", name, disabled })}
-        onModel={(model) => {
-          setInit((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  model,
-                  // A hand-typed id joins the list here and is persisted by the
-                  // host, so it survives the next reload too.
-                  models:
-                    model && !prev.models.includes(model)
-                      ? [...prev.models, model]
-                      : prev.models,
-                  // The host persists this too; kept live here so the picker's
-                  // Recent section moves without a reload.
-                  recent: model
-                    ? [model, ...prev.recent.filter((m) => m !== model)].slice(0, 5)
-                    : prev.recent,
-                }
-              : prev
-          );
-          markModelChange(model);
-          post({ type: "setModel", model });
-        }}
-      />
+      {/* Setup owns the composer slot until the CLI is installed and a key
+          exists; a chat box the CLI can only reject invites a dead-end message. */}
+      {!init?.setup && (init?.binaryOk ?? true) && (
+        <Composer
+          busy={busy}
+          model={init?.model ?? null}
+          models={init?.models ?? []}
+          recommended={init?.recommended ?? []}
+          recent={recentsFor(init?.recent ?? [], catalog)}
+          modelsLoading={modelsLoading}
+          modelsError={modelsError}
+          onRefreshModels={refreshModels}
+          permissionMode={permissionMode}
+          effort={effort}
+          contextUsed={contextUsed}
+          contextBudget={effectiveBudget ?? init?.contextBudget ?? 0}
+          skills={init?.skills ?? []}
+          mcpServers={mcpServers}
+          providers={providers}
+          fileResults={fileResults}
+          openMenu={openMenu}
+          onMenuOpened={closeMenuRequest}
+          insertText={pendingMention?.text ?? null}
+          insertMentions={pendingMention?.mentions}
+          onInserted={() => setPendingMention(null)}
+          onSearchFiles={onSearchFiles}
+          onSend={onSend}
+          onCommand={onCommand}
+          onCancel={onCancel}
+          onReview={() => startReview({ kind: "working" })}
+          onPermissionMode={choosePermissionMode}
+          onEffort={(next) => {
+            setEffort(next);
+            post({ type: "setEffort", effort: next });
+          }}
+          onProvider={(provider) =>
+            post({ type: "setProvider", baseUrl: provider.base_url, model: provider.example_model })
+          }
+          onToggleMcp={(name, disabled) => post({ type: "toggleMcp", name, disabled })}
+          queued={queued}
+          onSteerQueued={steerQueued}
+          onEditQueued={editQueued}
+          onReorderQueued={reorderQueued}
+          onUnqueue={(qid) => setQueued((prev) => prev.filter((q) => q.id !== qid))}
+          onModel={(model) => {
+            setInit((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    model,
+                    // A hand-typed id joins the list here and is persisted by the
+                    // host, so it survives the next reload too.
+                    models:
+                      model && !prev.models.includes(model)
+                        ? [...prev.models, model]
+                        : prev.models,
+                    // The host persists this too; kept live here so the picker's
+                    // Recent section moves without a reload.
+                    recent: model
+                      ? [model, ...prev.recent.filter((m) => m !== model)].slice(0, 5)
+                      : prev.recent,
+                  }
+                : prev
+            );
+            markModelChange(model);
+            post({ type: "setModel", model });
+          }}
+        />
+      )}
       {info && <InfoModal card={info} onClose={() => setInfo(null)} />}
       {!inEditor && <FilePreview />}
       {!nativeFind && <FindBar />}

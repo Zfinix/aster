@@ -35,6 +35,14 @@ export function SendIcon() {
   );
 }
 
+export function CloseIcon() {
+  return (
+    <svg {...base}>
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}
+
 /** The slash that opens the command menu, boxed the way its shortcut reads. */
 export function CommandIcon() {
   return (
@@ -360,8 +368,22 @@ export function ArrowDownLeftIcon() {
 export function UndoIcon() {
   return (
     <svg {...base}>
-      <path d="M5.7 3.5 L2 7.1 l3.6 3.6" />
-      <path d="M2 7.1 h8.1 a3.6 3.6 0 0 1 0 7.2 H6.3" />
+      <path d="M5.7 2.6 L2 6.2 l3.6 3.6" />
+      <path d="M2 6.2 h8.1 a3.6 3.6 0 0 1 0 7.2 H6.3" />
+    </svg>
+  );
+}
+
+/** Six-dot drag handle for a reorderable row. */
+export function GripIcon() {
+  return (
+    <svg {...base} strokeWidth={1.4}>
+      <circle cx="5.5" cy="4" r="0.4" />
+      <circle cx="10.5" cy="4" r="0.4" />
+      <circle cx="5.5" cy="8" r="0.4" />
+      <circle cx="10.5" cy="8" r="0.4" />
+      <circle cx="5.5" cy="12" r="0.4" />
+      <circle cx="10.5" cy="12" r="0.4" />
     </svg>
   );
 }

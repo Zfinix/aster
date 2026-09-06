@@ -2,7 +2,8 @@ import { exec } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
-import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli } from "../asterCli";
+import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli, runLogin } from "../asterCli";
+import { probe } from "../connect";
 import { ChatRunner } from "../chatRunner";
 import { skillCommands } from "../commands";
 import * as info from "../info";
@@ -30,6 +31,8 @@ interface State {
   customModels: string[];
   recentModels: string[];
   provider?: ProviderOverride;
+  /** When true, fakes an unconfigured endpoint so the first-run flow is visible. */
+  showSetup: boolean;
 }
 
 export function start(root: string, port: number): void {
@@ -39,6 +42,7 @@ export function start(root: string, port: number): void {
     effort: null,
     customModels: [],
     recentModels: [],
+    showSetup: false,
   };
   const chat = new ChatRunner();
   const review = new ReviewRunner();
@@ -99,6 +103,13 @@ export function start(root: string, port: number): void {
     if (url === "/settings" ) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(shell(repoName(root) ?? "aster", "settings"));
+      return;
+    }
+
+    if (url === "/setup") {
+      state.showSetup = true;
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(shell(repoName(root) ?? "aster"));
       return;
     }
 
@@ -179,11 +190,21 @@ export function start(root: string, port: number): void {
           effort: state.effort,
           binaryOk: await checkBinary(cliConfig().binary),
           skills: await skillCommands(root),
+          setup: state.showSetup
+            ? { provider: "OpenRouter", base_url: "https://openrouter.ai/api/v1", login: "openrouter", key_vars: ["OPENROUTER_API_KEY"] }
+            : undefined,
         });
         runState();
         break;
 
       case "chat": {
+        // A queued turn flushes the instant the webview sees `done`, which
+        // beats the CLI child exiting. Give the slot a moment to free before
+        // rejecting.
+        const slotFreeBy = Date.now() + 3000;
+        while (chat.running && Date.now() < slotFreeBy) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
         if (chat.running) {
           post({ type: "chatError", id: message.id, message: "A turn is already running." });
           break;
@@ -348,6 +369,54 @@ export function start(root: string, port: number): void {
           model: message.model,
           models: await info.modelsFor(root, message.model, env()).catch(() => []),
         });
+        break;
+      }
+
+      // Onboarding without an editor: the provider stays an in-memory override
+      // like `setProvider`, but the key is checked and stored for real, so the
+      // flow can be walked end to end from a browser tab.
+      case "connect": {
+        const catalog = await info.providers(root, env()).catch(() => []);
+        const picked = catalog.find((p) => p.base_url === message.baseUrl);
+        if (!picked) {
+          post({ type: "connectDone", ok: false, message: "That provider is not in the catalog." });
+          break;
+        }
+        const model = message.model || picked.example_model;
+        if (message.auth.kind === "login") {
+          state.provider = { baseUrl: picked.base_url, keyEnv: picked.key_env };
+          state.model = model;
+          const run = runLogin(message.auth.target, root, env(), (line) =>
+            post({ type: "loginOutput", line })
+          );
+          const code = await run.done;
+          if (code === 0) {
+            state.showSetup = false;
+            await onMessage({ type: "ready" });
+          }
+          post({
+            type: "loginDone",
+            ok: code === 0,
+            message: code === 0 ? "Signed in." : `aster login exited with code ${code}.`,
+          });
+          break;
+        }
+        const key = message.auth.kind === "key" ? message.auth.value.trim() : null;
+        const outcome = await probe(root, picked, key, env());
+        if (!outcome.ok) {
+          post({ type: "connectDone", ok: false, message: outcome.message });
+          break;
+        }
+        const keyVar = picked.key_env[0];
+        if (key && keyVar) await info.setApiKey(root, keyVar, key, "global");
+        // A local server gets the placeholder `aster init` would store, so the
+        // CLI stops asking for a key it will never need.
+        if (!key) await info.setApiKey(root, "ASTER_API_KEY", "local", "global");
+        state.provider = { baseUrl: picked.base_url, keyEnv: picked.key_env };
+        state.model = model;
+        state.showSetup = false;
+        await onMessage({ type: "ready" });
+        post({ type: "connectDone", ok: true, message: "Connected." });
         break;
       }
 

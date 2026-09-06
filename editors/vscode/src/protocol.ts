@@ -127,6 +127,13 @@ export interface Provider {
   key_env: string[];
 }
 
+/** How the panel gets an endpoint its credentials: a browser sign-in, a key
+ *  pasted into the card, or nothing at all for a server on this machine. */
+export type ConnectAuth =
+  | { kind: "login"; target: string }
+  | { kind: "key"; value: string }
+  | { kind: "none" };
+
 export interface PastedFile {
   name: string;
   data?: string;
@@ -276,8 +283,12 @@ export type ToHost =
   | { type: "listProviders" }
   | { type: "setProvider"; baseUrl: string; model: string }
   | { type: "login"; target: string }
+  | { type: "connect"; baseUrl: string; model: string; auth: ConnectAuth }
   | { type: "compact"; id: string; messages: ChatMessage[] }
-  | { type: "dismissAnnouncements"; ids: string[] };
+  | { type: "dismissAnnouncements"; ids: string[] }
+  | { type: "installCli" }
+  | { type: "installCliTerminal" }
+  | { type: "locateCli" };
 
 export type ToWebview =
   | {
@@ -301,6 +312,9 @@ export type ToWebview =
   | { type: "chatError"; id: string; message: string }
   | { type: "loginOutput"; line: string }
   | { type: "loginDone"; ok: boolean; message: string }
+  | { type: "connectDone"; ok: boolean; message: string }
+  | { type: "installCliProgress"; message: string }
+  | { type: "installCliDone"; ok: boolean; message: string }
   | {
       type: "runState";
       review: boolean;

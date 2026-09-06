@@ -1,8 +1,9 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { checkBinary, cliConfig, LoginRun, ProviderOverride, runCli, runLogin } from "./asterCli";
+import { checkBinary, cliConfig, INSTALL_CMD, installCli, LoginRun, ProviderOverride, runCli, runLogin } from "./asterCli";
 import * as info from "./info";
+import { persist, probe } from "./connect";
 import { ChatRunner } from "./chatRunner";
 import { IGNORED, searchFiles, skillCommands } from "./commands";
 import { MODELS, RECOMMENDED } from "./models";
@@ -17,6 +18,7 @@ import {
   PastedFile,
   PermissionMode,
   ReviewSource,
+  ConnectAuth,
   ToHost,
   ToWebview,
 } from "./protocol";
@@ -541,6 +543,14 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       case "setEffort":
         await this.context.globalState.update(EFFORT_KEY, message.effort ?? undefined);
         break;
+      case "dismissAnnouncements":
+        // --dismiss accepts comma-separated ids
+        try {
+          await runCli(["announce", "--dismiss", message.ids.join(",")], workspaceRoot() ?? ".");
+        } catch {
+          // Silent — user already dismissed locally.
+        }
+        break;
       case "setModel": {
         await this.context.globalState.update(MODEL_KEY, message.model);
         const custom = this.customModels();
@@ -656,10 +666,11 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         break;
       }
       case "listProviders": {
-        const root = workspaceRoot();
+        // The catalog ships in the binary, so it reads fine before a folder is open.
+        const root = workspaceRoot() ?? os.homedir();
         this.post({
           type: "providers",
-          providers: root ? await info.providers(root, this.env()).catch(() => []) : [],
+          providers: await info.providers(root, this.env()).catch(() => []),
         });
         break;
       }
@@ -780,15 +791,158 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       case "login":
         await this.runLogin(message.target, origin);
         break;
+      case "connect":
+        await this.connect(message.baseUrl, message.model, message.auth, origin);
+        break;
+      case "installCli": {
+        const storage = this.context.globalStorageUri.fsPath;
+        this.postTo(origin, { type: "installCliProgress", message: "Starting install..." });
+        try {
+          const binary = await installCli(storage, (msg) =>
+            this.postTo(origin, { type: "installCliProgress", message: msg })
+          );
+          // Re-check and re-init so the panel transitions to the greeting state
+          this.postTo(origin, { type: "installCliDone", ok: true, message: binary });
+          await this.sendInit(origin);
+        } catch (err) {
+          this.postTo(origin, {
+            type: "installCliDone",
+            ok: false,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+      case "installCliTerminal":
+        await this.installInTerminal(origin);
+        break;
+      case "locateCli":
+        await this.locateCli(origin);
+        break;
+    }
+  }
+
+  /** The install script in a real terminal. The editor's own network settings
+   *  are not the shell's: launched from the Dock it has no proxy variables and
+   *  no shell profile, which is what makes the built-in download fail where a
+   *  terminal succeeds. The user also sees the script's own output. */
+  private async installInTerminal(origin: vscode.Webview): Promise<void> {
+    const terminal = vscode.window.createTerminal({ name: "Install Aster" });
+    terminal.show();
+    terminal.sendText(INSTALL_CMD, true);
+    this.postTo(origin, {
+      type: "installCliProgress",
+      message: "Running the installer in a terminal. Watch it there.",
+    });
+    // The script leaves the terminal open, so the binary appearing is the only
+    // reliable signal that it finished.
+    const deadline = Date.now() + 5 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 2000));
+      const found = await this.findInstalledCli();
+      if (!found) continue;
+      await vscode.workspace
+        .getConfiguration("aster")
+        .update("binaryPath", found, vscode.ConfigurationTarget.Global);
+      this.postTo(origin, { type: "installCliDone", ok: true, message: found });
+      await this.sendInit(origin);
+      return;
+    }
+    this.postTo(origin, {
+      type: "installCliDone",
+      ok: false,
+      message: "the terminal has not produced an aster binary yet.",
+    });
+  }
+
+  /** Where the install script puts the binary, plus whatever is already on the
+   *  PATH the editor was started with. */
+  private async findInstalledCli(): Promise<string | undefined> {
+    const candidates = [
+      cliConfig().binary,
+      path.join(os.homedir(), ".local", "bin", "aster"),
+      path.join(os.homedir(), ".cargo", "bin", "aster"),
+      "/usr/local/bin/aster",
+      "/opt/homebrew/bin/aster",
+    ];
+    for (const candidate of candidates) {
+      if (candidate && (await checkBinary(candidate))) return candidate;
+    }
+    return undefined;
+  }
+
+  /** Already installed somewhere the editor cannot see: point at it directly
+   *  rather than sending the user to a settings field to type a path. */
+  private async locateCli(origin: vscode.Webview): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      openLabel: "Use this binary",
+      title: "Locate the aster binary",
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), ".local", "bin")),
+    });
+    const chosen = picked?.[0]?.fsPath;
+    if (!chosen) return;
+    if (!(await checkBinary(chosen))) {
+      this.postTo(origin, {
+        type: "installCliDone",
+        ok: false,
+        message: `${chosen} did not run. Pick the aster binary itself.`,
+      });
+      return;
+    }
+    await vscode.workspace
+      .getConfiguration("aster")
+      .update("binaryPath", chosen, vscode.ConfigurationTarget.Global);
+    this.postTo(origin, { type: "installCliDone", ok: true, message: chosen });
+    await this.sendInit(origin);
+  }
+
+  /** Onboarding from the panel: the endpoint is checked with the key it is
+   *  about to be given before anything is written, then made current. A fresh
+   *  init follows, which is what turns the card into the greeting. */
+  private async connect(
+    baseUrl: string,
+    model: string,
+    auth: ConnectAuth,
+    origin: vscode.Webview
+  ): Promise<void> {
+    const cwd = workspaceRoot() ?? os.homedir();
+    const env = this.env();
+    const failed = (message: string) =>
+      this.postTo(origin, { type: "connectDone", ok: false, message });
+    const catalog = await info.providers(cwd, env).catch(() => []);
+    const provider = catalog.find((p) => p.base_url === baseUrl);
+    if (!provider) {
+      failed("That provider is not in the catalog.");
+      return;
+    }
+    const chosen = model || provider.example_model;
+    try {
+      if (auth.kind === "login") {
+        await info.useProvider(cwd, provider.base_url, chosen);
+        await this.context.globalState.update(MODEL_KEY, chosen);
+        await this.runLogin(auth.target, origin);
+        return;
+      }
+      const key = auth.kind === "key" ? auth.value.trim() : null;
+      const outcome = await probe(cwd, provider, key, env);
+      if (!outcome.ok) {
+        failed(outcome.message);
+        return;
+      }
+      await persist(cwd, provider, chosen, key, env);
+      await this.context.globalState.update(MODEL_KEY, chosen);
+      await this.sendInit(origin);
+      this.postTo(origin, { type: "connectDone", ok: true, message: "Connected." });
+    } catch (err) {
+      failed(describe(err));
     }
   }
 
   private async runLogin(target: string, origin: vscode.Webview): Promise<void> {
-    const root = workspaceRoot();
-    if (!root) {
-      this.postTo(origin, { type: "loginDone", ok: false, message: "Open a folder first." });
-      return;
-    }
+    const root = workspaceRoot() ?? os.homedir();
     this.login?.cancel();
     let last = "";
     let run: LoginRun;
@@ -806,6 +960,9 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     try {
       const code = await run.done;
       if (this.login !== run) return;
+      // The fresh init goes first, so the panel already carries the new
+      // provider and model by the time it acts on the result.
+      if (code === 0) await this.sendInit(origin);
       this.postTo(origin, {
         type: "loginDone",
         ok: code === 0,
@@ -877,11 +1034,6 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
     await this.context.globalState.update(MODEL_KEY, model);
 
-    if (!(await info.hasKey(root, this.env()).catch(() => true))) {
-      void vscode.window.showWarningMessage(
-        `Aster: no key found for ${chosen?.name ?? baseUrl}. Add one in Aster Settings, under API keys.`
-      );
-    }
     this.post({
       type: "providerChanged",
       provider: chosen?.name ?? baseUrl,
@@ -908,6 +1060,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     // so a fresh install opens on what the terminal already uses.
     const model =
       this.model() ?? (root ? await info.currentModel(root).catch(() => null) : null);
+    const announcements = await this.fetchAnnouncements(root);
     this.postTo(target, {
       type: "init",
       workspaceRoot: root ?? null,
@@ -922,8 +1075,23 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       effort: this.effort(),
       binaryOk: await checkBinary(cliConfig().binary),
       skills: await skillCommands(root),
-      setup: root ? await info.setupNeeded(root, this.env()).catch(() => null) : null,
+      setup: await info.setupNeeded(root ?? os.homedir(), this.env()).catch(() => null),
+      announcements: announcements.length > 0 ? announcements : undefined,
     });
+  }
+
+  private async fetchAnnouncements(root: string | null | undefined): Promise<{ id: string; text: string }[]> {
+    try {
+      const { stdout, code } = await runCli(["announce", "--json"], root ?? ".");
+      if (code !== 0) return [];
+      const parsed = JSON.parse(stdout);
+      if (parsed?.items && Array.isArray(parsed.items)) {
+        return parsed.items.filter((i: unknown) => i && typeof i === "object" && typeof (i as { id: string }).id === "string");
+      }
+    } catch {
+      // Silent — announcements are never worth an error.
+    }
+    return [];
   }
 
   private async runChat(message: Extract<ToHost, { type: "chat" }>, origin: vscode.Webview): Promise<void> {
@@ -933,6 +1101,12 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       return;
     }
     const chat = this.getChatRunner(origin);
+    // A queued turn flushes the instant the webview sees `done`, which beats
+    // the CLI child exiting. Give the slot a moment to free before rejecting.
+    const slotFreeBy = Date.now() + 3000;
+    while (chat.running && Date.now() < slotFreeBy) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     if (chat.running) {
       this.post({ type: "chatError", id: message.id, message: "A turn is already running." });
       return;

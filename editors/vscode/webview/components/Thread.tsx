@@ -3,6 +3,7 @@ import { post } from "../lib/host";
 import { openFilePreview } from "../lib/filePreview";
 import type { LoginState } from "../lib/login";
 import type { Turn } from "../lib/thread";
+import type { Provider } from "../../src/protocol";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import { NewItemsPill } from "../interior/new-items-pill";
 import { ApprovalPrompt } from "./ApprovalPrompt";
@@ -10,7 +11,6 @@ import { CopyButton } from "./CopyButton";
 import { ErrorBox } from "./ErrorBox";
 import { InfoCard } from "./InfoCard";
 import { Markdown } from "./Markdown";
-import { QueuedTurn } from "./QueuedTurn";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { ReviewTurn } from "./ReviewTurn";
@@ -26,32 +26,30 @@ const isUser = (turn: Turn) => turn.role === "user";
 
 export function Thread({
   turns,
-  queued,
   login,
+  providers,
+  busy,
   onApproval,
   onRedirect,
   onAnswer,
-  onUnqueue,
   editing,
   onEditStart,
   onEditCancel,
   onEditSend,
   onFork,
-  onRewind,
 }: {
   turns: Turn[];
-  queued: string[];
   login: LoginState | null;
+  providers: Provider[];
+  busy: boolean;
   onApproval: (allow: boolean, always?: boolean) => void;
   onRedirect: (instead: string) => void;
   onAnswer: (choice: string | null) => void;
-  onUnqueue: (index: number) => void;
   editing: string | null;
   onEditStart: (id: string) => void;
   onEditCancel: () => void;
   onEditSend: (id: string, text: string) => void;
   onFork: (id: string) => void;
-  onRewind: (id: string) => void;
 }) {
   const { viewport, content, atBottom, onScroll, scrollToBottom } = useStickToBottom();
 
@@ -99,9 +97,9 @@ export function Thread({
                         </div>
                       </div>
                       <UserTurnActions
+                        busy={busy}
                         onEdit={() => onEditStart(turn.id)}
                         onFork={() => onFork(turn.id)}
-                        onRewind={() => onRewind(turn.id)}
                       />
                     </>
                   )}
@@ -186,7 +184,7 @@ export function Thread({
                 )}
 
                 {turn.setup ? (
-                  <SetupCard setup={turn.setup} login={login} />
+                  <SetupCard login={login} providers={providers} />
                 ) : (
                   turn.errorMsg && <ErrorBox message={turn.errorMsg} />
                 )}
@@ -222,10 +220,6 @@ export function Thread({
               </div>
             );
           })}
-
-          {queued.map((text, i) => (
-            <QueuedTurn key={`q${i}`} text={text} onRemove={() => onUnqueue(i)} />
-          ))}
         </div>
       </div>
 

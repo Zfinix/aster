@@ -343,7 +343,6 @@ code {
    Pulled left by its own frame so the text inside starts on the same column as
    an assistant reply, instead of sitting a few pixels in from it. */
 .turn-user {
-  --chip-pad-x: var(--s2);
   align-self: flex-start;
   max-width: 100%;
   margin-left: calc(-1 * (var(--chip-pad-x) + 1px));
@@ -362,31 +361,62 @@ code {
   line-height: 1.5;
 }
 
-/* Hover actions on a sent message: three faint glyphs under the bubble, only
-   visible while the message is hovered or one is focused. */
+/* Hover actions on a sent message: a small toolbar that floats at the right of
+   the message, only while it is hovered or one of its buttons has focus. */
 .turn-user-wrap {
+  --chip-pad-x: var(--s2);
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
 }
 
+/* Out of the flow on purpose: laid out, it would reserve a dead band under
+   every message, which two messages in a row read as a hole between them. */
 .turn-hover {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
   display: flex;
   gap: 2px;
-  margin-left: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
   opacity: 0;
+  pointer-events: none;
   transition: opacity 120ms ease;
 }
 
 .turn-user-wrap:hover .turn-hover,
 .turn-hover:focus-within {
   opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-hover {
+    transition: none;
+  }
 }
 
 .turn-hover .icon-btn {
   width: 22px;
   height: 22px;
+}
+
+/* A running turn refuses these; the buttons say so instead of eating clicks. */
+.icon-btn:disabled {
+  color: var(--fg-dim);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  background: none;
+  color: var(--fg-dim);
 }
 
 /* Edit reuses the message bubble as the input, so resending reads as the same
@@ -550,27 +580,107 @@ code {
   );
 }
 
-.turn-queued {
-  opacity: 0.72;
-  border-left-style: dashed;
+/* Queued messages dock inside the composer box, above the text field: grip to
+   reorder, Send now pushes one into the running turn, pencil edits, trash
+   drops it. The first chip dips into the thread when the run ends or stops. */
+.queued-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: var(--s2) var(--s2) 0;
 }
 
-.queued-foot {
+.queued-chip {
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  margin-top: var(--s1);
+  gap: var(--s1);
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  animation: queued-in 180ms ease;
 }
 
-.queued-badge {
+.queued-chip .icon-btn {
+  flex: none;
+}
+
+.queued-grip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
   color: var(--fg-dim);
-  font-size: 0.85em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  cursor: grab;
+  /* The gesture is ours, so a touch must not scroll the panel instead. */
+  touch-action: none;
 }
 
-.queued-remove {
-  font-size: 0.85em;
+.queued-chip:active .queued-grip {
+  cursor: grabbing;
+}
+
+.queued-chip:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+/* Lifted rather than faded: the row being moved stays readable while the ones
+   it passes settle around it. */
+.queued-dragging {
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.queued-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: text;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queued-send-now {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+.queued-send-now:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.queued-chip-editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s1);
+}
+
+@keyframes queued-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* Blocks inside one turn sit closer than the turns themselves, so a reply and
@@ -759,6 +869,10 @@ code {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .queued-chip {
+    animation: none;
+  }
+
   .shimmer {
     animation: none;
     background: none;
@@ -867,34 +981,6 @@ code {
   line-height: 1.45;
 }
 
-/* The turn never started: no key and no login for the endpoint. */
-.setup-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-  padding: var(--s3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  max-width: 100%;
-  text-align: left;
-}
-
-.setup-card-title {
-  font-weight: 600;
-}
-
-.setup-card-body,
-.setup-card-hint {
-  color: var(--fg);
-  line-height: 1.45;
-}
-
-.setup-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s2);
-}
-
 .setup-card-log {
   margin: 0;
   font-family: var(--mono);
@@ -902,6 +988,193 @@ code {
   color: var(--fg-dim);
   white-space: pre-wrap;
   line-height: 1.45;
+}
+
+/* Onboarding wears the composer box, so setup reads as the panel itself. */
+.setup-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s3) var(--s3) 0;
+  padding: 0 2px;
+  color: var(--vscode-input-foreground);
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  animation: setup-rise 280ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@starting-style {
+  .setup-wrap {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.setup-title {
+  font-weight: 600;
+  font-size: 1.35em;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.setup-body,
+.setup-hint,
+.setup-help {
+  color: var(--vscode-input-foreground);
+  opacity: 0.82;
+  line-height: 1.55;
+  font-size: 1em;
+  max-width: 60ch;
+}
+
+.setup-hint,
+.setup-help {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-top: var(--s1);
+}
+
+.setup-code {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  background: var(--code-bg);
+  border-radius: var(--radius);
+  padding: 1px 5px;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-wrap {
+    animation: none;
+  }
+
+  .btn-primary {
+    transition: none;
+  }
+
+  .btn-primary:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+@keyframes setup-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.setup-help {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  color: var(--fg-dim);
+}
+
+.setup-help code {
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
+
+/* The foot's buttons start on the text's own left edge, and the ghost matches
+   the primary's height and pill so the pair reads as one row. */
+.setup-wrap + .composer-foot {
+  padding: 0 calc(var(--s3) + 2px) var(--s3);
+}
+
+.setup-wrap + .composer-foot .ghost {
+  height: auto;
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+
+/* A ghost on its own still starts its label on the text edge. */
+.setup-wrap + .composer-foot > .ghost:first-child {
+  margin-left: -14px;
+}
+
+/* Provider rows sit flush with the card's text: the row's own padding is
+   pulled back so the label starts on the text edge. */
+.setup-providers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pop-row-gap);
+  margin: var(--s1) calc(-1 * var(--pop-row-pad-x)) 0;
+}
+
+.setup-more .picker-label {
+  color: var(--fg-dim);
+}
+
+/* The list step has no foot, so the wrap carries the bottom inset itself. */
+.setup-wrap:last-child {
+  margin-bottom: var(--s3);
+}
+
+/* A command to run elsewhere: the text scrolls on its own so a narrow panel
+   never breaks the line, and the copy sits clear of it. */
+.setup-command {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+  background: var(--code-bg-strong);
+  border-radius: var(--radius-lg);
+}
+
+.setup-command code {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.setup-command code::-webkit-scrollbar {
+  display: none;
+}
+
+.setup-command .icon-btn {
+  flex: none;
+}
+
+.setup-key {
+  width: 100%;
+  margin-top: var(--s1);
+  padding: 6px 12px;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  color: var(--fg);
+  background: var(--code-bg-strong);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  outline: none;
+}
+
+.setup-key::placeholder {
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-input-placeholderForeground);
+}
+
+.setup-key:focus-visible {
+  border-color: var(--vscode-focusBorder);
+}
+
+.setup-key[aria-invalid="true"] {
+  border-color: var(--sev-critical);
 }
 
 .setup-card-ok {
@@ -2602,8 +2875,8 @@ code {
 .btn-primary {
   font: inherit;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 3px 10px;
+  border-radius: 999px;
+  padding: 6px 14px;
   cursor: pointer;
   background: none;
   color: var(--fg);
@@ -2617,6 +2890,11 @@ code {
   border-color: transparent;
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .btn-primary:hover {
@@ -3191,21 +3469,6 @@ code {
   line-height: 1.25;
 }
 
-.empty-body,
-.empty-hint {
-  margin: 0;
-  line-height: 1.5;
-}
-
-.empty-body {
-  color: var(--fg-dim);
-}
-
-.empty-hint,
-.empty-branch {
-  color: var(--fg-dim);
-}
-
 /* Sits at the foot of the empty panel, just above the composer, so a tip reads
    as a footnote to the opener rather than a second heading. */
 /* One line, always: a tip is a glance, and two lines of it start to read as
@@ -3214,7 +3477,8 @@ code {
   /* The column centres its items, so without a width of its own a long tip
      would size to its text and hang past the panel instead of ellipsising. */
   width: 100%;
-  margin: var(--s3) 0 0;
+  flex: none;
+  margin: 0;
   font-size: 0.92em;
   /* Room for the chips, which stand taller than the prose around them. */
   line-height: 1.8;
@@ -3223,6 +3487,64 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   animation: tipIn 0.45s ease both;
+}
+
+/* A compact "what's new" strip between the greeting and the tip, in the
+   composer's own box so it reads as part of the panel rather than a banner. */
+.empty-announcements {
+  width: 100%;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  padding: var(--s2) var(--s2) var(--s3) calc(var(--s3) + 2px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--vscode-input-background);
+  text-align: left;
+}
+
+.empty-announcements-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.empty-announcements-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* Each note is a bullet with room around it and a readable measure, so five
+   of them read as a list and not as a paragraph that lost its breaks. */
+.empty-announcements-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s1) 0 0;
+  padding: 0 var(--s2) 0 1.1em;
+  max-width: 62ch;
+  color: var(--fg);
+  line-height: 1.55;
+}
+
+.empty-announcements-items li::marker {
+  color: var(--fg-dim);
+}
+
+.empty-announcements-dismiss {
+  border-radius: 999px;
+}
+
+/* Onboarding cards sit under the mark at full column width, left-aligned like
+   the composer they borrow their box from. */
+.setup-stream {
+  width: 100%;
+  flex: none;
+  margin-top: var(--s3);
+  text-align: left;
 }
 
 /* A key to press or a name to type, boxed the way a keycap reads. */
@@ -3300,6 +3622,7 @@ code {
 .composer[data-permission-mode="auto"] {
   --ring: var(--mode-auto);
   --send: var(--mode-auto);
+  border-color: var(--mode-auto);
 }
 
 .composer[data-permission-mode="auto"] .mode-btn {
