@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest, AuthenticateResponse,
-    AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentChunk, Implementation,
-    InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
+    AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentChunk, CurrentModeUpdate,
+    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
     NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
     SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
@@ -177,11 +177,24 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                     return responder.respond_with_error(Error::invalid_params());
                 };
                 let (id, value) = (request.config_id.0.to_string(), value.0.to_string());
+                let notify = cx.clone();
+                let notify_session = request.session_id.clone();
                 cx.spawn(async move {
                     match session.set_config(&id, &value).await {
-                        Ok(()) => responder.respond(SetSessionConfigOptionResponse::new(
-                            session.config_options(),
-                        )),
+                        Ok(()) => {
+                            if id == "mode" {
+                                let update = SessionUpdate::CurrentModeUpdate(
+                                    CurrentModeUpdate::new(value.clone()),
+                                );
+                                let _ = notify.send_notification(SessionNotification::new(
+                                    notify_session,
+                                    update,
+                                ));
+                            }
+                            responder.respond(SetSessionConfigOptionResponse::new(
+                                session.config_options(),
+                            ))
+                        }
                         Err(err) => responder.respond_with_error(to_error(err)),
                     }
                 })

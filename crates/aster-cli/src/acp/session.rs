@@ -232,8 +232,8 @@ impl Session {
         }
     }
 
-    /// The provider, model, and effort pickers the editor shows beside the
-    /// mode picker. Models carry the same humanized names as the other UIs,
+    /// The provider, model, effort, and mode pickers the editor shows.
+    /// Models carry the same humanized names as the other UIs,
     /// with the provider's coding shortlist first.
     pub fn config_options(&self) -> Vec<SessionConfigOption> {
         let client = self.client();
@@ -293,6 +293,11 @@ impl Session {
             .iter()
             .map(|e| SessionConfigSelectOption::new(e.as_str(), effort_label(*e)))
             .collect();
+        let mode_options: Vec<SessionConfigSelectOption> = aster_acp::modes()
+            .map(|(_, id, name, description)| {
+                SessionConfigSelectOption::new(id, name).description(description)
+            })
+            .collect();
         vec![
             SessionConfigOption::select("provider", "Provider", base_url, providers)
                 .category(SessionConfigOptionCategory::Other("provider".to_string())),
@@ -306,6 +311,14 @@ impl Session {
             )
             .category(SessionConfigOptionCategory::ThoughtLevel)
             .description("How much thinking each turn gets".to_string()),
+            SessionConfigOption::select(
+                "mode",
+                "Mode",
+                aster_acp::mode_id(self.mode()),
+                mode_options,
+            )
+            .category(SessionConfigOptionCategory::Mode)
+            .description("How much freedom the agent gets".to_string()),
         ]
     }
 
@@ -325,6 +338,10 @@ impl Session {
                 None => anyhow::bail!("unknown effort {value:?}"),
             },
             "provider" => self.switch_provider(value).await,
+            "mode" => match aster_acp::mode_from_id(value) {
+                Some(mode) => self.set_mode(mode),
+                None => anyhow::bail!("unknown mode {value:?}"),
+            },
             _ => anyhow::bail!("unknown option {id:?}"),
         }
     }
