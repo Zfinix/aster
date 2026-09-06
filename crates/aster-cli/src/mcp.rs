@@ -751,6 +751,15 @@ pub struct McpRuntime {
     webmcp_connection: Option<Arc<WebmcpConnection>>,
     disabled_servers: Vec<DisabledServer>,
     filtered_tools: Vec<String>,
+    on_demand: Option<Arc<OnDemand>>,
+}
+
+/// Configured servers a cached runtime spawns on their first tool call
+/// instead of at startup.
+#[derive(Clone)]
+struct OnDemand {
+    servers: BTreeMap<String, ServerConfig>,
+    eras: BTreeMap<String, crate::mcp_cache::CachedEra>,
 }
 
 /// A server the agent knows about but cannot use yet — it can ask the user
@@ -789,6 +798,98 @@ impl McpRuntime {
         (runtime, problems)
     }
 
+    /// A runtime built from the per-folder tool cache, where configured
+    /// servers spawn on their first tool call instead of at startup. A cache
+    /// miss falls back to a full connect, so a cold folder pays the spawns
+    /// once and every session after starts without waiting on any server.
+    pub async fn lazy(
+        settings: &McpSettings,
+        repo_root: &std::path::Path,
+    ) -> (Option<Self>, Vec<String>) {
+        let mut problems = Vec::new();
+        let extra = extra_servers(&mut problems);
+        let Some(hit) = crate::mcp_cache::load(repo_root, settings) else {
+            return Self::connect_with_rooted(settings, &extra, Some(repo_root)).await;
+        };
+        let mut tools = hit.tools;
+        let (web_connection, shortcuts_connection) = Self::in_process_tools(&mut tools);
+        let webmcp_connection = Self::webmcp_tools(settings, &mut tools, &mut problems).await;
+
+        // Session-scoped extras never reach the cache, so they connect up
+        // front; there are usually none.
+        let mut connections = BTreeMap::new();
+        for (name, config) in &extra {
+            if config.disabled || config.transport().is_none() {
+                continue;
+            }
+            match Self::start_one(name, config, None).await {
+                Ok((connection, listed)) => {
+                    tools.extend(listed);
+                    connections.insert(name.clone(), connection);
+                }
+                Err(e) => problems.push(format!("{name} {e:#}")),
+            }
+        }
+
+        let disabled_servers = disabled_servers_of(settings);
+        let (assembled, problems) = Self::assemble(settings, tools, problems, &disabled_servers);
+        let (injector, filtered_tools) = match assembled {
+            Some(parts) => parts,
+            None => return (None, problems),
+        };
+        let runtime = Self {
+            injector,
+            connections: Arc::new(Mutex::new(connections)),
+            web_connection,
+            shortcuts_connection,
+            webmcp_connection,
+            disabled_servers,
+            filtered_tools,
+            on_demand: Some(Arc::new(OnDemand {
+                servers: Self::enabled_servers(settings),
+                eras: hit.eras,
+            })),
+        };
+        (Some(runtime), problems)
+    }
+
+    fn enabled_servers(settings: &McpSettings) -> BTreeMap<String, ServerConfig> {
+        settings
+            .servers
+            .iter()
+            .filter(|(_, config)| !config.disabled && config.transport().is_some())
+            .map(|(name, config)| (name.clone(), config.clone()))
+            .collect()
+    }
+
+    /// The opt-in WebMCP bridge attaches to the user's browser, so its
+    /// failure is a problem line, never a session failure.
+    async fn webmcp_tools(
+        settings: &McpSettings,
+        tools: &mut Vec<McpTool>,
+        problems: &mut Vec<String>,
+    ) -> Option<Arc<WebmcpConnection>> {
+        if !settings.webmcp.enabled {
+            return None;
+        }
+        match aster_webmcp::WebmcpBackend::connect(&settings.webmcp).await {
+            Ok(backend) => match backend.list_tools().await {
+                Ok(listed) => {
+                    tools.extend(listed);
+                    Some(Arc::new(WebmcpConnection { backend }))
+                }
+                Err(e) => {
+                    problems.push(format!("webmcp {e:#}"));
+                    None
+                }
+            },
+            Err(e) => {
+                problems.push(format!("webmcp {e:#}"));
+                None
+            }
+        }
+    }
+
     /// Connect every enabled server plus an explicit set of session-scoped
     /// extras. Tests pass an empty map so an ambient `ASTER_MCP_EXTRA` in the
     /// environment cannot change the catalog they assert on.
@@ -823,6 +924,10 @@ impl McpRuntime {
             webmcp_connection: None,
             disabled_servers,
             filtered_tools,
+            on_demand: Some(Arc::new(OnDemand {
+                servers: Self::enabled_servers(settings),
+                eras: hit.eras,
+            })),
         })
     }
 
@@ -902,28 +1007,7 @@ impl McpRuntime {
 
         let (web_connection, shortcuts_connection) = Self::in_process_tools(&mut tools);
 
-        // The WebMCP bridge attaches to the user's browser, so it is opt-in
-        // and its failure is a problem line, never a session failure.
-        let webmcp_connection = if settings.webmcp.enabled {
-            match aster_webmcp::WebmcpBackend::connect(&settings.webmcp).await {
-                Ok(backend) => match backend.list_tools().await {
-                    Ok(listed) => {
-                        tools.extend(listed);
-                        Some(Arc::new(WebmcpConnection { backend }))
-                    }
-                    Err(e) => {
-                        problems.push(format!("webmcp {e:#}"));
-                        None
-                    }
-                },
-                Err(e) => {
-                    problems.push(format!("webmcp {e:#}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let webmcp_connection = Self::webmcp_tools(settings, &mut tools, &mut problems).await;
 
         let cached_eras = repo_root
             .and_then(|root| crate::mcp_cache::load(root, settings))
@@ -992,6 +1076,7 @@ impl McpRuntime {
             webmcp_connection,
             disabled_servers,
             filtered_tools,
+            on_demand: None,
         };
         (Some(runtime), problems)
     }
@@ -1107,6 +1192,23 @@ impl McpRuntime {
             bail!("the WebMCP bridge is not connected");
         }
         let mut connections = self.connections.lock().await;
+        if !connections.contains_key(&tool.server)
+            && let Some(on_demand) = &self.on_demand
+            && let Some(config) = on_demand.servers.get(&tool.server)
+        {
+            match Self::start_one(
+                &tool.server,
+                config,
+                on_demand.eras.get(&tool.server).cloned(),
+            )
+            .await
+            {
+                Ok((connection, _)) => {
+                    connections.insert(tool.server.clone(), connection);
+                }
+                Err(e) => bail!("MCP server `{}` could not start: {e:#}", tool.server),
+            }
+        }
         let connection = connections
             .get_mut(&tool.server)
             .with_context(|| format!("MCP server `{}` is not connected", tool.server))?;

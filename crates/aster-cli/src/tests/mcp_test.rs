@@ -1145,3 +1145,48 @@ fn stored_tokens_round_trip_and_skip_empty_fields() {
     assert_eq!(back.access_token, "at");
     assert_eq!(back.refresh_token.as_deref(), Some("rt"));
 }
+
+#[tokio::test]
+async fn a_cached_runtime_spawns_a_server_on_its_first_call() {
+    if !has_python() {
+        return;
+    }
+    let settings = python_settings();
+    let repo = tempfile::tempdir().unwrap();
+    // A live connect seeds the cache this test then reads.
+    let (seed, problems) = McpRuntime::connect_at(&settings, repo.path()).await;
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(seed.is_some());
+
+    let (runtime, problems) = McpRuntime::lazy(&settings, repo.path()).await;
+    assert!(problems.is_empty(), "{problems:?}");
+    let runtime = runtime.expect("cached tools make a runtime");
+    let tool = runtime
+        .injector()
+        .catalog()
+        .get("fake/create_issue")
+        .expect("the cached tool")
+        .clone();
+    let result = runtime
+        .call(&tool, &json!({ "repo": "aster" }))
+        .await
+        .expect("the server connects on demand");
+    assert!(render_result(&result).text.contains("ran create_issue"));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_lazy_runtime_falls_back_to_a_full_connect_without_a_cache() {
+    if !has_python() {
+        return;
+    }
+    let repo = tempfile::tempdir().unwrap();
+    let (runtime, problems) = McpRuntime::lazy(&python_settings(), repo.path()).await;
+    assert!(problems.is_empty(), "{problems:?}");
+    let runtime = runtime.expect("a cold folder connects eagerly");
+    assert_eq!(
+        runtime.tool_count(),
+        2 + web_tool_count() + shortcuts_tool_count()
+    );
+    runtime.shutdown().await;
+}

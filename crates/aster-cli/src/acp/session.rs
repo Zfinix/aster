@@ -128,7 +128,7 @@ pub(super) async fn open(
     let (mcp, problems) = if opts.no_mcp {
         (None, Vec::new())
     } else {
-        crate::mcp::McpRuntime::connect_at(&settings.mcp, &repo_root).await
+        crate::mcp::McpRuntime::lazy(&settings.mcp, &repo_root).await
     };
     for problem in &problems {
         eprintln!("mcp: {problem}");

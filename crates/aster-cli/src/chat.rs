@@ -952,7 +952,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     let (mcp, mcp_problems) = if args.no_mcp {
         (None, Vec::new())
     } else {
-        crate::mcp::McpRuntime::connect_at(&settings.mcp, &repo_root).await
+        crate::mcp::McpRuntime::lazy(&settings.mcp, &repo_root).await
     };
     for problem in &mcp_problems {
         eprintln!("{}", console::style(format!("✗ {problem}")).red());
