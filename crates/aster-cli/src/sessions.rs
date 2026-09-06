@@ -39,9 +39,19 @@ enum SessionsCmd {
     Rename { id: String, title: String },
     /// Copy this repo's conversations from another coding tool (Claude Code, Codex, Cursor, opencode, Hermes).
     Import {
-        /// Which tool to read; omitted, all three are tried.
+        /// Which tool to read; omitted, all five are tried.
         #[arg(long, value_enum)]
         from: Option<crate::import::Source>,
+        /// Only sessions created on or after this: a date (2026-09-05), `today`,
+        /// or a span back (30m, 12h, 7d).
+        #[arg(long, value_name = "WHEN")]
+        since: Option<String>,
+        /// Only sessions created on or before this, same forms as `--since`.
+        #[arg(long, value_name = "WHEN")]
+        until: Option<String>,
+        /// List oldest first instead of the newest-first default.
+        #[arg(long)]
+        oldest_first: bool,
         /// Report what would be imported without writing anything.
         #[arg(long)]
         dry_run: bool,
@@ -126,8 +136,16 @@ pub async fn run_sessions(args: SessionsArgs) -> Result<()> {
     let interactive = args.is_interactive();
 
     match args.cmd.unwrap_or(SessionsCmd::List) {
-        SessionsCmd::Import { from, dry_run } => {
-            return crate::import::run_sessions_import(from, dry_run).await;
+        SessionsCmd::Import {
+            from,
+            since,
+            until,
+            oldest_first,
+            dry_run,
+        } => {
+            let mut range = crate::import::TimeRange::parse(since.as_deref(), until.as_deref())?;
+            range.oldest_first = oldest_first;
+            return crate::import::run_sessions_import(from, range, dry_run).await;
         }
         SessionsCmd::List if interactive => {
             return pick_session(store, &repo_root, args.all).await;

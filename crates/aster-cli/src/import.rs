@@ -375,6 +375,77 @@ struct ImportedMessage {
     ts: DateTime<Utc>,
 }
 
+/// Inclusive window over session creation times, plus list order.
+pub struct TimeRange {
+    pub(crate) since: Option<DateTime<Utc>>,
+    pub(crate) until: Option<DateTime<Utc>>,
+    pub(crate) oldest_first: bool,
+}
+
+impl TimeRange {
+    pub fn parse(since: Option<&str>, until: Option<&str>) -> Result<Self> {
+        Ok(Self {
+            since: since.map(parse_when).transpose()?,
+            until: until.map(parse_when_until).transpose()?,
+            oldest_first: false,
+        })
+    }
+
+    fn contains(&self, at: DateTime<Utc>) -> bool {
+        self.since.is_none_or(|c| at >= c) && self.until.is_none_or(|c| at <= c)
+    }
+
+    fn sort(&self, sessions: &mut [ImportedSession]) {
+        if self.oldest_first {
+            sessions.sort_by_key(|s| s.created_at);
+        } else {
+            sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
+        }
+    }
+}
+
+/// Accepts `2026-09-05`, `today`, or a span back like `30m`, `12h`, `7d`.
+fn parse_when(input: &str) -> Result<DateTime<Utc>> {
+    let input = input.trim();
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(input, "%Y-%m-%d") {
+        return midnight(date).context("invalid date");
+    }
+    if input.eq_ignore_ascii_case("today") {
+        return midnight(Utc::now().date_naive()).context("invalid date");
+    }
+    relative(input)
+}
+
+/// `--until` lands at the end of the given day, so the day itself is included.
+fn parse_when_until(input: &str) -> Result<DateTime<Utc>> {
+    let input = input.trim();
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(input, "%Y-%m-%d") {
+        return date
+            .and_hms_opt(23, 59, 59)
+            .map(|dt| dt.and_utc())
+            .context("invalid date");
+    }
+    parse_when(input)
+}
+
+fn midnight(date: chrono::NaiveDate) -> Option<DateTime<Utc>> {
+    date.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc())
+}
+
+fn relative(input: &str) -> Result<DateTime<Utc>> {
+    let (digits, unit) = input.split_at(input.len().checked_sub(1).context("empty time value")?);
+    let n: i64 = digits
+        .parse()
+        .with_context(|| format!("cannot read a date or span from {input:?}"))?;
+    let duration = match unit {
+        "m" => chrono::Duration::minutes(n),
+        "h" => chrono::Duration::hours(n),
+        "d" => chrono::Duration::days(n),
+        _ => bail!("unknown span unit {unit:?}; use m, h, or d"),
+    };
+    Ok(Utc::now() - duration)
+}
+
 fn first_user_text(session: &ImportedSession) -> &str {
     session
         .messages
@@ -386,27 +457,35 @@ fn first_user_text(session: &ImportedSession) -> &str {
 
 /// `aster sessions import`: copy this repo's conversations into the session
 /// store. Only user and assistant text carries over; tool traffic stays behind.
-pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<()> {
+pub async fn run_sessions_import(
+    from: Option<Source>,
+    range: TimeRange,
+    dry_run: bool,
+) -> Result<()> {
     let repo_root = std::env::current_dir().context("could not determine the current directory")?;
     let store = crate::persist::store()?;
 
     let mut found = Vec::new();
     for source in picked(from) {
-        let sessions = match source {
+        let mut sessions = match source {
             Source::Claude => claude_sessions(&repo_root)?,
             Source::Codex => codex_sessions(&repo_root)?,
             Source::Cursor => cursor_sessions(&repo_root)?,
             Source::Opencode => opencode_sessions(&repo_root)?,
             Source::Hermes => hermes_sessions(&repo_root)?,
         };
-        found.push((source, sessions));
+        let before = sessions.len();
+        sessions.retain(|s| range.contains(s.created_at));
+        let dropped = before - sessions.len();
+        range.sort(&mut sessions);
+        found.push((source, sessions, dropped));
     }
 
-    let all: usize = found.iter().map(|(_, s)| s.len()).sum();
+    let all: usize = found.iter().map(|(_, s, _)| s.len()).sum();
     if !dry_run && crate::picker::is_tty() && all > 0 {
         let items: Vec<crate::picker::Item> = found
             .iter()
-            .flat_map(|(_, sessions)| sessions.iter())
+            .flat_map(|(_, sessions, _)| sessions.iter())
             .map(|s| crate::picker::Item {
                 name: s.id.clone(),
                 detail: format!(
@@ -422,7 +501,7 @@ pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<
             return Ok(());
         };
         let mut index = 0usize;
-        for (_, sessions) in &mut found {
+        for (_, sessions, _) in &mut found {
             let keep: Vec<bool> = (0..sessions.len())
                 .map(|i| chosen.contains(&(index + i)))
                 .collect();
@@ -433,7 +512,7 @@ pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<
     }
 
     let mut report = Vec::new();
-    for (source, sessions) in &found {
+    for (source, sessions, dropped) in &found {
         let mut imported = Vec::new();
         let mut skipped = 0usize;
         for session in sessions {
@@ -447,17 +526,18 @@ pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<
                 skipped += 1;
             }
         }
-        report.push((*source, imported, skipped));
+        report.push((*source, imported, skipped, *dropped));
     }
 
     if crate::json_mode() {
         let out: Vec<Value> = report
             .iter()
-            .map(|(source, imported, skipped)| {
+            .map(|(source, imported, skipped, dropped)| {
                 json!({
                     "source": source.name(),
                     "imported": imported,
                     "skipped_existing": skipped,
+                    "outside_range": dropped,
                     "dry_run": dry_run,
                 })
             })
@@ -466,16 +546,21 @@ pub async fn run_sessions_import(from: Option<Source>, dry_run: bool) -> Result<
         return Ok(());
     }
     let mut landed = 0usize;
-    for (source, imported, skipped) in report {
+    for (source, imported, skipped, dropped) in report {
         let verb = if dry_run { "would import" } else { "imported" };
         landed += imported.len();
-        match (imported.len(), skipped) {
-            (0, 0) => println!("{}: nothing found for this repo", source.name()),
-            (n, 0) => println!("{}: {verb} {n} session(s)", source.name()),
-            (n, s) => println!(
-                "{}: {verb} {n} session(s), {s} already imported",
-                source.name()
-            ),
+        match (imported.len(), skipped, dropped) {
+            (0, 0, 0) => println!("{}: nothing found for this repo", source.name()),
+            (n, s, d) => {
+                let mut line = format!("{}: {verb} {n} session(s)", source.name());
+                if s > 0 {
+                    line.push_str(&format!(", {s} already imported"));
+                }
+                if d > 0 {
+                    line.push_str(&format!(", {d} outside the date range"));
+                }
+                println!("{line}");
+            }
         }
     }
     if dry_run {
@@ -549,10 +634,16 @@ fn claude_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
 
         let mut messages = Vec::new();
         let mut model = None;
+        let mut title = None;
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
+            // Claude Code names its sessions with a title line; keep the last.
+            if v["type"] == json!("ai-title") {
+                title = v["aiTitle"].as_str().map(str::to_string).or(title);
+                continue;
+            }
             // Sidechains are subagent transcripts, meta lines are bookkeeping.
             if v["isSidechain"] == json!(true) || v["isMeta"] == json!(true) {
                 continue;
@@ -577,7 +668,7 @@ fn claude_sessions(repo_root: &Path) -> Result<Vec<ImportedSession>> {
         }
         sessions.push(ImportedSession {
             id: format!("claude-{stem}"),
-            title: None,
+            title,
             model,
             created_at: messages[0].ts,
             messages,
