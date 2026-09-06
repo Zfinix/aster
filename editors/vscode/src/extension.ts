@@ -3,7 +3,8 @@ import { FindingDiagnostics } from "./diagnostics";
 import { FindingsTreeProvider, openFinding } from "./findingsTree";
 import { AsterPanel } from "./panel";
 import { SettingsPanel } from "./settingsPanel";
-import { runCli } from "./asterCli";
+import { cliConfig, runCli, useBundledCli } from "./asterCli";
+import { installShellCommand, onShellPath, refreshShellCommand } from "./shellCommand";
 import { registerOutputProvider } from "./outputProvider";
 import { Finding } from "./types";
 
@@ -13,6 +14,39 @@ function supportsSecondarySidebar(): boolean {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  const bundled = useBundledCli(context.extensionPath);
+  if (bundled) {
+    // The link an older version made points into its own folder, which this
+    // update replaced; repair it before anything asks the user about it.
+    void refreshShellCommand(bundled).then(() => offerShellCommand(context, bundled));
+  }
+
+  function report(result: { ok: boolean; message: string }): void {
+    void (result.ok
+      ? vscode.window.showInformationMessage(result.message)
+      : vscode.window.showErrorMessage(`Could not add aster to your PATH: ${result.message}`));
+  }
+
+  /** Offered once, the first time a build carrying the CLI starts up without an
+   *  aster the user's own terminal can find. */
+  async function offerShellCommand(
+    context: vscode.ExtensionContext,
+    binary: string
+  ): Promise<void> {
+    const KEY = "aster.shellCommandOffered";
+    if (context.globalState.get<boolean>(KEY)) return;
+    if (await onShellPath()) return;
+    await context.globalState.update(KEY, true);
+    const yes = "Add to PATH";
+    const answer = await vscode.window.showInformationMessage(
+      "Aster ships its CLI with the extension. Add the aster command to your PATH?",
+      yes,
+      "Not now"
+    );
+    if (answer !== yes) return;
+    report(await installShellCommand(binary));
+  }
+
   void vscode.commands.executeCommand(
     "setContext",
     "aster.noSecondarySidebar",
@@ -56,6 +90,10 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("aster.openInNewWindow", () => panel.openInNewWindow()),
     vscode.commands.registerCommand("aster.openSettings", () => settings.open()),
+    vscode.commands.registerCommand("aster.installShellCommand", async () => {
+      const binary = useBundledCli(context.extensionPath) ?? cliConfig().binary;
+      report(await installShellCommand(binary));
+    }),
     // `aster.binaryPath` decides whether the panel believes the CLI exists, so
     // pointing it somewhere new has to re-run that check rather than wait for a
     // reload; the settings tab re-reads for the same reason.

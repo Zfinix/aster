@@ -62,14 +62,14 @@ fn a_command_with_args_runs_as_a_command() {
 #[test]
 fn a_dragged_absolute_path_submits_as_a_message() {
     let mut p = pane();
-    let path = "/Users/chizi/Desktop/Screen\\ Recording\\ 2026-08-01\\ AM.mov";
+    let path = "/Users/me/Desktop/Screen\\ Recording\\ 2026-08-01\\ AM.mov";
     match type_and_enter(&mut p, path) {
         InputResult::Submitted { text, refs } => {
             assert!(text.contains("[@"), "path should fold to a ref: {text}");
             assert_eq!(refs.len(), 1);
             assert_eq!(
                 refs[0].1,
-                "/Users/chizi/Desktop/Screen Recording 2026-08-01 AM.mov"
+                "/Users/me/Desktop/Screen Recording 2026-08-01 AM.mov"
             );
         }
         _ => panic!("expected a submission"),

@@ -70,8 +70,8 @@ above, where the mistake is inside `args`, still pass through unrepaired.
 ## 4. Models invent absolute paths instead of using the working directory
 
 ```
-cd /Users/chizi/repos/aster && git log --oneline -3   -> No such file or directory
-find /Users/chiziaruhoma/Downloads -name building-aster.pdf
+cd /Users/me/repos/aster && git log --oneline -3   -> No such file or directory
+find /Users/mdev/Downloads -name building-aster.pdf
 ```
 
 The first invents a repo location; the second invents a username. Every call

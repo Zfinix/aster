@@ -38,8 +38,29 @@ impl Cli {
     }
 
     pub async fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<Output, String> {
-        let mut child = self
-            .command(args)
+        self.run_with(self.command(args), stdin).await
+    }
+
+    /// A run under a changed environment: `set` adds or replaces variables,
+    /// `unset` removes them for this child only.
+    pub async fn run_env(
+        &self,
+        args: &[&str],
+        set: &[(&str, &str)],
+        unset: &[&str],
+    ) -> Result<Output, String> {
+        let mut cmd = self.command(args);
+        for name in unset {
+            cmd.env_remove(name);
+        }
+        for (name, value) in set {
+            cmd.env(name, value);
+        }
+        self.run_with(cmd, None).await
+    }
+
+    async fn run_with(&self, mut cmd: Command, stdin: Option<&str>) -> Result<Output, String> {
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("could not run {}: {e}", self.bin.display()))?;
         if let Some(mut pipe) = child.stdin.take() {
@@ -60,9 +81,15 @@ impl Cli {
     }
 
     pub async fn json(&self, args: &[&str]) -> Result<Value, String> {
+        self.json_in(args, None).await
+    }
+
+    /// `json` with something on stdin, for the commands that read a secret
+    /// there rather than from the process list.
+    pub async fn json_in(&self, args: &[&str], stdin: Option<&str>) -> Result<Value, String> {
         let mut args = args.to_vec();
         args.push("--json");
-        let out = self.run(&args, None).await?;
+        let out = self.run(&args, stdin).await?;
         let parsed: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| {
             let stderr = out.stderr.trim();
             match stderr.is_empty() {

@@ -10,12 +10,12 @@ describe("splitMentions", () => {
 
   it("splits a macOS screenshot path with spaces", () => {
     const text =
-      "look at @/Users/chizi/.local/share/aster/pasted/01M1RA-Screenshot 2026-07-28 at 4.55.05 PM.png thanks";
+      "look at @/Users/me/.local/share/aster/pasted/01M1RA-Screenshot 2026-07-28 at 4.55.05 PM.png thanks";
     expect(splitMentions(text)).toEqual([
       { kind: "text", text: "look at " },
       {
         kind: "image",
-        path: "/Users/chizi/.local/share/aster/pasted/01M1RA-Screenshot 2026-07-28 at 4.55.05 PM.png",
+        path: "/Users/me/.local/share/aster/pasted/01M1RA-Screenshot 2026-07-28 at 4.55.05 PM.png",
       },
       { kind: "text", text: " thanks" },
     ]);
@@ -23,11 +23,11 @@ describe("splitMentions", () => {
 
   it("renders the full staged screenshot path from chat history", () => {
     const text =
-      "@/Users/chizi/.local/share/aster/pasted/01M1REJY5B3RG24R6AN6VCSM2H-Screenshot 2026-08-24 at 5.57.30 PM.png";
+      "@/Users/me/.local/share/aster/pasted/01M1REJY5B3RG24R6AN6VCSM2H-Screenshot 2026-08-24 at 5.57.30 PM.png";
     expect(splitMentions(text)).toEqual([
       {
         kind: "image",
-        path: "/Users/chizi/.local/share/aster/pasted/01M1REJY5B3RG24R6AN6VCSM2H-Screenshot 2026-08-24 at 5.57.30 PM.png",
+        path: "/Users/me/.local/share/aster/pasted/01M1REJY5B3RG24R6AN6VCSM2H-Screenshot 2026-08-24 at 5.57.30 PM.png",
       },
     ]);
   });
@@ -70,14 +70,14 @@ describe("splitMentions", () => {
   });
 
   it("shows a staged paste under the name it was given", () => {
-    expect(displayName("/Users/chizi/.local/share/aster/pasted/01M1RBCZV654JRHMC8SPZWQ4VX-Invoice 13 - August 2026.pdf")).toBe(
+    expect(displayName("/Users/me/.local/share/aster/pasted/01M1RBCZV654JRHMC8SPZWQ4VX-Invoice 13 - August 2026.pdf")).toBe(
       "Invoice 13 - August 2026.pdf"
     );
   });
 
   it("leaves an @word that is not a file as text", () => {
-    expect(splitMentions("ping @chizi about this")).toEqual([
-      { kind: "text", text: "ping @chizi about this" },
+    expect(splitMentions("ping @casey about this")).toEqual([
+      { kind: "text", text: "ping @casey about this" },
     ]);
   });
 });

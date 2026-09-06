@@ -157,7 +157,7 @@ fn cancel_mention_removes_at_and_query() {
 fn an_escaped_absolute_path_folds_and_records_a_clean_reference() {
     let mut c = Composer::default();
     c.insert_str(
-        "look at /Users/chizi/Desktop/Screen\\ Recording\\ 2026-08-01\\ at\\ 10.52.58\\ AM.mov ok",
+        "look at /Users/me/Desktop/Screen\\ Recording\\ 2026-08-01\\ at\\ 10.52.58\\ AM.mov ok",
     );
     let text = c.take();
     assert!(text.contains("[@"), "got: {text}");
@@ -170,7 +170,7 @@ fn an_escaped_absolute_path_folds_and_records_a_clean_reference() {
     let (mark, path) = &refs[0];
     assert_eq!(
         path,
-        "/Users/chizi/Desktop/Screen Recording 2026-08-01 at 10.52.58 AM.mov"
+        "/Users/me/Desktop/Screen Recording 2026-08-01 at 10.52.58 AM.mov"
     );
     assert!(
         text.contains(mark),

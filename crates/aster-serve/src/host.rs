@@ -219,6 +219,7 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             let target = message["target"].as_str().unwrap_or_default();
             run::login(state, &instance, target).await?;
         }
+        "connect" => run::connect(state, &instance, message).await?,
         "compact" => {
             let model = message["model"].as_str().filter(|m| !m.is_empty());
             match info::compact(&state.cli, &message["messages"], model).await {
@@ -306,7 +307,7 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
     Ok(())
 }
 
-async fn init(state: &Arc<AppState>) -> Value {
+pub(crate) async fn init(state: &Arc<AppState>) -> Value {
     let root = state.cli.root.clone();
     let settings = state.settings.lock().await.clone();
     let recommended = recommended(state).await;

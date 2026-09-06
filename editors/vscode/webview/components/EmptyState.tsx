@@ -1,44 +1,41 @@
-import type { SetupInfo } from "../../src/protocol";
+import { useState } from "react";
+import type { Provider, SetupInfo } from "../../src/protocol";
 import type { LoginState } from "../lib/login";
+import { Announcement } from "./Announcement";
+import { InstallCard } from "./InstallCard";
 import { Mark } from "./Mark";
 import { SetupCard } from "./SetupCard";
 import { Tip } from "./Tip";
+import { CloseIcon } from "./icons";
+import { post } from "../lib/host";
 import { OPENERS, TIPS, useRotation } from "../lib/greeting";
-
-const INSTALL_CMD = "curl -fsSL https://withaster.dev/install | sh";
 
 const TIP_MS = 11000;
 
 export function EmptyState({
-  repoName,
-  branch,
   binaryOk,
   setup,
+  announcements,
   login,
+  providers,
 }: {
-  repoName: string | null;
-  branch: string | null;
   binaryOk: boolean;
   setup: SetupInfo | null;
+  announcements: { id: string; text: string }[] | null;
   login: LoginState | null;
+  providers: Provider[];
 }) {
   const opener = useRotation(OPENERS);
   const tip = useRotation(TIPS, TIP_MS);
+  const [announcementsGone, setAnnouncementsGone] = useState(false);
 
   if (!binaryOk) {
     return (
       <div className="empty">
-        <Mark px={2.6} />
-        <h1 className="empty-title">Aster CLI not found</h1>
-        <p className="empty-body">
-          Reviews run through the <code>aster</code> binary. Install it, then reload the window.
-        </p>
-        <pre className="code-block">
-          <code>{INSTALL_CMD}</code>
-        </pre>
-        <p className="empty-hint">
-          Installed elsewhere? Set <code>aster.binaryPath</code>.
-        </p>
+        <Mark px={2.6} interactive />
+        <div className="setup-stream">
+          <InstallCard />
+        </div>
       </div>
     );
   }
@@ -46,29 +43,54 @@ export function EmptyState({
   if (setup) {
     return (
       <div className="empty">
-        <Mark px={2.6} />
-        <SetupCard setup={setup} login={login} />
+        <Mark px={2.6} interactive />
+        <div className="setup-stream">
+          <SetupCard login={login} providers={providers} />
+        </div>
       </div>
     );
   }
+
+  const showAnnouncements = announcements && announcements.length > 0 && !announcementsGone;
 
   return (
     <div className="empty">
       <Mark px={2.6} interactive />
       <h1 className="empty-title">{opener}</h1>
-      {repoName ? (
-        <p className="empty-body">
-          {repoName}
-          {branch && <span className="empty-branch"> · {branch}</span>}
-        </p>
-      ) : (
-        <p className="empty-body">Open a folder to get started.</p>
+      {showAnnouncements && (
+        <div className="empty-announcements">
+          <div className="empty-announcements-head">
+            <span className="empty-announcements-title">What's new</span>
+            <button
+              type="button"
+              className="icon-btn empty-announcements-dismiss"
+              title="Dismiss"
+              aria-label="Dismiss announcements"
+              onClick={() => {
+                setAnnouncementsGone(true);
+                post({ type: "dismissAnnouncements", ids: announcements.map((a) => a.id) });
+              }}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+          <ul className="empty-announcements-items">
+            {announcements.map((a) => (
+              <li key={a.id}>
+                <Announcement text={a.text} />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
-      {/* Remounting on the text replays the fade, so a new tip arrives rather
+      {/* The card takes the tip's slot: one footnote under the greeting, not two.
+          Remounting on the text replays the fade, so a new tip arrives rather
           than swapping in place. */}
-      <p className="empty-tip" key={tip}>
-        <Tip text={tip} />
-      </p>
+      {!showAnnouncements && (
+        <p className="empty-tip" key={tip}>
+          <Tip text={tip} />
+        </p>
+      )}
     </div>
   );
 }
