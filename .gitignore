@@ -29,3 +29,6 @@ node_modules/
 
 # Zed extension build artifacts
 editors/zed/target/
+
+# The CLI a platform build carries; put there at package time.
+editors/vscode/bin/

@@ -2,7 +2,7 @@
   "name": "aster-vscode",
   "displayName": "Aster AI",
   "description": "AI coding agent in your editor: chat, verified code review, and one-click fixes",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "aster-dev",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -39,11 +39,11 @@
       },
       {
         "command": "aster.reviewRange",
-        "title": "Aster: Review Git Range…"
+        "title": "Aster: Review Git Range\u2026"
       },
       {
         "command": "aster.reviewPr",
-        "title": "Aster: Review GitHub PR…"
+        "title": "Aster: Review GitHub PR\u2026"
       },
       {
         "command": "aster.cancelReview",
@@ -112,6 +112,10 @@
         "command": "aster.openSettings",
         "title": "Aster: Open Settings",
         "icon": "$(gear)"
+      },
+      {
+        "command": "aster.installShellCommand",
+        "title": "Aster: Install 'aster' Command in PATH"
       }
     ],
     "keybindings": [
@@ -293,7 +297,9 @@
     "vscode:prepublish": "bun run build",
     "test": "vitest run",
     "icons": "node scripts/icon-gallery.mjs",
-    "dev:web": "bun run build:webview && tsc -p ./ && node out/devhost/main.js"
+    "dev:web": "bun run build:webview && tsc -p ./ && node out/devhost/main.js",
+    "bundle:cli": "node scripts/bundle-cli.mjs",
+    "package:target": "bun run build && vsce package --no-dependencies --target"
   },
   "devDependencies": {
     "@shikijs/core": "^4.3.1",
