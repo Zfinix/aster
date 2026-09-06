@@ -21,6 +21,7 @@ import { ContextMeter } from "./ContextMeter";
 import { McpPicker } from "./McpPicker";
 import { ModelMenu } from "./ModelMenu";
 import { Popover } from "./Popover";
+import { QueuedList } from "./QueuedTurn";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
 import {
   ActivityIcon,
@@ -120,6 +121,11 @@ export function Composer({
   onEffort,
   onProvider,
   onToggleMcp,
+  queued,
+  onSteerQueued,
+  onEditQueued,
+  onReorderQueued,
+  onUnqueue,
 }: {
   busy: boolean;
   model: string | null;
@@ -152,6 +158,11 @@ export function Composer({
   onEffort: (effort: Effort | null) => void;
   onProvider: (provider: Provider) => void;
   onToggleMcp: (name: string, disabled: boolean) => void;
+  queued: { id: string; text: string }[];
+  onSteerQueued: (id: string) => void;
+  onEditQueued: (id: string, text: string) => void;
+  onReorderQueued: (from: number, to: number) => void;
+  onUnqueue: (id: string) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -651,6 +662,13 @@ export function Composer({
         }}
         onDrop={onDrop}
       >
+        <QueuedList
+          queued={queued}
+          onSteer={onSteerQueued}
+          onEdit={onEditQueued}
+          onRemove={onUnqueue}
+          onReorder={onReorderQueued}
+        />
         {attachments.length > 0 && (
           <div className="composer-files">
             {attachments.map((file) => (
