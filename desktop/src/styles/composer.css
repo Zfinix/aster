@@ -31,6 +31,7 @@
   --ring: var(--mode-auto);
   --send: var(--mode-auto);
   --send-fg: #0b1f14;
+  border-color: var(--mode-auto);
 }
 
 .composer[data-permission-mode="auto"] .mode-btn {
