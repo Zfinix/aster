@@ -871,7 +871,9 @@ impl McpRuntime {
             Ok(catalog) => match Injector::new(catalog, settings.progressive()) {
                 // The built-in web tools are five stable names; listing them
                 // outright saves the search round a large catalogue forces.
-                Ok(injector) => injector.pin_servers(["web"]),
+                // chrome-devtools is pinned too so `take_screenshot` is always
+                // visible for localhost pages that web/screenshot cannot reach.
+                Ok(injector) => injector.pin_servers(["web", "chrome-devtools"]),
                 Err(e) => {
                     problems.push(format!("MCP injector rejected: {e}"));
                     return (None, problems);

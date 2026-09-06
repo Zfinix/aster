@@ -516,7 +516,7 @@ pub fn screenshot_tool() -> McpTool {
     aster_mcp::McpTool {
         server: "web".into(),
         name: "screenshot".into(),
-        description: "Capture a PNG screenshot of a rendered page via Context.dev and return its CDN URL. Use full_page to capture the entire scrollable height.".into(),
+        description: "Capture a PNG screenshot of a rendered page via Context.dev and return its CDN URL. Use full_page to capture the entire scrollable height. Only works for public, internet-reachable URLs; for localhost pages use `chrome-devtools/take_screenshot` instead.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
