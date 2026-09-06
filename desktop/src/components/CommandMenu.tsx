@@ -252,7 +252,7 @@ function score(item: MenuItem, title: string | undefined, q: string): number | n
   if (names.some((name) => name.includes(q))) return 2;
   if (title?.toLowerCase().includes(q)) return 3;
   if (detail?.includes(q)) return 4;
-  // Initials and dropped letters, so `wlc` still finds `write-like-chizi`. One
+  // Initials and dropped letters, so `wlc` still finds `write-like-casey`. One
   // letter would match nearly everything, so it takes two.
   if (q.length > 1 && names.some((name) => subsequence(name, q))) return 5;
   return null;

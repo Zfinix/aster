@@ -2045,8 +2045,8 @@ fn a_path_is_not_a_skill() {
     let dir = tempfile::tempdir().expect("tempdir");
     let skills = skill_set(dir.path(), "write-tests");
     assert_eq!(
-        expand_skill("/Users/chizi/write-tests", &skills),
-        "/Users/chizi/write-tests"
+        expand_skill("/Users/me/write-tests", &skills),
+        "/Users/me/write-tests"
     );
 }
 

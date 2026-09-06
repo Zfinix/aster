@@ -6,7 +6,7 @@
     <script>
       const listeners = new Map();
       let cbId = 0;
-      const repo = "/Users/chizi/projects/work-projects/aster";
+      const repo = "/Users/me/code/aster";
       const msg = (role, content, extra = {}) => ({ type: "message", role, content, ts: new Date().toISOString(), ...extra });
       const sessions = [
         { id: "s1", created_at: new Date(Date.now() - 3600e3).toISOString(), model: "anthropic/claude-sonnet-5", turns: 4, title: "Make the sidebar collapse remember its state" },
@@ -92,7 +92,7 @@
             }
             case "plugin:event|unlisten": return null;
             case "plugin:app|version": return "0.5.0";
-            case "startup_info": return { defaultRepo: repo, binPath: "/Users/chizi/.cargo/bin/aster" };
+            case "startup_info": return { defaultRepo: repo, binPath: "/Users/me/.cargo/bin/aster" };
             case "auth_status": return { hasKey: true, baseUrl: null, model: "anthropic/claude-sonnet-5" };
             case "list_sessions": return sessions;
             case "show_session": return { id: args.id, events: transcripts[args.id] ?? [] };

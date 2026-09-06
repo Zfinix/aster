@@ -44,9 +44,9 @@ const sections: MenuSection[] = [
       },
       {
         kind: "action",
-        id: "skill:write-like-chizi",
-        label: "/write-like-chizi",
-        slash: "/write-like-chizi",
+        id: "skill:write-like-casey",
+        label: "/write-like-casey",
+        slash: "/write-like-casey",
         detail: "Blog posts in his voice",
         run: noop,
       },
@@ -72,7 +72,7 @@ describe("rank", () => {
   });
 
   it("searches past the limit, so a name always reaches its row", () => {
-    expect(labels(rank(sections, "write-like"))).toEqual(["/write-like-chizi"]);
+    expect(labels(rank(sections, "write-like"))).toEqual(["/write-like-casey"]);
   });
 
   it("lifts the limit once a query is on", () => {
@@ -100,7 +100,7 @@ describe("rank", () => {
   });
 
   it("takes initials, so a long skill name is a few keystrokes", () => {
-    expect(labels(rank(sections, "wlc"))).toEqual(["/write-like-chizi"]);
+    expect(labels(rank(sections, "wlc"))).toEqual(["/write-like-casey"]);
   });
 
   it("drops sections with nothing left", () => {

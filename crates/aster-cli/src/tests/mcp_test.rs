@@ -588,7 +588,7 @@ async fn a_server_crashing_at_startup_is_reported_offline_with_its_stderr() {
 #[test]
 fn a_node_crash_dump_line_is_cut_down_to_the_reason() {
     let line = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@modelcontextprotocol/sdk' \
-                imported from /Users/chizi/projects/work-projects/mcp/linkedin-mcp/build/server.js";
+                imported from /Users/me/code/mcp/linkedin-mcp/build/server.js";
     assert_eq!(
         brief(line),
         "Cannot find package '@modelcontextprotocol/sdk'"

@@ -29,7 +29,7 @@ describe("redactSecrets", () => {
   });
 
   it("leaves a long path readable", () => {
-    const path = "node /Users/chizi/projects/work-projects/mcp/gta_mcp/build/server.js";
+    const path = "node /Users/me/code/mcp/gta_mcp/build/server.js";
     expect(redactSecrets(path)).toBe(path);
   });
 });
