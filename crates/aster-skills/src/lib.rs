@@ -65,6 +65,7 @@ const INTERNAL_SKILLS: &[&str] = &[
     include_str!("../builtins/internal/structural-edits/SKILL.md"),
     include_str!("../builtins/internal/lsp-navigation/SKILL.md"),
     include_str!("../builtins/internal/web-research/SKILL.md"),
+    include_str!("../builtins/internal/git-worktrees/SKILL.md"),
 ];
 
 /// Installed skills under `<root>/internal/<name>/SKILL.md` are internal too.
