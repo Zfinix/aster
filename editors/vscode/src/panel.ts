@@ -537,6 +537,13 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         await vscode.window.showTextDocument(doc, { preview: true });
         break;
       }
+      case "setSounds":
+        // The config watcher re-inits the panel, which is what syncs the
+        // webview, so no direct push here.
+        await vscode.workspace
+          .getConfiguration("aster")
+          .update("sounds", message.enabled, vscode.ConfigurationTarget.Global);
+        break;
       case "setPermissionMode":
         await this.context.globalState.update(PERMISSION_KEY, message.mode);
         break;
@@ -1074,6 +1081,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       permissionMode: this.permissionMode(),
       effort: this.effort(),
       binaryOk: await checkBinary(cliConfig().binary),
+      sounds: vscode.workspace.getConfiguration("aster").get<boolean>("sounds", true),
+      completionSound: vscode.workspace
+        .getConfiguration("aster")
+        .get<string>("completionSound", "ready"),
       skills: await skillCommands(root),
       setup: await info.setupNeeded(root ?? os.homedir(), this.env()).catch(() => null),
       announcements: announcements.length > 0 ? announcements : undefined,

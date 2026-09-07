@@ -189,6 +189,8 @@ export function start(root: string, port: number): void {
           permissionMode: state.permissionMode,
           effort: state.effort,
           binaryOk: await checkBinary(cliConfig().binary),
+          sounds: true,
+          completionSound: "ready",
           skills: await skillCommands(root),
           setup: state.showSetup
             ? { provider: "OpenRouter", base_url: "https://openrouter.ai/api/v1", login: "openrouter", key_vars: ["OPENROUTER_API_KEY"] }

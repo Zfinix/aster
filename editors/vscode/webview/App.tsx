@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { play } from "cuelume";
 import type {
   ChatStreamEvent,
   Effort,
@@ -21,6 +22,7 @@ import { FindBar } from "./components/FindBar";
 import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { inEditor, nativeFind, onHostMessage, persist, post, restore } from "./lib/host";
+import { playCompletion, setCompletionSound, setSoundsEnabled, soundsEnabled } from "./lib/sounds";
 import { type LoginState, loginLine } from "./lib/login";
 import { modelShort, recentsFor } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
@@ -84,6 +86,7 @@ export function App() {
   const [session, setSession] = useState(saved?.session ?? newSessionId());
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sounds, setSounds] = useState(soundsEnabled);
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [pendingMention, setPendingMention] = useState<{
     text: string;
@@ -183,6 +186,11 @@ export function App() {
         });
         setPermissionMode(message.permissionMode);
         setEffort(message.effort);
+        if (inEditor) {
+          setSoundsEnabled(message.sounds);
+          setCompletionSound(message.completionSound);
+          setSounds(message.sounds);
+        }
         modelRef.current = message.model;
         break;
 
@@ -208,6 +216,7 @@ export function App() {
         if (activeRef.current !== message.id) break;
         activeRef.current = null;
         setBusy(false);
+        play("error");
         patchAssistant(message.id, (turn) => ({
           ...turn,
           errorMsg: message.message,
@@ -227,6 +236,7 @@ export function App() {
       case "reviewStarted":
         activeRef.current = message.id;
         setBusy(true);
+        play("loading");
         patchReview(message.id, (data) => data);
         break;
 
@@ -238,6 +248,7 @@ export function App() {
         if (activeRef.current === message.id) {
           activeRef.current = null;
           setBusy(false);
+          playCompletion();
         }
         patchReview(message.id, (data) => ({ ...data, status: "done" }));
         break;
@@ -246,6 +257,7 @@ export function App() {
         if (activeRef.current === message.id) {
           activeRef.current = null;
           setBusy(false);
+          play("error");
         }
         patchReview(message.id, (data) => ({
           ...data,
@@ -542,6 +554,7 @@ export function App() {
       case "done":
         activeRef.current = null;
         setBusy(false);
+        playCompletion();
         if (event.context_budget) {
           setEffectiveBudget(event.context_budget);
         }
@@ -623,6 +636,7 @@ export function App() {
     setTurns(history);
     setBusy(true);
     activeRef.current = id;
+    play("loading");
     post({
       type: "chat",
       id,
@@ -655,6 +669,7 @@ export function App() {
     setTurns(history);
     setBusy(true);
     activeRef.current = tid;
+    play("loading");
     post({
       type: "chat",
       id: tid,
@@ -849,6 +864,13 @@ export function App() {
         onHistory={() => {
           post({ type: "listSessions" });
           setShowHistory(true);
+        }}
+        soundsOn={sounds}
+        onToggleSounds={() => {
+          const on = !sounds;
+          setSoundsEnabled(on);
+          setSounds(on);
+          if (inEditor) post({ type: "setSounds", enabled: on });
         }}
       />
       {turns.length === 0 ? (

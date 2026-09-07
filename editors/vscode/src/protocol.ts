@@ -202,6 +202,8 @@ export interface EditorSettings {
   minConfidence: number | null;
   publishDiagnostics: boolean;
   extraArgs: string[];
+  sounds: boolean;
+  completionSound: string;
 }
 
 export interface SettingsSnapshot {
@@ -263,6 +265,7 @@ export type ToHost =
   | { type: "openExternal"; url: string }
   | { type: "openUntitled"; content: string; lang?: string; title?: string; doc?: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }
+  | { type: "setSounds"; enabled: boolean }
   | { type: "setModel"; model: string }
   | { type: "setEffort"; effort: Effort | null }
   | { type: "searchFiles"; query: string; requestId: string }
@@ -304,6 +307,8 @@ export type ToWebview =
       permissionMode: PermissionMode;
       effort: Effort | null;
       binaryOk: boolean;
+      sounds: boolean;
+      completionSound: string;
       skills: SkillCommand[];
       setup?: SetupInfo | null;
       announcements?: { id: string; text: string }[];

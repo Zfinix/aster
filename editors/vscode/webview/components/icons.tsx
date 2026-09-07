@@ -27,6 +27,24 @@ export function AsterIcon() {
   );
 }
 
+export function SoundOnIcon() {
+  return (
+    <svg {...base}>
+      <path d="M2.5 6.5h2.5L9 3v10L5 9.5H2.5z" />
+      <path d="M11.5 5.5a3.4 3.4 0 0 1 0 5" />
+    </svg>
+  );
+}
+
+export function SoundOffIcon() {
+  return (
+    <svg {...base}>
+      <path d="M2.5 6.5h2.5L9 3v10L5 9.5H2.5z" />
+      <path d="M11 6.5l3 3M14 6.5l-3 3" />
+    </svg>
+  );
+}
+
 export function SendIcon() {
   return (
     <svg {...base}>

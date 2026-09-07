@@ -1,10 +1,11 @@
 import type { ConfigValue, EditorSettings } from "../../src/protocol";
 import { ListInput } from "./controls/ListInput";
 import { NumberInput } from "./controls/NumberInput";
+import { Select } from "./controls/Select";
 import { TextInput } from "./controls/TextInput";
 import { Toggle } from "./controls/Toggle";
 
-/** The four settings VS Code keeps rather than `aster.yaml`. They are written
+/** The settings VS Code keeps rather than `aster.yaml`. They are written
  *  through the editor's own configuration API, so the scope switcher above does
  *  not apply to them and this page says so. */
 export function EditorSection({
@@ -71,6 +72,44 @@ export function EditorSection({
             label="Minimum confidence"
             unit="none"
             onCommit={(next) => onSet("minConfidence", next)}
+          />
+        </div>
+      </div>
+
+      <div className="set-row">
+        <div className="set-row-text">
+          <div className="set-row-head">
+            <span className="set-row-label">Interaction sounds</span>
+          </div>
+          <p className="set-row-help">
+            Play a cue when a turn or review starts and finishes. The speaker button in the panel
+            toggles the same thing.
+          </p>
+          <p className="set-row-key mono">aster.sounds</p>
+        </div>
+        <div className="set-row-control">
+          <Toggle
+            checked={editor.sounds}
+            label="Interaction sounds"
+            onChange={(next) => onSet("sounds", next)}
+          />
+        </div>
+      </div>
+
+      <div className="set-row">
+        <div className="set-row-text">
+          <div className="set-row-head">
+            <span className="set-row-label">Completion sound</span>
+          </div>
+          <p className="set-row-help">Which sound plays when the agent finishes a turn or review.</p>
+          <p className="set-row-key mono">aster.completionSound</p>
+        </div>
+        <div className="set-row-control">
+          <Select
+            options={["ready", "success", "arrival", "bloom"]}
+            value={editor.completionSound}
+            label="Completion sound"
+            onChange={(next) => onSet("completionSound", next)}
           />
         </div>
       </div>

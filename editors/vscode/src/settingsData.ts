@@ -14,6 +14,10 @@ export function editorSettings(): EditorSettings {
     publishDiagnostics: vscode.workspace
       .getConfiguration("aster")
       .get<boolean>("publishDiagnostics", false),
+    sounds: vscode.workspace.getConfiguration("aster").get<boolean>("sounds", true),
+    completionSound: vscode.workspace
+      .getConfiguration("aster")
+      .get<string>("completionSound", "ready"),
   };
 }
 
