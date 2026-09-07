@@ -194,6 +194,198 @@ body {
   --send: #7d9bf0;
 }
 
+/* The projects sidebar, scaffolded under /demo: every project the server knows,
+   each folded chat under the project it was opened in. The column borrows the
+   editor sidebar's background so it reads as navigation, not content. */
+.demo-page {
+  display: flex;
+  min-height: 100%;
+  color: var(--fg);
+  font-family: var(--vscode-font-family);
+  font-size: 15px;
+}
+
+.projects-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 280px;
+  border-right: 1px solid var(--border);
+  background: var(--vscode-sideBar-background, var(--bg));
+}
+
+.projects-sidebar-top {
+  padding: var(--s3);
+}
+
+.projects-new-chat {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.projects-new-chat:hover {
+  background: var(--list-hover);
+}
+
+.projects-search {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 var(--s3) var(--s2);
+  padding: 4px var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--fg-dim);
+}
+
+.projects-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.projects-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 var(--s2) var(--s3);
+}
+
+.projects-empty {
+  padding: var(--s3);
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
+.projects-group {
+  margin-bottom: var(--s1);
+}
+
+.projects-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s1) var(--s2);
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.projects-group-head:hover {
+  background: var(--list-hover);
+  color: var(--fg);
+}
+
+.projects-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.projects-group-count {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+.projects-chat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--pop-row-pad-y) var(--s2);
+  padding-left: 30px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.projects-chat-row:hover {
+  background: var(--list-hover);
+}
+
+.projects-chat-row[data-active="true"] {
+  background: var(--list-hover);
+  font-weight: 600;
+}
+
+.projects-chat-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-chat-when {
+  flex: none;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.demo-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  padding: 40px var(--s4);
+  text-align: center;
+}
+
+.demo-thread-title {
+  margin: 0;
+  font-size: 20px;
+}
+
+.demo-thread-sub {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
+.demo-thread-note {
+  margin: var(--s3) 0 0;
+  max-width: 480px;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
+.demo-empty-title {
+  margin: var(--s2) 0 0;
+  font-size: 20px;
+}
+
 @media (prefers-color-scheme: light) {
   :root .composer[data-permission-mode="auto"],
   :root .composer[data-permission-mode="edit"] {
