@@ -6,7 +6,6 @@ import * as info from "./info";
 import { persist, probe } from "./connect";
 import { ChatRunner } from "./chatRunner";
 import { IGNORED, searchFiles, skillCommands } from "./commands";
-import { MODELS, RECOMMENDED } from "./models";
 import { deleteSession, listSessions, loadSession, renameSession } from "./sessions";
 import { FindingDiagnostics } from "./diagnostics";
 import { FindingsTreeProvider, openFinding } from "./findingsTree";
@@ -29,6 +28,13 @@ const PERMISSION_KEY = "aster.permissionMode";
 const MODEL_KEY = "aster.model";
 const CUSTOM_MODELS_KEY = "aster.customModels";
 const RECENT_MODELS_KEY = "aster.recentModels";
+const CATALOGS_KEY = "aster.catalogs";
+
+/** One endpoint's answer to `/models`, with the shortlist narrowed to it. */
+interface Catalog {
+  models: string[];
+  recommended: string[];
+}
 const EFFORT_KEY = "aster.effort";
 const PROVIDER_KEY = "aster.provider";
 
@@ -159,7 +165,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  deserializeWebviewPanel(panel: vscode.WebviewPanel): void {
+  async deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
     panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "aster.svg");
     this.tabs.add(panel);
     panel.onDidDispose(() => {
@@ -435,6 +441,42 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     return this.context.globalState.get<string>(MODEL_KEY) || null;
   }
 
+  /** The endpoint every model list here is scoped to, refreshed with init. */
+  private endpoint: string | null = null;
+
+  /** What each endpoint last answered to `/models`, keyed by base URL and kept
+   *  across reloads. Scoped to the endpoint, so a picker opens on the models
+   *  in reach rather than on nothing or on another provider's list. */
+  private catalogs(): Record<string, Catalog> {
+    return this.context.globalState.get<Record<string, Catalog>>(CATALOGS_KEY) ?? {};
+  }
+
+  private catalogFor(baseUrl: string | null): Catalog {
+    if (!baseUrl) return { models: [], recommended: [] };
+    return this.catalogs()[baseUrl] ?? { models: [], recommended: [] };
+  }
+
+  private async rememberCatalog(baseUrl: string | null, catalog: Catalog): Promise<void> {
+    if (!baseUrl || catalog.models.length === 0) return;
+    const all = { ...this.catalogs(), [baseUrl]: catalog };
+    await this.context.globalState.update(CATALOGS_KEY, all);
+  }
+
+  /** Ask the endpoint what it serves, and remember the answer for the next
+   *  time the picker opens. */
+  private async loadCatalog(root: string, baseUrl: string | null): Promise<Catalog> {
+    const [models, shortlist] = await Promise.all([
+      info.modelsList(root, this.env()),
+      info.recommendedModels(root, this.env()),
+    ]);
+    const catalog = {
+      models,
+      recommended: shortlist.filter((id) => models.includes(id)),
+    };
+    await this.rememberCatalog(baseUrl, catalog);
+    return catalog;
+  }
+
   private customModels(): string[] {
     return this.context.globalState.get<string[]>(CUSTOM_MODELS_KEY) ?? [];
   }
@@ -561,7 +603,8 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       case "setModel": {
         await this.context.globalState.update(MODEL_KEY, message.model);
         const custom = this.customModels();
-        if (message.model && !MODELS.includes(message.model) && !custom.includes(message.model)) {
+        const served = this.catalogFor(this.endpoint).models;
+        if (message.model && !served.includes(message.model) && !custom.includes(message.model)) {
           await this.context.globalState.update(CUSTOM_MODELS_KEY, [...custom, message.model]);
         }
         if (message.model) {
@@ -629,16 +672,16 @@ export class AsterPanel implements vscode.WebviewViewProvider {
             file = null;
           }
         }
-        this.post({ type: "filePreview", requestId: message.requestId, file });
+        this.postTo(origin, { type: "filePreview", requestId: message.requestId, file });
         break;
       }
       case "listSessions": {
         const root = workspaceRoot();
-        this.post({ type: "sessions", sessions: root ? await listSessions(root) : [] });
+        this.postTo(origin, { type: "sessions", sessions: root ? await listSessions(root) : [] });
         break;
       }
       case "info":
-        await this.sendInfo(message.id, message.topic);
+        await this.sendInfo(message.id, message.topic, origin);
         break;
       case "attachFiles": {
         const root = workspaceRoot();
@@ -696,25 +739,13 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           break;
         }
         try {
-          const { stdout, stderr, code } = await runCli(
-            ["models", "--json"],
-            root,
-            undefined,
-            this.env()
-          );
-          const parsed = JSON.parse(stdout) as string[] | { ok?: boolean; error?: string };
-          if (code === 0 && Array.isArray(parsed)) {
-            this.post({ type: "modelsLoaded", models: parsed });
-          } else {
-            const error = Array.isArray(parsed) ? stderr.trim() : parsed.error;
-            this.post({
-              type: "modelsLoaded",
-              models: [],
-              error: error || "This endpoint did not list its models.",
-            });
-          }
+          const catalog = await this.loadCatalog(root, this.endpoint);
+          this.post({ type: "modelsLoaded", ...catalog });
         } catch (err) {
-          this.post({ type: "modelsLoaded", models: [], error: describe(err) });
+          // The last answer stands rather than emptying the picker: the
+          // endpoint still serves what it served a moment ago.
+          const kept = this.catalogFor(this.endpoint);
+          this.post({ type: "modelsLoaded", ...kept, error: describe(err) });
         }
         break;
       }
@@ -764,7 +795,41 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         } catch (err) {
           void vscode.window.showErrorMessage(`Aster: ${describe(err)}`);
         }
-        this.post({ type: "sessions", sessions: await listSessions(root) });
+        this.postTo(origin, { type: "sessions", sessions: await listSessions(root) });
+        break;
+      }
+      case "listMemory":
+      case "readMemory":
+      case "forgetMemory": {
+        const root = workspaceRoot();
+        if (!root) break;
+        // Replies go back to the tab that asked: another tab may have taken
+        // focus while the CLI ran, and `post` follows focus.
+        if (message.type === "readMemory") {
+          try {
+            this.postTo(origin, {
+              type: "memoryBody",
+              name: message.name,
+              body: await info.memoryBody(root, message.name),
+            });
+          } catch (err) {
+            this.postTo(origin, { type: "memoryBody", name: message.name, error: describe(err) });
+          }
+          break;
+        }
+        if (message.type === "forgetMemory") {
+          try {
+            await info.forgetMemory(root, message.name);
+          } catch (err) {
+            void vscode.window.showErrorMessage(`Aster: ${describe(err)}`);
+          }
+        }
+        try {
+          const { blocks, project } = await info.memory(root);
+          this.postTo(origin, { type: "memory", blocks, project });
+        } catch (err) {
+          this.postTo(origin, { type: "memory", blocks: [], project: null, error: describe(err) });
+        }
         break;
       }
       case "fixFinding": {
@@ -988,34 +1053,35 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     this.post({ type: "mcpServers", servers });
   }
 
-  private async sendInfo(id: string, topic: "status" | "memory" | "diff" | "mom"): Promise<void> {
+  private async sendInfo(
+    id: string,
+    topic: "status" | "diff" | "mom",
+    origin?: vscode.Webview
+  ): Promise<void> {
     const root = workspaceRoot();
     if (!root) {
-      this.post({ type: "infoCard", id, title: topic, note: "Open a folder first.", error: true });
+      this.postTo(origin, {
+        type: "infoCard",
+        id,
+        title: topic,
+        note: "Open a folder first.",
+        error: true,
+      });
       return;
     }
     try {
       if (topic === "status") {
-        this.post({ type: "infoCard", id, title: "Status", rows: await info.status(root, this.env()) });
+        const rows = await info.status(root, this.env());
+        this.postTo(origin, { type: "infoCard", id, title: "Status", rows });
         return;
       }
       if (topic === "mom") {
-        this.post({ type: "infoCard", id, title: "Model policy", rows: await info.momPolicy(root) });
-        return;
-      }
-      if (topic === "memory") {
-        const rows = await info.memoryBlocks(root);
-        this.post({
-          type: "infoCard",
-          id,
-          title: "Memory",
-          rows,
-          note: rows.length ? undefined : "Nothing remembered yet.",
-        });
+        const rows = await info.momPolicy(root);
+        this.postTo(origin, { type: "infoCard", id, title: "Model policy", rows });
         return;
       }
       const diff = await info.workingDiff(root);
-      this.post({
+      this.postTo(origin, {
         type: "infoCard",
         id,
         title: "Uncommitted changes",
@@ -1024,15 +1090,15 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         note: diff.trim() ? undefined : "No uncommitted changes.",
       });
     } catch (err) {
-      this.post({ type: "infoCard", id, title: topic, note: describe(err), error: true });
+      this.postTo(origin, { type: "infoCard", id, title: topic, note: describe(err), error: true });
     }
   }
 
   private async switchProvider(baseUrl: string, model: string): Promise<void> {
     const root = workspaceRoot();
     if (!root) return;
-    const catalog = await info.providers(root).catch(() => []);
-    const chosen = catalog.find((p) => p.base_url === baseUrl);
+    const known = await info.providers(root).catch(() => []);
+    const chosen = known.find((p) => p.base_url === baseUrl);
     try {
       await info.useProvider(root, baseUrl, model);
     } catch (err) {
@@ -1040,12 +1106,17 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       return;
     }
     await this.context.globalState.update(MODEL_KEY, model);
+    // The old endpoint's answers say nothing about this one, so this endpoint
+    // is asked before the picker is told anything.
+    this.endpoint = baseUrl.replace(/\/+$/, "");
+    const catalog = await this.loadCatalog(root, this.endpoint).catch(() => this.catalogFor(this.endpoint));
 
     this.post({
       type: "providerChanged",
       provider: chosen?.name ?? baseUrl,
       model,
-      models: await info.modelsFor(root, model),
+      models: catalog.models.length > 0 ? catalog.models : [model],
+      recommended: catalog.recommended,
     });
   }
 
@@ -1067,6 +1138,8 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     // so a fresh install opens on what the terminal already uses.
     const model =
       this.model() ?? (root ? await info.currentModel(root).catch(() => null) : null);
+    this.endpoint = root ? await info.currentEndpoint(root, this.env()) : null;
+    const catalog = this.catalogFor(this.endpoint);
     const announcements = await this.fetchAnnouncements(root);
     this.postTo(target, {
       type: "init",
@@ -1074,8 +1147,8 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       repoName: repoName(root),
       branch: root ? await currentBranch(root) : null,
       model,
-      models: [...MODELS, ...this.customModels().filter((m) => !MODELS.includes(m))],
-      recommended: [...RECOMMENDED],
+      models: catalog.models.length > 0 ? catalog.models : model ? [model] : [],
+      recommended: catalog.recommended,
       recent: this.recentModels(),
       contextBudget: root ? await info.contextBudget(root, this.env()) : 0,
       permissionMode: this.permissionMode(),
@@ -1084,11 +1157,12 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       sounds: vscode.workspace.getConfiguration("aster").get<boolean>("sounds", true),
       completionSound: vscode.workspace
         .getConfiguration("aster")
-        .get<string>("completionSound", "ready"),
+        .get<string>("completionSound", "sparkle"),
       skills: await skillCommands(root),
       setup: await info.setupNeeded(root ?? os.homedir(), this.env()).catch(() => null),
       announcements: announcements.length > 0 ? announcements : undefined,
     });
+    void this.pushMomState();
   }
 
   private async fetchAnnouncements(root: string | null | undefined): Promise<{ id: string; text: string }[]> {
@@ -1112,17 +1186,8 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       return;
     }
     const chat = this.getChatRunner(origin);
-    // A queued turn flushes the instant the webview sees `done`, which beats
-    // the CLI child exiting. Give the slot a moment to free before rejecting.
-    const slotFreeBy = Date.now() + 3000;
-    while (chat.running && Date.now() < slotFreeBy) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (chat.running) {
-      this.post({ type: "chatError", id: message.id, message: "A turn is already running." });
-      return;
-    }
-
+    // The runner serializes turns, so a message sent mid-turn queues and
+    // flushes when the current one finishes.
     let sawTerminal = false;
     try {
       const running = chat.run({
@@ -1162,6 +1227,21 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       });
     } finally {
       this.broadcastRunState();
+      // Mom may have switched entries during the turn; the chip says so.
+      void this.pushMomState();
+    }
+  }
+
+  /** Tells every surface whether mom.yaml is picking the model, so the
+   *  composer chip shows the policy instead of a model mom would override. */
+  private async pushMomState(): Promise<void> {
+    const root = workspaceRoot();
+    if (!root) return;
+    try {
+      const state = await info.momState(root);
+      this.post({ type: "momState", state });
+    } catch {
+      // No manifest or a stale binary: the chip keeps showing the model.
     }
   }
 

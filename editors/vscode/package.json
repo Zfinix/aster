@@ -28,7 +28,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:asterChatTab"
   ],
   "contributes": {
     "commands": [
@@ -281,12 +282,13 @@
         "aster.completionSound": {
           "type": "string",
           "enum": [
+            "sparkle",
             "ready",
             "success",
             "arrival",
             "bloom"
           ],
-          "default": "ready",
+          "default": "sparkle",
           "description": "Which sound plays when the agent finishes a turn or review."
         },
         "aster.extraArgs": {

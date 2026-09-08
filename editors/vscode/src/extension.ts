@@ -77,6 +77,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(AsterPanel.primaryViewType, panel, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
+    // A tab only survives a restart if its view type has a serializer, and the
+    // workbench only reaches that serializer because package.json declares
+    // `onWebviewPanel:asterChatTab`, which activates us before editor restore.
+    vscode.window.registerWebviewPanelSerializer(AsterPanel.tabViewType, panel),
     vscode.window.registerTreeDataProvider("asterFindings", tree),
     vscode.commands.registerCommand("aster.openPanel", () =>
       panel.openInEditor(vscode.ViewColumn.Active)
