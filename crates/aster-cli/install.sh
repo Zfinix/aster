@@ -44,9 +44,18 @@ need uname
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Termux reports `Linux` here like any other distro, but it is bionic and has no
+# glibc loader, so the GNU build dies with a bare "not found". `uname -o` and
+# $PREFIX are what tell the two apart.
+is_android() {
+  [ "$(uname -o 2>/dev/null)" = "Android" ] && return 0
+  case "${PREFIX:-}" in */com.termux/*) return 0 ;; esac
+  return 1
+}
+
 case "$OS" in
   Darwin) os_id="apple-darwin" ;;
-  Linux)  os_id="unknown-linux-gnu" ;;
+  Linux)  if is_android; then os_id="linux-android"; else os_id="unknown-linux-gnu"; fi ;;
   *) err "unsupported OS: $OS"; exit 1 ;;
 esac
 
@@ -55,6 +64,13 @@ case "$ARCH" in
   arm64|aarch64) arch_id="aarch64" ;;
   *) err "unsupported arch: $ARCH"; exit 1 ;;
 esac
+
+if [ "$os_id" = "linux-android" ] && [ "$arch_id" != "aarch64" ]; then
+  err "Aster ships an Android build for aarch64 only, and this device is $ARCH."
+  err "Build it instead: pkg install rust clang binutils make pkg-config git"
+  err "                 cargo install --git https://github.com/${REPO} aster-cli"
+  exit 1
+fi
 
 TARGET="${arch_id}-${os_id}"
 API="https://api.github.com/repos/${REPO}/releases"

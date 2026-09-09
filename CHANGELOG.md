@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-09
+
+### Added
+
+- **Android builds.** Releases now carry an `aarch64-linux-android` binary, so
+  Aster installs and runs natively in Termux on a phone. It links only bionic's
+  `libc`, `libm` and `libdl`, so it runs on a stock Android device too, without
+  Termux or a proot guest.
+
+### Fixed
+
+- **The installer no longer hands Termux a binary it cannot run.** Termux
+  reports `Linux` from `uname -s` like any other distro, so `install.sh` chose
+  the glibc build and the download died at exec with a bare `not found`, which
+  named neither the cause nor a way out. It now reads `uname -o` and `$PREFIX`,
+  picks the Android build, and tells a non-aarch64 device how to build from
+  source instead.
+
 ## [0.5.0] - 2026-09-05
 
 ### Added
@@ -961,4 +979,5 @@ taught workflows without touching its prompt.
 [0.3.0]: https://github.com/Zfinix/aster/compare/v0.2.0...cli-v0.3.0
 [0.4.0]: https://github.com/Zfinix/aster/compare/cli-v0.3.0...cli-v0.4.0
 [0.5.0]: https://github.com/Zfinix/aster/compare/cli-v0.4.1...cli-v0.5.0
-[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.5.0...HEAD
+[0.5.1]: https://github.com/Zfinix/aster/compare/cli-v0.5.0...cli-v0.5.1
+[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.5.1...HEAD

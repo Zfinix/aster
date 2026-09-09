@@ -29,6 +29,11 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+          # Termux and any other on-device Android shell. bionic, not glibc, so
+          # the linux-gnu build cannot run here at all.
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            android: true
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -67,6 +72,25 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun run build:web
+
+      # cargo picks the host linker unless told otherwise, and the `cc` build
+      # scripts (aws-lc-sys, libsqlite3-sys, tree-sitter) each need the NDK
+      # clang for the target too. The runner ships an NDK; point everything at it.
+      - name: Point the toolchain at the Android NDK
+        if: matrix.android
+        shell: bash
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$BIN/aarch64-linux-android24-clang"
+          {
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android24-clang"
+            echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang"
+            echo "CXX_aarch64_linux_android=$BIN/aarch64-linux-android24-clang++"
+            echo "AR_aarch64_linux_android=$BIN/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=$BIN/llvm-ranlib"
+            echo "ANDROID_NDK_ROOT=$NDK"
+          } >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --locked -p aster-cli --bin aster --target ${{ matrix.target }}
@@ -114,6 +138,7 @@ jobs:
             ${{ steps.pkg.outputs.asset }}${{ steps.pkg_win.outputs.asset }}.sha256
 
       - name: Upload CLI binary for the desktop sidecar
+        if: ${{ !matrix.android }}
         uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.target }}
