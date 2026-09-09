@@ -66,6 +66,7 @@ bump_cargo crates/aster-index/Cargo.toml
 bump_cargo desktop/src-tauri/Cargo.toml
 bump_json desktop/package.json
 bump_json desktop/src-tauri/tauri.conf.json
+bump_json editors/vscode/package.json
 
 # Keep Cargo.lock's workspace entries in step; ignore if offline.
 cargo update --workspace --quiet 2>/dev/null || true
