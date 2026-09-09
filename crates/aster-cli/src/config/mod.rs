@@ -134,7 +134,7 @@ pub async fn run(args: ConfigArgs) -> Result<()> {
         },
         ConfigCmd::Models(args) => models::run(args).await,
         ConfigCmd::Model(args) => match args.id {
-            Some(id) => models::use_model(models::UseModelArgs { id }),
+            Some(id) => models::use_model(models::UseModelArgs { id }).await,
             None => model_status(&repo_root),
         },
         ConfigCmd::Keys(args) => key::list(&repo_root, args.all),
@@ -344,6 +344,8 @@ impl Unit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
     Model,
+    Mom,
+    Providers,
     Permissions,
     Agent,
     Subagents,
@@ -353,8 +355,10 @@ enum Group {
 }
 
 impl Group {
-    const ALL: [Group; 7] = [
+    const ALL: [Group; 9] = [
         Group::Model,
+        Group::Mom,
+        Group::Providers,
         Group::Permissions,
         Group::Agent,
         Group::Subagents,
@@ -366,6 +370,8 @@ impl Group {
     fn title(self) -> &'static str {
         match self {
             Group::Model => "Model and provider",
+            Group::Mom => "Model manifest (mom)",
+            Group::Providers => "Provider catalog",
             Group::Permissions => "Permissions",
             Group::Agent => "Agent limits",
             Group::Subagents => "Sub-agents",
@@ -378,6 +384,8 @@ impl Group {
     fn blurb(self) -> &'static str {
         match self {
             Group::Model => "what Aster talks to, and how hard it thinks",
+            Group::Mom => "when a mom.yaml, not you, picks the model",
+            Group::Providers => "where refreshed model ids are pulled from",
             Group::Permissions => "what the agent may edit, read, and run",
             Group::Agent => "how far one turn may go",
             Group::Subagents => "the fan-out the agent tool is allowed",
@@ -429,6 +437,36 @@ const KEYS: &[Key] = &[
         env: &["ASTER_MODEL"],
         default: "openai/gpt-4o-mini",
         help: "Used by chat, review, and fix. The `review.` prefix is historical",
+    },
+    Key {
+        name: "providers.catalog_url",
+        label: "Model list URL",
+        group: Group::Providers,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &["ASTER_CATALOG_URL"],
+        default: "unset · the list built into this binary",
+        help: "A JSON file of model ids per provider, pulled by `aster provider refresh`",
+    },
+    Key {
+        name: "mom.enabled",
+        label: "Let mom pick the model",
+        group: Group::Mom,
+        kind: Kind::Bool,
+        unit: Unit::None,
+        env: &[],
+        default: "on wherever a mom.yaml is in reach",
+        help: "Mom picks the model each turn. Picking a model yourself turns it off",
+    },
+    Key {
+        name: "mom.manifest",
+        label: "Manifest file",
+        group: Group::Mom,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "mom.yaml, then .agents/mom.yaml, then ~/.aster/mom.yaml",
+        help: "Path to the manifest, relative to the repo. Skips the search order",
     },
     Key {
         name: "review.base_url",
@@ -796,6 +834,9 @@ fn configured(settings: &Settings, name: &str) -> Value {
         "mcp.context_tokens" => json!(mcp.context_tokens),
         "mcp.inventory_percent" => float(mcp.inventory_percent),
         "mcp.search_limit" => json!(mcp.search_limit),
+        "providers.catalog_url" => json!(settings.providers.catalog_url),
+        "mom.enabled" => json!(settings.mom.enabled),
+        "mom.manifest" => json!(settings.mom.manifest),
         "ui.welcome" => json!(settings.ui.welcome),
         _ => Value::Null,
     }

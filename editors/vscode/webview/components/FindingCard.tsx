@@ -89,7 +89,10 @@ export function FindingCard({ finding }: { finding: Finding }) {
             </div>
           )}
           {reason && status !== "idle" && status !== "fixing" && (
-            <p className="finding-fix-reason">{reason}</p>
+            <div className="finding-fix">
+              <span className="finding-fix-label">Fix result</span>
+              <p className="finding-fix-reason">{reason}</p>
+            </div>
           )}
           <div className="finding-actions">
             <span className="finding-tags">
@@ -97,7 +100,7 @@ export function FindingCard({ finding }: { finding: Finding }) {
               {finding.confidence != null && ` · ${Math.round(finding.confidence * 100)}%`}
             </span>
             <button
-              className="btn"
+              className="link"
               onClick={() => post({ type: "openFinding", finding })}
               title="Open in editor"
             >

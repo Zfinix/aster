@@ -1,9 +1,10 @@
 //! One ACP session: an Aster chat session bound to an editor thread, holding
 //! the permission mode, policy, and history each turn of the agent loop needs.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
@@ -18,8 +19,12 @@ use tokio::sync::Notify;
 
 use crate::chat::{self, ChatEventSink, Limits, SessionCtx, SwarmLimits, UiSender};
 
-const TITLE_TIMEOUT: Duration = Duration::from_secs(10);
 const MODELS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Model lists by provider, so opening a thread never waits on `/models`
+/// and later threads do not ask again.
+static MODELS: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const EFFORTS: [Effort; 7] = [
     Effort::Off,
@@ -37,6 +42,40 @@ async fn fetch_models(client: &AiClient) -> Vec<String> {
         .ok()
         .and_then(|r| r.ok())
         .unwrap_or_default()
+}
+
+fn provider_key(client: &AiClient) -> String {
+    client.base_url().trim_end_matches('/').to_string()
+}
+
+fn cached_models(base_url: &str) -> Vec<String> {
+    MODELS
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(base_url).cloned())
+        .unwrap_or_default()
+}
+
+fn store_models(base_url: &str, models: Vec<String>) {
+    if models.is_empty() {
+        return;
+    }
+    if let Ok(mut cache) = MODELS.lock() {
+        cache.insert(base_url.to_string(), models);
+    }
+}
+
+/// Fetch off the critical path. Until the list lands the picker shows the
+/// provider's coding shortlist, which costs no request.
+fn refresh_models(client: &AiClient) {
+    let key = provider_key(client);
+    if !cached_models(&key).is_empty() {
+        return;
+    }
+    let client = client.clone();
+    tokio::spawn(async move {
+        store_models(&key, fetch_models(&client).await);
+    });
 }
 
 fn model_short(id: &str) -> String {
@@ -57,6 +96,14 @@ fn case_token(word: &str) -> String {
         && word[1..].chars().all(|c| c.is_ascii_digit())
     {
         return word.to_lowercase();
+    }
+    // Fireworks writes a version with p for the point: 5p3 reads as 5.3.
+    if word.contains('p')
+        && word
+            .split('p')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    {
+        return word.replace('p', ".");
     }
     if word.chars().any(|c| c.is_ascii_digit()) && word.len() <= 3 {
         return word.to_uppercase();
@@ -96,12 +143,12 @@ pub(super) struct Session {
     client: Mutex<AiClient>,
     pub ctx: SessionCtx,
     grants: Arc<Grants>,
-    models: Mutex<Vec<String>>,
     history: Mutex<Vec<ChatMessage>>,
     permissions: Mutex<PermissionsConfig>,
     policy: Mutex<Policy>,
     cancel_requested: AtomicBool,
     cancel: Notify,
+    running: AtomicBool,
 }
 
 /// Open a session in `cwd`: a fresh one, or the recorded transcript `resume`
@@ -123,7 +170,7 @@ pub(super) async fn open(
     let policy = Policy::compile(&permissions)?;
     let grants = Arc::new(chat::configured_grants(&permissions, &repo_root));
     let credentials = Arc::new(chat::configured_credentials(&permissions, &repo_root));
-    let yolo = permissions.mode == Mode::Yolo;
+    let yolo = Arc::new(AtomicBool::new(permissions.mode == Mode::Yolo));
 
     let (mcp, problems) = if opts.no_mcp {
         (None, Vec::new())
@@ -133,27 +180,27 @@ pub(super) async fn open(
     for problem in &problems {
         eprintln!("mcp: {problem}");
     }
-    let models = fetch_models(&client).await;
+    refresh_models(&client);
 
     let store = crate::persist::store().ok();
     let (recorder, prior, id) = match (&store, resume) {
+        // An id the store has not seen opens a session under that name rather
+        // than failing: an editor may mint the thread id before its first turn.
         (Some(store), Some(id)) => {
-            let transcript = store
+            let prior = store
                 .resume(&repo_root, id)
-                .with_context(|| format!("no session {id:?} for this repo"))?;
-            let writer = store.resume_writer(&repo_root, id)?;
-            (
-                Some(Arc::new(Mutex::new(writer))),
-                transcript.to_chat_messages(),
-                id.to_string(),
-            )
+                .map(|t| t.to_chat_messages())
+                .unwrap_or_default();
+            let writer =
+                store.session_writer_for(&repo_root, id, &repo_root, Some(client.model.clone()))?;
+            (Some(Arc::new(Mutex::new(writer))), prior, id.to_string())
         }
         (Some(store), None) => {
             let writer = store.new_session(&repo_root, &repo_root, Some(client.model.clone()))?;
             let id = writer.id().to_string();
             (Some(Arc::new(Mutex::new(writer))), Vec::new(), id)
         }
-        (None, Some(id)) => anyhow::bail!("no session store, so {id:?} cannot be resumed"),
+        (None, Some(id)) => (None, Vec::new(), id.to_string()),
         (None, None) => (None, Vec::new(), ulid::Ulid::new().to_string()),
     };
 
@@ -161,7 +208,6 @@ pub(super) async fn open(
         recorder,
         store,
         credentials,
-        write_grants: Arc::new(chat::configured_write_grants(&repo_root)),
         skills: chat::discover_skills(&repo_root),
         instructions: Arc::new(crate::instructions::discover(&repo_root)),
         probe: Arc::new(bash_tools::ToolProbe::detect()),
@@ -185,15 +231,19 @@ pub(super) async fn open(
         client: Mutex::new(client),
         ctx,
         grants,
-        models: Mutex::new(models),
         history: Mutex::new(prior.clone()),
         permissions: Mutex::new(permissions),
         policy: Mutex::new(policy),
         cancel_requested: AtomicBool::new(false),
         cancel: Notify::new(),
+        running: AtomicBool::new(false),
     });
     Ok((session, prior))
 }
+
+#[cfg(test)]
+#[path = "tests/session_test.rs"]
+mod tests;
 
 impl Session {
     pub fn mode(&self) -> Mode {
@@ -210,6 +260,9 @@ impl Session {
         if let Ok(mut policy) = self.policy.lock() {
             *policy = compiled;
         }
+        self.ctx
+            .yolo
+            .store(mode == Mode::Yolo, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -257,8 +310,8 @@ impl Session {
             );
         }
 
-        let models = self.models.lock().map(|m| m.clone()).unwrap_or_default();
-        let recommended: Vec<String> = crate::init::provider_recommended(&base_url)
+        let models = cached_models(&base_url);
+        let recommended: Vec<String> = crate::config::models::cached_shortlist(&base_url)
             .into_iter()
             .filter(|id| models.is_empty() || models.contains(id))
             .collect();
@@ -376,10 +429,7 @@ impl Session {
             }
             client.clone()
         };
-        let models = fetch_models(&client).await;
-        if let Ok(mut stored) = self.models.lock() {
-            *stored = models;
-        }
+        store_models(&provider_key(&client), fetch_models(&client).await);
         Ok(())
     }
 
@@ -393,6 +443,19 @@ impl Session {
     pub fn cancel(&self) {
         self.cancel_requested.store(true, Ordering::SeqCst);
         self.cancel.notify_waiters();
+    }
+
+    /// A prompt that arrives mid-turn steers the running one: it joins at the
+    /// next round boundary through the same queue the TUI feeds. Returns false
+    /// when nothing is running, so the caller runs it as its own turn.
+    pub fn steer(&self, prompt: &str) -> bool {
+        if !self.running.load(Ordering::SeqCst) {
+            return false;
+        }
+        if let Ok(mut queue) = self.ctx.injected.lock() {
+            queue.push(prompt.to_string());
+        }
+        true
     }
 
     async fn cancelled(&self) {
@@ -425,6 +488,7 @@ impl Session {
             content: prompt.into(),
         }];
         chat::expand_skill_asks(&mut turns, &self.repo_root);
+        chat::attach_images(&mut turns, &self.repo_root);
         if let Some(turn) = turns.first() {
             self.ctx.record(MessageEvent::user(turn.content.text()));
         }
@@ -437,6 +501,7 @@ impl Session {
             .clone();
         let allow_edits = self.mode().can_edit();
         self.cancel_requested.store(false, Ordering::SeqCst);
+        self.running.store(true, Ordering::SeqCst);
         let client = self.client();
 
         let mut edited = Vec::new();
@@ -460,13 +525,22 @@ impl Session {
             }
         };
 
+        self.running.store(false, Ordering::SeqCst);
         let Some(result) = outcome else {
             if let Ok(mut stored) = self.history.lock() {
                 *stored = history;
             }
             return Ok(TurnOutcome { cancelled: true });
         };
-        let (reply, compacted) = result?;
+        let (reply, compacted) = match result {
+            Ok(turn) => turn,
+            Err(err) => {
+                if let Ok(mut stored) = self.history.lock() {
+                    *stored = history;
+                }
+                return Err(err);
+            }
+        };
         if let Some(compacted) = compacted {
             history = compacted;
         }
@@ -474,9 +548,9 @@ impl Session {
             role: "assistant".into(),
             content: reply.into(),
         });
-        if let Some(naming) = chat::name_session(&client, &self.ctx, &history, Some(sink)) {
-            let _ = tokio::time::timeout(TITLE_TIMEOUT, naming).await;
-        }
+        // Detached like the TUI's: the title reaches the editor on the sink
+        // whenever it lands, instead of holding the turn open until it does.
+        drop(chat::name_session(&client, &self.ctx, &history, Some(sink)));
         if let Ok(mut stored) = self.history.lock() {
             *stored = history;
         }

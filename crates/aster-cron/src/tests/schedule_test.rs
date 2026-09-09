@@ -9,6 +9,7 @@ fn sched(name: &str, cron: &str) -> crate::Schedule {
         agent: "scout".into(),
         task: "look".into(),
         notify: false,
+        notify_url: None,
     }
 }
 

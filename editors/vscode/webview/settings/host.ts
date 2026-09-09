@@ -34,7 +34,15 @@ export function post(message: SettingsToHost): void {
 export function onHostMessage(handler: (message: SettingsToWebview) => void): () => void {
   if (!api) {
     const stream = new EventSource(EVENTS);
-    stream.onmessage = (event) => handler(JSON.parse(event.data) as SettingsToWebview);
+    stream.onmessage = (event) => {
+      let message: SettingsToWebview;
+      try {
+        message = JSON.parse(event.data) as SettingsToWebview;
+      } catch {
+        return;
+      }
+      handler(message);
+    };
     return () => stream.close();
   }
   const listener = (event: MessageEvent<SettingsToWebview>) => handler(event.data);

@@ -32,6 +32,11 @@ describe("splitMentions", () => {
     ]);
   });
 
+  it("splits a screenshot named with the narrow no-break space macOS uses", () => {
+    const path = "/tmp/aster-pasted/Screenshot 2026-09-09 at 7.40.54 AM.png";
+    expect(splitMentions(`@${path}`)).toEqual([{ kind: "image", path }]);
+  });
+
   it("treats a document mention as a doc", () => {
     expect(splitMentions("see @docs/report.pdf")).toEqual([
       { kind: "text", text: "see " },

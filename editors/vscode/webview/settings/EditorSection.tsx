@@ -106,7 +106,7 @@ export function EditorSection({
         </div>
         <div className="set-row-control">
           <Select
-            options={["ready", "success", "arrival", "bloom"]}
+            options={["sparkle", "ready", "success", "arrival", "bloom"]}
             value={editor.completionSound}
             label="Completion sound"
             onChange={(next) => onSet("completionSound", next)}

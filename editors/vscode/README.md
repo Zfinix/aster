@@ -1,102 +1,115 @@
 # Aster for VS Code and Cursor
 
-Run [Aster](https://github.com/zfinix/aster) from a chat panel in your editor's sidebar: ask questions about the code, kick off a review, and watch findings stream in. Turn on `aster.publishDiagnostics` and confirmed findings also land as squiggles in the editor and entries in the Problems panel.
+An AI coding agent in your sidebar: ask about the code, let it make edits, and
+run a verified code review that streams its findings into the chat.
 
-Works in VS Code and Cursor (Cursor consumes standard VS Code extensions).
+Works in VS Code and Cursor.
 
-## Requirements
+## Getting started
 
-The extension shells out to the `aster` CLI, so it must be installed and configured:
+1. Install the extension. The CLI it runs comes with it, so there is nothing
+   else to download.
+2. Open the panel with `cmd+shift+a` (`ctrl+shift+a` on Windows and Linux), pick
+   a provider, and sign in or paste an API key.
+
+That is the whole setup. If you already use Aster in the terminal, the panel
+picks up your existing config and keys and skips step 2.
+
+**Want `aster` in your terminal too?** Run **Aster: Install 'aster' Command in
+PATH** from the command palette and it links the bundled binary into
+`~/.local/bin`.
+
+**On a platform without a prebuilt binary,** the panel shows an install card
+with a button that fetches one for you. To do it by hand instead:
 
 ```bash
 curl -fsSL https://withaster.dev/install | sh
-
-export ASTER_API_KEY=sk-...
-export ASTER_BASE_URL=https://openrouter.ai/api/v1
-export ASTER_MODEL=openai/gpt-4o-mini
 ```
 
-If `aster` is not on your PATH, point `aster.binaryPath` at it. The panel tells you when the binary is missing.
+Point `aster.binaryPath` at an existing binary if you would rather use your own.
 
-## The panel
+## What you can do
 
-The chat panel lives in the **secondary sidebar** (the right-hand pane, same place as Codex and Claude Code). Open it with **Aster: Open** from the editor's `…` menu or the command palette, or with `cmd+shift+a` / `ctrl+shift+a`.
+**Chat.** Ask a question and the agent answers with your repo as its working
+directory, so it can read and search the code. Type `@` to mention a file, or
+drag one onto the composer from the explorer or your file manager. `alt+a`
+sends the current selection with its line numbers.
 
-- Type a question to run one `aster chat` turn with the repo as cwd, so the agent can read and search your code. Review turns stay in the chat context, so "why is finding 2 critical?" works.
-- Hit **Review** to review the working tree. Phases, verify progress, confirmed findings, and refuted candidates all stream into the thread; token spend and cost land at the end.
-- Findings collapse to one row each. Expand for the description and fix, then click the location to jump there.
-
-The Aster icon in the activity bar holds the **Findings** view: the last review's findings as a flat, severity-sorted list.
-
-Contributing to the secondary sidebar needs VS Code 1.106+ (Cursor 3.x reports 1.128, so it qualifies). On older hosts the panel falls back into the activity bar container automatically.
-
-### Modes
-
-The chip next to the composer holds the same modes as the TUI, passed straight through as `--permission-mode`:
+**Edit.** The agent edits files directly. The chip next to the composer sets how
+much it asks first:
 
 | Mode | Behavior |
 | --- | --- |
-| Plan | Explore the code and present a plan before editing |
-| Manual | Ask for approval before each edit |
-| Auto | Apply what passes the safety check, pause for anything risky |
-| Edit (default) | Edit files without asking |
-| Yolo | No guardrails, unrestricted |
+| Plan | Explores and presents a plan before touching anything |
+| Manual | Asks before each edit |
+| Auto | Applies safe edits, pauses on anything risky |
+| Edit | Edits without asking (default) |
+| Yolo | No guardrails |
 
-Approval prompts appear inline in the thread; the answer goes back to the running turn over the CLI's stream protocol. Edited files are listed under the reply, click to open. Paths protected by `aster.yaml` `permissions` stay blocked in every mode but Yolo.
+Approvals appear inline in the chat. Files it changed are listed under the
+reply, and clicking one opens it. Paths you protect in `aster.yaml` stay blocked
+in every mode except Yolo.
 
-### The command menu
+**Review.** Hit **Review** to check your uncommitted work, or review a branch, a
+git range, or a GitHub PR. Findings arrive as they are confirmed, one row each,
+with the fix and a link to the line. Turn on `aster.publishDiagnostics` to get
+them as squiggles and Problems entries too. The Aster icon in the activity bar
+keeps the last review's findings as a sorted list.
 
-Everything the panel can do is in one filterable menu. Open it with the `/` button next to the composer, by pressing `/` in an empty composer, with `cmd+alt+k` / `ctrl+alt+k`, or from the editor's own palette as **Aster: Show Command Menu**. Type to filter; arrows and enter to pick.
+Reviews stay in the chat, so you can follow up: "why is finding 2 critical?"
+
+## The command menu
+
+Everything the panel does lives in one filterable menu. Press `/` in an empty
+composer, or `cmd+alt+k`.
 
 | Section | Rows |
 | --- | --- |
-| | New conversation, Clear conversation, Compact conversation, Resume a session…, Mention a file… |
-| Model | Switch model…, Switch provider…, Effort, Mode… |
-| Repository | Review the working tree, Review a git range…, Review a GitHub PR…, Show uncommitted changes, Status, Memory, MCP servers… |
-| Skills | Every skill the session can see, including the ones installed plugins contribute |
+| | New, clear, or compact the conversation, resume a session, mention a file |
+| Model | Switch model or provider, set effort, change mode |
+| Repository | Review the working tree, a range, or a PR; uncommitted changes; status; memory; MCP servers |
+| Skills | Every skill this session can see, including ones your plugins add |
 
-Rows carry their current value on the right, so the menu doubles as a readout: which model is live, which provider, how many MCP servers are on. **Effort** is set inline on its own row rather than behind another menu. A row ending in `…` opens a second panel: the model list, the provider catalog, the mode picker, or the MCP servers with their on/off state.
+Each row shows its current value on the right, so the menu doubles as a
+readout of which model is live and what is turned on. **Switch model** reads
+the catalog from your provider every time it opens, so you can search for a
+model by name instead of remembering its id.
 
-**Switch model…** reads the endpoint's own catalog each time it opens, so you search for a model instead of knowing its id. Search matches the readable name and the raw id alike, so `sonnet`, `anthropic`, and `claude-sonnet-5` all find the same row. A handful of vetted models sit under **Recommended**; the rest of the catalog follows. If what you typed matches nothing, the last row offers to use it as an id anyway, which is also the way out when an endpoint does not implement `/models` (the picker says so).
+Status, uncommitted changes, memory, and compact all answer with a card in the
+thread without spending a model call.
 
-### Files
+## Commands and shortcuts
 
-`@` in the composer searches the workspace: the file name is the row, the folder underneath it. You can also **drag files straight onto the composer** from the explorer, an editor tab, or your file manager; they land as `@`-mentions relative to the repo root. `alt+a` sends the active editor's selection over as a mention with its line range.
-
-**Status**, **Show uncommitted changes**, **Memory**, and **Compact conversation** answer with a card in the thread. None of them go to the model, and none end up in the history the next turn sends. Picking a skill writes `Use the "<skill>" skill:` into the composer and leaves the task to you.
-
-A provider picked here travels as `ASTER_BASE_URL` on the CLI runs this panel starts, so it never edits your `aster.yaml`. If that endpoint's own key is exported (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and so on) the panel picks it up; otherwise it falls back to `ASTER_API_KEY` and says so.
-
-## Editor commands
-
-| Command | What it does |
+| Command | |
 | --- | --- |
-| Aster: Open | Focuses the panel (`cmd+shift+a`). Also an editor title action, which Cursor shows in the editor's `…` overflow menu |
-| Aster: Open in New Tab / Primary Editor / New Window / Side Bar | The same conversation, wherever you want it |
-| Aster: New Conversation | Starts fresh beside the open one (`cmd+alt+n`) |
-| Aster: Show Command Menu | The menu above (`cmd+alt+k`) |
-| Aster: Reopen Session | Picks an earlier session to resume (`cmd+alt+r`) |
-| Aster: Insert @-Mention Reference | Sends the active selection to the composer with its line range (`alt+a`) |
-| Aster: Open Settings | The settings tab below |
-| Aster: Fix Finding | Hands one finding to the agent to fix |
-| Aster: Review Current Branch | Reviews the current branch against its base |
-| Aster: Review Git Range… | Reviews an explicit range, e.g. `main..HEAD` |
-| Aster: Review GitHub PR… | Reviews a PR by number (needs `aster login` or `GITHUB_TOKEN`) |
-| Aster: Cancel Review | Stops the running review |
-| Aster: Clear Findings | Clears diagnostics and the Findings view |
+| Aster: Open | `cmd+shift+a` |
+| Aster: New Conversation | `cmd+alt+n` |
+| Aster: Show Command Menu | `cmd+alt+k` |
+| Aster: Reopen Session | `cmd+alt+r` |
+| Aster: Insert @-Mention Reference | `alt+a` |
+
+Use `ctrl` in place of `cmd` on Windows and Linux.
+
+The panel can also be moved to a new tab, the primary editor, a new window, or
+the side bar. Reviews have their own commands (review the branch, a range, or a
+PR by number; cancel; clear findings), as does fixing a single finding.
 
 ## Settings
 
-**Aster: Open Settings** opens a dedicated settings tab: every `aster.yaml` key with its current value and where it came from, editable in place, saved to the repo's config or the global one. It is the same data `aster config` shows in the terminal.
+**Aster: Open Settings** opens a tab showing every `aster.yaml` key, its current
+value, and where that value came from, editable in place. It is the same data
+`aster config` prints in the terminal.
 
-The extension's own settings stay in VS Code's:
+The extension adds four settings of its own:
 
-- `aster.binaryPath` — path to the aster binary (default: `aster` on PATH)
-- `aster.minConfidence` — drop findings below this confidence; falls back to `aster.yaml`
-- `aster.publishDiagnostics` — also report findings in the Problems tab (off by default; findings live in the panel)
-- `aster.extraArgs` — extra args for every review, e.g. `["--no-index"]`
+- `aster.binaryPath` — use a different aster binary
+- `aster.minConfidence` — hide findings below this confidence
+- `aster.publishDiagnostics` — also report findings in the Problems tab (off by default)
+- `aster.extraArgs` — extra arguments for every review
 
-Provider, model defaults, include/exclude globs, analyzers, and edit permissions come from your environment and `aster.yaml`, same as the CLI. The model picked in the composer is passed as `--model` for chat turns.
+Everything else (provider, model, globs, analyzers, permissions) comes from
+`aster.yaml` and your environment, exactly as it does for the CLI. A provider
+picked in the panel applies to this panel only and never rewrites your config.
 
 ## Development
 
@@ -106,6 +119,8 @@ bun install
 bun run build      # tsc for the extension host, vite for the webview bundle
 ```
 
-`build:host` compiles `src/` (Node, CommonJS) to `out/`. `build:webview` typechecks and bundles `webview/` (React) to `media/webview/`, which the panel loads under a strict CSP. `src/protocol.ts` is the shared message contract and is compiled by both.
+`build:host` compiles `src/` to `out/`; `build:webview` bundles the React panel
+to `media/webview/`, loaded under a strict CSP. `src/protocol.ts` is the message
+contract shared by both.
 
-Open `editors/vscode` in VS Code and press F5 for an Extension Development Host, or `bun run package` for a VSIX to install via "Extensions: Install from VSIX…" (works in Cursor too).
+Press F5 for an Extension Development Host, or `bun run package` for a VSIX.

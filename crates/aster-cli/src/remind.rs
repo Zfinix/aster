@@ -24,7 +24,7 @@ pub(crate) fn run(args: RemindArgs) -> Result<()> {
     if let Some(id) = &args.fire {
         aster_cron::remove(id)?;
         let text = args.text_override.unwrap_or_else(|| "reminder".to_string());
-        aster_cron::notify::send("aster reminder", &text)?;
+        aster_cron::notify::send("aster reminder", &text, None)?;
         return Ok(());
     }
 

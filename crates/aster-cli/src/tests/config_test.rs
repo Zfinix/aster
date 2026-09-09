@@ -309,7 +309,8 @@ fn missing_credentials_message_points_at_the_fix() {
         "https://openrouter.ai/api/v1",
     ));
     let text = openrouter.to_string();
-    assert!(text.contains("no API key"), "{text}");
+    assert!(text.contains("no key for OpenRouter"), "{text}");
+    assert!(text.contains("aster init"), "{text}");
     assert!(text.contains("aster login openrouter"), "{text}");
 
     let deepseek =

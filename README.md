@@ -52,14 +52,17 @@ cargo install --path crates/aster-cli
 ## Start here
 
 ```bash
-aster init     # pick a provider, paste your key, done
 cd your-repo
-aster          # opens the chat
+aster          # first run asks how you want to connect, then opens the chat
 ```
 
-`aster init` writes `~/.aster/aster.yaml` and stores your key in `~/.aster/.env`,
-so it applies to every repo. Prefer environment variables? Skip `init` and export
-these instead:
+The first run asks one question: sign in with a browser (OpenRouter, ChatGPT,
+Z.ai), paste an API key, or point at a model already running on your machine
+(Ollama, LM Studio, vLLM, llama.cpp). It writes `~/.aster/aster.yaml` and stores
+any key in `~/.aster/.env`, so it applies to every repo. `aster init` runs the
+same setup again later.
+
+Prefer environment variables? Skip the wizard and export these instead:
 
 ```bash
 export ASTER_API_KEY=sk-...

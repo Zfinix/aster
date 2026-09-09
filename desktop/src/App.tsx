@@ -7,8 +7,10 @@ import {
   cancelChat,
   deleteSession,
   listModels,
+  listRecommended,
   listProviders,
   listSessions,
+  memoryAdd,
   persistModel,
   pickDiff,
   pickRepo,
@@ -35,7 +37,6 @@ import type {
 import { findingKey } from "./lib/match";
 import {
   DEFAULT_MODEL,
-  RESEARCH_MODELS,
   SOURCE_DEFAULT_VALUE,
   defaultReviewTitle,
   emptyReview,
@@ -173,6 +174,30 @@ function applyEvent(d: ReviewData, ev: StreamEvent): ReviewData {
   }
 }
 
+/** Each endpoint's last answer to `/models`, kept per base URL so the picker
+ *  opens on the models in reach instead of on nothing. */
+function catalogStore(): Record<string, string[]> {
+  try {
+    return JSON.parse(localStorage.getItem("aster.catalogs") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function cachedCatalog(baseUrl: string | null): string[] | null {
+  if (!baseUrl) return null;
+  const models = catalogStore()[baseUrl];
+  return models?.length ? models : null;
+}
+
+function rememberCatalog(baseUrl: string | null, models: string[]): void {
+  if (!baseUrl || models.length === 0) return;
+  localStorage.setItem(
+    "aster.catalogs",
+    JSON.stringify({ ...catalogStore(), [baseUrl]: models }),
+  );
+}
+
 function App() {
   const toast = useToast();
   const [theme, setTheme] = useTheme();
@@ -227,20 +252,13 @@ function App() {
     localStorage.setItem("aster.permissionMode", m);
     setPermissionMode(m);
   }, []);
-  const [customModels, setCustomModels] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("aster.customModels") || "[]");
-    } catch {
-      return [];
-    }
-  });
   const [catalog, setCatalog] = useState<string[] | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | undefined>();
-  const models = [
-    ...(catalog ?? RESEARCH_MODELS),
-    ...customModels.filter((m) => !(catalog ?? RESEARCH_MODELS).includes(m)),
-  ];
+  const [shortlist, setShortlist] = useState<string[]>([]);
+  // Only what this endpoint serves; until it has answered once, the model in
+  // use is the whole list. Another provider's ids are not choices here.
+  const models = catalog ?? (model ? [model] : []);
   const [recent, setRecent] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("aster.recentModels") || "[]");
@@ -308,19 +326,30 @@ function App() {
       .catch(() => setProviders([]));
   }, [opts.repoPath]);
 
+  // What this endpoint answered last time, so the picker is not empty while it
+  // is asked again — and so a switch never shows the old endpoint's list.
+  useEffect(() => {
+    setCatalog(cachedCatalog(auth?.baseUrl ?? null));
+  }, [auth?.baseUrl]);
+
   // Not every endpoint lists its models, so the failure is shown in the
   // picker, which still takes an id typed by hand.
   const refreshModels = useCallback(() => {
     setModelsLoading(true);
     setModelsError(undefined);
+    const endpoint = auth?.baseUrl ?? null;
+    listRecommended(opts.repoPath || null)
+      .then(setShortlist)
+      .catch(() => setShortlist([]));
     listModels(opts.repoPath || null)
-      .then((list) => setCatalog(list.length ? list : null))
-      .catch((e) => {
-        setCatalog(null);
-        setModelsError(String(e));
+      .then((list) => {
+        rememberCatalog(endpoint, list);
+        setCatalog(list.length ? list : null);
       })
+      // The last answer stands: the endpoint still serves what it just served.
+      .catch((e) => setModelsError(String(e)))
       .finally(() => setModelsLoading(false));
-  }, [opts.repoPath]);
+  }, [auth?.baseUrl, opts.repoPath]);
 
   // The CLI config is the source of truth for the model; localStorage only
   // seeds the first paint before auth_status answers.
@@ -677,6 +706,21 @@ function App() {
     const text = raw.trim();
     if (!text || busy || activeChatRef.current || activeReviewRef.current) return;
 
+    // `/remember <fact>` never reaches the model: the host writes it and the
+    // toast is the whole answer.
+    const remembered = /^\/remember\b\s*(.*)$/.exec(text);
+    if (remembered) {
+      const fact = remembered[1].trim();
+      if (!fact) {
+        toast("Usage: /remember <fact> — it lands in ASTER.md");
+        return;
+      }
+      memoryAdd(fact)
+        .then(() => toast("Saved to memory (ASTER.md)"))
+        .catch((e) => toast(`Could not save: ${e}`));
+      return;
+    }
+
     const userTurn: Turn = { id: nextId(), role: "user", text, ts: Date.now() };
     const asstId = nextId();
     const asstTurn: Turn = { id: asstId, role: "assistant", text: "", pending: true, ts: Date.now() };
@@ -725,7 +769,7 @@ function App() {
         chatUnlistenRef.current = unlisten;
       })
       .catch((e) => settleChat(String(e), false));
-  }, [busy, activeId, conversations, opts.repoPath, model, permissionMode, effort, handleChatEvent, settleChat]);
+  }, [busy, activeId, conversations, opts.repoPath, model, permissionMode, effort, handleChatEvent, settleChat, toast]);
 
   const handleEvent = useCallback(
     (ev: StreamEvent) => {
@@ -837,13 +881,6 @@ function App() {
     (value: string) => {
       localStorage.setItem("aster.model", value);
       setModel(value);
-      // An id typed by hand is kept so the picker lists it next time.
-      setCustomModels((ms) => {
-        if (ms.includes(value) || RESEARCH_MODELS.includes(value)) return ms;
-        const next = [...ms, value];
-        localStorage.setItem("aster.customModels", JSON.stringify(next));
-        return next;
-      });
       setRecent((r) => {
         const next = [value, ...r.filter((m) => m !== value)].slice(0, 5);
         localStorage.setItem("aster.recentModels", JSON.stringify(next));
@@ -859,7 +896,8 @@ function App() {
     (provider: Provider) => {
       useProvider(provider.base_url, provider.example_model || null, opts.repoPath || null)
         .then(() => {
-          setCatalog(null);
+          setCatalog(cachedCatalog(provider.base_url));
+          setShortlist([]);
           refreshAuth();
           refreshProviders();
           toast(`Switched to ${provider.name}`);
@@ -1081,7 +1119,7 @@ function App() {
       reviewing,
       model,
       models,
-      recommended: RESEARCH_MODELS,
+      recommended: shortlist,
       recent,
       modelsLoading,
       modelsError,
@@ -1101,7 +1139,7 @@ function App() {
       onOpenSettings: () => setSettingsOpen(true),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, homeIntent, opts, repos, onRepo, onSource, onAttach, reviewing, model, customModels, catalog, recent, modelsLoading, modelsError, refreshModels, permissionMode, effort, providers, refreshProviders, onAsk, onReview, onCommand, onStopChat, onPermissionMode, onModel, onEffort, onProvider],
+    [busy, homeIntent, opts, repos, onRepo, onSource, onAttach, reviewing, model, catalog, shortlist, recent, modelsLoading, modelsError, refreshModels, permissionMode, effort, providers, refreshProviders, onAsk, onReview, onCommand, onStopChat, onPermissionMode, onModel, onEffort, onProvider],
   );
 
   const threadOptions = activeConvo

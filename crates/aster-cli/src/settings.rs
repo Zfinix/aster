@@ -15,7 +15,27 @@ pub struct Settings {
     pub agent: Agent,
     pub agents: Agents,
     pub ui: Ui,
+    pub mom: Mom,
+    pub providers: Providers,
     pub schedules: Vec<aster_cron::Schedule>,
+}
+
+/// Where refreshed model ids come from. Only ids travel over this: endpoints
+/// and key vars ship in the binary and are never taken from a fetched file.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Providers {
+    pub catalog_url: Option<String>,
+}
+
+/// Whether a MoM manifest picks the model per turn, and which file to read.
+/// `mom.yaml` is the opt-in; this is the switch every client reads, so mom
+/// being on is as visible as the model it stands in for.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Mom {
+    pub enabled: Option<bool>,
+    pub manifest: Option<String>,
 }
 
 /// Terminal presentation choices.
@@ -136,6 +156,13 @@ impl Settings {
             },
             ui: Ui {
                 welcome: project.ui.welcome.or(self.ui.welcome),
+            },
+            mom: Mom {
+                enabled: project.mom.enabled.or(self.mom.enabled),
+                manifest: project.mom.manifest.or(self.mom.manifest),
+            },
+            providers: Providers {
+                catalog_url: project.providers.catalog_url.or(self.providers.catalog_url),
             },
             // Schedules merge by name, the project's definition winning, so a
             // repo can override a global cadence without dropping the rest.
@@ -258,22 +285,43 @@ pub struct Saved {
 /// endpoint follow you between directories, so they go in the global config. A
 /// project file pinning the same key is moved along with it, since it outranks.
 pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> Result<Saved> {
+    let rendered: Vec<(&str, String)> = pairs
+        .iter()
+        .map(|(key, value)| (*key, yaml_scalar(value)))
+        .collect();
+    persist_user_section("review", repo_root, &rendered)
+}
+
+/// The mom switch travels with the user like the model it stands in for, so it
+/// is saved the same way. Written bare: `Option<bool>` reads `true`, not
+/// `"true"`.
+pub fn persist_mom_enabled(repo_root: Option<&Path>, enabled: bool) -> Result<Saved> {
+    persist_user_section("mom", repo_root, &[("enabled", enabled.to_string())])
+}
+
+/// One write for any section. Values arrive in YAML form already, since only
+/// the caller knows whether its setting is a string.
+fn persist_user_section(
+    section: &str,
+    repo_root: Option<&Path>,
+    pairs: &[(&str, String)],
+) -> Result<Saved> {
     let path = user_config()?;
-    write_review(&path, pairs)?;
+    write_section(&path, section, pairs)?;
 
     let Some(project) = project_config(repo_root).filter(|p| *p != path) else {
         return Ok(Saved { path, also: None });
     };
     let text = std::fs::read_to_string(&project).unwrap_or_default();
-    let pinned: Vec<(&str, &str)> = pairs
+    let pinned: Vec<(&str, String)> = pairs
         .iter()
-        .copied()
-        .filter(|(key, _)| pins(&text, "review", key))
+        .filter(|(key, _)| pins(&text, section, key))
+        .cloned()
         .collect();
     if pinned.is_empty() {
         return Ok(Saved { path, also: None });
     }
-    write_review(&project, &pinned)?;
+    write_section(&project, section, &pinned)?;
     Ok(Saved {
         path,
         also: Some(project),
@@ -283,11 +331,25 @@ pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> 
 /// Write `review.<key>` pairs into one file, editing it line by line so
 /// comments and layout survive.
 pub(crate) fn write_review(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
+    let rendered: Vec<(&str, String)> = pairs
+        .iter()
+        .map(|(key, value)| (*key, yaml_scalar(value)))
+        .collect();
+    write_section(path, "review", &rendered)
+}
+
+fn write_section(path: &Path, section: &str, pairs: &[(&str, String)]) -> Result<()> {
     let mut text = std::fs::read_to_string(path).unwrap_or_default();
     for (key, value) in pairs {
-        text = with_key(&text, "review", key, value);
+        text = with_key(&text, section, key, value);
     }
     save(path, text)
+}
+
+/// Quote a value written into YAML. Workers AI model ids start with `@`, which
+/// YAML reserves, so a bare id writes a file nothing can read back.
+pub(crate) fn yaml_scalar(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 pub(crate) fn save(path: &Path, text: String) -> Result<()> {

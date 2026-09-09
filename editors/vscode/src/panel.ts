@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -334,11 +335,32 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     }
     // Two candidates: one match is the file, more than one is a guess.
     const found = await vscode.workspace.findFiles(`**/${file.name}`, IGNORED, 2);
-    if (found.length !== 1) {
+    if (found.length === 1) {
+      const stat = await vscode.workspace.fs.stat(found[0]);
+      if (stat.size === file.size) {
+        return found[0];
+      }
+    }
+    return this.findOrigin(file);
+  }
+
+  /** A paste reaches the webview as bytes with no path, but the clipboard the
+   *  bytes came from still knows the file. Asking it keeps the original in
+   *  place instead of copying it into tmp. */
+  private async findOrigin(file: PastedFile): Promise<vscode.Uri | undefined> {
+    const origin = await clipboardFile();
+    // Name and size, so a clipboard that moved on since the paste, or a copy of
+    // several files, never attaches something the user did not paste.
+    if (!origin || path.basename(origin) !== file.name) {
       return undefined;
     }
-    const stat = await vscode.workspace.fs.stat(found[0]);
-    return stat.size === file.size ? found[0] : undefined;
+    const uri = vscode.Uri.file(origin);
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      return stat.size === file.size ? uri : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async writePasted(file: PastedFile, data: string): Promise<vscode.Uri> {
@@ -349,13 +371,19 @@ export class AsterPanel implements vscode.WebviewViewProvider {
     // The original name, so the agent sees what was dropped. A collision is the
     // only case that gets a suffix, so a second paste of the same name never
     // overwrites the one already mentioned.
+    const bytes = Buffer.from(data, "base64");
     let target = vscode.Uri.joinPath(dir, file.name);
     let n = 1;
     while (await fileExists(target)) {
+      // The same image pasted twice is the same file, so it is mentioned again
+      // rather than stacked up as another copy of bytes already on disk.
+      if (await sameBytes(target, bytes)) {
+        return target;
+      }
       target = vscode.Uri.joinPath(dir, numberedName(file.name, n));
       n += 1;
     }
-    await vscode.workspace.fs.writeFile(target, Buffer.from(data, "base64"));
+    await vscode.workspace.fs.writeFile(target, bytes);
     return target;
   }
 
@@ -502,10 +530,29 @@ export class AsterPanel implements vscode.WebviewViewProvider {
 
   private async onMessage(message: ToHost, origin: vscode.Webview): Promise<void> {
     switch (message.type) {
-      case "ready":
+      case "ready": {
         await this.sendInit();
         this.broadcastRunState();
+        // A reloaded tab restores its session name. The webview persists the
+        // title itself and sends it here; the listSessions lookup is only the
+        // fallback for tabs saved before that.
+        if (message.session) {
+          if (message.title) {
+            this.nameTab(origin, { type: "title", title: message.title });
+          } else {
+            const root = workspaceRoot();
+            if (root) {
+              const title = (await listSessions(root)).find(
+                (s) => s.id === message.session
+              )?.title;
+              if (title) {
+                this.nameTab(origin, { type: "title", title });
+              }
+            }
+          }
+        }
         break;
+      }
       case "chat":
         await this.runChat(message, origin);
         break;
@@ -796,6 +843,23 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           void vscode.window.showErrorMessage(`Aster: ${describe(err)}`);
         }
         this.postTo(origin, { type: "sessions", sessions: await listSessions(root) });
+        break;
+      }
+      case "rememberMemory": {
+        const root = workspaceRoot();
+        if (!root) break;
+        try {
+          await info.addMemory(root, message.text);
+          this.postTo(origin, { type: "remembered", id: message.id });
+        } catch (err) {
+          this.postTo(origin, { type: "remembered", id: message.id, error: describe(err) });
+        }
+        try {
+          const { blocks, project } = await info.memory(root);
+          this.postTo(origin, { type: "memory", blocks, project });
+        } catch {
+          // The card already says whether the fact landed; the list can wait.
+        }
         break;
       }
       case "listMemory":
@@ -1389,6 +1453,29 @@ async function fileExists(uri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(uri);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The file the clipboard holds, if it holds one. The pasteboard carries the
+ *  file's URL, which a webview paste never sees. */
+function clipboardFile(): Promise<string | undefined> {
+  if (process.platform !== "darwin") {
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    execFile(
+      "osascript",
+      ["-e", "POSIX path of (the clipboard as «class furl»)"],
+      (err, stdout) => resolve(err ? undefined : stdout.trim() || undefined)
+    );
+  });
+}
+
+async function sameBytes(uri: vscode.Uri, bytes: Buffer): Promise<boolean> {
+  try {
+    return bytes.equals(Buffer.from(await vscode.workspace.fs.readFile(uri)));
   } catch {
     return false;
   }

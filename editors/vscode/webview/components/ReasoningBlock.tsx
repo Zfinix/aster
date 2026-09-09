@@ -22,9 +22,9 @@ export function ReasoningBlock({
     ? durationMs != null
       ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
       : "Thought"
-    : tokens != null
-      ? `Thinking... ${tokens} tokens`
-      : "Thought";
+    : tokens
+      ? `Thinking... ${tokens.toLocaleString()} tokens`
+      : "Thinking...";
 
   return (
     <div className="reasoning">

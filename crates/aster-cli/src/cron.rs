@@ -60,6 +60,7 @@ pub(crate) fn run(args: CronArgs) -> Result<()> {
                 json: crate::json_mode(),
                 schedule: Some(sched.name.clone()),
                 notify: sched.notify,
+                notify_url: sched.notify_url.clone(),
                 cwd: Some(repo_root.clone()),
             };
             let rt = tokio::runtime::Runtime::new()?;

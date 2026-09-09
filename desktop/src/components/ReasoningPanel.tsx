@@ -22,7 +22,7 @@ export function ReasoningPanel({
     ? durationMs != null
       ? `Thought for ${Math.max(1, Math.round(durationMs / 1000))}s`
       : "Thought"
-    : tokens != null
+    : tokens
       ? `Thinking, ${tokens} tokens`
       : "Thinking";
 

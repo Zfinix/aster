@@ -155,6 +155,15 @@ pub(super) fn elapsed(secs: u64) -> String {
     crate::util::elapsed(secs)
 }
 
+/// How long ago a stored fact was written, for the columns that date rows.
+pub(super) fn time_ago(then: chrono::DateTime<chrono::Utc>) -> String {
+    crate::util::time_ago(then)
+}
+
+pub(super) fn count_of(n: usize, noun: &str) -> String {
+    crate::util::count_of(n, noun)
+}
+
 pub(super) const LIST_MAX: usize = 8;
 
 pub(super) const MORE: &str = "… +";

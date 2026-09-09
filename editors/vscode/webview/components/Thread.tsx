@@ -162,7 +162,9 @@ export function Thread({
                     <GoalCard key={block.id} block={block} />
                   ) : block.kind === "injected" ? (
                     <div key={block.id} className="turn-user turn-user-injected">
-                      <div className="turn-user-text">{block.text}</div>
+                      <div className="turn-user-text">
+                        <UserText text={block.text} />
+                      </div>
                     </div>
                   ) : (
                     <div key={block.id} className="turn-body">

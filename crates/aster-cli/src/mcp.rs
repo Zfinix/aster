@@ -53,11 +53,12 @@ pub struct ServerConfig {
     pub disabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Transport {
     Stdio,
     #[serde(alias = "http")]
+    #[value(alias = "http")]
     StreamableHttp,
     Sse,
 }
@@ -1363,6 +1364,8 @@ pub enum McpAction {
     /// Stop starting a server, keeping its configuration in place. A
     /// `server/tool` id (globs allowed) turns off that tool alone.
     Disable { name: String },
+    /// Declare a server by hand: a command to spawn, or `--url` for a remote one.
+    Add(AddArgs),
     /// Copy MCP servers from another coding tool (Claude Code, Codex, Cursor, opencode, Hermes) into .mcp.json.
     Import {
         /// Which tool to read; omitted, all of them are tried.
@@ -1403,6 +1406,7 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
         McpAction::List { no_connect } => *no_connect,
         McpAction::Enable { name } => return set_disabled(repo_root, name, false),
         McpAction::Disable { name } => return set_disabled(repo_root, name, true),
+        McpAction::Add(args) => return add_server(repo_root, args),
         McpAction::Import { from } => return crate::import::run_mcp_import(*from, repo_root),
         McpAction::Remove { name } => return remove_servers(repo_root, name.as_deref()),
         McpAction::Login { name } => {
@@ -1571,6 +1575,55 @@ pub fn toggle_server(
     }
 }
 
+/// One server as the control panel draws it: aligned columns, no secrets.
+struct PanelRow {
+    on: bool,
+    kind: &'static str,
+    auth: &'static str,
+    target: String,
+}
+
+impl PanelRow {
+    fn of(name: &str, config: &ServerConfig) -> Self {
+        let transport = config.transport();
+        // Args are omitted: they often carry secrets (API keys), and a long
+        // hint wraps, which breaks clack's frame erasing.
+        let target = if config.url.trim().is_empty() {
+            config.command.clone()
+        } else {
+            config.url.trim().to_string()
+        };
+        Self {
+            on: !config.disabled,
+            kind: match transport {
+                Some(Transport::Stdio) => "stdio",
+                Some(Transport::StreamableHttp) => "http",
+                Some(Transport::Sse) => "sse",
+                None => "not set up",
+            },
+            // A remote server that still needs a login says so here, so a 401
+            // later is never the first hint of it.
+            auth: match transport {
+                Some(Transport::StreamableHttp) | Some(Transport::Sse) => {
+                    match oauth::has_stored_login(name) {
+                        true => "logged in",
+                        false => "no login",
+                    }
+                }
+                _ => "",
+            },
+            target: crate::util::truncate(&target, 48),
+        }
+    }
+
+    fn badge(&self) -> console::StyledObject<&'static str> {
+        match self.on {
+            true => console::style("on").green(),
+            false => console::style("off").dim(),
+        }
+    }
+}
+
 async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
     use cliclack::select;
 
@@ -1582,45 +1635,52 @@ async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
         Back,
     }
 
+    // The menu is rebuilt after every toggle, so the cursor has to be put
+    // back on the server that was just changed; otherwise the next enter
+    // toggles whichever server sorts first.
+    let mut cursor: Option<String> = None;
+
     loop {
         let settings = crate::settings::Settings::load(repo_root)?;
         let names: Vec<String> = settings.mcp.servers.keys().cloned().collect();
-        let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+        let rows: Vec<PanelRow> = settings
+            .mcp
+            .servers
+            .iter()
+            .map(|(name, config)| PanelRow::of(name, config))
+            .collect();
+        let on = rows.iter().filter(|r| r.on).count();
+        let name_width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+        let kind_width = rows.iter().map(|r| r.kind.len()).max().unwrap_or(0);
+        let auth_width = rows.iter().map(|r| r.auth.len()).max().unwrap_or(0);
 
-        let mut menu = select::<Row>("MCP servers — enter toggles a server");
-        for (i, (name, config)) in settings.mcp.servers.iter().enumerate() {
-            let state = if config.disabled { "off" } else { "on" };
-            let transport = config
-                .transport()
-                .map(Transport::label)
-                .unwrap_or("unconfigured");
-            // Args are omitted: they often carry secrets (API keys), and a
-            // long hint wraps, which breaks clack's frame erasing.
-            let target = if config.url.trim().is_empty() {
-                config.command.clone()
-            } else {
-                config.url.trim().to_string()
-            };
-            let target = crate::util::truncate(&target, 48);
-            // A remote server that needs a login says so, so a 401 later is
-            // never the first hint.
-            let auth = match config.transport() {
-                Some(Transport::StreamableHttp) | Some(Transport::Sse)
-                    if oauth::has_stored_login(name) =>
-                {
-                    " · logged in"
-                }
-                Some(Transport::StreamableHttp) | Some(Transport::Sse) => " · no login",
-                _ => "",
-            };
+        let title = match names.len() {
+            0 => "MCP servers".to_string(),
+            total => format!("MCP servers · {on} of {total} on — type to search, enter toggles"),
+        };
+        let mut menu = select::<Row>(title).filter_mode().max_rows(10);
+        if let Some(at) = cursor
+            .as_ref()
+            .and_then(|name| names.iter().position(|n| n == name))
+        {
+            menu = menu.initial_value(Row::Server(at));
+        }
+        for (i, (name, row)) in names.iter().zip(&rows).enumerate() {
+            // The state reads last so its colour survives: clack dims a whole
+            // unfocused label, and a colour inside would end the dim early.
             menu = menu.item(
                 Row::Server(i),
-                format!("{name:<width$}  {state} · {transport}{auth}"),
-                target,
+                format!(
+                    "{name:<name_width$}  {kind:<kind_width$}  {auth:<auth_width$}  {}",
+                    row.badge(),
+                    kind = row.kind,
+                    auth = row.auth,
+                ),
+                &row.target,
             );
         }
         if names.is_empty() {
-            println!("No MCP servers configured. Add them under `mcp.servers` in aster.yaml.");
+            cliclack::log::info("No MCP servers yet. Add them under `mcp.servers` in aster.yaml.")?;
         }
         let remote: Vec<usize> = settings
             .mcp
@@ -1639,7 +1699,7 @@ async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
             menu = menu.item(
                 Row::Login(remote[0]),
                 "Log in…",
-                "OAuth login for a remote server",
+                "sign in to a remote server",
             );
         }
         menu = menu.item(
@@ -1657,9 +1717,9 @@ async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
             Row::Remove => remove_servers(repo_root, None)?,
             Row::Login(_) => {
                 let mut pick = select::<String>("Log in to which server?");
-                for name in &remote {
-                    let server = &names[*name];
-                    pick = pick.item(server.clone(), server.clone(), "");
+                for at in &remote {
+                    let server = &names[*at];
+                    pick = pick.item(server.clone(), server.clone(), rows[*at].auth);
                 }
                 if let Ok(Some(chosen)) = crate::util::or_cancel(pick.interact()) {
                     match oauth::login(&chosen).await {
@@ -1670,10 +1730,14 @@ async fn panel(repo_root: Option<&std::path::Path>) -> Result<()> {
             }
             Row::Server(i) => {
                 let name = &names[i];
+                cursor = Some(name.clone());
                 let disabled = !settings.mcp.servers[name].disabled;
                 let path = toggle_server(repo_root, name, disabled)?;
-                let verb = if disabled { "disabled" } else { "enabled" };
-                cliclack::log::success(format!("{verb} {name} · {}", path.display()))?;
+                let state = if disabled { "off" } else { "on" };
+                cliclack::log::success(format!(
+                    "{name} is now {state} {}",
+                    console::style(format!("· {}", path.display())).dim()
+                ))?;
             }
         }
     }
@@ -1773,6 +1837,151 @@ fn set_tool_denied(repo_root: Option<&std::path::Path>, id: &str, denied: bool) 
         println!("{verb} {id} in {}", path.display());
     }
     Ok(())
+}
+
+#[derive(clap::Args)]
+pub struct AddArgs {
+    /// The name the agent sees as the `server/tool` prefix.
+    pub name: String,
+    /// The command to spawn and its arguments. Put `--` first when the server
+    /// takes flags of its own.
+    #[arg(trailing_var_arg = true)]
+    pub command: Vec<String>,
+    /// A remote endpoint to connect to instead of a command to spawn.
+    #[arg(long, conflicts_with = "command")]
+    pub url: Option<String>,
+    /// Override the transport inferred from `--url` or the command.
+    #[arg(long, value_enum)]
+    pub transport: Option<Transport>,
+    /// An environment variable for the spawned command. Repeatable.
+    #[arg(long = "env", short = 'e', value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+    /// A header sent to a remote server. Repeatable.
+    #[arg(
+        long = "header",
+        short = 'H',
+        value_name = "NAME:VALUE",
+        requires = "url"
+    )]
+    pub header: Vec<String>,
+    /// Write to `~/.aster/mcp.json` rather than this repo's `.mcp.json`.
+    #[arg(long)]
+    pub global: bool,
+}
+
+fn add_server(repo_root: Option<&std::path::Path>, args: &AddArgs) -> Result<()> {
+    let name = args.name.trim();
+    anyhow::ensure!(
+        !name.is_empty() && !name.contains('/') && !name.contains(char::is_whitespace),
+        "a server name cannot be empty or contain `/` or spaces"
+    );
+    let settings = crate::settings::Settings::load(repo_root)?;
+    anyhow::ensure!(
+        !settings.mcp.servers.contains_key(name),
+        "{name:?} is already configured. `aster mcp remove {name}` drops it first"
+    );
+    let entry = server_entry(args)?;
+    let path = match (args.global, repo_root) {
+        (false, Some(root)) => root.join(".mcp.json"),
+        _ => dirs::home_dir()
+            .context("no home directory to write ~/.aster/mcp.json into")?
+            .join(".aster/mcp.json"),
+    };
+    write_mcp_json_server(&path, name, entry)?;
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({ "ok": true, "server": name, "path": path.display().to_string() })
+        );
+    } else {
+        println!("added {name} to {}", path.display());
+        println!("`aster mcp list` starts it and shows the tools it advertises");
+    }
+    Ok(())
+}
+
+/// The `.mcp.json` entry the flags describe. A `--url` server records its
+/// transport so a plain http endpoint is never probed as sse and back.
+fn server_entry(args: &AddArgs) -> Result<serde_json::Map<String, Value>> {
+    let mut entry = serde_json::Map::new();
+    match args.url.as_deref().map(str::trim) {
+        Some(url) => {
+            anyhow::ensure!(!url.is_empty(), "--url needs an endpoint");
+            let kind = args.transport.unwrap_or(Transport::StreamableHttp);
+            anyhow::ensure!(
+                kind != Transport::Stdio,
+                "a --url server is remote; drop `--transport stdio`"
+            );
+            entry.insert("url".into(), json!(url));
+            entry.insert("type".into(), json!(kind.label()));
+            let headers = pairs(&args.header, ':', "--header", "Name:value")?;
+            if !headers.is_empty() {
+                entry.insert("headers".into(), json!(headers));
+            }
+        }
+        None => {
+            let (command, rest) = args
+                .command
+                .split_first()
+                .context("a command to spawn, or --url for a remote server, is required")?;
+            anyhow::ensure!(!command.trim().is_empty(), "the command cannot be empty");
+            if let Some(kind) = args.transport {
+                anyhow::ensure!(
+                    kind == Transport::Stdio,
+                    "a spawned command speaks stdio; use --url for {}",
+                    kind.label()
+                );
+            }
+            entry.insert("command".into(), json!(command));
+            if !rest.is_empty() {
+                entry.insert("args".into(), json!(rest));
+            }
+        }
+    }
+    let env = pairs(&args.env, '=', "--env", "KEY=value")?;
+    if !env.is_empty() {
+        entry.insert("env".into(), json!(env));
+    }
+    Ok(entry)
+}
+
+fn pairs(raw: &[String], sep: char, flag: &str, shape: &str) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for item in raw {
+        let (key, value) = item
+            .split_once(sep)
+            .with_context(|| format!("{flag} takes {shape}, got {item:?}"))?;
+        let key = key.trim();
+        anyhow::ensure!(!key.is_empty(), "{flag} takes {shape}, got {item:?}");
+        out.insert(key.to_string(), value.trim().to_string());
+    }
+    Ok(out)
+}
+
+fn write_mcp_json_server(
+    path: &std::path::Path,
+    name: &str,
+    entry: serde_json::Map<String, Value>,
+) -> Result<()> {
+    let mut config: Value = match std::fs::read_to_string(path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?
+        }
+        Err(_) => json!({}),
+    };
+    let Some(root) = config.as_object_mut() else {
+        bail!("{} is not a JSON object", path.display());
+    };
+    let servers = root.entry("mcpServers").or_insert_with(|| json!({}));
+    let Some(servers) = servers.as_object_mut() else {
+        bail!("mcpServers in {} is not an object", path.display());
+    };
+    servers.insert(name.to_string(), Value::Object(entry));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let out = serde_json::to_string_pretty(&config)?;
+    std::fs::write(path, out + "\n").with_context(|| format!("writing {}", path.display()))
 }
 
 fn remove_servers(repo_root: Option<&std::path::Path>, name: Option<&str>) -> Result<()> {

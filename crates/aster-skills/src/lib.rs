@@ -49,6 +49,7 @@ const BUILTIN_SKILLS: &[&str] = &[
     include_str!("../builtins/security-review/SKILL.md"),
     include_str!("../builtins/security-scan/SKILL.md"),
     include_str!("../builtins/skill-creator/SKILL.md"),
+    include_str!("../builtins/artifact-design/SKILL.md"),
 ];
 
 /// Built-ins under `builtins/internal/`: how the agent conducts itself, not

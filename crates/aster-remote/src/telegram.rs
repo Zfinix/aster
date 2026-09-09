@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use aster_ai::AiClient;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
@@ -179,25 +180,14 @@ async fn model_catalog() -> Result<&'static Vec<String>> {
         return Ok(models);
     }
     let base = env::var("ASTER_BASE_URL").unwrap_or_else(|_| aster_ai::DEFAULT_BASE_URL.into());
-    let key = aster_ai::keys::resolve_key(&base).map(|(key, _)| key);
-    let mut request = reqwest::Client::new()
-        .get(format!("{}/models", base.trim_end_matches('/')))
-        .timeout(Duration::from_secs(15));
-    if let Some(key) = key {
-        request = request.bearer_auth(key);
-    }
-    let body: Value = request.send().await?.json().await?;
-    let mut models: Vec<String> = body
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|data| {
-            data.iter()
-                .filter_map(|m| m.get("id").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
+    let key = aster_ai::keys::resolve_key(&base)
+        .map(|(key, _)| key)
         .unwrap_or_default();
-    models.sort();
+    // Through the client, so endpoints that list models their own way, such as
+    // Workers AI, answer here too.
+    let models = AiClient::new(base, key, String::new())
+        .fetch_models()
+        .await?;
     Ok(MODEL_CACHE.get_or_init(|| models))
 }
 

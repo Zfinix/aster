@@ -56,3 +56,35 @@ fn definitions_find_where_a_symbol_lives() {
     let defs = client.definitions(&file, 2, 4).expect("definitions");
     assert!(defs.iter().any(|d| d.contains("a.rs:1")), "{defs:?}");
 }
+
+#[test]
+fn uris_escape_characters_that_paths_allow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a b.rs");
+    std::fs::write(&file, "").expect("write");
+    let uri = crate::path_to_uri(&file);
+    assert!(uri.contains("a%20b.rs"), "{uri}");
+    assert_eq!(
+        crate::uri_to_path(&serde_json::json!(uri)),
+        Some(crate::canonical(&file))
+    );
+}
+
+#[test]
+fn diagnostics_follow_the_latest_edit() {
+    if !server_available() {
+        return;
+    }
+    let (dir, file) = rust_project("pub fn f() {\n    let x: u = 1;\n}\n");
+    let mut client = Client::start(ServerKind::RustAnalyzer, dir.path()).expect("start");
+    let broken = client.diagnostics(&file).expect("diagnostics");
+    assert!(broken.iter().any(|d| d.starts_with("error")), "{broken:?}");
+
+    std::fs::write(&file, "pub fn f() -> u32 {\n    1\n}\n").expect("rewrite");
+    let fixed = client.diagnostics(&file).expect("diagnostics");
+    assert!(!fixed.iter().any(|d| d.starts_with("error")), "{fixed:?}");
+    assert!(
+        !fixed.iter().any(|d| d.contains("not finished")),
+        "{fixed:?}"
+    );
+}

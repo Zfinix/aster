@@ -83,6 +83,22 @@ export interface SessionSummary {
   title: string;
 }
 
+/** One named memory block, as `aster memory list --json` reports it. */
+export interface MemoryBlock {
+  name: string;
+  description: string;
+  path: string;
+  source_session: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** The project's own `ASTER.md`, appended to rather than named in blocks. */
+export interface MemoryProject {
+  path: string;
+  text: string;
+}
+
 export interface TranscriptTurn {
   role: "user" | "assistant";
   content: string;
@@ -242,7 +258,7 @@ export type SettingsToWebview =
   | { type: "settingsError"; key?: string; message: string };
 
 export type ToHost =
-  | { type: "ready" }
+  | { type: "ready"; session?: string; title?: string }
   | {
       type: "chat";
       id: string;
@@ -277,7 +293,11 @@ export type ToHost =
   | { type: "deleteSession"; id: string }
   | { type: "renameSession"; id: string; title: string }
   | { type: "fetchModels" }
-  | { type: "info"; id: string; topic: "status" | "memory" | "diff" | "mom" }
+  | { type: "info"; id: string; topic: "status" | "diff" | "mom" }
+  | { type: "listMemory" }
+  | { type: "readMemory"; name: string }
+  | { type: "forgetMemory"; name: string }
+  | { type: "rememberMemory"; id: string; text: string }
   | { type: "attachFiles" }
   | { type: "dropFiles"; uris: string[] }
   | { type: "pasteFiles"; files: PastedFile[] }
@@ -292,6 +312,15 @@ export type ToHost =
   | { type: "installCli" }
   | { type: "installCliTerminal" }
   | { type: "locateCli" };
+
+/** mom.yaml's grip on the model: active while a manifest is loaded and not
+ *  suspended, with the entry it currently resolves to. */
+export interface MomState {
+  active: boolean;
+  suspended: boolean;
+  entry: string | null;
+  model: string | null;
+}
 
 export type ToWebview =
   | {
@@ -328,6 +357,14 @@ export type ToWebview =
       pending?: ChatStreamEvent;
     }
   | { type: "sessions"; sessions: SessionSummary[] }
+  | {
+      type: "memory";
+      blocks: MemoryBlock[];
+      project: MemoryProject | null;
+      error?: string;
+    }
+  | { type: "memoryBody"; name: string; body?: string; error?: string }
+  | { type: "remembered"; id: string; error?: string }
   | { type: "sessionLoaded"; id: string; title: string | null; turns: TranscriptTurn[] }
   | { type: "newConversation" }
   | { type: "insertMention"; text: string; mentions?: string[] }
@@ -346,7 +383,8 @@ export type ToWebview =
   | { type: "fixResult"; finding: Finding; status: string; reason?: string; patch?: string }
   | { type: "fixAllResult"; results: { finding: Finding; status: string; reason?: string }[] }
   | { type: "log"; line: string }
-  | { type: "modelsLoaded"; models: string[]; error?: string }
+  | { type: "modelsLoaded"; models: string[]; recommended?: string[]; error?: string }
+  | { type: "momState"; state: MomState }
   | {
       type: "infoCard";
       id: string;
@@ -359,7 +397,7 @@ export type ToWebview =
     }
   | { type: "mcpServers"; servers: McpServer[] }
   | { type: "providers"; providers: Provider[] }
-  | { type: "providerChanged"; provider: string; model: string; models: string[] }
+  | { type: "providerChanged"; provider: string; model: string; models: string[]; recommended?: string[] }
   | {
       type: "compacted";
       id: string;

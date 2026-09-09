@@ -2,7 +2,7 @@
 //! `-p` installs into the project, shadowing a global skill of the same name. A git
 //! source is fetched lazily: manifests first, full contents only when chosen.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -498,6 +498,142 @@ fn install_all(skills: &[Skill], dest: &Path, force: bool) -> Result<usize> {
     Ok(count)
 }
 
+/// Words this repo would use about itself: its own name, the languages its
+/// root manifests imply, and the dependencies they name. Cheap on purpose —
+/// a listing must not pay for a repo walk.
+fn repo_terms(repo_root: &Path) -> BTreeSet<String> {
+    const MANIFEST_TERMS: &[(&str, &[&str])] = &[
+        ("Cargo.toml", &["rust", "cargo", "crate"]),
+        ("package.json", &["javascript", "typescript", "node", "npm"]),
+        ("deno.json", &["deno", "typescript"]),
+        ("pyproject.toml", &["python"]),
+        ("requirements.txt", &["python"]),
+        ("go.mod", &["golang"]),
+        ("pubspec.yaml", &["dart", "flutter"]),
+        ("Gemfile", &["ruby", "rails"]),
+        ("composer.json", &["php"]),
+        ("mix.exs", &["elixir"]),
+        ("Package.swift", &["swift"]),
+        ("build.gradle.kts", &["kotlin", "gradle", "android"]),
+        ("build.gradle", &["gradle", "android"]),
+        ("pom.xml", &["java", "maven"]),
+        ("CMakeLists.txt", &["cmake"]),
+        ("Dockerfile", &["docker"]),
+        ("wrangler.jsonc", &["cloudflare", "workers", "wrangler"]),
+        ("wrangler.toml", &["cloudflare", "workers", "wrangler"]),
+    ];
+    // Words that match half the catalog and would sort noise to the top.
+    const TOO_COMMON: &[&str] = &[
+        "app", "api", "cli", "web", "test", "tests", "types", "core", "utils", "src", "main",
+        "build", "dev", "run", "code", "node", "js", "ts",
+    ];
+
+    let mut terms = BTreeSet::new();
+    let mut add = |raw: &str| {
+        for word in raw.split(|c: char| !c.is_ascii_alphanumeric()) {
+            let word = word.to_ascii_lowercase();
+            if word.len() >= 3 && !TOO_COMMON.contains(&word.as_str()) {
+                terms.insert(word);
+            }
+        }
+    };
+
+    if let Some(name) = repo_root.file_name().and_then(|n| n.to_str()) {
+        add(name);
+    }
+    for (manifest, words) in MANIFEST_TERMS {
+        if !repo_root.join(manifest).exists() {
+            continue;
+        }
+        for word in *words {
+            add(word);
+        }
+    }
+    // Dependency names are the sharpest signal a manifest carries: "expo" and
+    // "heroui" say far more than "javascript" does.
+    if let Ok(text) = std::fs::read_to_string(repo_root.join("package.json"))
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        for field in ["dependencies", "devDependencies"] {
+            for name in json[field]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, _)| k)
+            {
+                add(name.trim_start_matches('@'));
+            }
+        }
+    }
+    terms
+}
+
+/// How much a skill looks like it belongs to this repo. A name hit counts for
+/// more than a description hit, since a description mentions many things.
+fn relevance(skill: &Skill, terms: &BTreeSet<String>) -> usize {
+    let name = skill.name.to_ascii_lowercase();
+    let description = skill.description.to_ascii_lowercase();
+    terms
+        .iter()
+        .map(
+            |term| match (mentions(&name, term), mentions(&description, term)) {
+                (true, _) => 3,
+                (false, true) => 1,
+                _ => 0,
+            },
+        )
+        .sum()
+}
+
+/// `term` as a whole word, so "go" does not match "going".
+fn mentions(haystack: &str, term: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(at) = haystack[from..].find(term) {
+        let start = from + at;
+        let end = start + term.len();
+        let edge = |i: usize| !bytes[i].is_ascii_alphanumeric();
+        if (start == 0 || edge(start - 1)) && (end == bytes.len() || edge(end)) {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// Split a listing into what this repo would plausibly use and the rest, each
+/// alphabetical within itself. Ranking beats a flat A-Z once the global root
+/// holds a couple of hundred skills.
+fn by_relevance(skills: &[Skill], terms: &BTreeSet<String>) -> (Vec<Skill>, Vec<Skill>) {
+    let mut scored: Vec<(usize, Skill)> = skills
+        .iter()
+        .map(|skill| (relevance(skill, terms), skill.clone()))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    let at = scored
+        .iter()
+        .position(|(score, _)| *score == 0)
+        .unwrap_or(scored.len());
+    let mut here: Vec<Skill> = scored[..at].iter().map(|(_, s)| s.clone()).collect();
+    let rest: Vec<Skill> = scored[at..].iter().map(|(_, s)| s.clone()).collect();
+    // A handful is a shortlist; forty is the same wall with a new heading.
+    here.truncate(MAX_RELEVANT);
+    let spilled = scored[..at].len().saturating_sub(here.len());
+    let mut rest = rest;
+    if spilled > 0 {
+        let mut extra: Vec<Skill> = scored[here.len()..at]
+            .iter()
+            .map(|(_, s)| s.clone())
+            .collect();
+        extra.extend(rest);
+        rest = extra;
+        rest.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    (here, rest)
+}
+
+const MAX_RELEVANT: usize = 8;
+
 fn print_available(skills: &[Skill]) {
     let width = width();
     let namew = skills.iter().map(|s| s.name.len()).max().unwrap_or(0);
@@ -568,13 +704,26 @@ fn list(project_only: bool, global_only: bool) -> Result<()> {
         return Ok(());
     }
 
+    let terms = std::env::current_dir()
+        .map(|cwd| repo_terms(&cwd))
+        .unwrap_or_default();
     for (scope, root, skills) in &sections {
         if skills.is_empty() {
             println!("no {} skills in {}\n", scope_word(*scope), root.display());
             continue;
         }
         println!("{} {} skill(s):\n", skills.len(), scope_word(*scope));
-        print_available(skills);
+        let (here, rest) = by_relevance(skills, &terms);
+        if here.is_empty() {
+            print_available(skills);
+        } else {
+            println!("{}", style("  likely useful here").dim());
+            print_available(&here);
+            if !rest.is_empty() {
+                println!("\n{}", style(format!("  the other {}", rest.len())).dim());
+                print_available(&rest);
+            }
+        }
         println!();
     }
 

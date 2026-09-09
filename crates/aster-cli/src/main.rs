@@ -7,6 +7,7 @@ mod auth;
 use auth::LoginArgs;
 mod budget;
 mod chat;
+mod cloudflare_auth;
 mod config;
 mod credentials;
 mod cron;
@@ -116,6 +117,8 @@ enum Command {
     Fix(fix::FixArgs),
     /// List or show saved chat sessions for this repo.
     Sessions(sessions::SessionsArgs),
+    /// Save a durable fact to memory (a line in ASTER.md, or a block with --title).
+    Remember(sessions::RememberArgs),
     /// List or add durable memory (project facts and blocks).
     Memory(sessions::MemoryArgs),
     /// Show what the next turn would run with: provider, model, limits, wiring.
@@ -218,6 +221,7 @@ async fn main() -> Result<()> {
         Command::Chat(args) => chat::run(args).await,
         Command::Fix(args) => fix::run(args).await,
         Command::Sessions(args) => sessions::run_sessions(args).await,
+        Command::Remember(args) => sessions::run_remember(args),
         Command::Memory(args) => sessions::run_memory(args),
         Command::Status => status::run(),
         Command::Config(args) => config::run(args).await,
@@ -228,7 +232,7 @@ async fn main() -> Result<()> {
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
         Command::Model(args) => config::models::run_model(args).await,
         Command::Mom(args) => mom::run_mom(args).await,
-        Command::Provider(args) => config::provider::run(args),
+        Command::Provider(args) => config::provider::run(args).await,
         Command::Models(args) => config::models::run(args).await,
         Command::Remote(args) => remote::run(args).await,
         Command::Run(args) => run::run(args).await,

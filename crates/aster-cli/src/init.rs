@@ -61,7 +61,33 @@ impl Provider {
     fn templated(&self) -> bool {
         self.base_url.contains('{')
     }
+
+    /// The base URL with every `{placeholder}` filled from the environment.
+    /// `None` when one is still open, which is what keeps a half-formed
+    /// endpoint out of the pickers.
+    fn resolved_base_url(&self) -> Option<String> {
+        let mut url = self.base_url.clone();
+        for (placeholder, vars) in TEMPLATE_VARS {
+            if !url.contains(placeholder) {
+                continue;
+            }
+            let value = vars.iter().find_map(|var| keys::env_non_empty(var))?;
+            url = url.replace(placeholder, value.trim());
+        }
+        (!url.contains('{')).then_some(url)
+    }
 }
+
+/// The env vars that fill each catalog placeholder, in the order they are
+/// tried. A row whose placeholder has no var here can never resolve.
+const TEMPLATE_VARS: [(&str, &[&str]); 3] = [
+    (
+        "{account_id}",
+        &["CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID"] as &[&str],
+    ),
+    ("{region}", &["AWS_REGION", "AWS_DEFAULT_REGION"]),
+    ("{resource}", &["AZURE_OPENAI_RESOURCE"]),
+];
 
 const PROVIDERS_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.json"));
@@ -72,14 +98,13 @@ pub(crate) fn load_providers() -> Result<Vec<Provider>> {
     Ok(catalog.providers)
 }
 
-/// Every non-templated catalog row as (id, base_url), for callers that map
-/// provider ids to endpoints without the full picker rows.
+/// Every usable catalog row as (id, base_url), for callers that map provider
+/// ids to endpoints without the full picker rows.
 pub fn provider_base_urls() -> Vec<(String, String)> {
     load_providers()
         .unwrap_or_default()
         .into_iter()
-        .filter(|p| !p.templated())
-        .map(|p| (p.id, p.base_url))
+        .filter_map(|p| Some((p.id.clone(), p.resolved_base_url()?)))
         .collect()
 }
 
@@ -92,15 +117,24 @@ pub fn provider_label(base_url: &str) -> String {
 }
 
 /// One row for the TUI's `/provider` picker: name, endpoint, and the model to
-/// start from. Templated endpoints are dropped, since there is no one to fill
-/// the placeholder in mid-session.
+/// start from. Endpoints with a placeholder the environment cannot fill are
+/// dropped, since there is no one to answer for it mid-session.
 pub fn provider_choices() -> Vec<(String, String, String)> {
-    load_providers()
+    let mut choices = load_providers()
         .unwrap_or_default()
         .into_iter()
-        .filter(|p| !p.templated())
-        .map(|p| (p.name, p.base_url, p.example_model))
-        .collect()
+        .filter_map(|p| {
+            Some((
+                p.name.clone(),
+                p.resolved_base_url()?,
+                p.example_model.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    // The catalog file is grouped by vendor, not alphabetical; the picker reads
+    // better sorted.
+    choices.sort_by_key(|a| a.0.to_lowercase());
+    choices
 }
 
 /// The catalog's shortlist for `base_url`, falling back to its example model.
@@ -109,24 +143,53 @@ pub fn provider_recommended(base_url: &str) -> Vec<String> {
     aster_ai::keys::catalog_models(base_url)
 }
 
+/// The catalog's vetted coding shortlist for `base_url`, empty for endpoints
+/// that only carry an example model. Callers that label a group "best for
+/// coding" want this one, not the example.
+pub fn provider_shortlist(base_url: &str) -> Vec<String> {
+    aster_ai::keys::catalog_shortlist(base_url)
+}
+
 /// Resolve what a user typed at `provider use` against the catalog: an id, a
 /// name, or a base URL. A URL that matches nothing is taken at face value, so
 /// self-hosted endpoints work without a catalog entry.
 pub fn find_provider(target: &str) -> Result<(String, String, String)> {
     let want = target.trim().trim_end_matches('/');
     let providers = load_providers()?;
-    let found = providers.into_iter().filter(|p| !p.templated()).find(|p| {
+    let found = providers.into_iter().find(|p| {
         p.id.eq_ignore_ascii_case(want)
             || p.name.eq_ignore_ascii_case(want)
             || p.base_url.trim_end_matches('/').eq_ignore_ascii_case(want)
     });
     if let Some(p) = found {
-        return Ok((p.name, p.base_url, p.example_model));
+        let base_url = match p.resolved_base_url() {
+            Some(url) => url,
+            None => bail!("{}", unfilled(&p)),
+        };
+        return Ok((p.name, base_url, p.example_model));
     }
     if want.starts_with("http://") || want.starts_with("https://") {
         return Ok((provider_label(want), want.to_string(), String::new()));
     }
     bail!("no provider {target:?} in the catalog; run `aster provider list` to see the ids")
+}
+
+/// Why a templated row is unusable, naming the env var that would fix it.
+fn unfilled(provider: &Provider) -> String {
+    let var = TEMPLATE_VARS
+        .iter()
+        .find(|(placeholder, _)| provider.base_url.contains(placeholder))
+        .map(|(_, vars)| vars[0]);
+    match var {
+        Some(var) => format!(
+            "{} needs an endpoint of its own; set {var}, or run `aster init` to type the URL",
+            provider.name
+        ),
+        None => format!(
+            "{} needs an endpoint of its own; pass the full URL to `aster provider use`",
+            provider.name
+        ),
+    }
 }
 
 fn lookup(base_url: &str) -> Option<Provider> {
@@ -193,6 +256,56 @@ pub(crate) async fn run_onboarding() -> Result<()> {
         yes: false,
     })
     .await
+}
+
+/// The setup a bare `aster` runs into when no key is configured: the same
+/// three doors as `aster init`, written straight to `~/.aster`, so the first
+/// command a new user types is also the one that gets them chatting. `false`
+/// when they back out.
+pub(crate) async fn first_run() -> Result<bool> {
+    let repo_root = env::current_dir().context("resolving the current directory")?;
+    let providers = load_providers()?;
+    let current = Current::read(&repo_root);
+
+    set_theme(AsterTheme);
+    print!("{}", crate::tui::mark_ansi());
+    log::info("Aster needs a model to talk to. This takes about twenty seconds.")?;
+
+    let Some(chosen) = provider_setup(&providers, &current).await? else {
+        outro_cancel("Cancelled. Nothing was written.")?;
+        return Ok(false);
+    };
+    let yaml_path = dirs::home_dir()
+        .context("could not determine home directory")?
+        .join(".aster/aster.yaml");
+    emit(
+        save_provider(&yaml_path, &chosen.base_url, &chosen.model, false)?,
+        true,
+    )?;
+    if let Some(key) = chosen
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    {
+        emit(
+            store_key(
+                &yaml_path.with_file_name(".env"),
+                chosen.key_var,
+                key,
+                false,
+            )?,
+            true,
+        )?;
+    }
+    if key_status(&chosen.base_url).is_none()
+        && crate::config::provider::resolve_key(&chosen.base_url).is_none()
+    {
+        outro_cancel(no_key_hint(&chosen.base_url))?;
+        return Ok(false);
+    }
+    outro("Set. Opening the chat…")?;
+    Ok(true)
 }
 
 pub async fn run(args: InitArgs) -> Result<()> {
@@ -367,6 +480,21 @@ enum Setup {
 }
 
 async fn wizard(providers: &[Provider], current: &Current) -> Result<Option<Configured>> {
+    // A first run has one thing to set up, so asking which is a question with
+    // only one answer. Web tools are an offer for a later rerun.
+    if !current.configured {
+        let Some(chosen) = provider_setup(providers, current).await? else {
+            return Ok(None);
+        };
+        return Ok(Some(Configured {
+            base_url: chosen.base_url,
+            model: chosen.model,
+            api_key: chosen.api_key,
+            key_var: Some(chosen.key_var),
+            web_keys: Vec::new(),
+        }));
+    }
+
     let Some(picked) = or_cancel(
         multiselect("What do you want to set up? (space to toggle · enter to confirm)")
             .required(false)
@@ -488,12 +616,211 @@ pub(crate) struct Chosen {
     pub(crate) key_var: &'static str,
 }
 
-/// Provider, base URL, key, model. The key is asked before the model so the
-/// endpoint can be asked what it serves. `None` when the user cancels.
+/// The first question, so a new user answers what they already have rather
+/// than which of forty endpoints they want.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    SignIn,
+    Key,
+    Local,
+}
+
+fn route_step(current: &Current) -> Result<Option<Route>> {
+    let start = match current.configured {
+        true if keys::is_loopback(&current.base_url) => Route::Local,
+        true => Route::Key,
+        false => Route::SignIn,
+    };
+    or_cancel(
+        select::<Route>("How do you want to connect?")
+            .initial_value(start)
+            .item(
+                Route::SignIn,
+                "Sign in with a browser",
+                "OpenRouter, ChatGPT, or Z.ai · no key to manage",
+            )
+            .item(
+                Route::Key,
+                "I have an API key",
+                "any provider in the catalog, or your own endpoint",
+            )
+            .item(
+                Route::Local,
+                "A model on this machine",
+                "Ollama, LM Studio, vLLM, llama.cpp · no account",
+            )
+            .interact(),
+    )
+}
+
+/// Provider, base URL, key, model, by whichever of the three routes fits what
+/// the user already has. `None` when they cancel.
 pub(crate) async fn provider_setup(
     providers: &[Provider],
     current: &Current,
 ) -> Result<Option<Chosen>> {
+    let Some(route) = route_step(current)? else {
+        return Ok(None);
+    };
+    match route {
+        Route::SignIn => sign_in_setup(providers, current).await,
+        Route::Key => key_setup(providers, current).await,
+        Route::Local => local_setup(providers, current).await,
+    }
+}
+
+/// The providers whose sign-in Aster can drive, as (catalog id, label, hint).
+const SIGN_IN: [(&str, &str, &str); 4] = [
+    ("openrouter", "OpenRouter", "one account, most models"),
+    ("codex", "ChatGPT", "use a Plus or Pro subscription"),
+    ("zai_coding", "Z.ai", "the GLM coding plan"),
+    ("cloudflare", "Cloudflare", "Workers AI on your account"),
+];
+
+async fn sign_in_setup(providers: &[Provider], current: &Current) -> Result<Option<Chosen>> {
+    let mut menu = select::<usize>("Sign in with");
+    for (i, (_, name, hint)) in SIGN_IN.iter().enumerate() {
+        menu = menu.item(i, *name, *hint);
+    }
+    let Some(i) = or_cancel(menu.interact())? else {
+        return Ok(None);
+    };
+    let (id, name, _) = SIGN_IN[i];
+    let mut signed_in_url = None;
+    let summary = match id {
+        "openrouter" => crate::openrouter_auth::login().await?,
+        "zai_coding" => crate::zai_auth::login().await?,
+        "cloudflare" => {
+            let (summary, url) = crate::cloudflare_auth::login().await?;
+            signed_in_url = Some(url);
+            summary
+        }
+        _ => {
+            let home = aster_ai::home_dir()?;
+            aster_ai::codex::login(&home).await?;
+            format!("Signed in to {name}.")
+        }
+    };
+    log::success(summary)?;
+
+    let provider = by_id(providers, id)
+        .with_context(|| format!("providers.json has no {id} row to sign in against"))?;
+    let base_url = signed_in_url.unwrap_or_else(|| provider.base_url.clone());
+    let key = crate::config::provider::resolve_key(&base_url).map(|(key, _)| key);
+    let Some(model) = pick_model(provider, &base_url, current, key.as_deref()).await? else {
+        return Ok(None);
+    };
+    Ok(Some(Chosen {
+        base_url: base_url.clone(),
+        model: model.trim().to_string(),
+        // The sign-in already stored whatever it minted; re-writing it here
+        // would only risk saving a stale copy.
+        api_key: None,
+        key_var: key_var_for(&base_url),
+    }))
+}
+
+/// The catalog rows for a server you run yourself, in the order they are probed.
+const LOCAL_IDS: [&str; 4] = ["ollama", "lmstudio", "vllm", "llamacpp"];
+
+async fn local_setup(providers: &[Provider], current: &Current) -> Result<Option<Chosen>> {
+    let rows: Vec<&Provider> = LOCAL_IDS
+        .iter()
+        .filter_map(|id| by_id(providers, id))
+        .collect();
+
+    let spinner = cliclack::spinner();
+    spinner.start("Looking for a model server on this machine…");
+    let mut running = Vec::new();
+    for p in &rows {
+        if reachable(&p.base_url).await {
+            running.push(p.id.clone());
+        }
+    }
+    match running.len() {
+        0 => spinner.error("nothing answering on the usual ports"),
+        n => spinner.stop(format!("{n} running")),
+    }
+
+    let custom = rows.len();
+    let at = rows
+        .iter()
+        .position(|p| running.contains(&p.id))
+        .unwrap_or(0);
+    let mut menu = select::<usize>("Which one?").initial_value(at);
+    for (i, p) in rows.iter().enumerate() {
+        let hint = match running.contains(&p.id) {
+            true => format!("{} · running", p.base_url),
+            false => format!("{} · not answering", p.base_url),
+        };
+        menu = menu.item(i, &p.name, hint);
+    }
+    menu = menu.item(custom, "Custom endpoint", "any OpenAI-compatible base URL");
+    let Some(idx) = or_cancel(menu.interact())? else {
+        return Ok(None);
+    };
+
+    let custom_provider;
+    let provider = match rows.get(idx) {
+        Some(p) => *p,
+        None => {
+            let Some(url) = custom_base_url(current, false)? else {
+                return Ok(None);
+            };
+            custom_provider = Provider {
+                id: "custom".to_string(),
+                name: "Custom endpoint".to_string(),
+                base_url: url,
+                example_model: String::new(),
+                auth: String::new(),
+            };
+            &custom_provider
+        }
+    };
+    let base_url = provider.base_url.clone();
+
+    // A server that is up can be asked what it loaded, which beats guessing at
+    // a model id that only that machine knows.
+    let model = match reachable(&base_url).await {
+        true => match search_models(&base_url, "", current).await? {
+            Search::Picked(model) => Some(model),
+            Search::Cancelled => return Ok(None),
+            Search::Unavailable => type_model(provider)?,
+        },
+        false => type_model(provider)?,
+    };
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    Ok(Some(Chosen {
+        base_url: base_url.clone(),
+        model: model.trim().to_string(),
+        api_key: None,
+        key_var: key_var_for(&base_url),
+    }))
+}
+
+fn by_id<'a>(providers: &'a [Provider], id: &str) -> Option<&'a Provider> {
+    providers.iter().find(|p| p.id == id)
+}
+
+/// Whether an endpoint answers a model list right now. Short timeout: this
+/// runs four times before a menu paints.
+async fn reachable(base_url: &str) -> bool {
+    let Ok(http) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(700))
+        .build()
+    else {
+        return false;
+    };
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    http.get(url)
+        .send()
+        .await
+        .is_ok_and(|r| r.status().is_success())
+}
+
+async fn key_setup(providers: &[Provider], current: &Current) -> Result<Option<Chosen>> {
     // The catalog rows, then one for any endpoint the catalog does not know:
     // a self-hosted server, a proxy, anything OpenAI-compatible. An endpoint
     // in use that no row serves is a custom one, so the cursor starts there.
@@ -542,9 +869,12 @@ pub(crate) async fn provider_setup(
     };
 
     let base_url = if provider.templated() {
+        let prefill = provider
+            .resolved_base_url()
+            .unwrap_or_else(|| provider.base_url.clone());
         let Some(url) = or_cancel(
             cliclack::input("Base URL")
-                .default_input(&provider.base_url)
+                .default_input(&prefill)
                 .required(false)
                 .interact::<String>(),
         )?
@@ -553,7 +883,7 @@ pub(crate) async fn provider_setup(
         };
         let url = url.trim();
         match url.is_empty() {
-            true => provider.base_url.clone(),
+            true => prefill,
             false => url.to_string(),
         }
     } else {
@@ -813,7 +1143,14 @@ fn write_scaffold(path: &Path, base_url: &str, model: &str) -> Result<Note> {
     Ok(Note::Success(format!("{verb} {}", display(path))))
 }
 
+/// Quote a scalar the writer interpolates. Cloudflare model ids start with
+/// `@`, which YAML reserves, so a bare id writes a file nothing can read back.
+fn yaml_scalar(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 fn yaml_contents(base_url: &str, model: &str) -> String {
+    let (model, base_url) = (yaml_scalar(model), yaml_scalar(base_url));
     format!(
         "# Aster review config. Precedence: CLI flags > shell env > this file > defaults.\n\
          # API keys are NEVER read from here. Use ASTER_API_KEY or `aster login`.\n\

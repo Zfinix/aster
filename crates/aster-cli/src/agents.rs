@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use aster_agents::AgentRegistry;
 use aster_ai::AiClient;
@@ -74,6 +74,7 @@ pub(crate) struct AgentDeps {
     pub limits: crate::chat::Limits,
     pub swarm: SwarmLimits,
     pub session_registry: Arc<AgentRegistry>,
+    pub yolo: bool,
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -197,17 +198,17 @@ async fn run_agent(
     let mut child_client = deps.client.clone();
     // An overridden model may belong to another provider than the parent's
     // endpoint, so it is re-paired with an endpoint that serves it.
-    if let Some(model) = def
+    let override_model = def
         .model
         .clone()
-        .or_else(|| deps.swarm.collector_model.clone())
-    {
-        match crate::mom::target_for_model(&model, deps.client.base_url()) {
+        .or_else(|| deps.swarm.collector_model.clone());
+    if let Some(model) = &override_model {
+        match crate::mom::target_for_model(model, deps.client.base_url()) {
             Some(target) => {
                 child_client.set_endpoint(&target.base_url, target.key);
                 child_client.model = target.model_param;
             }
-            None => child_client.model = model,
+            None => child_client.model = model.clone(),
         }
     }
 
@@ -236,8 +237,6 @@ async fn run_agent(
         recorder: None,
         store: None,
         credentials: deps.credentials.clone(),
-        // Not inherited: a sub-agent asks for its own out-of-repo writes.
-        write_grants: Default::default(),
         skills: Arc::new(aster_skills::SkillSet::default()),
         instructions: Arc::new(crate::instructions::Instructions::default()),
         probe: deps.probe.clone(),
@@ -249,7 +248,7 @@ async fn run_agent(
             compact_budget_chars: deps.limits.compact_budget_chars,
         },
         environment: deps.environment.clone(),
-        yolo: false,
+        yolo: Arc::new(AtomicBool::new(deps.yolo)),
         reads: Default::default(),
         previews: Default::default(),
         lookups: Default::default(),
@@ -259,29 +258,48 @@ async fn run_agent(
         swarm: deps.swarm.clone(),
     };
 
-    let history = vec![aster_ai::ChatMessage {
-        role: "user".into(),
-        content: task.into(),
-    }];
-
     let allow_edits = def
         .tools
         .as_deref()
         .map(|t| t.contains(&"edit_file".to_string()))
         .unwrap_or(false);
 
-    let (reply, _edited, _compacted) = crate::chat::agent_turn_streaming(
-        child_client,
-        deps.repo_root.clone(),
-        history,
-        allow_edits,
-        deps.policy.clone(),
-        deps.grants.clone(),
-        None,
-        child_ctx,
-        activity_sink(activity),
-    )
-    .await?;
+    let history = vec![aster_ai::ChatMessage {
+        role: "user".into(),
+        content: task.into(),
+    }];
+
+    let turn = |client: aster_ai::AiClient, history: Vec<aster_ai::ChatMessage>| {
+        crate::chat::agent_turn_streaming(
+            client,
+            deps.repo_root.clone(),
+            history,
+            allow_edits,
+            deps.policy.clone(),
+            deps.grants.clone(),
+            None,
+            child_ctx.clone(),
+            activity_sink(activity.clone()),
+        )
+    };
+
+    let child_model = child_client.model.clone();
+    let (reply, _edited, _compacted) = match turn(child_client, history.clone()).await {
+        Ok(out) => out,
+        // The in-loop steers could not break the repetition. A sub-agent has
+        // no mom to switch models for it, so the escalation is one fresh run
+        // on the parent's model.
+        Err(e)
+            if override_model.is_some()
+                && e.downcast_ref::<aster_ai::DegenerateOutput>().is_some() =>
+        {
+            let _ = activity.send(format!(
+                "the reply kept degenerating on {child_model}; retrying once on the parent model"
+            ));
+            turn(deps.client.clone(), history).await?
+        }
+        Err(e) => return Err(e),
+    };
 
     Ok(reply)
 }

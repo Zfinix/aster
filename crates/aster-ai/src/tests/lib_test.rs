@@ -27,6 +27,15 @@ fn format_api_error_labels_auth_failures() {
 }
 
 #[test]
+fn format_api_error_reads_the_cloudflare_envelope() {
+    let body = r#"{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}],"messages":[]}"#;
+    assert_eq!(
+        format_api_error(StatusCode::UNAUTHORIZED, body),
+        "authentication failed (check your API key) (401): Authentication error"
+    );
+}
+
+#[test]
 fn format_api_error_uses_raw_body_when_not_json() {
     let msg = format_api_error(StatusCode::INTERNAL_SERVER_ERROR, "upstream down");
     assert_eq!(msg, "provider error (500): upstream down");
@@ -491,4 +500,101 @@ async fn a_rejected_image_is_described_instead_of_dropped() {
         .await
         .expect("turn succeeds");
     assert_eq!(message.content.unwrap_or_default(), "done");
+}
+
+fn client_knowing(window: Option<u32>) -> AiClient {
+    let client = AiClient::new("https://example.test/v1", "test-key", "test-model");
+    client
+        .info
+        .set(Some(ModelInfo {
+            id: "test-model".to_string(),
+            takes_images: None,
+            context_window: window,
+        }))
+        .unwrap();
+    client
+}
+
+#[tokio::test]
+async fn the_output_cap_shrinks_to_what_the_context_window_leaves() {
+    let client = client_knowing(Some(24_000));
+    // ~16k tokens of prompt against a 24k window: the default no longer fits.
+    let budget = client.output_budget(64_000).await;
+    assert_eq!(budget, Some(24_000 - 16_000 - 512));
+    // A short prompt leaves room for whatever was asked for.
+    assert_eq!(client.output_budget(4_000).await, client.max_tokens);
+}
+
+#[tokio::test]
+async fn a_prompt_that_fills_the_window_still_asks_for_an_answer_worth_reading() {
+    let client = client_knowing(Some(24_000));
+    assert_eq!(client.output_budget(200_000).await, Some(MIN_OUTPUT_TOKENS));
+}
+
+#[tokio::test]
+async fn an_endpoint_that_declares_no_window_keeps_the_configured_cap() {
+    let client = client_knowing(None);
+    assert_eq!(client.output_budget(200_000).await, client.max_tokens);
+}
+
+/// Serve `part one ` (cut by `finish_reason: "length"`) once, then `part two`
+/// for the continuation request. Mock A answers exactly once (`up_to_n_times`),
+/// so the follow-up request falls through to mock B.
+#[tokio::test]
+async fn a_length_truncated_reply_is_continued_rather_than_cut() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": { "role": "assistant", "content": "part one " },
+                    "finish_reason": "length"
+                }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 50 }
+            })),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": { "role": "assistant", "content": "part two" },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 12, "completion_tokens": 40 }
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let out = client.complete("sys", "user", 0.7).await.unwrap();
+    assert_eq!(out, "part one part two");
+}
+
+#[tokio::test]
+async fn a_reply_that_never_finishes_stops_after_the_continuation_cap() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": { "role": "assistant", "content": "x" },
+                    "finish_reason": "length"
+                }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 50 }
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let out = client.complete("sys", "user", 0.7).await.unwrap();
+    // MAX_CONTINUATION_PASSES (=3) continuations on top of the first call.
+    assert_eq!(out, "xxxx");
 }

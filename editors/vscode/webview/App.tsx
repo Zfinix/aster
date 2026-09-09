@@ -5,10 +5,13 @@ import type {
   Effort,
   InfoRow,
   McpServer,
+  MemoryBlock,
+  MemoryProject,
   PermissionMode,
   Provider,
   ReviewSource,
   SessionSummary,
+  MomState,
   SetupInfo,
   SkillCommand,
   ToWebview,
@@ -16,6 +19,8 @@ import type {
 import { Composer } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { MemoryPanel } from "./components/MemoryPanel";
+import type { MemoryBody } from "./components/MemoryRow";
 import { InfoModal } from "./components/InfoModal";
 import { FilePreview } from "./components/FilePreview";
 import { FindBar } from "./components/FindBar";
@@ -60,6 +65,7 @@ const newSessionId = () => `vsc-${Date.now().toString(36)}`;
 interface Persisted {
   turns: Turn[];
   session: string;
+  title?: string;
 }
 
 interface Init {
@@ -79,12 +85,15 @@ interface Init {
 export function App() {
   const saved = restore<Persisted>();
   const [init, setInit] = useState<Init | null>(null);
+  const [mom, setMom] = useState<MomState | null>(null);
   const [login, setLogin] = useState<LoginState | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("edit");
   const [effort, setEffort] = useState<Effort | null>(null);
   const [turns, setTurns] = useState<Turn[]>(() => hydrate(saved?.turns));
   const [session, setSession] = useState(saved?.session ?? newSessionId());
-  const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [sessionTitle, setSessionTitle] = useState<string | null>(
+    saved?.title ?? null
+  );
   const [busy, setBusy] = useState(false);
   const [sounds, setSounds] = useState(soundsEnabled);
   const [fileResults, setFileResults] = useState<string[]>([]);
@@ -95,6 +104,8 @@ export function App() {
   const [queued, setQueued] = useState<{ id: string; text: string }[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [memory, setMemory] = useState<MemoryState | null>(null);
+  const [memoryBodies, setMemoryBodies] = useState<Record<string, MemoryBody>>({});
   const [info, setInfo] = useState<InfoCardData | null>(null);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -121,8 +132,8 @@ export function App() {
 
   useEffect(() => {
     turnsRef.current = turns;
-    persist({ turns, session });
-  }, [turns, session]);
+    persist({ turns, session, title: sessionTitle ?? undefined });
+  }, [turns, session, sessionTitle]);
 
   // The in-flight request id, so a stale event after a cancel is ignored.
   const activeRef = useRef<string | null>(null);
@@ -337,17 +348,43 @@ export function App() {
       case "sessions":
         setSessions(message.sessions);
         break;
+      case "memory":
+        setMemory({ blocks: message.blocks, project: message.project, error: message.error });
+        break;
+      case "remembered":
+        setInfo((prev) =>
+          prev && prev.id === message.id
+            ? { ...prev, pending: false, body: message.error ?? "Saved to memory (ASTER.md)" }
+            : prev
+        );
+        break;
+      case "memoryBody":
+        setMemoryBodies((prev) => ({
+          ...prev,
+          [message.name]: { body: message.body, error: message.error },
+        }));
+        break;
       case "log":
         break;
-      // Merged, not replaced: the vetted list and any hand-typed id have to
-      // survive an endpoint that answers with a catalog of its own.
       case "modelsLoaded":
         setModelsLoading(false);
         setModelsError(message.error);
         setCatalog(message.models.length ? message.models : null);
+        // The endpoint's answer replaces the list rather than joining it: a
+        // model another provider serves is not a choice here.
         setInit((prev) =>
-          prev ? { ...prev, models: [...new Set([...prev.models, ...message.models])] } : prev
+          prev
+            ? {
+                ...prev,
+                models: message.models.length ? message.models : prev.models,
+                recommended: message.recommended ?? prev.recommended,
+              }
+            : prev
         );
+        break;
+
+      case "momState":
+        setMom(message.state.active ? message.state : null);
         break;
 
       case "mcpServers":
@@ -363,7 +400,8 @@ export function App() {
             ? {
                 ...prev,
                 model: message.model,
-                models: message.models.length ? message.models : prev.models,
+                models: message.models.length ? message.models : [message.model],
+                recommended: message.recommended ?? [],
               }
             : prev
         );
@@ -588,7 +626,9 @@ export function App() {
 
   useEffect(() => {
     const unsubscribe = onHostMessage(handle);
-    post({ type: "ready" });
+    // The reloaded tab tells the host which session it restored, so the host
+    // can take the saved name instead of leaving the tab labelled "Aster".
+    post({ type: "ready", session: saved?.session, title: saved?.title });
     post({ type: "listProviders" });
     return unsubscribe;
   }, [handle]);
@@ -627,6 +667,11 @@ export function App() {
   };
 
   const startTurn = (text: string) => {
+    const remembered = /^\/remember\b\s*(.*)$/.exec(text.trim());
+    if (remembered) {
+      rememberFact(remembered[1].trim());
+      return;
+    }
     const id = nextId();
     const history: Turn[] = [
       ...turns,
@@ -771,7 +816,22 @@ export function App() {
     post({ type: "review", id, source });
   };
 
-  const askInfo = (topic: "status" | "memory" | "diff" | "mom") => {
+  const readMemory = useCallback((name: string) => post({ type: "readMemory", name }), []);
+
+  // `/remember <fact>`: the host writes it and answers on the same id, so the
+  // card flips from pending to saved (or to the error) in place.
+  const rememberFact = (fact: string) => {
+    const id = nextId();
+    if (!fact) {
+      setInfo({ id, title: "Remember", body: "Usage: /remember <fact> — it lands in ASTER.md" });
+      return;
+    }
+    setTurns((prev) => [...prev, { id: nextId(), role: "user", text: `/remember ${fact}` }]);
+    setInfo({ id, title: "Memory", pending: true });
+    post({ type: "rememberMemory", id, text: fact });
+  };
+
+  const askInfo = (topic: "status" | "diff" | "mom") => {
     const id = nextId();
     setInfo({ id, title: infoTitle(topic), pending: true });
     post({ type: "info", id, topic });
@@ -783,9 +843,14 @@ export function App() {
         startReview({ kind: "working" });
         break;
       case "status":
-      case "memory":
       case "diff":
         askInfo(name);
+        break;
+      // The list is asked for on open, so a fact saved during the conversation
+      // is in it rather than in a copy taken when the panel first mounted.
+      case "memory":
+        setMemory({ blocks: [], project: null });
+        post({ type: "listMemory" });
         break;
       // Loading like any other turn: the placeholder is a pending assistant
       // turn, so a failure lands on it as an error the same way too.
@@ -865,13 +930,6 @@ export function App() {
           post({ type: "listSessions" });
           setShowHistory(true);
         }}
-        soundsOn={sounds}
-        onToggleSounds={() => {
-          const on = !sounds;
-          setSoundsEnabled(on);
-          setSounds(on);
-          if (inEditor) post({ type: "setSounds", enabled: on });
-        }}
       />
       {turns.length === 0 ? (
         <EmptyState
@@ -907,6 +965,7 @@ export function App() {
       {!init?.setup && (init?.binaryOk ?? true) && (
         <Composer
           busy={busy}
+          mom={mom}
           model={init?.model ?? null}
           models={init?.models ?? []}
           recommended={init?.recommended ?? []}
@@ -941,6 +1000,12 @@ export function App() {
             post({ type: "setProvider", baseUrl: provider.base_url, model: provider.example_model })
           }
           onToggleMcp={(name, disabled) => post({ type: "toggleMcp", name, disabled })}
+          soundsOn={sounds}
+          onToggleSounds={(on) => {
+            setSoundsEnabled(on);
+            setSounds(on);
+            if (inEditor) post({ type: "setSounds", enabled: on });
+          }}
           queued={queued}
           onSteerQueued={steerQueued}
           onEditQueued={editQueued}
@@ -974,6 +1039,21 @@ export function App() {
       {info && <InfoModal card={info} onClose={() => setInfo(null)} />}
       {!inEditor && <FilePreview />}
       {!nativeFind && <FindBar />}
+
+      {memory && (
+        <MemoryPanel
+          blocks={memory.blocks}
+          project={memory.project}
+          error={memory.error}
+          bodies={memoryBodies}
+          onRead={readMemory}
+          onForget={(name) => {
+            setMemoryBodies(({ [name]: _gone, ...rest }) => rest);
+            post({ type: "forgetMemory", name });
+          }}
+          onClose={() => setMemory(null)}
+        />
+      )}
 
       {showHistory && (
         <HistoryPanel
@@ -1016,14 +1096,12 @@ function sessionRows(turns: Turn[]): InfoRow[] {
   return rows;
 }
 
-function infoTitle(topic: "status" | "memory" | "diff" | "mom"): string {
+function infoTitle(topic: "status" | "diff" | "mom"): string {
   return topic === "diff"
     ? "Uncommitted changes"
-    : topic === "memory"
-      ? "Memory"
-      : topic === "mom"
-        ? "Model policy"
-        : "Status";
+    : topic === "mom"
+      ? "Model policy"
+      : "Status";
 }
 
 const HELP_BODY = `| Command | What it does |
@@ -1041,10 +1119,17 @@ const HELP_BODY = `| Command | What it does |
 | /review-pr | Review a GitHub PR |
 | /diff | Show uncommitted changes |
 | /status | Show model and token usage |
-| /memory | List what Aster remembers |
+| /memory | Read and forget what Aster remembers |
+| /remember <fact> | Save a fact to memory |
 | /mom | Show the mom.yaml model policy |
 | /mcp | Turn MCP servers on and off |
 | /mention | Attach a file to the next message |`;
+
+interface MemoryState {
+  blocks: MemoryBlock[];
+  project: MemoryProject | null;
+  error?: string;
+}
 
 type ReviewEvent = Extract<ToWebview, { type: "reviewEvent" }>["event"];
 

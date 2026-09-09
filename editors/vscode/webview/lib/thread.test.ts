@@ -4,6 +4,7 @@ import {
   appendReasoning,
   appendText,
   buildMessages,
+  emptyReview,
   hydrate,
   newTurn,
   patchCall,
@@ -123,6 +124,34 @@ describe("stopUnfinished", () => {
     const block = stopped.blocks[0];
     if (block.kind !== "tools") throw new Error("expected a tool group");
     expect(block.calls[0].stopped).toBeUndefined();
+  });
+});
+
+describe("restoreTurn", () => {
+  it("rebuilds the agents block from a persisted agent tool result", () => {
+    const result = JSON.stringify([
+      { agent: "explorer", task: "find where X lives", report: "it is in chat.rs" },
+      { agent: "reviewer", task: "review it", error: "timed out" },
+    ]);
+    const turn = restoreTurn("t1", "", undefined, [
+      { id: "c1", name: "agent", arguments: "{}", result },
+    ]);
+    const block = turn.blocks[0];
+    if (block.kind !== "agents") throw new Error("expected an agents block");
+    expect(block.callId).toBe("c1");
+    expect(
+      block.tasks.map((t) => [t.agent, t.status, t.report, t.error])
+    ).toEqual([
+      ["explorer", "done", "it is in chat.rs", undefined],
+      ["reviewer", "error", undefined, "timed out"],
+    ]);
+  });
+
+  it("keeps an unparseable agent result as a plain tool call", () => {
+    const turn = restoreTurn("t1", "", undefined, [
+      { id: "c1", name: "agent", arguments: "{}", result: "error: agent arguments were not valid JSON: bad" },
+    ]);
+    expect(shape(turn)).toEqual(["tools:c1"]);
   });
 });
 
@@ -311,6 +340,18 @@ describe("buildMessages across a compaction", () => {
     expect(buildMessages([asked("u1", "hi"), said("a1", "hello")])).toEqual([
       { role: "user", content: "hi" },
       { role: "assistant", content: "hello" },
+    ]);
+  });
+
+  it("flattens a finished review into a user message, which is the only kind the runner replays", () => {
+    const reviewed: Turn = {
+      id: "r1",
+      role: "review",
+      data: { ...emptyReview(), status: "done", summary: "looks fine", findings: [], refuted: [], files: [] },
+    };
+    expect(buildMessages([reviewed, asked("u1", "why nothing?")])).toEqual([
+      { role: "user", content: expect.stringContaining("no issues") },
+      { role: "user", content: "why nothing?" },
     ]);
   });
 });

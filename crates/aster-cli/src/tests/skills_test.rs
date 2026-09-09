@@ -72,3 +72,94 @@ fn the_other_scope_is_named_for_error_messages() {
     assert_eq!(other_scope_flag(Scope::Global), "--project");
     assert_eq!(other_scope_flag(Scope::Project), "--global");
 }
+
+fn skill_dir(root: &Path, name: &str, description: &str) {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).expect("skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {description}\n---\n\nbody\n"),
+    )
+    .expect("SKILL.md");
+}
+
+#[test]
+fn a_term_matches_whole_words_only() {
+    assert!(mentions("rust coding guidelines", "rust"));
+    assert!(mentions("write swift", "swift"));
+    assert!(!mentions("going somewhere", "go"));
+    assert!(!mentions("trustworthy", "rust"));
+    assert!(mentions("expo/react-native", "react"));
+}
+
+#[test]
+fn manifests_and_dependencies_become_terms() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("juice-mobile");
+    std::fs::create_dir_all(&root).expect("root");
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("cargo");
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"dependencies":{"expo":"1","@heroui/react":"3"},"devDependencies":{"vitest":"1"}}"#,
+    )
+    .expect("package.json");
+
+    let terms = repo_terms(&root);
+    for want in [
+        "rust", "cargo", "expo", "heroui", "react", "vitest", "juice", "mobile",
+    ] {
+        assert!(terms.contains(want), "missing {want}: {terms:?}");
+    }
+    // Words that would match half the catalog are dropped rather than ranked.
+    for skip in ["app", "cli", "web", "node"] {
+        assert!(!terms.contains(skip), "kept {skip}");
+    }
+}
+
+#[test]
+fn a_repos_own_stack_sorts_above_everything_else() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    skill_dir(
+        &root,
+        "rust-guidelines",
+        "House Rust style for cargo crates.",
+    );
+    skill_dir(&root, "academic-paper", "Write an academic paper.");
+    skill_dir(&root, "zzz-last", "Nothing to do with this repo.");
+    let skills: Vec<Skill> = SkillSet::discover(&[root])
+        .visible()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut terms = BTreeSet::new();
+    terms.insert("rust".to_string());
+    terms.insert("cargo".to_string());
+    let (here, rest) = by_relevance(&skills, &terms);
+
+    assert_eq!(
+        here.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["rust-guidelines"]
+    );
+    // The rest keeps a plain A-Z, so the tail stays scannable.
+    assert_eq!(
+        rest.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["academic-paper", "zzz-last"]
+    );
+}
+
+#[test]
+fn nothing_relevant_leaves_the_listing_alphabetical() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    skill_dir(&root, "beta", "Second.");
+    skill_dir(&root, "alpha", "First.");
+    let skills: Vec<Skill> = SkillSet::discover(&[root]).visible().cloned().collect();
+
+    let (here, rest) = by_relevance(&skills, &BTreeSet::new());
+    assert!(here.is_empty());
+    assert_eq!(
+        rest.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+}

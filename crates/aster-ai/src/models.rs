@@ -227,12 +227,18 @@ pub struct ToolChatResponse {
 #[derive(Deserialize)]
 pub struct ToolChatChoice {
     pub message: AssistantMessage,
+    /// `stop` or `length` (reply hit the output budget). `length` is what the
+    /// continuation loop in the client keys on.
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -316,6 +322,10 @@ pub struct ToolCallFunction {
 #[derive(Deserialize)]
 pub struct ChatChoice {
     pub message: ChatMessage,
+    /// `stop`, `length` (reply hit the output budget), or `tool_calls`. `length`
+    /// is what the continuation loop in the client keys on.
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
@@ -343,6 +353,10 @@ pub struct ChatStreamChoice {
 pub struct ChatDelta {
     #[serde(default)]
     pub content: Option<String>,
+    /// Workers AI's spelling for a thinking model's output. Without it the
+    /// whole reply is dropped, since `content` stays empty until it finishes.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCallDelta>,
     #[serde(default)]

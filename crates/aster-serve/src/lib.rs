@@ -3,6 +3,7 @@
 //! the desktop app's, built for the web, and every turn runs as a child `aster`
 //! process, so a tab and a terminal drive the same CLI in the same repo.
 
+mod acp;
 mod assets;
 mod cli;
 mod files;

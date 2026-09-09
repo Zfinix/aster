@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aster: the CLI is the driver — live</title>
+<style>
+  /* Tokens lifted from editors/vscode/webview/tokens.css, pinned to the dark
+     fallback values. */
+  :root {
+    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px;
+    --radius: 4px; --radius-lg: 6px; --radius-xl: 12px;
+    --bg: #181818; --fg: #cccccc; --fg-dim: #9d9d9d;
+    --border: rgba(127,127,127,.28);
+    --code-bg: rgba(127,127,127,.08);
+    --code-bg-soft: rgba(127,127,127,.04);
+    --code-bg-strong: rgba(127,127,127,.14);
+    --list-hover: rgba(255,255,255,.05);
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --mono-size: 11px;
+    --sev-critical: #f14c4c;
+    --sev-low: #3794ff;
+    --diff-add: #4ec94e;
+    --mode-auto: #30d158;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #101010; color: var(--fg);
+    font: 13px/1.55 -apple-system, "Segoe UI", sans-serif;
+    display: flex; gap: 20px; align-items: stretch; justify-content: center;
+    padding: 28px 16px; min-height: 100vh;
+  }
+
+  /* ---- the window ---- */
+  .window {
+    width: 470px; flex: none;
+    display: flex; flex-direction: column;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+    height: calc(100vh - 64px);
+  }
+  .titlebar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    color: var(--fg-dim); font-size: 12px;
+  }
+  .titlebar .dots { display: flex; gap: 6px; }
+  .titlebar .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+  .titlebar .tab { margin-left: 8px; padding: 2px 10px; border-radius: 5px; background: var(--code-bg-strong); color: var(--fg); }
+  .titlebar .live { margin-left: auto; font-size: 11px; color: var(--mode-auto); }
+  .titlebar .live::before { content: "● "; }
+
+  .thread { flex: 1; overflow-y: auto; padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+  .msg { max-width: 90%; border-radius: var(--radius-xl); padding: 7px var(--s3); }
+  .msg.user { align-self: flex-end; background: var(--code-bg-strong); }
+  .msg.agent { align-self: flex-start; }
+  .msg.agent .who { font-size: 11px; color: var(--fg-dim); margin-bottom: 2px; }
+  .msg.agent .body { white-space: pre-wrap; }
+  .msg.agent .body.idle::after { content: "▍"; color: var(--fg-dim); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .tool-row {
+    align-self: stretch; display: flex; align-items: baseline; gap: 6px;
+    padding: 4px var(--s3); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); background: var(--code-bg-soft);
+    font-size: 12px; color: var(--fg-dim);
+  }
+  .tool-row .verb { flex: none; font-weight: 600; color: var(--fg); }
+  .tool-row .detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: var(--mono-size); }
+  .tool-row[data-status="running"] .detail {
+    background: linear-gradient(90deg, var(--fg-dim) 35%, var(--fg) 50%, var(--fg-dim) 65%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: shimmer 2s linear infinite;
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .tool-row[data-status="failed"] { border-color: var(--sev-critical); }
+  .tool-row[data-status="failed"] .verb { color: var(--sev-critical); }
+
+  .perm {
+    align-self: stretch; border: 1px solid var(--mode-auto);
+    border-radius: var(--radius-lg); padding: 8px var(--s3); background: var(--code-bg-soft);
+  }
+  .perm .ask { font-weight: 600; margin-bottom: 6px; }
+  .perm .btns { display: flex; gap: 6px; }
+  .perm button {
+    font: inherit; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--code-bg); color: var(--fg); padding: 3px 10px;
+  }
+  .perm button.allow { border-color: var(--mode-auto); color: var(--mode-auto); }
+
+  .composer {
+    display: flex; align-items: center; gap: var(--s2);
+    margin: var(--s2) var(--s3) var(--s3); padding: 7px var(--s3);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    background: var(--code-bg);
+  }
+  .composer input { flex: 1; background: none; border: none; outline: none; color: var(--fg); font: inherit; }
+  .composer input::placeholder { color: var(--fg-dim); }
+  .composer .send {
+    flex: none; width: 22px; height: 22px; border-radius: 50%; border: none;
+    background: var(--mode-auto); color: #fff; font-size: 12px; cursor: pointer;
+  }
+  .composer .mode { flex: none; font-size: 11px; color: var(--mode-auto); border: 1px solid color-mix(in srgb, var(--mode-auto) 40%, transparent); border-radius: 99px; padding: 1px 8px; }
+
+  /* ---- the wire panel ---- */
+  .wire { width: 400px; max-width: 44vw; display: flex; flex-direction: column; gap: 12px; }
+  .wire h2 { font-size: 15px; font-weight: 600; }
+  .wire .sub { color: var(--fg-dim); font-size: 12px; }
+
+  /* agent-net graph card, copied from the webview's AgentGroup */
+  .agent-net {
+    display: flex; flex-direction: column;
+    border: 1px solid var(--border); border-radius: var(--radius-xl);
+    background: var(--code-bg-soft); overflow: hidden;
+  }
+  .agent-net-head {
+    display: flex; align-items: center; gap: var(--s2);
+    width: 100%; text-align: left; font: inherit; color: var(--fg-dim);
+    padding: var(--s2) var(--s3); background: none; border: none; cursor: pointer;
+  }
+  .agent-net-head:hover { background: var(--list-hover); }
+  .agent-net-title { display: flex; align-items: center; gap: var(--s2); flex: none; font-weight: 600; color: var(--fg); }
+  .agent-net-counts { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .agent-net-graph {
+    position: relative; display: grid; grid-template-columns: auto 1fr;
+    column-gap: 36px; align-items: center; padding: var(--s3);
+  }
+  .agent-net-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .agent-wire { fill: none; stroke: var(--border); stroke-width: 1.25; }
+  .agent-net-wires [data-status="running"] { color: var(--sev-low); }
+  .agent-net-wires [data-status="done"] { color: var(--diff-add); }
+  .agent-wire-flow { fill: none; stroke: currentColor; stroke-width: 1.25; stroke-dasharray: 3 5; animation: wire-flow .9s linear infinite; }
+  @keyframes wire-flow { to { stroke-dashoffset: -8; } }
+  .agent-wire-end { fill: currentColor; }
+  .agent-wire-port { fill: var(--fg-dim); }
+  .agent-net-root {
+    display: flex; align-items: center; gap: var(--s2);
+    padding: var(--s2) var(--s3); border-radius: calc(var(--radius-xl) - var(--s1));
+    background: var(--code-bg); color: var(--fg); font-weight: 600;
+  }
+  .agent-net-root[data-running="true"] > svg { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .agent-net-nodes { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+  .agent-node {
+    display: flex; align-items: center; gap: var(--s2); width: 100%; min-width: 0;
+    text-align: left; font: inherit; color: var(--fg); padding: 5px var(--s2);
+    border: none; border-radius: calc(var(--radius-xl) - var(--s1));
+    background: var(--code-bg); cursor: pointer; transition: background 120ms ease-out;
+  }
+  .agent-node:hover { background: var(--code-bg-strong); }
+  .agent-node[data-status="running"] { --node-tint: var(--sev-low); }
+  .agent-node[data-status="done"] { --node-tint: var(--diff-add); }
+  .agent-avatar {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    flex: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--code-bg-strong); color: var(--fg);
+    transition: background-color 220ms ease-out, color 220ms ease-out;
+  }
+  .agent-avatar svg { width: 12px; height: 12px; stroke-width: 1.7; }
+  .agent-node[data-status="running"] .agent-avatar svg { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .agent-node[data-status="done"] .agent-avatar { background: var(--node-tint); color: #fff; }
+  .agent-node-name { flex: none; font-weight: 600; }
+  .agent-node-line { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--fg-dim); font-size: .92em; }
+  .agent-node-say { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .agent-node[data-status="running"] .agent-node-say {
+    background: linear-gradient(90deg, var(--fg-dim) 35%, var(--fg) 50%, var(--fg-dim) 65%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: shimmer 2s linear infinite;
+  }
+  .agent-node-state { display: flex; flex: none; color: var(--fg-dim); opacity: .5; }
+  .agent-node:hover .agent-node-state { opacity: 1; }
+
+  .wire-log {
+    flex: 1; min-height: 160px; overflow-y: auto;
+    background: #0d0d0d; border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 8px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  }
+  .wire-log > div {
+    display: grid; grid-template-columns: 62px 1fr; gap: 8px;
+    padding: 1px 0; align-items: baseline;
+  }
+  .wire-log .dir { text-align: right; color: var(--fg-dim); }
+  .wire-log .dir.out { color: var(--sev-low); }
+  .wire-log .dir.in { color: var(--diff-add); }
+  .wire-log .dir.err { color: var(--sev-critical); }
+  .wire-log .txt { color: var(--fg-dim); word-break: break-all; min-width: 0; }
+  .wire-log .txt b { color: var(--fg); font-weight: 500; }
+  .wire-log .rep { color: var(--fg-dim); opacity: .6; font-variant-numeric: tabular-nums; }
+  .hint { color: var(--fg-dim); font-size: 12px; }
+  @media (max-width: 900px) { body { flex-direction: column; align-items: center; } .wire { max-width: 470px; width: 100%; } }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="tab">Chat: aster</span>
+      <span class="live" id="live">connecting</span>
+    </div>
+    <div class="thread" id="thread"></div>
+    <div class="composer">
+      <input id="input" placeholder="Ask anything — the CLI answers" autocomplete="off">
+      <span class="mode">auto</span>
+      <button class="send" id="send" title="Send">↑</button>
+    </div>
+  </div>
+
+  <div class="wire">
+    <div>
+      <h2>The wire, live</h2>
+      <p class="sub">Every frame below is real traffic between this page and a real <code>aster acp</code> child. The graph lights up as frames land.</p>
+    </div>
+
+    <div class="agent-net">
+      <div class="agent-net-head">
+        <span class="agent-net-title">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="3" r="2"/><circle cx="3" cy="13" r="2"/><circle cx="13" cy="13" r="2"/><path d="M7 4.8 4 11.2M9 4.8l3 6.4"/></svg>
+          Who is driving
+        </span>
+        <span class="agent-net-counts" id="counts">idle</span>
+      </div>
+      <div class="agent-net-graph" id="graph">
+        <svg class="agent-net-wires" id="wires" aria-hidden="true"></svg>
+        <div class="agent-net-root" id="root" data-running="false">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M6 5h4M6 8h4M6 8v4"/></svg>
+          <span>aster acp</span>
+        </div>
+        <div class="agent-net-nodes" id="nodes"></div>
+      </div>
+    </div>
+
+    <div class="wire-log" id="log"></div>
+  </div>
+
+<script>
+const CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M3 8.5 6.5 12 13 4.5"/></svg>';
+const SPIN  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="5.5" stroke-dasharray="26 9"/></svg>';
+
+/* The three things the CLI drives, drawn as the subagents graph view draws
+   them: a root fanning out over measured wires to one node each. */
+const NODES = [
+  { id: "webview", say: "waiting for frames" },
+  { id: "tools",   say: "no tool calls yet" },
+  { id: "model",   say: "no turns yet" },
+];
+
+const els = id => document.getElementById(id);
+const thread = els("thread"), log = els("log");
+let ws, agentBubble = null, turnOpen = false, toolRows = new Map();
+
+NODES.forEach((n, i) => {
+  const b = document.createElement("button");
+  b.className = "agent-node"; b.id = "node" + i; b.dataset.status = "idle";
+  b.innerHTML = `<span class="agent-avatar"><span class="glyph"></span></span>
+    <span class="agent-node-name">${n.id}</span>
+    <span class="agent-node-line"><span class="agent-node-say">${n.say}</span></span>
+    <span class="agent-node-state"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg></span>`;
+  els("nodes").appendChild(b);
+});
+
+function measure() {
+  const graph = els("graph"), svg = els("wires");
+  const box = graph.getBoundingClientRect();
+  const from = els("root").getBoundingClientRect();
+  const x1 = from.right - box.left, y1 = from.top + from.height / 2 - box.top;
+  let out = `<circle class="agent-wire-port" cx="${x1}" cy="${y1}" r="2.5"/>`;
+  NODES.forEach((_, i) => {
+    const to = els("node" + i).getBoundingClientRect();
+    const x2 = to.left - box.left, y2 = to.top + to.height / 2 - box.top;
+    const bend = Math.max((x2 - x1) / 2, 8);
+    const d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+    const st = els("node" + i).dataset.status;
+    out += `<g data-status="${st}"><path class="agent-wire" d="${d}"/>` +
+      (st === "running" ? `<path class="agent-wire-flow" d="${d}"/>` : "") +
+      `<circle class="agent-wire-end" cx="${x2}" cy="${y2}" r="2"/></g>`;
+  });
+  svg.innerHTML = out;
+}
+
+function setNode(i, status, say) {
+  const n = els("node" + i);
+  n.dataset.status = status;
+  if (say !== undefined) n.querySelector(".agent-node-say").textContent = say;
+  n.querySelector(".glyph").innerHTML = status === "done" ? CHECK : status === "running" ? SPIN : "";
+  measure();
+}
+
+function pulse(i, say) {
+  setNode(i, "running", say);
+  clearTimeout(pulse["t" + i]);
+  pulse["t" + i] = setTimeout(() => setNode(i, "done"), 1200);
+}
+
+let lastKey = "", lastCount = 0;
+function addLog(dir, text) {
+  const cls = dir.startsWith("ui") ? "out" : dir.startsWith("cli") ? "in" : "err";
+  const key = dir + "\u0000" + text;
+  if (key === lastKey) {
+    lastCount++;
+    log.lastChild.querySelector(".rep").textContent = ` ×${lastCount}`;
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+  lastKey = key; lastCount = 1;
+  const line = document.createElement("div");
+  const sp = text.indexOf(" ");
+  const head = sp === -1 ? text : text.slice(0, sp);
+  const rest = sp === -1 ? "" : text.slice(sp);
+  line.innerHTML = `<span class="dir ${cls}">${dir}</span><span class="txt"><b>${esc(head)}</b>${esc(rest)}<span class="rep"></span></span>`;
+  log.appendChild(line);
+  while (log.children.length > 120) log.firstChild.remove();
+  log.scrollTop = log.scrollHeight;
+}
+
+function addUser(text) {
+  const el = document.createElement("div");
+  el.className = "msg user"; el.textContent = text;
+  thread.appendChild(el); scroll();
+}
+
+function openAgent() {
+  const el = document.createElement("div");
+  el.className = "msg agent";
+  el.innerHTML = '<div class="who">aster</div><div class="body idle"></div>';
+  thread.appendChild(el); scroll();
+  return el.querySelector(".body");
+}
+
+function addTool(name, args) {
+  const el = document.createElement("div");
+  el.className = "tool-row"; el.dataset.status = "running";
+  el.innerHTML = `<span class="verb">${esc(name)}</span><span class="detail">${esc(args)}</span>`;
+  thread.appendChild(el); scroll();
+  return el;
+}
+
+function addPermission(p) {
+  const el = document.createElement("div");
+  el.className = "perm";
+  el.innerHTML = `<div class="ask">${esc(p.title)}</div><div class="btns"></div>`;
+  const btns = el.querySelector(".btns");
+  (p.options ?? []).forEach(o => {
+    const b = document.createElement("button");
+    b.textContent = o.name;
+    if (o.name.toLowerCase().includes("allow")) b.className = "allow";
+    b.onclick = () => { ws.send(JSON.stringify({ type: "permission_reply", id: p.id, optionId: o.optionId })); el.remove(); };
+    btns.appendChild(b);
+  });
+  thread.appendChild(el); scroll();
+}
+
+function scroll() { thread.scrollTop = thread.scrollHeight; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function handleUpdate(u) {
+  const kind = u.sessionUpdate;
+  if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
+    if (!agentBubble) agentBubble = openAgent();
+    const text = typeof u.content === "string" ? u.content : u.content?.text ?? "";
+    agentBubble.textContent += text;
+    pulse(0, "rendering agent text");
+    pulse(2, "streaming tokens");
+    scroll();
+  } else if (kind === "tool_call") {
+    const row = addTool(u.name ?? u.title ?? "tool", JSON.stringify(u.rawInput ?? {}));
+    toolRows.set(String(u.toolCallId), row);
+    pulse(1, `${u.name ?? "tool"} running`);
+    pulse(0, "tool call frame");
+  } else if (kind === "tool_call_update") {
+    if (u.status === "completed" || u.status === "failed") {
+      const row = toolRows.get(String(u.toolCallId));
+      if (row) { row.dataset.status = u.status; pulse(1, `${u.status}`); }
+    }
+  } else if (kind === "session_info_update") {
+    pulse(0, "session metadata");
+  }
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => els("live").textContent = "live";
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === "frame") addLog(m.dir, m.line);
+    else if (m.type === "update") handleUpdate(m.update);
+    else if (m.type === "permission") addPermission(m);
+    else if (m.type === "done") {
+      lastKey = ""; lastCount = 0;
+      els("root").dataset.running = "false";
+      els("counts").textContent = "idle";
+      if (agentBubble) agentBubble.classList.remove("idle");
+      agentBubble = null;
+    } else if (m.type === "error") {
+      addLog("stderr", m.message);
+      els("live").textContent = "error";
+    }
+  };
+  ws.onclose = () => { els("live").textContent = "reconnecting"; setTimeout(connect, 1000); };
+}
+
+function send() {
+  const input = els("input");
+  const text = input.value.trim();
+  if (!text || ws.readyState !== 1) return;
+  input.value = "";
+  addUser(text);
+  agentBubble = openAgent();
+  els("root").dataset.running = "true";
+  els("counts").textContent = "turn running";
+  setNode(2, "running", "turn started");
+  ws.send(JSON.stringify({ type: "prompt", text }));
+}
+
+els("send").onclick = send;
+els("input").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+window.addEventListener("resize", measure);
+
+connect();
+measure();
+</script>
+</body>
+</html>

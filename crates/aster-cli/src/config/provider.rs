@@ -1,6 +1,5 @@
-//! Shared LLM provider resolution, and the `aster provider` command that writes
-//! the choice down. Precedence: non-empty shell env, then `aster.yaml`, then
-//! defaults. API keys never come from the yaml.
+//! LLM provider resolution and the `aster provider` command. Precedence: shell env, then `aster.yaml`, then defaults.
+//! API keys never come from yaml.
 
 use std::env;
 use std::fmt;
@@ -14,9 +13,7 @@ use serde::Serialize;
 
 use crate::settings::{Review, Saved, Settings};
 
-/// What a front-end needs to get the user signed in: the browser login that
-/// applies, if any, and the env vars a key could go in. Travels as `setup` on
-/// a stream error and in `aster config key --json`.
+/// Data needed for user authentication, sent as `setup` on stream error or in `aster config key --json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Setup {
     pub provider: String,
@@ -49,7 +46,7 @@ impl Setup {
         }
     }
 
-    /// None when the endpoint already has a key or a login.
+    /// Returns Some(Setup) if credentials are needed for this endpoint.
     pub fn needed(base_url: &str) -> Option<Self> {
         resolve_key(base_url)
             .is_none()
@@ -57,30 +54,39 @@ impl Setup {
     }
 }
 
-/// No key and no login for the endpoint. Typed so `--stream` can hand the
-/// front-end the setup it needs instead of a bare exit.
+/// Signals a missing key and no login for the endpoint.
 #[derive(Debug)]
 pub struct MissingCredentials(pub Setup);
+
+/// List of supported browser logins.
+pub const LOGINS: [(&str, &str); 2] = [
+    ("openrouter", "one account, most models"),
+    ("codex", "use a ChatGPT Plus or Pro subscription"),
+];
 
 impl fmt::Display for MissingCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let setup = &self.0;
-        if setup.login == Some("codex") {
-            return write!(
-                f,
-                "not signed in to ChatGPT. Run `aster login codex` to link your subscription, then try again"
-            );
+        let mut lines = vec![match setup.login {
+            Some("codex") => "not signed in to ChatGPT yet. Ways in:".to_string(),
+            _ => format!("no key for {} yet. Ways in:", setup.provider),
+        }];
+        lines.push(
+            "  aster init                 pick a provider, or a model on this machine".to_string(),
+        );
+        let mut logins = LOGINS;
+        logins.sort_by_key(|(target, _)| Some(*target) != setup.login);
+        for (target, what) in logins {
+            lines.push(format!("  aster login {target:<14} {what}"));
         }
-        let sign_in = match setup.login {
-            Some(target) => format!(", or run `aster login {target}`"),
-            None => String::new(),
-        };
-        write!(
-            f,
-            "no API key found for {}. Run `aster init` to set one up globally{sign_in}, or set {} in your shell environment",
-            setup.provider,
-            setup.key_vars.join(" or ")
-        )
+        if let Some(var) = setup.key_vars.first() {
+            let others = match setup.key_vars.len() {
+                1 => String::new(),
+                _ => format!("   (or {})", setup.key_vars[1..].join(", ")),
+            };
+            lines.push(format!("  export {var}=…{others}"));
+        }
+        write!(f, "{}", lines.join("\n"))
     }
 }
 
@@ -98,8 +104,7 @@ const DEFAULT_MODEL: &str = "openai/gpt-4o-mini";
 
 pub use aster_ai::keys::{KeySource, resolve_key};
 
-/// Endpoint and model alone, on the same precedence as [`resolve`] but without
-/// needing a key, so a saved choice can be read back before one is set.
+/// Get chosen endpoint and model, no key required.
 pub fn resolve_endpoint(review: &Review, model_flag: Option<&str>) -> (String, String) {
     let base_url = env_or("ASTER_BASE_URL", review.base_url.as_deref())
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
@@ -110,8 +115,8 @@ pub fn resolve_endpoint(review: &Review, model_flag: Option<&str>) -> (String, S
     (base_url, model)
 }
 
-/// Resolve endpoint, key, and model. `model_flag` wins over env and yaml; empty env counts as unset.
-/// The value `auto` routes through OpenRouter's live benchmark data instead of a pinned id.
+/// Get endpoint, key, model. `model_flag` takes highest priority.
+/// If model is "auto" and endpoint is openrouter, call the router to resolve.
 pub fn resolve(review: &Review, model_flag: Option<&str>) -> Result<LlmConfig> {
     let (base_url, model) = resolve_endpoint(review, model_flag);
     let Some((api_key, _)) = resolve_key(&base_url) else {
@@ -174,7 +179,7 @@ fn resolve_auto_model(api_key: &str) -> String {
     }
 }
 
-fn resolve_effort(review: &Review) -> Effort {
+pub(crate) fn resolve_effort(review: &Review) -> Effort {
     crate::effort_flag()
         .or_else(|| {
             let raw =
@@ -205,7 +210,6 @@ fn resolve_web_search(review: &Review) -> bool {
         .unwrap_or(review.web_search.unwrap_or(false))
 }
 
-// Attribution headers for OpenRouter analytics and display name.
 const ASTER_HTTP_REFERER: &str = "https://withaster.dev";
 const ASTER_TITLE: &str = "Aster";
 
@@ -214,9 +218,7 @@ pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Resu
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model)
         .with_effort(llm.effort)
         .with_web_search(llm.web_search);
-    // Only attribute on OpenRouter-routed traffic; other providers ignore or
-    // reject unknown headers, and the referer would leak aster's origin for no
-    // gain.
+    // Only attribute if endpoint is openrouter.
     if is_openrouter(client.base_url()) {
         return Ok(client.with_attribution_headers([
             ("HTTP-Referer".to_string(), ASTER_HTTP_REFERER.to_string()),
@@ -235,7 +237,7 @@ pub(crate) fn is_openrouter(base_url: &str) -> bool {
         .contains("openrouter")
 }
 
-/// Shell env wins, then the aster.yaml value; None when neither is set.
+/// Returns shell value or config value for `key`, or None.
 pub fn env_or(key: &str, file: Option<&str>) -> Option<String> {
     env::var(key)
         .ok()
@@ -251,34 +253,219 @@ pub struct ProviderArgs {
 
 #[derive(Subcommand)]
 enum ProviderCmd {
-    /// List the endpoints Aster knows, marking the one in use.
+    /// List known endpoints.
     List,
-    /// Point Aster at an endpoint and adopt a model it serves. Saved to
-    /// aster.yaml, so every surface picks it up.
+    /// Use given provider and optionally set its model.
     Use(UseProviderArgs),
+    /// Pull refreshed model ids from `providers.catalog_url`.
+    Refresh,
+    /// Ask every endpoint you hold a key for what it serves, and print a
+    /// catalog file with the dead ids dropped.
+    Probe(ProbeArgs),
+}
+
+#[derive(Args)]
+pub struct ProbeArgs {
+    /// Write the file here instead of printing it.
+    #[arg(long, value_name = "PATH")]
+    out: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]
 pub struct UseProviderArgs {
-    /// Provider id, name, or base URL, as shown by `aster provider list`.
+    /// Provider id, name, or base URL.
     #[arg(value_name = "PROVIDER")]
     pub(crate) target: String,
 
-    /// Model to adopt with it. Defaults to the provider's example model,
-    /// since an endpoint kept with a model it does not serve fails next turn.
+    /// Model to use (if not given, the provider's example model is used).
     #[arg(long, value_name = "ID")]
     pub(crate) model: Option<String>,
 }
 
-pub fn run(args: ProviderArgs) -> Result<()> {
+pub async fn run(args: ProviderArgs) -> Result<()> {
     match args.command {
         ProviderCmd::List => super::models::list_providers_command(),
         ProviderCmd::Use(args) => use_provider(args),
+        ProviderCmd::Refresh => refresh().await,
+        ProviderCmd::Probe(args) => probe(args).await,
     }
 }
 
-/// Repoint the endpoint and its model together, the way the TUI's `/provider`
-/// does, then report what the next turn resolves to.
+/// Where the catalog cache lives, and the only thing a fetch may change: model
+/// ids. Endpoints and key vars are compiled in and never read from here.
+fn catalog_url(settings: &Settings) -> Option<String> {
+    env_or(
+        "ASTER_CATALOG_URL",
+        settings.providers.catalog_url.as_deref(),
+    )
+}
+
+async fn refresh() -> Result<()> {
+    let repo_root = env::current_dir().context("could not determine the current directory")?;
+    let settings = Settings::load(Some(&repo_root))?;
+    let Some(url) = catalog_url(&settings) else {
+        bail!(
+            "no model list to pull from. Point one at a URL first:\n  aster config set providers.catalog_url <url>"
+        );
+    };
+    let Some(path) = keys::overlay_path() else {
+        bail!("could not resolve the home directory to cache the list in");
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("aster/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let text = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .with_context(|| format!("fetching {url}"))?
+        .error_for_status()
+        .with_context(|| format!("fetching {url}"))?
+        .text()
+        .await?;
+
+    let fetched: Catalog = serde_json::from_str(&text)
+        .with_context(|| format!("{url} is not a model list Aster understands"))?;
+    let (rows, ids) = (fetched.models.len(), fetched.total_ids());
+    if rows == 0 {
+        bail!("{url} lists no providers; leaving the current list in place");
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&fetched)? + "\n")?;
+
+    if crate::json_mode() {
+        println!(
+            "{}",
+            serde_json::json!({ "ok": true, "providers": rows, "models": ids,
+                               "url": url, "cached": path.display().to_string() })
+        );
+        return Ok(());
+    }
+    println!(
+        "{ids} model ids across {rows} provider(s) · cached in {}",
+        path.display()
+    );
+    Ok(())
+}
+
+/// The catalog file, both halves of the trip: what `probe` writes and what
+/// `refresh` accepts. Model ids only, by provider id.
+#[derive(Debug, Default, Serialize, serde::Deserialize)]
+struct Catalog {
+    #[serde(default)]
+    generated: String,
+    /// Carried in the file so a copy found on its own still explains itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    note: String,
+    #[serde(default)]
+    models: std::collections::BTreeMap<String, CatalogModels>,
+}
+
+const CATALOG_NOTE: &str = "Model ids only, by provider id. Endpoints and key vars live in \
+     providers.json and are never read from here. Regenerate with `aster provider probe --out \
+     model-catalog.json`; publish it where `providers.catalog_url` points.";
+
+impl Catalog {
+    fn total_ids(&self) -> usize {
+        self.models.values().map(|m| m.recommended.len()).sum()
+    }
+}
+
+#[derive(Debug, Default, Serialize, serde::Deserialize)]
+struct CatalogModels {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    example_model: Option<String>,
+    #[serde(default)]
+    recommended: Vec<String>,
+}
+
+/// Ask each endpoint holding its own key what it serves, and drop the ids that
+/// have gone. Never invents a shortlist: an endpoint gaining a model is a
+/// judgement call, an endpoint losing one is a fact, and only the fact is
+/// automated.
+async fn probe(args: ProbeArgs) -> Result<()> {
+    let mut out = Catalog {
+        generated: chrono::Utc::now().date_naive().to_string(),
+        note: CATALOG_NOTE.to_string(),
+        models: Default::default(),
+    };
+    let mut notes: Vec<String> = Vec::new();
+
+    for (id, base_url) in crate::init::provider_base_urls() {
+        if keys::is_loopback(&base_url) {
+            continue;
+        }
+        // Only endpoints holding a key of their own. The shared key answers for
+        // every provider, and probing on it would hand one key to thirty
+        // different companies to learn nothing.
+        let Some((key, KeySource::Provider)) = resolve_key(&base_url) else {
+            continue;
+        };
+        let shortlist = keys::catalog_shortlist(&base_url);
+        let example = keys::catalog_example(&base_url).unwrap_or_default();
+        let client = AiClient::new(base_url.clone(), key, example.clone());
+        let served = match client.fetch_models().await {
+            Ok(models) if !models.is_empty() => models,
+            Ok(_) => {
+                notes.push(format!("{id:<16} lists nothing; left alone"));
+                continue;
+            }
+            Err(e) => {
+                notes.push(format!("{id:<16} {}", first_line(&format!("{e:#}"))));
+                continue;
+            }
+        };
+        let kept: Vec<String> = shortlist
+            .iter()
+            .filter(|id| served.contains(id))
+            .cloned()
+            .collect();
+        let dropped = shortlist.len() - kept.len();
+        notes.push(format!(
+            "{id:<16} {} served · {} kept{}",
+            served.len(),
+            kept.len(),
+            match dropped {
+                0 => String::new(),
+                n => format!(" · {n} gone"),
+            }
+        ));
+        out.models.insert(
+            id,
+            CatalogModels {
+                example_model: match served.contains(&example) {
+                    true => Some(example),
+                    false => served.first().cloned(),
+                },
+                recommended: kept,
+            },
+        );
+    }
+
+    let text = serde_json::to_string_pretty(&out)? + "\n";
+    match &args.out {
+        Some(path) => {
+            std::fs::write(path, &text)?;
+            eprintln!("{}", notes.join("\n"));
+            eprintln!("\nwrote {}", path.display());
+        }
+        None => {
+            eprintln!("{}", notes.join("\n"));
+            println!("{text}");
+        }
+    }
+    Ok(())
+}
+
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().to_string()
+}
+
+/// Point endpoint and model together, then show effect.
 pub(crate) fn use_provider(args: UseProviderArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
     let (name, base_url, example_model) = crate::init::find_provider(&args.target)?;
@@ -294,9 +481,7 @@ pub(crate) fn use_provider(args: UseProviderArgs) -> Result<()> {
     report(&repo_root, &saved, &["ASTER_BASE_URL", "ASTER_MODEL"])
 }
 
-/// What the next turn would run with, read back through the same resolution
-/// every command uses, plus the env vars that would override what was just
-/// written. Silence there would be the bug this command exists to fix.
+/// Print what will be used next, showing any shell overrides.
 pub(crate) fn report(repo_root: &Path, saved: &Saved, watch: &[&str]) -> Result<()> {
     let settings = Settings::load(Some(repo_root))?;
     let (base_url, model) = resolve_endpoint(&settings.review, None);
@@ -310,6 +495,7 @@ pub(crate) fn report(repo_root: &Path, saved: &Saved, watch: &[&str]) -> Result<
     let key_source = match source {
         Some(KeySource::Provider) => "provider",
         Some(KeySource::Shared) => "shared",
+        Some(KeySource::Local) => "local",
         None => "none",
     };
 
@@ -348,8 +534,6 @@ pub(crate) fn report(repo_root: &Path, saved: &Saved, watch: &[&str]) -> Result<
                 keys::key_vars(&base_url).join(" or ")
             );
         }
-        // A key meant for the last endpoint is usually rejected by this one, so
-        // the fallback is worth naming before the next turn fails on it.
         Some(KeySource::Shared) if !key_env.is_empty() => {
             eprintln!(
                 "note: no {} set; using {} for this endpoint",

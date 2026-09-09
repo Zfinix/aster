@@ -143,3 +143,54 @@ fn legacy_blocks_without_frontmatter_still_list() {
     assert!(listed[0].source_session.is_none());
     assert!(listed[0].created_at.is_none());
 }
+
+#[test]
+fn peek_block_reads_the_body_without_journaling_a_recall() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = store(&dir);
+
+    memory
+        .remember("Tone", "how to reply", "Keep it terse")
+        .unwrap();
+    assert_eq!(memory.peek_block("Tone").unwrap(), "Keep it terse");
+    assert!(
+        !memory
+            .journal()
+            .unwrap()
+            .iter()
+            .any(|e| e.op == MemoryOp::Recall)
+    );
+}
+
+#[test]
+fn list_recent_puts_the_newest_write_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = store(&dir);
+
+    memory.remember("First", "older", "one").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    memory.remember("Second", "newer", "two").unwrap();
+
+    let names: Vec<String> = memory
+        .list_recent()
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, vec!["second", "first"]);
+}
+
+#[test]
+fn project_text_is_none_until_a_fact_is_appended() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = store(&dir);
+
+    assert!(memory.project_text().is_none());
+    memory.append_project("Deploys go out from main").unwrap();
+    assert!(
+        memory
+            .project_text()
+            .unwrap()
+            .contains("Deploys go out from main")
+    );
+}

@@ -283,6 +283,35 @@ fn step_style(status: PlanStepStatus) -> Style {
     }
 }
 
+/// A web search's sources: a bold header over one row per result, the title
+/// in blue with the url dimmed beside it, capped by the caller.
+pub(super) fn sources(
+    label: &str,
+    sources: &[(String, String)],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let rows: Vec<Line<'static>> = sources
+        .iter()
+        .map(|(title, url)| {
+            Line::from(vec![
+                branch(false),
+                Span::styled(title.clone(), Style::default().fg(theme::get().blue)),
+                Span::raw(" "),
+                Span::styled(url.clone(), theme::get().faint_style()),
+            ])
+        })
+        .collect();
+    let header = Line::from(Span::styled(
+        label.to_string(),
+        Style::default()
+            .fg(theme::get().text)
+            .add_modifier(Modifier::BOLD),
+    ));
+    let mut lines = vec![header];
+    lines.extend(rows);
+    prepend_blank(hang(lines, bullet(), width))
+}
+
 /// A tool call with its output, elided in the middle when it is long.
 pub(super) fn tool(label: &str, output: &str, failed: bool, width: usize) -> Vec<Line<'static>> {
     let head_style = if failed {
@@ -525,7 +554,7 @@ const TIPS: &[&str] = &[
     "aster sessions list prints ids to use with aster --resume <id>",
     "/mcp enables or disables MCP servers from inside the chat",
     "/mode changes how the agent acts; shift+tab steps through them",
-    "/effort cycles the reasoning budget when called with no argument",
+    "/effort opens the effort picker when called with no argument",
 ];
 
 fn tip() -> &'static str {

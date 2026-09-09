@@ -3,6 +3,8 @@
 function caseToken(word: string): string {
   if (/^[0-9.]+$/.test(word)) return word;
   if (/^v\d+$/i.test(word)) return word.toLowerCase();
+  // Fireworks writes a version with p for the point: 5p3 reads as 5.3.
+  if (/^\d+(p\d+)+$/.test(word)) return word.replace(/p/g, ".");
   if (/\d/.test(word) && word.length <= 3) return word.toUpperCase();
   if (/^[a-z]+$/i.test(word) && !/[aeiouy]/i.test(word)) return word.toUpperCase();
   return word.charAt(0).toUpperCase() + word.slice(1);

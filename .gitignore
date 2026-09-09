@@ -33,3 +33,7 @@ editors/zed/target/
 
 # The CLI a platform build carries; put there at package time.
 editors/vscode/bin/
+
+# Desloppify local state
+.desloppify/
+.sandbox-audit/

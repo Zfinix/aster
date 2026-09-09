@@ -9,6 +9,13 @@ use tokio::process::Command;
 
 use crate::cli::Cli;
 
+/// The endpoint the next turn goes to, for keying anything cached per provider.
+pub async fn endpoint(cli: &Cli) -> Option<String> {
+    let s = cli.json(&["status"]).await.ok()?;
+    let base_url = s["base_url"].as_str()?.trim_end_matches('/');
+    (!base_url.is_empty()).then(|| base_url.to_string())
+}
+
 /// The TUI's `/status` rows. Session-local facts (context spent, usage) are the
 /// panel's to add: the CLI has no view of a conversation it is not running.
 pub async fn status(cli: &Cli) -> Result<Value, String> {

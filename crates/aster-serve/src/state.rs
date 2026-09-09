@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tokio::sync::{Mutex, broadcast};
 
+use crate::acp::Registry;
 use crate::cli::Cli;
 use crate::run::Run;
 use crate::settings::Settings;
@@ -24,6 +25,9 @@ pub struct Instance {
     pub chat: Mutex<Option<Run>>,
     pub review: Mutex<Option<Run>>,
     pub events: broadcast::Sender<String>,
+    /// The tab's persistent agent, spawned on the first chat and reused until
+    /// its process dies.
+    pub agent: Mutex<Option<Arc<crate::acp::Agent>>>,
 }
 
 impl Instance {
@@ -33,6 +37,7 @@ impl Instance {
             chat: Mutex::new(None),
             review: Mutex::new(None),
             events,
+            agent: Mutex::new(None),
         }
     }
 
@@ -60,17 +65,6 @@ impl Instance {
         drop(chat);
         self.post(message);
     }
-
-    /// Answer the running turn: an approval, a question, or a message queued
-    /// while it was working. All three are one JSON line on its stdin.
-    pub async fn answer(&self, line: Value) -> Result<(), String> {
-        let mut slot = self.chat.lock().await;
-        let run = slot.as_mut().ok_or("no turn is running")?;
-        run.write(&line.to_string()).await?;
-        // The prompt is settled; a tab loading now must not be shown it again.
-        run.clear_pending();
-        Ok(())
-    }
 }
 
 pub struct AppState {
@@ -78,6 +72,9 @@ pub struct AppState {
     pub bind: SocketAddr,
     pub token: Option<String>,
     instances: Mutex<HashMap<String, Arc<Instance>>>,
+    /// Transcript session id to the agent bound to it, so a session loaded in
+    /// a second tab moves its agent instead of being bound twice.
+    pub agents: std::sync::Arc<Registry>,
     pub settings: Mutex<Settings>,
     pub login: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -89,6 +86,7 @@ impl AppState {
             bind,
             token,
             instances: Mutex::new(HashMap::new()),
+            agents: std::sync::Arc::new(Registry::default()),
             settings: Mutex::new(Settings::load()),
             login: Mutex::new(None),
         }

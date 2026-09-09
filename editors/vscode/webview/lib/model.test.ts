@@ -16,6 +16,10 @@ describe("modelChip", () => {
     expect(modelChip("gpt-5-mini")).toBe("GPT 5 Mini");
   });
 
+  it("reads a fireworks p version as a point release", () => {
+    expect(modelShort("fireworks/glm-5p3-flash-low")).toBe("GLM 5.3 Flash Low");
+  });
+
   it("falls back like modelShort when there is nothing to pick", () => {
     expect(modelChip(null)).toBe("Default");
     expect(modelShort("claude-fable-5-1")).toBe("Claude Fable 5 1");

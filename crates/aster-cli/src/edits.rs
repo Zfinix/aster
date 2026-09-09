@@ -254,6 +254,45 @@ pub fn resolve_new_anywhere(repo_root: &Path, path: &str) -> Result<(PathBuf, Sc
     Ok((target, scope))
 }
 
+/// A create at `target` whose parent does not exist may be a typo: the first
+/// missing component is compared against the entries of the nearest existing
+/// ancestor, and a close match stops the write with a hint instead of
+/// fabricating a wrong directory tree.
+pub fn wrong_directory_hint(target: &Path) -> Option<String> {
+    let parent = target.parent()?;
+    if parent.exists() {
+        return None;
+    }
+    let mut existing = parent;
+    while !existing.exists() {
+        existing = existing.parent()?;
+    }
+    let missing = target
+        .strip_prefix(existing)
+        .ok()?
+        .components()
+        .next()?
+        .as_os_str()
+        .to_string_lossy()
+        .to_string();
+    let best = fs::read_dir(existing)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            (name.clone(), similarity(&missing, &name))
+        })
+        .filter(|(_, score)| *score >= MIN_SIMILARITY)
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    Some(format!(
+        "{} has no `{missing}`, but `{}` is close: the path is probably a typo. \
+         Check the directory and correct the path; create the directory with \
+         run_command first if it is really wanted.",
+        display_home(existing),
+        best.0,
+    ))
+}
+
 pub fn read_repo_file(repo_root: &Path, path: &str) -> Result<(PathBuf, String)> {
     let resolved = resolve_in_repo(repo_root, path)?;
     let content =

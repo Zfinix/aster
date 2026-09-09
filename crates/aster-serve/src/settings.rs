@@ -2,6 +2,7 @@
 //! the picker shows. The model and endpoint themselves live in the CLI config
 //! (`aster.yaml`), which every surface loads and saves.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -15,6 +16,9 @@ pub struct Settings {
     pub permission_mode: String,
     pub custom_models: Vec<String>,
     pub recent_models: Vec<String>,
+    /// Each endpoint's last answer to `/models`, keyed by base URL, so the
+    /// picker opens on the models in reach rather than on nothing.
+    pub catalogs: HashMap<String, Vec<String>>,
     pub effort: Option<String>,
 }
 
@@ -24,6 +28,7 @@ impl Default for Settings {
             permission_mode: "edit".into(),
             custom_models: Vec::new(),
             recent_models: Vec::new(),
+            catalogs: HashMap::new(),
             effort: None,
         }
     }
@@ -47,6 +52,21 @@ impl Settings {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
             let _ = fs::write(path, bytes);
         }
+    }
+
+    pub fn catalog(&self, base_url: &str) -> Vec<String> {
+        self.catalogs
+            .get(base_url.trim_end_matches('/'))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn remember_catalog(&mut self, base_url: &str, models: Vec<String>) {
+        if models.is_empty() {
+            return;
+        }
+        self.catalogs
+            .insert(base_url.trim_end_matches('/').to_string(), models);
     }
 
     /// Remember a model the picker just used, hand-typed ones included. Which

@@ -168,3 +168,6 @@ esac
 if [ -x "$DEST" ]; then
   "$DEST" --version || true
 fi
+
+printf '\nGet started:\n  cd your-repo\n  aster\n'
+printf 'The first run asks how you want to connect: sign in, paste a key, or a local model.\n' 

@@ -34,6 +34,36 @@ pub(crate) fn elapsed(secs: u64) -> String {
 
 /// Cut a string to `max` characters with an ellipsis, so prompt rows never
 /// wrap (wrapping breaks clack's frame erasing).
+/// How long ago an instant was, in one or two characters: `now`, `12m`, `3d`.
+pub(crate) fn time_ago(then: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = (chrono::Utc::now() - then).num_seconds().max(0);
+    if secs < 60 {
+        return "now".into();
+    }
+    let m = secs / 60;
+    if m < 60 {
+        return format!("{m}m");
+    }
+    let h = m / 60;
+    if h < 24 {
+        return format!("{h}h");
+    }
+    let d = h / 24;
+    if d < 30 {
+        return format!("{d}d");
+    }
+    let w = d / 7;
+    if w < 52 {
+        return format!("{w}w");
+    }
+    format!("{}y", w / 52)
+}
+
+/// `3 blocks`, `1 fact`: a count with its noun made plural when it needs to be.
+pub(crate) fn count_of(n: usize, noun: &str) -> String {
+    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
+}
+
 pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();

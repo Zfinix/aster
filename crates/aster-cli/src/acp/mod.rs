@@ -207,6 +207,12 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                     return responder.respond_with_error(unknown_session());
                 };
                 let prompt = aster_acp::prompt_text(&request.prompt);
+                // A prompt sent while a turn is running steers that turn and
+                // answers right away; the running loop picks it up at the next
+                // round boundary and streams the reply into the same turn.
+                if session.steer(&prompt) {
+                    return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                }
                 let spawned = cx.clone();
                 cx.spawn(async move {
                     let sink = Sink::new(

@@ -2,9 +2,11 @@
 //! one every surface uses. `aster models` is the older spelling of the list.
 
 use std::env;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
+use cliclack::log;
 
 use crate::settings::Settings;
 
@@ -70,7 +72,7 @@ pub struct UseModelArgs {
 pub async fn run_model(args: ModelArgs) -> Result<()> {
     match args.command {
         ModelCmd::List(args) => run(args).await,
-        ModelCmd::Use(args) => use_model(args),
+        ModelCmd::Use(args) => use_model(args).await,
         ModelCmd::Recommended => recommended(),
         ModelCmd::Router(args) => router_command(args),
     }
@@ -124,10 +126,41 @@ fn router_command(args: RouterArgs) -> Result<()> {
 
 /// Write the choice where every surface reads it, then report what the next
 /// turn resolves to: the point is that this answer is the same everywhere.
-pub(crate) fn use_model(args: UseModelArgs) -> Result<()> {
+/// The endpoint stays put. Picking a model is not picking a provider, and a
+/// silent move strands the id the user just chose on someone else's endpoint.
+pub(crate) async fn use_model(args: UseModelArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
+    let settings = Settings::load(Some(&repo_root))?;
     let saved = crate::settings::persist_user_review(Some(&repo_root), &[("model", &args.id)])?;
+    // Mom stands in for a model, so picking one deselects it the way picking
+    // any model deselects the last. Written to the same file as the model, and
+    // said out loud: the switch is never flipped somewhere the user cannot see.
+    if crate::mom::enabled_for(&repo_root) {
+        crate::mom::set_enabled(&repo_root, false);
+        log::info("mom is off · it was picking the model. `aster mom on` gives it back")?;
+    }
+
+    warn_unserved(&settings, &args.id).await;
     super::provider::report(&repo_root, &saved, &["ASTER_MODEL"])
+}
+
+/// Say so when the endpoint in use lists its models and this is not one of
+/// them. Only a warning: the list may be stale, and an endpoint that cannot be
+/// reached says nothing about the id.
+async fn warn_unserved(settings: &Settings, model: &str) {
+    let Ok(client) = super::provider::resolve_client(settings, Some(model)) else {
+        return;
+    };
+    let Ok(served) = client.fetch_models().await else {
+        return;
+    };
+    if served.is_empty() || served.iter().any(|m| m == model) {
+        return;
+    }
+    let _ = log::info(format!(
+        "{} does not serve {model}. Pick one it does with `aster model list`, or point Aster somewhere else with `aster provider`.",
+        crate::init::provider_label(client.base_url())
+    ));
 }
 
 fn recommended() -> Result<()> {
@@ -136,7 +169,7 @@ fn recommended() -> Result<()> {
     let (base_url, _) = super::provider::resolve_endpoint(&settings.review, None);
     let models = match router_recommended(&base_url) {
         Some(models) => models,
-        None => crate::init::provider_recommended(&base_url),
+        None => crate::init::provider_shortlist(&base_url),
     };
     if crate::json_mode() {
         println!("{}", serde_json::to_string(&models)?);
@@ -149,17 +182,41 @@ fn recommended() -> Result<()> {
 }
 
 fn router_recommended(base_url: &str) -> Option<Vec<String>> {
-    use aster_ai::router;
     if !super::provider::is_openrouter(base_url) {
         return None;
     }
     let (api_key, _) = aster_ai::keys::resolve_key(base_url)?;
-    let cache = match aster_ai::home_dir() {
-        Ok(home) => router::cache_path(&home),
+    let picks = aster_ai::router::recommend(&api_key, &rankings_cache()).ok()?;
+    Some(distinct(picks.into_iter().map(|p| p.model)))
+}
+
+/// Tiers are three, the models behind them need not be: cheap and balanced
+/// often land on the same id. A list of model names has no room for the same
+/// name twice.
+fn distinct(ids: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    ids.filter(|id| seen.insert(id.clone())).collect()
+}
+
+/// The shortlist a picker can label "best for coding": OpenRouter's benchmark
+/// picks off the cache, the catalog's vetted list otherwise, and nothing for an
+/// endpoint that has neither. Never fetches, so a picker draws without waiting.
+pub fn cached_shortlist(base_url: &str) -> Vec<String> {
+    if super::provider::is_openrouter(base_url) {
+        return distinct(
+            aster_ai::router::recommend_cached(&rankings_cache())
+                .into_iter()
+                .map(|p| p.model),
+        );
+    }
+    crate::init::provider_shortlist(base_url)
+}
+
+fn rankings_cache() -> PathBuf {
+    match aster_ai::home_dir() {
+        Ok(home) => aster_ai::router::cache_path(&home),
         Err(_) => std::env::temp_dir().join("aster-model-rankings.json"),
-    };
-    let picks = router::recommend(&api_key, &cache).ok()?;
-    Some(picks.into_iter().map(|p| p.model).collect())
+    }
 }
 
 /// `aster provider list`, sharing this module's renderer so the two spellings

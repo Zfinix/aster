@@ -107,7 +107,8 @@ pub fn logout_all() -> Result<()> {
         Some(path) => {
             let openrouter = crate::init::remove_env_key(&path, crate::openrouter_auth::KEY_VAR)?;
             let zai = crate::init::remove_env_key(&path, crate::zai_auth::KEY_VAR)?;
-            openrouter || zai
+            let cloudflare = crate::init::remove_env_key(&path, crate::cloudflare_auth::KEY_VAR)?;
+            openrouter || zai || cloudflare
         }
         None => false,
     };

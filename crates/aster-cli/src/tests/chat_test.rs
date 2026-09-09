@@ -138,7 +138,7 @@ async fn explore_reads_outside_the_repo_in_yolo() {
     let path = outside.path().join("notes.txt");
     std::fs::write(&path, "outside the repo\n").unwrap();
     let ctx = SessionCtx {
-        yolo: true,
+        yolo: Arc::new(AtomicBool::new(true)),
         ..SessionCtx::default()
     };
     let out = run_tool_with(
@@ -1309,6 +1309,32 @@ async fn edit_file_creates_a_missing_file_without_search() {
 }
 
 #[tokio::test]
+async fn edit_file_refuses_a_typoed_parent_directory() {
+    let repo = tempfile::tempdir().unwrap();
+    fs::create_dir(repo.path().join("Job")).unwrap();
+    let policy = Policy::permissive();
+    let mut edited = Vec::new();
+
+    let err = edit_file(
+        repo.path(),
+        &policy,
+        None,
+        &SessionCtx::default(),
+        &args("Jobs/typ/bio.md", None, "# Bio\n"),
+        &mut edited,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("`Job`"), "{err}");
+    assert!(
+        !repo.path().join("Jobs").exists(),
+        "the typo tree was created"
+    );
+    assert!(edited.is_empty());
+}
+
+#[tokio::test]
 async fn outside_reads_are_approved_by_the_front_end() {
     let repo = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
@@ -1462,50 +1488,13 @@ async fn a_protected_file_stays_protected_through_an_absolute_path() {
 }
 
 #[tokio::test]
-async fn outside_writes_are_approved_by_the_front_end() {
-    let repo = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    let target = outside.path().join("notes.txt");
-    fs::write(&target, "keep me").unwrap();
-    let ctx = SessionCtx::default();
-
-    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-    let answer = tokio::spawn(async move {
-        let req = approval(rx.recv().await.unwrap());
-        assert!(
-            req.preview.contains("outside the repository"),
-            "{}",
-            req.preview
-        );
-        let _ = req.respond.send(Answer::Yes);
-    });
-
-    edit_file(
-        repo.path(),
-        &Policy::permissive(),
-        Some(&tx),
-        &ctx,
-        &args(&target.to_string_lossy(), Some("keep me"), "changed"),
-        &mut Vec::new(),
-    )
-    .await
-    .unwrap();
-
-    answer.await.unwrap();
-    assert_eq!(fs::read_to_string(&target).unwrap(), "changed");
-    assert_eq!(
-        ctx.write_grants.granted(),
-        [outside.path().canonicalize().unwrap()]
-    );
-}
-
-#[tokio::test]
-async fn outside_writes_are_denied_without_an_approver() {
+async fn outside_writes_need_approval_without_yolo() {
     let repo = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("notes.txt");
     fs::write(&target, "keep me").unwrap();
 
+    // No approver, so the approval request is a refusal and nothing is written.
     let err = edit_file(
         repo.path(),
         &Policy::permissive(),
@@ -1515,45 +1504,10 @@ async fn outside_writes_are_denied_without_an_approver() {
         &mut Vec::new(),
     )
     .await
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
 
-    assert!(err.contains("needs the user's approval"), "{err}");
+    assert!(err.to_string().contains("outside the repo"));
     assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
-}
-
-#[tokio::test]
-async fn a_read_grant_does_not_cover_a_write() {
-    let repo = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    let target = outside.path().join("notes.txt");
-    fs::write(&target, "keep me").unwrap();
-    let grants = Grants::new([outside.path().canonicalize().unwrap()]);
-
-    resolve_for_read(
-        repo.path(),
-        &Policy::permissive(),
-        &grants,
-        None,
-        &SessionCtx::default(),
-        &target.to_string_lossy(),
-    )
-    .await
-    .unwrap();
-
-    let err = edit_file(
-        repo.path(),
-        &Policy::permissive(),
-        None,
-        &SessionCtx::default(),
-        &args(&target.to_string_lossy(), Some("keep me"), "changed"),
-        &mut Vec::new(),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-
-    assert!(err.contains("needs the user's approval"), "{err}");
 }
 
 #[tokio::test]
@@ -1562,7 +1516,7 @@ async fn yolo_writes_outside_the_repo_without_asking() {
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("new.txt");
     let ctx = SessionCtx {
-        yolo: true,
+        yolo: Arc::new(AtomicBool::new(true)),
         ..SessionCtx::default()
     };
 
@@ -1578,43 +1532,6 @@ async fn yolo_writes_outside_the_repo_without_asking() {
     .unwrap();
 
     assert_eq!(fs::read_to_string(&target).unwrap(), "written");
-}
-
-#[tokio::test]
-async fn one_approval_covers_the_rest_of_the_directory() {
-    let repo = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    let ctx = SessionCtx::default();
-
-    let (tx, mut rx) = mpsc::channel::<UiRequest>(1);
-    let prompts = tokio::spawn(async move {
-        let mut seen = 0;
-        while let Some(req) = rx.recv().await {
-            seen += 1;
-            let _ = approval(req).respond.send(Answer::Yes);
-        }
-        seen
-    });
-
-    for name in ["a.txt", "b.txt"] {
-        edit_file(
-            repo.path(),
-            &Policy::permissive(),
-            Some(&tx),
-            &ctx,
-            &args(&outside.path().join(name).to_string_lossy(), None, "x"),
-            &mut Vec::new(),
-        )
-        .await
-        .unwrap();
-    }
-    drop(tx);
-
-    assert_eq!(
-        prompts.await.unwrap(),
-        1,
-        "the second write should be covered"
-    );
 }
 
 #[tokio::test]
@@ -2162,6 +2079,38 @@ async fn a_model_that_stays_silent_ends_the_turn_without_an_error() {
 
     let reply = turn_against(&server).await.unwrap();
     assert!(reply.contains("returned nothing"), "{reply}");
+}
+
+#[tokio::test]
+async fn a_degenerate_reply_is_steered_and_retried_rather_than_failing_the_turn() {
+    let server = wiremock::MockServer::start().await;
+    let looped = "all work and no play makes jack a dull boy. ".repeat(8);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body(&looped))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body("recovered"))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    assert_eq!(turn_against(&server).await.unwrap(), "recovered");
+}
+
+#[tokio::test]
+async fn a_model_that_never_stops_degenerating_still_fails_the_turn() {
+    let server = wiremock::MockServer::start().await;
+    let looped = "all work and no play makes jack a dull boy. ".repeat(8);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body(&looped))
+        .mount(&server)
+        .await;
+
+    let err = turn_against(&server).await.unwrap_err().to_string();
+    assert!(err.contains("degenerated"), "{err}");
 }
 
 #[test]

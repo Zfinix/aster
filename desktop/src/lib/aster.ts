@@ -202,6 +202,11 @@ export function listModels(repoPath: string | null): Promise<string[]> {
   return invoke<string[]>("list_models", { repoPath });
 }
 
+/** The current endpoint's own coding shortlist, empty when it has none. */
+export function listRecommended(repoPath: string | null): Promise<string[]> {
+  return invoke<string[]>("list_recommended", { repoPath });
+}
+
 /** Save the model where every surface reads it: aster.yaml, via the CLI. */
 export function persistModel(model: string): Promise<void> {
   return invoke("set_model", { model });

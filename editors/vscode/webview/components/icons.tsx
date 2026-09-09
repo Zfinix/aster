@@ -27,6 +27,18 @@ export function AsterIcon() {
   );
 }
 
+/** mom's mark: a signpost, because the policy decides which way each turn
+ *  goes before the model ever sees it. */
+export function MomIcon() {
+  return (
+    <svg {...base}>
+      <path d="M8 2.5v11" />
+      <path d="M8 4.5h4.5l1.8 1.8-1.8 1.8H8" />
+      <path d="M8 8.5H3.5L1.7 10.3l1.8 1.8H8" />
+    </svg>
+  );
+}
+
 export function SoundOnIcon() {
   return (
     <svg {...base}>

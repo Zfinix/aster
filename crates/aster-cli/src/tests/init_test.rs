@@ -42,8 +42,22 @@ fn templated_detects_placeholder() {
 #[test]
 fn yaml_contains_selected_provider() {
     let y = yaml_contents("http://localhost:11434/v1", "qwen2.5-coder");
-    assert!(y.contains("base_url: http://localhost:11434/v1"));
-    assert!(y.contains("model: qwen2.5-coder"));
+    assert!(y.contains("base_url: \"http://localhost:11434/v1\""));
+    assert!(y.contains("model: \"qwen2.5-coder\""));
+}
+
+#[test]
+fn a_cloudflare_model_id_survives_the_round_trip() {
+    // `@` cannot start a plain YAML scalar, so a bare id wrote a config that
+    // failed to parse and took every later run down with it.
+    let model = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+    let y = yaml_contents(
+        "https://api.cloudflare.com/client/v4/accounts/abc/ai/v1",
+        model,
+    );
+    let settings: crate::settings::Settings =
+        serde_yaml::from_str(&y).expect("the config Aster writes must be one it can read");
+    assert_eq!(settings.review.model.as_deref(), Some(model));
 }
 
 #[test]
@@ -110,6 +124,31 @@ fn find_provider_refuses_endpoints_with_an_unfilled_placeholder() {
 }
 
 #[test]
+fn every_catalog_placeholder_has_an_env_var_that_fills_it() {
+    for provider in load_providers().unwrap().iter().filter(|p| p.templated()) {
+        let filled = TEMPLATE_VARS
+            .iter()
+            .any(|(placeholder, _)| provider.base_url.contains(placeholder));
+        assert!(filled, "{} has a placeholder nothing fills", provider.name);
+    }
+}
+
+#[test]
+fn a_filled_placeholder_leaves_a_usable_endpoint() {
+    let cloudflare = Provider {
+        id: "cloudflare".into(),
+        name: "Cloudflare Workers AI".into(),
+        base_url: "https://api.cloudflare.com/client/v4/accounts/abc/ai/v1".into(),
+        example_model: String::new(),
+        auth: "Bearer".into(),
+    };
+    assert_eq!(
+        cloudflare.resolved_base_url().as_deref(),
+        Some("https://api.cloudflare.com/client/v4/accounts/abc/ai/v1")
+    );
+}
+
+#[test]
 fn recommended_falls_back_to_the_example_model() {
     // OpenRouter's shortlist is live now (the benchmark router), so the
     // catalog only carries its example model.
@@ -118,6 +157,17 @@ fn recommended_falls_back_to_the_example_model() {
     // No shortlist of its own: the example model is the whole answer.
     assert_eq!(provider_recommended("https://api.x.ai/v1"), ["grok-4"]);
     assert!(provider_recommended("https://nobody.example/v1").is_empty());
+}
+
+#[test]
+fn the_shortlist_does_not_fall_back_to_the_example_model() {
+    // What a picker labels "best for coding": an example model is neither.
+    assert!(provider_shortlist("https://openrouter.ai/api/v1").is_empty());
+    assert!(provider_shortlist("https://api.x.ai/v1").is_empty());
+    assert_eq!(
+        provider_shortlist("https://api.z.ai/api/coding/paas/v4"),
+        ["glm-5.3", "glm-5.2"]
+    );
 }
 
 #[test]

@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 
 /// Which language server a file maps to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,14 +32,21 @@ impl ServerKind {
     }
 }
 
+static PROBED: LazyLock<Mutex<HashMap<ServerKind, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub fn installed(kind: ServerKind) -> bool {
+    let mut probed = PROBED.lock().expect("probe cache");
     // A rustup shim can sit on PATH with the real server never installed, so
-    // probe the binary rather than trusting the name lookup.
-    which::which(kind.binary()).is_ok()
-        && std::process::Command::new(kind.binary())
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
+    // probe the binary rather than trusting the name lookup. The probe spawns
+    // a process, so it is answered once per run.
+    *probed.entry(kind).or_insert_with(|| {
+        which::which(kind.binary()).is_ok()
+            && std::process::Command::new(kind.binary())
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+    })
 }
 
 /// The server that can answer queries about `path`, if any.

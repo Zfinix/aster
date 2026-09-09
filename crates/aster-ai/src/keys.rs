@@ -19,6 +19,8 @@ pub const SHARED_KEY_VAR: &str = "ASTER_API_KEY";
 pub enum KeySource {
     Provider,
     Shared,
+    /// A server on this machine, which authenticates nothing.
+    Local,
 }
 
 /// The env vars that may hold `base_url`'s own key, in the order they are
@@ -151,15 +153,94 @@ pub fn resolve_key(base_url: &str) -> Option<(String, KeySource)> {
         crate::codex::load(&home)?;
         return Some(("chatgpt-subscription".to_string(), KeySource::Provider));
     }
-    match provider_key(base_url) {
-        Some(key) => Some((key, KeySource::Provider)),
-        None => Some((env_non_empty(SHARED_KEY_VAR)?, KeySource::Shared)),
+    if let Some(key) = provider_key(base_url) {
+        return Some((key, KeySource::Provider));
     }
+    if let Some(key) = env_non_empty(SHARED_KEY_VAR) {
+        return Some((key, KeySource::Shared));
+    }
+    // A model server on this machine checks no credential, so asking for a key
+    // would block the one setup that needs no account at all.
+    is_loopback(base_url).then(|| (LOCAL_KEY.to_string(), KeySource::Local))
+}
+
+/// A placeholder bearer for endpoints that ignore it, so the request still has
+/// the shape every other endpoint expects.
+const LOCAL_KEY: &str = "local";
+
+/// Whether `base_url` points at this machine, however it spells the host.
+pub fn is_loopback(base_url: &str) -> bool {
+    let host = host_only(base_url.trim_end_matches('/'));
+    let host = match host.rsplit_once(':') {
+        Some((before, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            before
+        }
+        _ => host,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
 struct ModelRow {
     base_url: String,
-    models: Vec<String>,
+    shortlist: Vec<String>,
+    example: String,
+}
+
+/// Where a refreshed model list is cached. Written by `aster provider refresh`,
+/// read here. Only model ids live in it: base URLs and key vars stay in the
+/// embedded catalog, so a bad file can never repoint an endpoint at someone
+/// else's server and collect the key.
+pub fn overlay_path() -> Option<std::path::PathBuf> {
+    Some(
+        crate::home_dir()
+            .ok()?
+            .join(".aster")
+            .join("model-catalog.json"),
+    )
+}
+
+/// The refreshed ids, by provider id. Absent, unreadable, or malformed all mean
+/// the same thing: use what shipped in the binary.
+fn overlay() -> HashMap<String, CatalogModels> {
+    let Some(text) = overlay_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return HashMap::new();
+    };
+    parse_overlay(&text)
+}
+
+/// Read a refreshed catalog. Anything the file carries beyond model ids is
+/// dropped on the floor here: there is no field to receive it.
+pub fn parse_overlay(text: &str) -> HashMap<String, CatalogModels> {
+    serde_json::from_str::<Overlay>(text)
+        .map(|o| o.models)
+        .unwrap_or_default()
+}
+
+/// The two fields a refresh may carry. There is deliberately nowhere here to
+/// put a base URL or a key var.
+#[derive(Deserialize, Default, Clone)]
+pub struct CatalogModels {
+    #[serde(default)]
+    pub example_model: Option<String>,
+    #[serde(default)]
+    pub recommended: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Overlay {
+    #[serde(default)]
+    models: HashMap<String, CatalogModels>,
+}
+
+/// A model id worth writing down: printable, one line, and short enough that a
+/// picker row stays a picker row.
+pub fn sane_model_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 200 && id.chars().all(|c| !c.is_control()) && id.trim() == id
 }
 
 fn model_rows() -> &'static [ModelRow] {
@@ -167,6 +248,7 @@ fn model_rows() -> &'static [ModelRow] {
     ROWS.get_or_init(|| {
         #[derive(Deserialize)]
         struct Row {
+            id: String,
             base_url: String,
             #[serde(default)]
             example_model: String,
@@ -180,16 +262,27 @@ fn model_rows() -> &'static [ModelRow] {
         let Ok(catalog) = serde_json::from_str::<Rows>(PROVIDERS_JSON) else {
             return Vec::new();
         };
+        let fresh = overlay();
         catalog
             .providers
             .into_iter()
-            .map(|row| ModelRow {
-                base_url: row.base_url.trim_end_matches('/').to_string(),
-                models: match (row.recommended.is_empty(), row.example_model.is_empty()) {
-                    (false, _) => row.recommended,
-                    (true, false) => vec![row.example_model],
-                    (true, true) => Vec::new(),
-                },
+            .map(|row| {
+                let update = fresh.get(&row.id);
+                let shortlist = match update.map(|u| &u.recommended) {
+                    Some(ids) if !ids.is_empty() => {
+                        ids.iter().filter(|id| sane_model_id(id)).cloned().collect()
+                    }
+                    _ => row.recommended,
+                };
+                let example = update
+                    .and_then(|u| u.example_model.clone())
+                    .filter(|id| sane_model_id(id))
+                    .unwrap_or(row.example_model);
+                ModelRow {
+                    base_url: row.base_url.trim_end_matches('/').to_string(),
+                    shortlist,
+                    example,
+                }
             })
             .collect()
     })
@@ -199,16 +292,37 @@ fn model_rows() -> &'static [ModelRow] {
 /// the host's, so endpoints sharing a host keep their own list. Empty
 /// off-catalog, which reads as "ask the endpoint".
 pub fn catalog_models(base_url: &str) -> Vec<String> {
+    match catalog_row(base_url) {
+        Some(row) if !row.shortlist.is_empty() => row.shortlist.clone(),
+        Some(row) if !row.example.is_empty() => vec![row.example.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// The catalog's curated coding shortlist for `base_url`, with no fall back to
+/// the example model: a row without one has no shortlist to show, rather than
+/// a list of one that claims to be vetted.
+pub fn catalog_shortlist(base_url: &str) -> Vec<String> {
+    catalog_row(base_url)
+        .map(|row| row.shortlist.clone())
+        .unwrap_or_default()
+}
+
+/// The catalog's starting model for `base_url`, with no fall back to the
+/// shortlist: callers that want either already have `catalog_models`.
+pub fn catalog_example(base_url: &str) -> Option<String> {
+    catalog_row(base_url)
+        .map(|row| row.example.clone())
+        .filter(|id| !id.is_empty())
+}
+
+fn catalog_row(base_url: &str) -> Option<&'static ModelRow> {
     let want = base_url.trim_end_matches('/');
     let rows = model_rows();
-    rows.iter()
-        .find(|row| row.base_url == want)
-        .or_else(|| {
-            let host = host_only(want);
-            rows.iter().find(|row| host_only(&row.base_url) == host)
-        })
-        .map(|row| row.models.clone())
-        .unwrap_or_default()
+    rows.iter().find(|row| row.base_url == want).or_else(|| {
+        let host = host_only(want);
+        rows.iter().find(|row| host_only(&row.base_url) == host)
+    })
 }
 
 /// Every var a key for `base_url` could come from, most specific first, for an

@@ -132,3 +132,89 @@ fn catalog_models_reads_the_codex_shortlist_and_skips_unknown_hosts() {
     );
     assert!(catalog_models("https://example.com/v1").is_empty());
 }
+
+#[test]
+fn the_shortlist_is_only_the_vetted_list_never_the_example_model() {
+    assert_eq!(
+        catalog_shortlist("https://api.z.ai/api/coding/paas/v4"),
+        ["glm-5.3", "glm-5.2"]
+    );
+    // An example model is a place to start, not a coding shortlist.
+    assert!(catalog_shortlist("https://api.x.ai/v1").is_empty());
+    assert_eq!(catalog_models("https://api.x.ai/v1"), ["grok-4"]);
+    assert!(catalog_shortlist("https://example.com/v1").is_empty());
+}
+
+#[test]
+fn a_server_on_this_machine_is_recognised_however_the_host_is_spelled() {
+    for url in [
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://0.0.0.0:8000/v1",
+        "http://[::1]:8080/v1",
+        "http://LocalHost:4000/v1",
+    ] {
+        assert!(is_loopback(url), "{url}");
+    }
+    for url in [
+        "https://openrouter.ai/api/v1",
+        "https://localhost.example.com/v1",
+        "http://192.168.1.4:11434/v1",
+    ] {
+        assert!(!is_loopback(url), "{url}");
+    }
+}
+
+#[test]
+fn a_local_endpoint_needs_no_key() {
+    // A shared key in the environment outranks the fallback, so it would be
+    // testing the wrong branch.
+    if std::env::var(SHARED_KEY_VAR).is_ok() {
+        return;
+    }
+    assert!(matches!(
+        resolve_key("http://localhost:11434/v1"),
+        Some((_, KeySource::Local))
+    ));
+    assert!(resolve_key("https://api.deepseek.com/v1").is_none());
+}
+
+#[test]
+fn a_refreshed_catalog_carries_model_ids_and_nothing_else() {
+    // A poisoned list trying to move an endpoint or name a new key var: both
+    // fields land nowhere, because the type has nowhere to put them.
+    let models = parse_overlay(
+        r#"{
+          "models": {
+            "baseten": {
+              "example_model": "zai-org/GLM-5.3",
+              "recommended": ["zai-org/GLM-5.3"],
+              "base_url": "https://attacker.example/v1",
+              "key_env": ["BASETEN_API_KEY"]
+            }
+          }
+        }"#,
+    );
+    let row = models.get("baseten").expect("the provider survives");
+    assert_eq!(row.example_model.as_deref(), Some("zai-org/GLM-5.3"));
+    assert_eq!(row.recommended, ["zai-org/GLM-5.3"]);
+    assert_eq!(
+        key_vars("https://inference.baseten.co/v1")[0],
+        "BASETEN_API_KEY"
+    );
+}
+
+#[test]
+fn a_catalog_that_does_not_parse_leaves_the_shipped_list_alone() {
+    assert!(parse_overlay("not json at all").is_empty());
+    assert!(parse_overlay("{}").is_empty());
+}
+
+#[test]
+fn a_model_id_has_to_be_one_printable_line() {
+    assert!(sane_model_id("zai-org/GLM-5.3"));
+    assert!(!sane_model_id(""));
+    assert!(!sane_model_id(" padded"));
+    assert!(!sane_model_id("two\nlines"));
+    assert!(!sane_model_id(&"x".repeat(201)));
+}

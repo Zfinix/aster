@@ -5,7 +5,6 @@ import { modelShort } from "../lib/model";
 interface Row {
   id: string;
   label: string;
-  detail: string;
 }
 
 /** Model picker: the vetted coding models, with the endpoint's whole catalog one
@@ -44,8 +43,7 @@ export function ModelPicker({
 
   const { top, rest, recents } = useMemo(() => {
     const q = typed.toLowerCase();
-    // The label is humanized, so the exact id is what the second line is for.
-    const toRow = (id: string) => ({ id, label: modelShort(id), detail: id });
+    const toRow = (id: string) => ({ id, label: modelShort(id) });
     const matches = (r: Row) =>
       !q || r.id.toLowerCase().includes(q) || r.label.toLowerCase().includes(q);
 
@@ -55,16 +53,12 @@ export function ModelPicker({
       .filter((id) => models.includes(id) && !recommended.includes(id))
       .map(toRow)
       .filter(matches);
-    // Idle, the catalog is only the menu when nothing vetted survived it, which
-    // is what a switch to an endpoint with its own ids leaves behind.
-    const rest = q
-      ? models
-          .filter((id) => !recommended.includes(id) && !recent.includes(id))
-          .map(toRow)
-          .filter(matches)
-      : top.length || recents.length
-        ? []
-        : models.map(toRow);
+    // The rest of what this endpoint serves, always: a search should not be
+    // the only way to see the models in reach.
+    const rest = models
+      .filter((id) => !recommended.includes(id) && !recent.includes(id))
+      .map(toRow)
+      .filter(matches);
     return { top, rest, recents };
   }, [models, recommended, recent, typed]);
 

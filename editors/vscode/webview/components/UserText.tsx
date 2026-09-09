@@ -9,11 +9,23 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 export function fileUrl(path: string): string {
   return `/api/file?path=${encodeURIComponent(path)}`;
 }
-// A mention may contain spaces (macOS screenshots do), so it runs to the last
-// segment that ends in a known file extension, and never eats a later @mention.
-// The boundary is a lookbehind, so the text around a mention keeps its spaces.
-const MENTION =
-  /(^|\s)@([^\s@]+(?: [^\s@]+)*?\.(?:png|jpe?g|gif|webp|svg|bmp|ico|pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|epub|mp4|mkv|mov|avi|webm|mp3|wav|flac|ogg|m4a))(?=\s|$)/gi;
+// macOS writes a narrow no-break space before AM/PM in a screenshot name, and
+// `\s` matches it, so a mention segment has to take the no-break spaces back.
+const SEGMENT = "(?:[^\\s@]|[\\u00a0\\u202f])+";
+
+/** A mention may contain spaces (macOS screenshots do), so it runs to the last
+ *  segment ending in `extensions`, and never eats a later @mention. The
+ *  boundary is a lookbehind, so the text around a mention keeps its spaces. */
+export function mentionPattern(extensions: string): RegExp {
+  return new RegExp(
+    `(^|\\s)@(${SEGMENT}(?: ${SEGMENT})*?\\.(?:${extensions}))(?=\\s|$)`,
+    "gi"
+  );
+}
+
+const MENTION = mentionPattern(
+  "png|jpe?g|gif|webp|svg|bmp|ico|pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|epub|mp4|mkv|mov|avi|webm|mp3|wav|flac|ogg|m4a"
+);
 
 /** What a mention shows: a staged paste keeps the name it was given, not the
  *  stamped copy it became on disk. */
@@ -68,12 +80,23 @@ function useFile(path: string, kind: "image" | "doc"): PreviewFile | null {
   return file;
 }
 
-/** One image mention, shown as the image itself once the host has read it. */
-function ImageMention({ path }: { path: string }) {
+/** One image mention, shown as the image itself once the host has read it.
+ *  Compact renders a line-high thumbnail, for tight spots like a queued chip. */
+function ImageMention({ path, compact = false }: { path: string; compact?: boolean }) {
   const file = useFile(path, "image");
   const src = file?.image ?? null;
 
   if (!src) return <span className="mention-chip">{displayName(path)}</span>;
+  if (compact) {
+    return (
+      <img
+        className="mention-image mention-image-thumb"
+        src={src}
+        alt={displayName(path)}
+        title={path}
+      />
+    );
+  }
   return (
     <img
       className="mention-image"
@@ -145,14 +168,19 @@ export function splitMentions(text: string): MentionPart[] {
   return parts;
 }
 
-/** User turn text, with an `@image.png` or `@report.pdf` mention drawn as what it names. */
-export function UserText({ text }: { text: string }) {
+/** User turn text, with an `@image.png` or `@report.pdf` mention drawn as what
+ *  it names. Compact, for tight spots like a queued chip: a thumbnail or a
+ *  name, never the full-size asset or a button inside the chip's own button. */
+export function UserText({ text, compact = false }: { text: string; compact?: boolean }) {
   return (
     <>
       {splitMentions(text).map((part, i) => {
         if (part.kind === "text") return <span key={i}>{part.text}</span>;
-        return part.kind === "image" ? (
-          <ImageMention key={i} path={part.path} />
+        if (part.kind === "image") {
+          return <ImageMention key={i} path={part.path} compact={compact} />;
+        }
+        return compact ? (
+          <span key={i} className="mention-chip">{displayName(part.path)}</span>
         ) : (
           <DocMention key={i} path={part.path} />
         );

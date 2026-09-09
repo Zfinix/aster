@@ -139,6 +139,52 @@ export function mcpTarget(call: ToolCall): string | undefined {
     : undefined;
 }
 
+/** One hit from a web search: the payload the model reads is a JSON array of
+ *  pages, and the reader wants the hits without the wrapper. */
+export type WebResult = { title: string; url: string; snippet: string };
+
+const SNIPPET_MAX = 240;
+
+function snippetLine(text: string): string {
+  const line = text.split("\n", 1)[0].replace(/\s+/g, " ").trim();
+  return line.length <= SNIPPET_MAX ? line : `${line.slice(0, SNIPPET_MAX - 1).trimEnd()}…`;
+}
+
+/** The hits a `web/search` returned, or undefined when this is not a search or
+ *  the payload is not the shape we expect. */
+export function webResults(call: ToolCall): WebResult[] | undefined {
+  const target = mcpTarget(call) ?? call.name;
+  if (target !== "web/search" || call.error) return undefined;
+  const raw = call.result?.trim();
+  if (!raw || !raw.startsWith("[")) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const results = parsed
+    .map((hit): WebResult | undefined => {
+      if (typeof hit !== "object" || hit === null) return undefined;
+      const page = hit as { markdown?: unknown; metadata?: unknown };
+      const meta =
+        typeof page.metadata === "object" && page.metadata !== null
+          ? (page.metadata as Record<string, unknown>)
+          : {};
+      const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+      const url = str(meta.url);
+      if (!url) return undefined;
+      return {
+        title: str(meta.title) || url,
+        url,
+        snippet: str(meta.description) || snippetLine(str(page.markdown)),
+      };
+    })
+    .filter((r): r is WebResult => r !== undefined);
+  return results.length ? results : undefined;
+}
+
 const PROSE_TOOLS = new Set([
   "web/search",
   "web/extract",
@@ -326,6 +372,9 @@ export function resultHint(call: ToolCall): string | undefined {
   const found = mcpMatches(call);
   if (found) return `${found.length} ${found.length === 1 ? "tool" : "tools"}`;
 
+  const hits = webResults(call);
+  if (hits) return `${hits.length} ${hits.length === 1 ? "result" : "results"}`;
+
   const lines = trimmed.split("\n").length;
   switch (call.name) {
     case "search_files":
@@ -411,7 +460,9 @@ const ACTIVITY_VERBS: Record<string, string> = {
   aster_mcp: "MCP",
 };
 
-export type Activity = { kind: "tool"; verb: string; detail?: string } | { kind: "note"; text: string };
+export type Activity =
+  | { kind: "tool"; name: string; verb: string; detail?: string }
+  | { kind: "note"; text: string };
 
 /** A sub-agent's activity line as the card shows it: a tool call becomes a
  *  verb and what it touched, anything else is the agent's own words. */
@@ -422,7 +473,7 @@ export function describeActivity(line: string): Activity {
   const isTool = /^[a-z][a-z0-9_-]*(\/[a-z0-9_-]+)*$/.test(head) && (head in ACTIVITY_VERBS || /[_/]/.test(head));
   if (!isTool) return { kind: "note", text: trimmed };
   const detail = space === -1 ? undefined : trimmed.slice(space + 1).trim() || undefined;
-  return { kind: "tool", verb: ACTIVITY_VERBS[head] ?? humanize(head), detail };
+  return { kind: "tool", name: head, verb: ACTIVITY_VERBS[head] ?? humanize(head), detail };
 }
 
 /** A duration as a person reads it off a clock: seconds until a minute, then

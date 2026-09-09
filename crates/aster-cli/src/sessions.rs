@@ -394,6 +394,14 @@ fn print_transcript(transcript: &aster_persist::SessionTranscript) {
 }
 
 #[derive(Args)]
+pub struct RememberArgs {
+    /// The fact to keep.
+    pub text: String,
+    #[arg(long, value_name = "NAME")]
+    pub title: Option<String>,
+}
+
+#[derive(Args)]
 pub struct MemoryArgs {
     #[command(subcommand)]
     cmd: Option<MemoryCmd>,
@@ -420,32 +428,61 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
 
     match args.cmd.unwrap_or(MemoryCmd::List) {
         MemoryCmd::List => {
-            let blocks = memory.list()?;
+            let blocks = memory.list_recent()?;
+            let project = memory.project_text();
             if crate::json_mode() {
                 let out = json!({
                     "dir": memory.dir().display().to_string(),
+                    "project": project.as_ref().map(|text| json!({
+                        "path": memory.dir().join(aster_persist::PROJECT_MEMORY_FILE)
+                            .display().to_string(),
+                        "text": text,
+                    })),
                     "blocks": blocks.iter().map(|b| json!({
                         "name": b.name,
                         "description": b.description,
+                        "path": b.path.display().to_string(),
+                        "source_session": b.source_session,
+                        "created_at": b.created_at.map(|t| t.to_rfc3339()),
+                        "updated_at": b.updated_at.map(|t| t.to_rfc3339()),
                     })).collect::<Vec<_>>(),
                 });
                 println!("{out}");
             } else {
-                let context = memory.load_context()?;
-                if context.trim().is_empty() {
+                if blocks.is_empty() && project.is_none() {
                     println!("no memory stored yet");
                     return Ok(());
                 }
                 println!("memory dir: {}", memory.dir().display());
-                if blocks.is_empty() {
-                    println!("(project memory only, no blocks)");
+                if let Some(text) = &project {
+                    let facts = text
+                        .lines()
+                        .filter(|l| l.trim_start().starts_with('-'))
+                        .count();
+                    println!("  {PROJECT_LABEL}  {facts} facts");
                 }
-                for block in blocks {
-                    if block.description.is_empty() {
-                        println!("  {}", block.name);
-                    } else {
-                        println!("  {}  —  {}", block.name, block.description);
-                    }
+                let width = terminal_width();
+                let pad = blocks
+                    .iter()
+                    .map(|b| b.name.chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .min(32);
+                let room = width.saturating_sub(pad + 12).max(20);
+                for block in &blocks {
+                    let when = block
+                        .updated_at
+                        .or(block.created_at)
+                        .map(|t| time_ago(&t))
+                        .unwrap_or_default();
+                    let desc = truncate(&one_line(&block.description), room);
+                    let row = format!(
+                        "  {:<pad$}  {desc:<room$}  {when}",
+                        truncate(&block.name, pad),
+                        pad = pad,
+                        room = room,
+                    );
+                    println!("{}", row.trim_end());
                 }
             }
         }
@@ -467,59 +504,51 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
                 println!("{body}");
             }
         }
-        MemoryCmd::Add { text, title } => {
-            let result = match &title {
-                Some(title) => {
-                    let path = memory.remember(title, &text, &text)?;
-                    ("block", Some(path))
-                }
-                None => {
-                    memory.append_project(&text)?;
-                    ("project", None)
-                }
-            };
-            if crate::json_mode() {
-                println!(
-                    "{}",
-                    json!({
-                        "ok": true,
-                        "kind": result.0,
-                        "path": result.1.map(|p| p.display().to_string()),
-                    })
-                );
-            } else {
-                match result.1 {
-                    Some(path) => println!("saved block {:?} to {}", title, path.display()),
-                    None => println!("appended to project memory"),
-                }
-            }
+        MemoryCmd::Add { text, title } => memory_add(&memory, &text, title.as_deref())?,
+    }
+    Ok(())
+}
+
+/// Save a durable fact: a named block with `--title`, otherwise a line in
+/// project memory (ASTER.md).
+pub fn run_remember(args: RememberArgs) -> Result<()> {
+    let memory = crate::persist::store()?.memory();
+    memory_add(&memory, &args.text, args.title.as_deref())
+}
+
+fn memory_add(memory: &aster_persist::MemoryStore, text: &str, title: Option<&str>) -> Result<()> {
+    let result = match title {
+        Some(title) => {
+            let path = memory.remember(title, text, text)?;
+            ("block", Some(path))
+        }
+        None => {
+            memory.append_project(text)?;
+            ("project", None)
+        }
+    };
+    if crate::json_mode() {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "kind": result.0,
+                "path": result.1.map(|p| p.display().to_string()),
+            })
+        );
+    } else {
+        match result.1 {
+            Some(path) => println!("saved block {title:?} to {}", path.display()),
+            None => println!("appended to project memory"),
         }
     }
     Ok(())
 }
 
+const PROJECT_LABEL: &str = "ASTER.md";
+
 fn time_ago(created: &chrono::DateTime<chrono::Utc>) -> String {
-    let secs = (chrono::Utc::now() - *created).num_seconds().max(0);
-    if secs < 60 {
-        return "now".into();
-    }
-    let m = secs / 60;
-    if m < 60 {
-        return format!("{m}m");
-    }
-    let h = m / 60;
-    if h < 24 {
-        return format!("{h}h");
-    }
-    let d = h / 24;
-    if d < 30 {
-        return format!("{d}d");
-    }
-    let w = d / 7;
-    if w < 52 {
-        return format!("{w}w");
-    }
-    format!("{}y", w / 52)
+    crate::util::time_ago(*created)
 }
 
 fn one_line(text: &str) -> String {

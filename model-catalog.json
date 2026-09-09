@@ -1,0 +1,136 @@
+{
+  "generated": "2026-09-09",
+  "note": "Model ids only, by provider id. Endpoints and key vars live in providers.json and are never read from here. Regenerate with `aster provider probe --out model-catalog.json`; publish it where `providers.catalog_url` points.",
+  "models": {
+    "baseten": {
+      "example_model": "zai-org/GLM-5.3",
+      "recommended": [
+        "zai-org/GLM-5.3",
+        "zai-org/GLM-5.3-Fast",
+        "deepseek-ai/DeepSeek-V4-Pro-0813",
+        "moonshotai/Kimi-K3",
+        "moonshotai/Kimi-K2.7-Code",
+        "openai/gpt-oss-120b"
+      ]
+    },
+    "cloudflare": {
+      "example_model": "@cf/zai-org/glm-5.3",
+      "recommended": [
+        "@cf/zai-org/glm-5.3",
+        "@cf/deepseek-ai/deepseek-v4-pro-0813",
+        "@cf/moonshotai/kimi-k2.7-code",
+        "@cf/qwen/qwen3.8-27b",
+        "@cf/openai/gpt-oss-120b",
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+      ]
+    },
+    "codex": {
+      "example_model": "gpt-6-astra",
+      "recommended": [
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4-mini"
+      ]
+    },
+    "deepseek": {
+      "example_model": "deepseek-v4-pro",
+      "recommended": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash"
+      ]
+    },
+    "google_gemini": {
+      "example_model": "gemini-3.1-pro-preview",
+      "recommended": [
+        "gemini-3.1-pro-preview",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash",
+        "gemini-pro-latest",
+        "gemini-flash-latest"
+      ]
+    },
+    "huggingface": {
+      "example_model": "Qwen/Qwen3-Coder-Next",
+      "recommended": [
+        "Qwen/Qwen3-Coder-Next",
+        "Qwen/Qwen3.8-2.4T-A95B",
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "meta-llama/Llama-3.3-70B-Instruct"
+      ]
+    },
+    "meta_ai": {
+      "example_model": "muse-spark-1.3",
+      "recommended": [
+        "muse-spark-1.3",
+        "muse-spark-1.2"
+      ]
+    },
+    "novita": {
+      "example_model": "deepseek/deepseek-v4-pro",
+      "recommended": [
+        "deepseek/deepseek-v4-pro",
+        "moonshotai/kimi-k3",
+        "moonshotai/kimi-k2.7-code",
+        "qwen/qwen3.5-397b-a17b",
+        "deepseek/deepseek-v4-flash",
+        "openai/gpt-oss-120b"
+      ]
+    },
+    "nvidia_nim": {
+      "example_model": "nvidia/nemotron-3-ultra-550b-a55b",
+      "recommended": [
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "moonshotai/kimi-k3",
+        "deepseek-ai/deepseek-v4-pro-0813",
+        "deepseek-ai/deepseek-v4-flash-0731",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "openai/gpt-oss-20b"
+      ]
+    },
+    "openai": {
+      "example_model": "gpt-6-astra",
+      "recommended": [
+        "gpt-6-astra",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt-5.5-pro",
+        "gpt-5.5",
+        "gpt-5.4-mini"
+      ]
+    },
+    "openrouter": {
+      "example_model": "deepseek/deepseek-v4-pro",
+      "recommended": []
+    },
+    "orcarouter": {
+      "example_model": "orcarouter/auto",
+      "recommended": [
+        "anthropic/claude-opus-5",
+        "openai/gpt-5.6-terra",
+        "deepseek/deepseek-v4-pro",
+        "qwen/qwen3.8-max",
+        "kimi/kimi-k3",
+        "google/gemini-3.1-pro-preview"
+      ]
+    },
+    "zai": {
+      "example_model": "glm-5.3-flash",
+      "recommended": [
+        "glm-5.3",
+        "glm-5.3flash"
+      ]
+    },
+    "zai_coding": {
+      "example_model": "glm-5.3-flash",
+      "recommended": [
+        "glm-5.3",
+        "glm-5.3-flash"
+      ]
+    }
+  }
+}

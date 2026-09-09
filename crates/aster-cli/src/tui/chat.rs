@@ -24,11 +24,11 @@ use super::bottom_pane::{
     UnifiedSection, scan_mentions,
 };
 use super::guard::TuiGuard;
-use super::helpers::{clip_row, human_count, listed, short_path};
+use super::helpers::{clip_row, count_of, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
 use super::terminal::{Tui, TuiEvent};
-use super::{history, theme};
+use super::{history, theme, wrap};
 use crate::chat::{
     Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
 };
@@ -166,7 +166,6 @@ pub async fn run_chat(
             auto: policy_for(Mode::Auto)?,
             edit: policy_for(Mode::Edit)?,
             grants: sync::Arc::new(crate::chat::configured_grants(&perms, &repo_root)),
-            write_grants: sync::Arc::new(crate::chat::configured_write_grants(&repo_root)),
             credentials: sync::Arc::new(crate::chat::configured_credentials(&perms, &repo_root)),
         },
         approval_tx,
@@ -784,6 +783,7 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
         )),
         "reasoning_delta" => Some(TurnEvent::ReasoningDelta(
             event.get("content")?.as_str()?.to_string(),
+            event.get("tokens").and_then(Value::as_u64).unwrap_or(0),
         )),
         "reasoning_done" => Some(TurnEvent::ReasoningDone),
         "notice" => Some(TurnEvent::Notice(
@@ -851,6 +851,7 @@ pub(crate) fn step_label(name: &str, args: &str) -> String {
             "" => "Edited file".to_string(),
             path => format!("Edited {path}"),
         },
+        "web_search" | "web/search" => "Sources".to_string(),
         "open_preview" => match s("description") {
             "" => format!("Opened {}", s("target")),
             what => what.to_string(),
@@ -896,6 +897,35 @@ fn command_line(args: &Value) -> Option<String> {
     }
 }
 
+const MAX_SOURCE_ROWS: usize = 10;
+
+/// A `web/search` result is the JSON array of pages the model sees; pull one
+/// (title, url) pair per page for the source list. None when the shape does
+/// not match, so an unexpected payload still renders as a plain tool result.
+fn search_sources(result: &str) -> Option<Vec<(String, String)>> {
+    let pages = serde_json::from_str::<Value>(result)
+        .ok()?
+        .as_array()?
+        .to_vec();
+    let sources: Vec<(String, String)> = pages
+        .iter()
+        .filter_map(|page| {
+            let url = page["metadata"]["url"].as_str()?.to_string();
+            let title = page["metadata"]["title"]
+                .as_str()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or(&url)
+                .to_string();
+            Some((title, url))
+        })
+        .take(MAX_SOURCE_ROWS)
+        .collect();
+    match sources.is_empty() {
+        true => None,
+        false => Some(sources),
+    }
+}
+
 fn missed(result: &str) -> bool {
     result.starts_with("note: ") && result.contains("does not exist")
 }
@@ -920,7 +950,7 @@ enum TurnEvent {
         error: bool,
     },
     Reasoning(String),
-    ReasoningDelta(String),
+    ReasoningDelta(String, u64),
     ReasoningDone,
     Citations(Vec<Citation>),
     Notice(String),
@@ -969,7 +999,6 @@ struct SessionPermissions {
     auto: sync::Arc<Policy>,
     edit: sync::Arc<Policy>,
     grants: sync::Arc<Grants>,
-    write_grants: sync::Arc<Grants>,
     credentials: sync::Arc<aster_policy::CommandGrants>,
 }
 
@@ -990,6 +1019,23 @@ fn mode_color(mode: Mode) -> Color {
     theme::get().mode_color(mode)
 }
 
+/// Wrap `text` to `width`, keeping at most `max` rows and marking the cut.
+fn clamp_rows(text: &str, width: usize, max: usize) -> Vec<String> {
+    let mut rows = wrap::lines(text, width);
+    if rows.len() > max {
+        rows.truncate(max);
+        if let Some(last) = rows.last_mut() {
+            let cut = clip_row(last, width.saturating_sub(1));
+            *last = if cut.ends_with('…') {
+                cut
+            } else {
+                format!("{cut}…")
+            };
+        }
+    }
+    rows
+}
+
 fn mode_glyph(mode: Mode) -> &'static str {
     match mode {
         Mode::Plan => "⏸",
@@ -1001,6 +1047,15 @@ fn mode_glyph(mode: Mode) -> &'static str {
 }
 
 const EDIT_NOTE_PREFIX: &str = "Edits are now ";
+
+/// Blocks the `/memory` index shows before it counts the rest: enough to scan
+/// without burying the composer.
+const MEMORY_INDEX_ROWS: usize = 12;
+
+/// Lines of description a block gets in the index: enough to say what it is,
+/// not so many that one wordy block owns the screen. `/memory <name>` has the
+/// rest.
+const MEMORY_DESC_ROWS: usize = 2;
 
 fn is_edit_note(msg: &ChatMessage) -> bool {
     msg.role == "system" && msg.content.text().starts_with(EDIT_NOTE_PREFIX)
@@ -1028,7 +1083,7 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "mom",
         takes_arg: true,
-        desc: "Your model policy: what runs when (/mom resume puts it back in charge)",
+        desc: "Your model policy: /mom on, /mom off, or no argument to see it",
     },
     CommandDesc {
         name: "provider",
@@ -1053,7 +1108,7 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "effort",
         takes_arg: true,
-        desc: "Set the reasoning budget (off, low, medium, high), or cycle it",
+        desc: "Set the reasoning budget, or pick a level with no argument",
     },
     CommandDesc {
         name: "thinking",
@@ -1101,9 +1156,14 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
         desc: "Pick a skill to use, view, or delete",
     },
     CommandDesc {
+        name: "remember",
+        takes_arg: true,
+        desc: "Save a fact to memory · /remember <text>",
+    },
+    CommandDesc {
         name: "memory",
-        takes_arg: false,
-        desc: "List what Aster remembers about this project",
+        takes_arg: true,
+        desc: "What Aster remembers · /memory <name> reads one",
     },
     CommandDesc {
         name: "clear",
@@ -1130,9 +1190,11 @@ struct ChatApp {
     exploring: bool,
     show_thinking: bool,
     reasoning_buf: String,
+    reasoning_tokens: u64,
     running: Vec<RunningTool>,
     agent_rows: std::collections::HashMap<String, Vec<AgentRow>>,
     pending_blanks: usize,
+    last_edit: Option<(String, String, String)>,
 
     thinking: bool,
     started: Option<Instant>,
@@ -1200,9 +1262,11 @@ impl ChatApp {
             exploring: false,
             show_thinking: false,
             reasoning_buf: String::new(),
+            reasoning_tokens: 0,
             running: Vec::new(),
             agent_rows: std::collections::HashMap::new(),
             pending_blanks: 0,
+            last_edit: None,
             thinking: false,
             started: None,
             usage: None,
@@ -1247,6 +1311,7 @@ impl ChatApp {
     }
 
     fn emit(&mut self, block: Vec<Line<'static>>) {
+        self.last_edit = None;
         if !block.is_empty() {
             self.queue.push_back(block);
         }
@@ -1371,10 +1436,12 @@ impl ChatApp {
                 let block = history::reasoning(&text, self.show_thinking, self.width);
                 self.emit(block);
             }
-            TurnEvent::ReasoningDelta(text) => {
+            TurnEvent::ReasoningDelta(text, tokens) => {
                 self.reasoning_buf.push_str(&text);
+                self.reasoning_tokens = tokens;
             }
             TurnEvent::ReasoningDone => {
+                self.reasoning_tokens = 0;
                 self.end_message();
                 self.end_explored();
                 if !self.reasoning_buf.is_empty() {
@@ -1412,18 +1479,41 @@ impl ChatApp {
             history::tool(&tool.label, &agent_report_text(&rows), failed, self.width)
         } else if failed {
             history::tool(&tool.label, result, true, self.width)
+        } else if tool.name == "web/search" {
+            match search_sources(result) {
+                Some(sources) => history::sources(&tool.label, &sources, self.width),
+                None => history::tool(&tool.label, result, false, self.width),
+            }
         } else if tool.name == "update_plan" {
             // The plan itself is the output; the tool's text just repeats it.
             history::plan(&self.plan_steps(), self.width)
         } else if tool.name == "edit_file" {
-            // `edit_file` answers with "edited <path>:\n<patch>".
+            // `edit_file` answers with "edited <path>:\n<patch>". Repeated
+            // edits to one file collapse into a single header.
             let (head, patch) = result.split_once('\n').unwrap_or((result, ""));
-            let verb = if head.starts_with("created") {
-                "Created"
-            } else {
-                "Edited"
-            };
-            history::patch(verb, &tool.path, patch, self.width)
+            let created = head.starts_with("created");
+            let verb = if created { "Created" } else { "Edited" };
+            match self.last_edit.take() {
+                Some((path, prev_verb, mut body)) if path == tool.path => {
+                    body.push('\n');
+                    body.push_str(patch);
+                    let verb = if prev_verb == "Created" || created {
+                        "Created"
+                    } else {
+                        "Edited"
+                    };
+                    let block = history::patch(verb, &tool.path, &body, self.width);
+                    self.queue.pop_back();
+                    self.emit(block);
+                    self.last_edit = Some((tool.path.clone(), verb.to_string(), body));
+                    return;
+                }
+                _ => {
+                    self.emit(history::patch(verb, &tool.path, patch, self.width));
+                    self.last_edit = Some((tool.path.clone(), verb.to_string(), patch.to_string()));
+                }
+            }
+            return;
         } else {
             history::tool(&tool.label, result, false, self.width)
         };
@@ -1575,7 +1665,6 @@ impl ChatApp {
             recorder: self.recorder.clone(),
             store: self.store.clone(),
             credentials: self.perms.credentials.clone(),
-            write_grants: self.perms.write_grants.clone(),
             skills: crate::chat::discover_skills(&repo_root),
             instructions: self.instructions.clone(),
             probe: std::sync::Arc::new(bash_tools::ToolProbe::detect()),
@@ -1583,7 +1672,7 @@ impl ChatApp {
             mcp: self.mcp.clone(),
             limits: self.limits,
             environment: crate::chat::environment_note(&repo_root),
-            yolo: self.mode == Mode::Yolo,
+            yolo: sync::Arc::new(std::sync::atomic::AtomicBool::new(self.mode == Mode::Yolo)),
             reads: Default::default(),
             previews: Default::default(),
             lookups: Default::default(),
@@ -1839,7 +1928,10 @@ impl ChatApp {
             }
             AppEvent::SessionPicked(id) => self.resume_session(&id),
             AppEvent::McpToggle { name, disabled } => self.toggle_mcp(&name, disabled),
-            AppEvent::ModelChanged(model) => self.set_model(model, client),
+            AppEvent::ModelChanged(model) => match model.as_str() {
+                crate::mom::MOM_MODEL_ID => self.mom_on(),
+                _ => self.set_model(model, client),
+            },
             AppEvent::ProviderPicked { base_url, model } => {
                 self.switch_provider(base_url, model, client)
             }
@@ -2201,12 +2293,10 @@ impl ChatApp {
             self.note("no mom.yaml here · add one to set rules for when models switch");
             return;
         }
-        if arg == Some("resume") {
-            if let Some(mom) = &mut self.mom {
-                mom.resume();
-            }
-            self.note("mom.yaml back in charge · applies from your next message");
-            return;
+        match arg {
+            Some("on") | Some("resume") => return self.mom_on(),
+            Some("off") | Some("suspend") => return self.mom_off(),
+            _ => {}
         }
         let Some(overview) = self.mom.as_ref().map(|m| m.overview()) else {
             return;
@@ -2228,9 +2318,9 @@ impl ChatApp {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             if overview.suspended {
-                "paused: you picked a model yourself · /mom resume puts it back in charge"
+                "off: the model you picked stays · /mom on hands it back"
             } else {
-                "in charge: the policy picks the model before every message"
+                "on: it picks the model before every message · /mom off stops it"
             },
             text,
         )));
@@ -2274,10 +2364,13 @@ impl ChatApp {
             return;
         };
         let model = mom.model_param(&base_url, model_id);
-        if base_url.trim_end_matches('/') != self.provider_base_url.trim_end_matches('/') {
+        // Against the client's own endpoint, not the pane's copy of it: the
+        // copy can lag, and skipping the switch would send one provider's
+        // model to another.
+        if base_url.trim_end_matches('/') != client.base_url().trim_end_matches('/') {
             client.set_endpoint(&base_url, key);
-            self.provider_base_url = base_url;
         }
+        self.provider_base_url = base_url;
         client.model = model.clone();
         self.model = model;
     }
@@ -2289,12 +2382,7 @@ impl ChatApp {
         if target.base_url.trim_end_matches('/') != self.provider_base_url.trim_end_matches('/') {
             client.set_endpoint(&target.base_url, target.key);
             self.provider_base_url = target.base_url.clone();
-            if let Err(e) = crate::settings::persist_user_review(
-                Some(&self.repo_root),
-                &[("base_url", &target.base_url)],
-            ) {
-                self.note(&format!("could not save the provider choice: {e:#}"));
-            }
+            self.save_review(&[("base_url", &target.base_url)], "provider choice");
             self.note(&format!(
                 "{model} runs on {}",
                 crate::init::provider_label(&target.base_url)
@@ -2303,23 +2391,33 @@ impl ChatApp {
         self.set_model(target.model_param, client);
     }
 
-    fn set_model(&mut self, model: String, client: &mut AiClient) {
-        if model == self.model {
+    /// Write config the whole machine reads. A pane with no repo root is not
+    /// attached to a session, so there is nothing to save on its behalf.
+    fn save_review(&mut self, pairs: &[(&str, &str)], what: &str) {
+        if self.repo_root.as_os_str().is_empty() {
             return;
         }
+        if let Err(e) = crate::settings::persist_user_review(Some(&self.repo_root), pairs) {
+            self.note(&format!("could not save the {what}: {e:#}"));
+        }
+    }
+
+    fn set_model(&mut self, model: String, client: &mut AiClient) {
+        // Ahead of the no-op check: picking the very model mom just landed on
+        // is still the user taking the wheel, and mom must hear it.
         if let Some(mom) = &mut self.mom
             && !mom.suspended()
         {
             mom.suspend_for_user();
-            self.note("mom.yaml suspended for this session: you picked a model yourself");
+            crate::mom::set_enabled(&self.repo_root, false);
+            self.note("mom off · it was picking the model. /mom on gives it back");
+        }
+        if model == self.model {
+            return;
         }
         client.model = model.clone();
         // Saved as well as applied, or the choice would silently reset next run.
-        if let Err(e) =
-            crate::settings::persist_user_review(Some(&self.repo_root), &[("model", &model)])
-        {
-            self.note(&format!("could not save the model choice: {e:#}"));
-        }
+        self.save_review(&[("model", &model)], "model choice");
         self.flash = Some(if self.thinking {
             format!("model {model} · applies to your next message")
         } else {
@@ -2343,14 +2441,52 @@ impl ChatApp {
         });
     }
 
-    fn open_model_picker(&mut self, models: Vec<String>, pane: &mut BottomPane<AppEvent>) {
+    fn open_model_picker(&mut self, mut models: Vec<String>, pane: &mut BottomPane<AppEvent>) {
         self.flash = None;
         if models.is_empty() {
             self.note("the provider returned no models; use /model <id>");
             return;
         }
-        let view = ModelPickerView::new(&self.model, models, pane.sender());
+        // Mom is a row in this list, not a mode hidden behind a command: it
+        // stands in for a model, so it is picked and unpicked like one.
+        let momming = self.mom.as_ref().is_some_and(|m| !m.suspended());
+        if self.mom.is_some() {
+            models.insert(0, crate::mom::MOM_MODEL_ID.to_string());
+        }
+        let current = if momming {
+            crate::mom::MOM_MODEL_ID
+        } else {
+            &self.model
+        };
+        let view = ModelPickerView::new(current, models, pane.sender());
         pane.push_view(Box::new(view));
+    }
+
+    /// Hand the model back to the manifest, from `/mom on` or its row in the
+    /// model picker.
+    fn mom_on(&mut self) {
+        if self.mom.is_none() {
+            self.note("no mom.yaml here · add one to set rules for when models switch");
+            return;
+        }
+        if let Some(mom) = &mut self.mom {
+            mom.resume();
+        }
+        crate::mom::set_enabled(&self.repo_root, true);
+        self.note("mom on · it picks the model from your next message");
+    }
+
+    /// Stand the manifest down, keeping whatever model is loaded.
+    fn mom_off(&mut self) {
+        if self.mom.is_none() {
+            self.note("no mom.yaml here · add one to set rules for when models switch");
+            return;
+        }
+        if let Some(mom) = &mut self.mom {
+            mom.suspend_for_user();
+        }
+        crate::mom::set_enabled(&self.repo_root, false);
+        self.note(&format!("mom off · staying on {}", self.model));
     }
 
     fn open_unified_selector(&mut self, pane: &mut BottomPane<AppEvent>) {
@@ -2482,12 +2618,16 @@ impl ChatApp {
                 Some(Ok(effort)) => self.set_effort(effort, client),
                 Some(Err(e)) => self.flash = Some(e),
                 None => {
-                    let at = Effort::ALL
+                    let items = Effort::ALL
                         .iter()
-                        .position(|e| *e == self.effort)
-                        .unwrap_or(0);
-                    let next = Effort::ALL[(at + 1) % Effort::ALL.len()];
-                    self.set_effort(next, client);
+                        .map(|e| SelectionItem {
+                            name: e.as_str().to_string(),
+                            description: String::new(),
+                            is_current: *e == self.effort,
+                            event: AppEvent::SetEffort(*e),
+                        })
+                        .collect();
+                    pane.push_picker("Switch effort", items, None);
                 }
             },
             "thinking" => self.toggle_thinking(),
@@ -2555,7 +2695,8 @@ impl ChatApp {
             "diff" | "d" => self.show_diff(),
             "mcp" => self.show_mcp(pane),
             "skills" => self.open_skills_picker(pane),
-            "memory" => self.show_memory(),
+            "remember" => self.remember_fact(arg),
+            "memory" => self.show_memory(arg),
             "quit" | "q" | "exit" => self.should_quit = true,
             // Skills never reach here: `/name` submits as a message, so the
             // composer keeps the command and `expand_skill` spells it out.
@@ -2591,7 +2732,13 @@ impl ChatApp {
                 format!("  {} {}", mode_glyph(self.mode), self.mode.as_str()),
                 Style::default().fg(mode_color(self.mode)),
             ),
-            Span::styled(format!("  ·  {}", self.model), dark),
+            Span::styled(
+                match self.mom.as_ref().is_some_and(|m| !m.suspended()) {
+                    true => format!("  ·  mom · {}", self.model),
+                    false => format!("  ·  {}", self.model),
+                },
+                dark,
+            ),
             Span::styled(format!("  ⌁ {}", self.effort), dark),
             Span::styled("  ⌄", theme::get().dimmer_style()),
         ];
@@ -2915,27 +3062,179 @@ impl ChatApp {
         }
     }
 
-    fn show_memory(&mut self) {
+    /// `/memory` is the index; `/memory <name>` reads one block in full, and
+    /// `/memory forget <name>` takes a wrong fact back.
+    fn show_memory(&mut self, arg: Option<&str>) {
         let Some(store) = &self.store else {
             self.note("no store open, so nothing is remembered");
             return;
         };
-        let blocks = match store.memory().list() {
+        let memory = store.memory();
+        match arg.map(str::trim).filter(|a| !a.is_empty()) {
+            Some(arg) => {
+                if let Some(name) = arg.strip_prefix("forget ") {
+                    match memory.forget(name.trim()) {
+                        Ok(true) => self.note(&format!("forgot {}", name.trim())),
+                        Ok(false) => self.note(&format!("nothing remembered as {}", name.trim())),
+                        Err(e) => self.note(&format!("could not forget: {e:#}")),
+                    }
+                    return;
+                }
+                self.show_memory_block(arg);
+            }
+            None => self.show_memory_index(),
+        }
+    }
+
+    fn show_memory_index(&mut self) {
+        let Some(store) = &self.store else { return };
+        let memory = store.memory();
+        let blocks = match memory.list_recent() {
             Ok(blocks) => blocks,
             Err(e) => {
                 self.note(&format!("could not list memory: {e:#}"));
                 return;
             }
         };
-        if blocks.is_empty() {
-            self.note("nothing remembered yet (the agent saves facts with its remember tool)");
+        let project = memory.project_text();
+        let facts = project
+            .as_deref()
+            .map(|t| {
+                t.lines()
+                    .filter(|l| l.trim_start().starts_with('-'))
+                    .count()
+            })
+            .unwrap_or(0);
+        if blocks.is_empty() && facts == 0 {
+            self.note("nothing remembered yet · Aster saves facts as it learns them");
             return;
         }
-        let rows = blocks
-            .into_iter()
-            .map(|b| (b.name, b.description))
-            .collect();
-        self.emit_rows("Memory", rows);
+
+        let width = self.width;
+        let theme = theme::get();
+        let body = width.saturating_sub(4).clamp(24, 100);
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Memory", theme.bold_style()),
+            Span::styled(
+                format!("   {}", count_of(blocks.len(), "block")),
+                theme.dimmer_style(),
+            ),
+            Span::styled(
+                if facts > 0 {
+                    format!(" · {} in ASTER.md", count_of(facts, "fact"))
+                } else {
+                    String::new()
+                },
+                theme.dimmer_style(),
+            ),
+        ])];
+
+        for block in blocks.iter().take(MEMORY_INDEX_ROWS) {
+            let when = block
+                .updated_at
+                .or(block.created_at)
+                .map(super::helpers::time_ago)
+                .unwrap_or_default();
+            let name = super::helpers::clip_row(&block.name, body.saturating_sub(when.len() + 2));
+            let gap = body
+                .saturating_sub(wrap::width(&name) + wrap::width(&when))
+                .max(1);
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(name, theme.accent_bold()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(when, theme.faint_style()),
+            ]));
+            for row in clamp_rows(&block.description, body.saturating_sub(2), MEMORY_DESC_ROWS) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {row}"),
+                    theme.dimmer_style(),
+                )));
+            }
+        }
+
+        if blocks.len() > MEMORY_INDEX_ROWS {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} more · aster memory list",
+                    blocks.len() - MEMORY_INDEX_ROWS
+                ),
+                theme.dimmer_style(),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "/remember <text> saves one · /memory <name> reads one · /memory forget <name> takes it back",
+            theme.faint_style(),
+        )));
+
+        let block = history::assistant(lines, true, width);
+        self.emit(block);
+    }
+
+    fn remember_fact(&mut self, arg: Option<&str>) {
+        let Some(text) = arg else {
+            self.note("usage: /remember <text> · the fact lands in ASTER.md");
+            return;
+        };
+        let Some(store) = &self.store else {
+            self.note("memory is not available in this session");
+            return;
+        };
+        match store.memory().append_project(text) {
+            Ok(()) => self.note("saved to memory (ASTER.md)"),
+            Err(e) => self.note(&format!("could not save: {e:#}")),
+        }
+    }
+
+    fn show_memory_block(&mut self, name: &str) {
+        let Some(store) = &self.store else { return };
+        let memory = store.memory();
+        if name.eq_ignore_ascii_case("project") || name.eq_ignore_ascii_case("aster.md") {
+            match memory.project_text() {
+                Some(text) => self.emit_memory_body("ASTER.md", None, &text),
+                None => self.note("no project memory yet (nothing has been appended to ASTER.md)"),
+            }
+            return;
+        }
+        let body = match memory.peek_block(name) {
+            Ok(body) => body,
+            Err(_) => {
+                self.note(&format!(
+                    "nothing remembered as {name} · /memory lists them"
+                ));
+                return;
+            }
+        };
+        let when = memory
+            .list()
+            .ok()
+            .and_then(|blocks| {
+                blocks
+                    .into_iter()
+                    .find(|b| b.name.eq_ignore_ascii_case(name))
+                    .and_then(|b| b.updated_at.or(b.created_at))
+            })
+            .map(super::helpers::time_ago);
+        self.emit_memory_body(name, when, &body);
+    }
+
+    fn emit_memory_body(&mut self, name: &str, when: Option<String>, body: &str) {
+        let width = self.width;
+        let theme = theme::get();
+        let mut lines = vec![Line::from(vec![
+            Span::styled(name.to_string(), theme.accent_bold()),
+            Span::styled(
+                when.map(|w| format!("   saved {w} ago"))
+                    .unwrap_or_default(),
+                theme.faint_style(),
+            ),
+        ])];
+        lines.push(Line::from(""));
+        lines.extend(markdown::render(body));
+        let block = history::assistant(lines, true, width);
+        self.emit(block);
     }
 
     fn usage_flash(&self) -> Option<String> {

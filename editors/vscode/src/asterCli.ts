@@ -220,7 +220,12 @@ async function resolveTag(repo: string): Promise<string> {
     res.on("end", () => resolve(data));
     res.on("error", reject);
   });
-  const releases = JSON.parse(body) as { tag_name?: string }[];
+  let releases: { tag_name?: string }[];
+  try {
+    releases = JSON.parse(body) as { tag_name?: string }[];
+  } catch {
+    throw new Error("github.com did not return a release list. Check your proxy, then try again.");
+  }
   const tag = Array.isArray(releases)
     ? releases.find((r) => r.tag_name?.startsWith("cli-v"))?.tag_name
     : undefined;

@@ -7,7 +7,7 @@ mod profile;
 mod runner;
 
 pub use profile::{SandboxProfile, command_name, credential_paths, credentials_for};
-pub use runner::{CommandOutput, SandboxConfig, run_command};
+pub use runner::{CommandOutput, SandboxConfig, run_command, run_unsandboxed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {

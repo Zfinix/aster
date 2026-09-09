@@ -54,6 +54,7 @@ const ICONS: Record<string, ReactElement> = {
   "review-pr": <GitPullRequestIcon />,
   diff: <DiffIcon />,
   thinking: <BrainIcon />,
+  remember: <BrainIcon />,
 };
 
 export type ComposerBinding = Omit<Props, "variant">;
@@ -374,6 +375,11 @@ export function Composer({
           action("review-range", "Review a git range…"),
           action("review-pr", "Review a GitHub PR…"),
           action("diff", "Review a diff file…"),
+          {
+            ...action("remember", "Remember a fact…"),
+            takesArg: true,
+            run: (rest: string) => compose("/remember ", rest),
+          },
         ],
       },
     ];

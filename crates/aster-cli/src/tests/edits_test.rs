@@ -46,6 +46,24 @@ fn resolve_new_reports_paths_leaving_the_repo_instead_of_failing() {
 }
 
 #[test]
+fn wrong_directory_hint_flags_a_near_miss() {
+    let base = tempfile::tempdir().unwrap();
+    fs::create_dir(base.path().join("Job")).unwrap();
+    let target = base.path().join("Jobs/typ/bio.md");
+    let hint = wrong_directory_hint(&target).unwrap();
+    assert!(hint.contains("`Job`"), "{hint}");
+    assert!(hint.contains("`Jobs`"), "{hint}");
+}
+
+#[test]
+fn wrong_directory_hint_passes_unrelated_and_existing_parents() {
+    let base = tempfile::tempdir().unwrap();
+    fs::create_dir(base.path().join("docs")).unwrap();
+    assert!(wrong_directory_hint(&base.path().join("zzzq/new.txt")).is_none());
+    assert!(wrong_directory_hint(&base.path().join("docs/new.txt")).is_none());
+}
+
+#[test]
 fn parse_blocks_single_block() {
     let blocks = parse_blocks(REPLY).unwrap();
     assert_eq!(blocks.len(), 1);

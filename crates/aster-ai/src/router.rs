@@ -244,10 +244,22 @@ pub fn recommend(api_key: &str, cache: &Path) -> Result<Vec<Pick>> {
     if entries.is_empty() {
         bail!("OpenRouter returned no benchmark data; try again later");
     }
-    Ok(Tier::ALL
+    Ok(picks(&entries))
+}
+
+/// The same picks from the cache alone, for callers that must answer now: a
+/// picker being drawn cannot wait on the benchmarks API.
+pub fn recommend_cached(cache: &Path) -> Vec<Pick> {
+    read_cache_entries(cache)
+        .map(|e| picks(&e))
+        .unwrap_or_default()
+}
+
+fn picks(entries: &[Entry]) -> Vec<Pick> {
+    Tier::ALL
         .iter()
-        .filter_map(|tier| pick_from_entries(&entries, *tier, false))
-        .collect())
+        .filter_map(|tier| pick_from_entries(entries, *tier, false))
+        .collect()
 }
 
 fn read_cache_entries(cache: &Path) -> Option<Vec<Entry>> {

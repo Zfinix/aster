@@ -1,6 +1,18 @@
 import { exec } from "child_process";
 import { runCli } from "./asterCli";
-import { ApiKey, ChatMessage, EnvVar, InfoRow, McpServer, Provider, SetupInfo, TranscriptTurn } from "./protocol";
+import {
+  ApiKey,
+  ChatMessage,
+  EnvVar,
+  InfoRow,
+  McpServer,
+  MomState,
+  MemoryBlock,
+  MemoryProject,
+  Provider,
+  SetupInfo,
+  TranscriptTurn,
+} from "./protocol";
 
 async function json<T>(
   args: string[],
@@ -73,12 +85,29 @@ export async function contextBudget(cwd: string, env?: NodeJS.ProcessEnv): Promi
   }
 }
 
-export async function memoryBlocks(cwd: string): Promise<InfoRow[]> {
-  const parsed = await json<{ blocks?: { name: string; description: string }[] }>(
+/** Everything `/memory` shows: the named blocks newest first, and the project
+ *  file they sit alongside. */
+export async function memory(cwd: string): Promise<{ blocks: MemoryBlock[]; project: MemoryProject | null }> {
+  const parsed = await json<{ blocks?: MemoryBlock[]; project?: MemoryProject | null }>(
     ["memory", "list"],
     cwd
   );
-  return (parsed.blocks ?? []).map((b) => ({ label: b.name, value: b.description }));
+  return { blocks: parsed.blocks ?? [], project: parsed.project ?? null };
+}
+
+/** One block's body, read when a row is opened rather than with the list. */
+export async function memoryBody(cwd: string, name: string): Promise<string> {
+  const parsed = await json<{ body?: string }>(["memory", "show", name], cwd);
+  return parsed.body ?? "";
+}
+
+export async function forgetMemory(cwd: string, name: string): Promise<void> {
+  await json(["memory", "remove", name], cwd);
+}
+
+/** `/remember <text>`: append a fact to project memory (ASTER.md). */
+export async function addMemory(cwd: string, text: string): Promise<void> {
+  await json(["memory", "add", text], cwd);
 }
 
 interface MomJson {
@@ -103,6 +132,25 @@ export async function momPolicy(cwd: string): Promise<InfoRow[]> {
   }
   rows.push({ label: "switch rules", value: `${m.rules ?? 0}` });
   return rows;
+}
+
+/** Whether mom.yaml is in charge of the model this session, and what it
+ *  currently resolves to. */
+export async function momState(cwd: string): Promise<MomState> {
+  const m = await json<
+    MomJson & { suspended?: boolean; current?: { entry: string; model: string } }
+  >(["mom", "check"], cwd);
+  // Before the first turn mom has no current entry; start-with is what it
+  // would use, so the chip names that instead of a vague "policy".
+  const entry = m.current?.entry ?? m.start_with ?? null;
+  const model =
+    m.current?.model ?? m.entries?.find((e) => e.name === entry)?.model ?? null;
+  return {
+    active: true,
+    suspended: m.suspended ?? false,
+    entry,
+    model,
+  };
 }
 
 export async function mcpServers(cwd: string): Promise<McpServer[]> {
@@ -225,6 +273,55 @@ export async function revealEnv(cwd: string, name: string): Promise<string | nul
 
 /** The endpoint's catalog. A provider that will not answer is not fatal: the
  *  picker still switched, and a model can be typed by hand. */
+/** What the current endpoint serves. Throws with the endpoint's own message
+ *  when it will not say, which the picker shows in place of a list. */
+export async function modelsList(cwd: string, env?: NodeJS.ProcessEnv): Promise<string[]> {
+  const { stdout, stderr, code } = await runCli(["models", "--json"], cwd, undefined, env);
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    parsed = null;
+  }
+  if (code === 0 && Array.isArray(parsed)) return parsed as string[];
+  const reported = (parsed as { error?: string } | null)?.error ?? stderr.trim();
+  throw new Error(reported || "This endpoint did not list its models.");
+}
+
+/** The endpoint the next turn goes to, for keying anything cached per
+ *  provider. Null when the CLI cannot be asked. */
+export async function currentEndpoint(
+  cwd: string,
+  env?: NodeJS.ProcessEnv
+): Promise<string | null> {
+  try {
+    const s = await json<StatusJson>(["status"], cwd, env);
+    return s.base_url.replace(/\/+$/, "") || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The provider's own coding shortlist. Empty for endpoints that have none,
+ *  so no picker labels another provider's ids "best for coding". */
+export async function recommendedModels(
+  cwd: string,
+  env?: NodeJS.ProcessEnv
+): Promise<string[]> {
+  try {
+    const { stdout, code } = await runCli(
+      ["model", "recommended", "--json"],
+      cwd,
+      undefined,
+      env
+    );
+    const parsed = JSON.parse(stdout) as unknown;
+    return code === 0 && Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function modelsFor(
   cwd: string,
   model: string,

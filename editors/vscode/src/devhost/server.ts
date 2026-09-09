@@ -7,7 +7,6 @@ import { probe } from "../connect";
 import { ChatRunner } from "../chatRunner";
 import { skillCommands } from "../commands";
 import * as info from "../info";
-import { MODELS, RECOMMENDED } from "../models";
 import {
   ChatMessage,
   Effort,
@@ -182,35 +181,32 @@ export function start(root: string, port: number): void {
           repoName: repoName(root),
           branch: await currentBranch(root),
           model: state.model,
-          models: [...MODELS, ...state.customModels.filter((m) => !MODELS.includes(m))],
-          recommended: [...RECOMMENDED],
+          models: state.model ? [state.model] : [],
+          recommended: [],
           recent: state.recentModels,
           contextBudget: await info.contextBudget(root, env()).catch(() => 0),
           permissionMode: state.permissionMode,
           effort: state.effort,
           binaryOk: await checkBinary(cliConfig().binary),
           sounds: true,
-          completionSound: "ready",
+          completionSound: "sparkle",
           skills: await skillCommands(root),
           setup: state.showSetup
             ? { provider: "OpenRouter", base_url: "https://openrouter.ai/api/v1", login: "openrouter", key_vars: ["OPENROUTER_API_KEY"] }
             : undefined,
         });
+        try {
+          const state = await info.momState(root);
+          post({ type: "momState", state });
+        } catch {
+          // No manifest: the chip keeps showing the configured model.
+        }
         runState();
         break;
 
       case "chat": {
-        // A queued turn flushes the instant the webview sees `done`, which
-        // beats the CLI child exiting. Give the slot a moment to free before
-        // rejecting.
-        const slotFreeBy = Date.now() + 3000;
-        while (chat.running && Date.now() < slotFreeBy) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-        if (chat.running) {
-          post({ type: "chatError", id: message.id, message: "A turn is already running." });
-          break;
-        }
+        // The runner serializes turns, so a message sent mid-turn queues and
+        // flushes when the current one finishes.
         let sawTerminal = false;
         try {
           const running = chat.run({
@@ -231,6 +227,12 @@ export function start(root: string, port: number): void {
           const code = await running;
           if (!sawTerminal) {
             post({ type: "chatError", id: message.id, message: `aster chat exited with ${code}` });
+          }
+          try {
+            const mom = await info.momState(root);
+            post({ type: "momState", state: mom });
+          } catch {
+            // The chip keeps whatever it showed last.
           }
         } catch (err) {
           post({ type: "chatError", id: message.id, message: describe(err) });
@@ -288,7 +290,7 @@ export function start(root: string, port: number): void {
         break;
       case "setModel":
         state.model = message.model || null;
-        if (message.model && !MODELS.includes(message.model) && !state.customModels.includes(message.model)) {
+        if (message.model && !state.customModels.includes(message.model)) {
           state.customModels.push(message.model);
         }
         if (message.model) {
@@ -339,7 +341,12 @@ export function start(root: string, port: number): void {
           const { stdout, stderr, code } = await runCli(["models", "--json"], root, undefined, env());
           const parsed = JSON.parse(stdout) as string[] | { error?: string };
           if (code === 0 && Array.isArray(parsed)) {
-            post({ type: "modelsLoaded", models: parsed });
+            const shortlist = await info.recommendedModels(root, env()).catch(() => []);
+            post({
+              type: "modelsLoaded",
+              models: parsed,
+              recommended: shortlist.filter((id) => parsed.includes(id)),
+            });
           } else {
             const error = Array.isArray(parsed) ? stderr.trim() : parsed.error;
             post({ type: "modelsLoaded", models: [], error: error || "This endpoint did not list its models." });
@@ -349,6 +356,47 @@ export function start(root: string, port: number): void {
         }
         break;
 
+      case "rememberMemory": {
+        try {
+          await info.addMemory(root, message.text);
+          post({ type: "remembered", id: message.id });
+        } catch (err) {
+          post({ type: "remembered", id: message.id, error: describe(err) });
+        }
+        try {
+          const { blocks, project } = await info.memory(root);
+          post({ type: "memory", blocks, project });
+        } catch {
+          // The card already says whether the fact landed; the list can wait.
+        }
+        break;
+      }
+      case "listMemory":
+      case "readMemory":
+      case "forgetMemory": {
+        if (message.type === "readMemory") {
+          try {
+            post({
+              type: "memoryBody",
+              name: message.name,
+              body: await info.memoryBody(root, message.name),
+            });
+          } catch (err) {
+            post({ type: "memoryBody", name: message.name, error: describe(err) });
+          }
+          break;
+        }
+        if (message.type === "forgetMemory") {
+          await info.forgetMemory(root, message.name).catch(() => undefined);
+        }
+        try {
+          const { blocks, project } = await info.memory(root);
+          post({ type: "memory", blocks, project });
+        } catch (err) {
+          post({ type: "memory", blocks: [], project: null, error: describe(err) });
+        }
+        break;
+      }
       case "listMcp":
         post({ type: "mcpServers", servers: await info.mcpServers(root).catch(() => []) });
         break;
@@ -449,7 +497,7 @@ export function start(root: string, port: number): void {
     }
   }
 
-  async function sendInfo(id: string, topic: "status" | "memory" | "diff" | "mom"): Promise<void> {
+  async function sendInfo(id: string, topic: "status" | "diff" | "mom"): Promise<void> {
     try {
       if (topic === "status") {
         post({ type: "infoCard", id, title: "Status", rows: await info.status(root, env()) });
@@ -457,17 +505,6 @@ export function start(root: string, port: number): void {
       }
       if (topic === "mom") {
         post({ type: "infoCard", id, title: "Model policy", rows: await info.momPolicy(root) });
-        return;
-      }
-      if (topic === "memory") {
-        const rows = await info.memoryBlocks(root);
-        post({
-          type: "infoCard",
-          id,
-          title: "Memory",
-          rows,
-          note: rows.length ? undefined : "Nothing remembered yet.",
-        });
         return;
       }
       const diff = await info.workingDiff(root);

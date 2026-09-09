@@ -597,6 +597,25 @@ async fn list_models(repo_path: Option<String>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+async fn list_recommended(repo_path: Option<String>) -> Result<Vec<String>, String> {
+    let parsed = run_aster_json(
+        &["model", "recommended", "--json"],
+        repo_path.as_deref(),
+        None,
+        Vec::new(),
+    )
+    .await?;
+    Ok(parsed
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+#[tauri::command]
 async fn config_list(repo_path: Option<String>) -> Result<serde_json::Value, String> {
     run_aster_json(
         &["config", "list", "--json"],
@@ -933,6 +952,7 @@ pub fn run() {
             list_providers,
             use_provider,
             list_models,
+            list_recommended,
             config_list,
             config_set,
             config_unset,

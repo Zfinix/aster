@@ -8,8 +8,8 @@ const REPETITION_BUF: usize = 256;
 const REPETITION_STOP_AFTER: usize = 4;
 const MIN_CHUNK_LETTERS: usize = 8;
 
-pub const DEGENERATE_MSG: &str = "the model's reply degenerated into repeated text and was stopped; \
-     switch to a stronger model or higher effort and retry";
+pub const DEGENERATE_MSG: &str =
+    "Stopped: model is repeating itself. Try a stronger model or higher effort.";
 
 /// Marker error for a reply the guard cut off. `agent_loop` matches on this
 /// type so a degenerate reply is never misread as a model that rejected tools.

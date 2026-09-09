@@ -33,6 +33,10 @@ pub fn program_args(aster_bin: &Path, sched: &Schedule, repo_root: &Path) -> Vec
     if sched.notify {
         args.push("--notify".to_string());
     }
+    if let Some(url) = &sched.notify_url {
+        args.push("--notify-url".to_string());
+        args.push(url.clone());
+    }
     args.push("--cwd".to_string());
     args.push(repo_root.to_string_lossy().into_owned());
     args

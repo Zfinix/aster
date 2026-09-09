@@ -108,26 +108,6 @@ fn store_key(key: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// When a run dies for lack of an OpenRouter key on an attended terminal,
-/// offer the browser sign-in once instead of failing outright. True when the
-/// caller should retry resolution.
-pub async fn offer_sign_in(error: &str) -> Result<bool> {
-    if !error.contains("no API key") || !error.contains("OpenRouter") {
-        return Ok(false);
-    }
-    if !console::Term::stdout().features().is_attended() {
-        return Ok(false);
-    }
-    let yes = cliclack::confirm("No OpenRouter key found. Sign in with OpenRouter now?")
-        .initial_value(true)
-        .interact()?;
-    if !yes {
-        return Ok(false);
-    }
-    login_and_report().await?;
-    Ok(true)
-}
-
 #[cfg(test)]
 #[path = "openrouter_auth_tests.rs"]
 mod tests;

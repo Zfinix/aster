@@ -5,171 +5,36 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::oneshot;
 
 use crate::info;
 use crate::state::{AppState, Instance};
 
-/// A live child. Cancelling drops the sender, which the waiter reads as a kill.
+/// A live child, or the bookkeeping slot for a persistent agent's turn.
+/// Cancelling drops the sender, which the waiter reads as a kill.
 pub struct Run {
-    stdin: Option<tokio::process::ChildStdin>,
     cancel: Option<oneshot::Sender<()>>,
     pub(crate) id: String,
     pending: Arc<std::sync::Mutex<Option<Value>>>,
 }
 
 impl Run {
-    pub async fn write(&mut self, line: &str) -> Result<(), String> {
-        let stdin = self.stdin.as_mut().ok_or("this turn takes no answers")?;
-        stdin
-            .write_all(format!("{line}\n").as_bytes())
-            .await
-            .map_err(|e| format!("could not answer the prompt: {e}"))
-    }
-
     /// The event the child is waiting on, if any.
     pub fn blocked_on(&self) -> Option<Value> {
         self.pending.lock().ok().and_then(|slot| slot.clone())
     }
 
-    pub(crate) fn clear_pending(&self) {
-        if let Ok(mut slot) = self.pending.lock() {
-            *slot = None;
+    /// A run the browser can see but no child answers: the persistent agent
+    /// holds its own stdin, so only the bookkeeping slot is needed.
+    pub(crate) fn detached(id: String, pending: Arc<std::sync::Mutex<Option<Value>>>) -> Self {
+        Self {
+            cancel: None,
+            id,
+            pending,
         }
     }
-}
-
-/// Start a chat turn. Returns once the child is up: the turn's own end arrives
-/// as a `done` or `error` event, and a child that dies without one is reported
-/// as a `chatError`.
-pub async fn chat(
-    state: &Arc<AppState>,
-    instance: &Arc<Instance>,
-    id: String,
-    message: &Value,
-) -> Result<(), String> {
-    let settings = state.settings.lock().await;
-    let mode = message
-        .get("permissionMode")
-        .and_then(Value::as_str)
-        .unwrap_or(&settings.permission_mode)
-        .to_string();
-    drop(settings);
-
-    let mut args: Vec<String> = vec![
-        "chat".into(),
-        "--messages-json".into(),
-        "-".into(),
-        "--stream".into(),
-        "--permission-mode".into(),
-        mode,
-    ];
-    // Only when the browser picked one: the flag outranks ASTER_EFFORT and
-    // aster.yaml, so sending a default would silently override the repo's.
-    for (flag, value) in [
-        ("--effort", message.get("effort")),
-        ("--model", message.get("model")),
-        ("--session", message.get("session")),
-    ] {
-        if let Some(value) = value.and_then(Value::as_str).filter(|v| !v.is_empty()) {
-            args.push(flag.into());
-            args.push(value.into());
-        }
-    }
-
-    // Claim the slot before spawning: a refused turn must not leave a child
-    // behind, and two turns must never share a repo.
-    let mut slot = instance.chat.lock().await;
-    if slot.is_some() {
-        return Err("A turn is already running.".into());
-    }
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut child = state
-        .cli
-        .command(&argv)
-        .spawn()
-        .map_err(|e| format!("could not launch aster: {e}"))?;
-
-    // The messages go in as a single line; stdin then stays open, because that
-    // is the channel the CLI reads approval replies from. Any failure before
-    // the slot is claimed must take the child with it.
-    let mut stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            let _ = child.kill().await;
-            return Err("aster chat has no stdin".into());
-        }
-    };
-    let messages = message
-        .get("messages")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    if let Err(e) = stdin.write_all(format!("{messages}\n").as_bytes()).await {
-        let _ = child.kill().await;
-        return Err(format!("could not send messages to aster: {e}"));
-    }
-
-    log(child.stderr.take());
-    let pending = Arc::new(std::sync::Mutex::new(None));
-    let terminal = stream(instance, child.stdout.take(), {
-        let id = id.clone();
-        let pending = pending.clone();
-        move |event| {
-            match event.get("type").and_then(Value::as_str) {
-                // Remember what the child is blocked on, so a tab that loads
-                // later can be handed the prompt it never saw.
-                Some("approval_request" | "question") => {
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some(event.clone());
-                    }
-                }
-                Some("done" | "error") => {
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = None;
-                    }
-                }
-                _ => {}
-            }
-            let terminal = matches!(
-                event.get("type").and_then(Value::as_str),
-                Some("done" | "error")
-            );
-            (
-                json!({ "type": "chatEvent", "id": id, "event": event }),
-                terminal,
-            )
-        }
-    });
-
-    let (cancel, cancelled) = oneshot::channel();
-    *slot = Some(Run {
-        stdin: Some(stdin),
-        cancel: Some(cancel),
-        id: id.clone(),
-        pending,
-    });
-    drop(slot);
-
-    let instance = instance.clone();
-    tokio::spawn(async move {
-        let code = wait(child, cancelled).await;
-        instance.chat.lock().await.take();
-        // A turn that ended on its own already said so. One that did not left
-        // the UI waiting, so the exit code is the only explanation available.
-        if let Some(code) = code
-            && !terminal.load(std::sync::atomic::Ordering::SeqCst)
-        {
-            instance.post(json!({
-                "type": "chatError",
-                "id": id,
-                "message": format!("aster chat exited with code {code}. See the terminal running aster serve."),
-            }));
-        }
-        instance.post_run_state().await;
-    });
-    Ok(())
 }
 
 /// Start a review. Findings stream as they land; the run ends with `reviewDone`
@@ -218,7 +83,6 @@ pub async fn review(
 
     let (cancel, cancelled) = oneshot::channel();
     *slot = Some(Run {
-        stdin: None,
         cancel: Some(cancel),
         id: id.clone(),
         pending: Arc::new(std::sync::Mutex::new(None)),

@@ -9,6 +9,10 @@ use std::sync::Arc;
 use crate::agents::{AgentDeps, AgentTask, discover_agents, run_swarm};
 use aster_policy::Policy;
 
+#[cfg(test)]
+#[path = "run_tests.rs"]
+mod tests;
+
 #[derive(Debug, Args)]
 pub(crate) struct RunArgs {
     /// The agent to run, as listed by `aster agents`.
@@ -24,6 +28,9 @@ pub(crate) struct RunArgs {
     /// Post a native notification when the run finishes.
     #[arg(long)]
     pub notify: bool,
+    /// URL opened when the notification is clicked (with --notify).
+    #[arg(long)]
+    pub notify_url: Option<String>,
     /// Working directory for the run; defaults to the current directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
@@ -73,6 +80,7 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         limits: crate::chat::Limits::resolve(&settings.agent),
         swarm: crate::chat::SwarmLimits::resolve(&settings.agents),
         session_registry: registry.clone(),
+        yolo: permissions.mode == aster_policy::Mode::Yolo,
     };
 
     let reports = run_swarm(
@@ -92,13 +100,18 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         record_scheduled_session(&deps, &args, schedule, report)?;
     }
     if args.notify {
-        let body = match (&report.report, &report.error) {
+        let (reported_url, report_text) = match &report.report {
+            Some(text) => split_notify_url(text),
+            None => (None, None),
+        };
+        let click_url = reported_url.or(args.notify_url.as_deref());
+        let body = match (&report_text, &report.error) {
             (Some(text), _) => first_line(text),
             (None, Some(err)) => format!("failed: {err}"),
             (None, None) => "finished with no report".to_string(),
         };
         let title = format!("aster: {}", args.schedule.as_deref().unwrap_or(&args.agent));
-        let _ = aster_cron::notify::send(&title, &body);
+        let _ = aster_cron::notify::send(&title, &body, click_url);
     }
 
     if args.json {
@@ -111,6 +124,20 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A report may end with a `notify-url: <url>` line; the agent uses it to hand
+/// back a per-run click target (e.g. an X compose intent). Returns the URL and
+/// the report with that line stripped.
+fn split_notify_url(report: &str) -> (Option<&str>, Option<&str>) {
+    let trimmed = report.trim_end();
+    match trimmed.rsplit_once('\n') {
+        Some((head, last)) => match last.trim().strip_prefix("notify-url:") {
+            Some(url) if !url.trim().is_empty() => (Some(url.trim()), Some(head.trim_end())),
+            _ => (None, Some(trimmed)),
+        },
+        None => (None, Some(trimmed)),
+    }
 }
 
 fn first_line(text: &str) -> String {

@@ -3,7 +3,6 @@ import * as config from "./asterConfig";
 import * as info from "./info";
 import { checkBinary, cliConfig } from "./asterCli";
 import { EditorSettings, SettingsSnapshot } from "./protocol";
-import { MODELS } from "./models";
 
 export function editorSettings(): EditorSettings {
   const { binary, minConfidence, extraArgs } = cliConfig();
@@ -17,7 +16,7 @@ export function editorSettings(): EditorSettings {
     sounds: vscode.workspace.getConfiguration("aster").get<boolean>("sounds", true),
     completionSound: vscode.workspace
       .getConfiguration("aster")
-      .get<string>("completionSound", "ready"),
+      .get<string>("completionSound", "sparkle"),
   };
 }
 
@@ -54,7 +53,10 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
   const configured = Array.isArray(keys)
     ? keys.find((key) => key.key === "review.model")?.value
     : null;
-  const catalog = await info.modelsFor(cwd, String(configured ?? MODELS[0])).catch(() => []);
+  const model = configured ? String(configured) : await info.currentModel(cwd).catch(() => null);
+  const catalog = model
+    ? await info.modelsFor(cwd, model).catch(() => [])
+    : await info.recommendedModels(cwd).catch(() => []);
   return {
     ...base,
     keys: Array.isArray(keys) ? keys : [],
@@ -63,9 +65,8 @@ export async function snapshot(root: string | null): Promise<SettingsSnapshot> {
     paths,
     servers,
     providers,
-    // The vetted list first so the useful ids are at the top of the menu, then
-    // whatever else the endpoint offers.
-    models: [...MODELS, ...catalog.filter((id) => !MODELS.includes(id))],
+    // Only what this endpoint serves: another provider's ids are not choices.
+    models: catalog,
     ...(Array.isArray(keys) ? {} : { error: describe(keys) }),
   };
 }

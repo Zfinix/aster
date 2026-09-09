@@ -145,7 +145,10 @@ export function ModelMenu({
             <ChoiceList
               label="Provider"
               empty="Loading the catalog…"
-              choices={providers.map((provider) => ({
+              placeholder="Search providers…"
+              choices={[...providers]
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((provider) => ({
                 key: provider.base_url,
                 label: provider.name,
                 title: provider.base_url,

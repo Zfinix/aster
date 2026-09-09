@@ -1190,3 +1190,101 @@ async fn a_lazy_runtime_falls_back_to_a_full_connect_without_a_cache() {
     );
     runtime.shutdown().await;
 }
+
+fn add_args(name: &str, command: &[&str]) -> AddArgs {
+    AddArgs {
+        name: name.into(),
+        command: command.iter().map(|s| s.to_string()).collect(),
+        url: None,
+        transport: None,
+        env: Vec::new(),
+        header: Vec::new(),
+        global: false,
+    }
+}
+
+#[test]
+fn a_spawned_server_records_its_command_and_arguments() {
+    let mut args = add_args("cua", &["cua-driver", "mcp"]);
+    args.env = vec!["TOKEN=abc".into()];
+    let entry = server_entry(&args).expect("a command is enough");
+    assert_eq!(entry["command"], json!("cua-driver"));
+    assert_eq!(entry["args"], json!(["mcp"]));
+    assert_eq!(entry["env"], json!({ "TOKEN": "abc" }));
+    assert!(!entry.contains_key("type"), "{entry:?}");
+}
+
+#[test]
+fn a_remote_server_defaults_to_streamable_http_and_keeps_its_headers() {
+    let mut args = add_args("linear", &[]);
+    args.url = Some("https://mcp.linear.app/mcp".into());
+    args.header = vec!["Authorization: Bearer t".into()];
+    let entry = server_entry(&args).expect("a url is enough");
+    assert_eq!(entry["url"], json!("https://mcp.linear.app/mcp"));
+    assert_eq!(entry["type"], json!("streamable-http"));
+    assert_eq!(entry["headers"], json!({ "Authorization": "Bearer t" }));
+}
+
+#[test]
+fn neither_a_command_nor_a_url_is_an_error_rather_than_an_empty_entry() {
+    assert!(server_entry(&add_args("nothing", &[])).is_err());
+}
+
+#[test]
+fn a_transport_that_contradicts_the_target_is_refused() {
+    let mut remote = add_args("remote", &[]);
+    remote.url = Some("https://example.com/mcp".into());
+    remote.transport = Some(Transport::Stdio);
+    assert!(server_entry(&remote).is_err());
+
+    let mut local = add_args("local", &["npx"]);
+    local.transport = Some(Transport::Sse);
+    assert!(server_entry(&local).is_err());
+}
+
+#[test]
+fn a_pair_without_its_separator_is_named_rather_than_dropped() {
+    let mut args = add_args("cua", &["cua-driver"]);
+    args.env = vec!["TOKEN".into()];
+    let err = server_entry(&args).expect_err("TOKEN is not KEY=value");
+    assert!(err.to_string().contains("--env"), "{err}");
+}
+
+#[test]
+fn adding_a_server_keeps_the_ones_already_in_the_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".mcp.json");
+    std::fs::write(&path, r#"{"mcpServers":{"github":{"command":"npx"}}}"#).expect("seed");
+    let entry = server_entry(&add_args("cua", &["cua-driver", "mcp"])).expect("valid");
+    write_mcp_json_server(&path, "cua", entry).expect("write");
+    let servers = mcp_json_servers(&path).expect("parse");
+    let names: Vec<&str> = servers.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["github", "cua"],
+        "the new server is appended, not sorted in"
+    );
+}
+
+#[test]
+fn a_panel_row_names_the_transport_short_and_keeps_the_state_for_last() {
+    let remote = ServerConfig {
+        url: "https://mcp.example.com/mcp".into(),
+        ..Default::default()
+    };
+    let row = PanelRow::of("example-with-no-stored-login", &remote);
+    assert!(row.on);
+    assert_eq!(row.kind, "http");
+    assert_eq!(row.auth, "no login");
+    assert_eq!(row.target, "https://mcp.example.com/mcp");
+
+    let local = ServerConfig {
+        command: "npx".into(),
+        disabled: true,
+        ..Default::default()
+    };
+    let row = PanelRow::of("local", &local);
+    assert!(!row.on);
+    assert_eq!(row.kind, "stdio");
+    assert_eq!(row.auth, "", "a local server never needs a login column");
+}

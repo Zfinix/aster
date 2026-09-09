@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpIcon, GripIcon, PencilIcon, TrashIcon } from "./icons";
+import { UserText } from "./UserText";
 
 /** The queued chips, docked at the top of the composer box: grip to reorder,
  *  Send now pushes one into the running turn, pencil edits, trash drops it.
@@ -156,7 +157,7 @@ export function QueuedTurn({
         <GripIcon />
       </span>
       <button className="queued-text" title={text} onClick={() => setEditing(true)}>
-        {text}
+        <UserText text={text} compact />
       </button>
       <button
         className="queued-send-now"

@@ -110,7 +110,8 @@ const VARS: &[Var] = &[
     Var { var: "ASTER_NO_UPDATE_CHECK", group: "Toggles", kind: "bool", secret: false, help: "Set to anything to skip the update and announcement checks" },
     Var { var: "ASTER_WEBMCP_CDP_URL", group: "Toggles", kind: "text", secret: false, help: "Chrome DevTools endpoint the web MCP tools connect to" },
     Var { var: "ASTER_TELEGRAM_TOKEN", group: "Remote", kind: "text", secret: true, help: "Bot token for the Telegram remote" },
-    Var { var: "ASTER_REMOTE_USERS", group: "Remote", kind: "text", secret: false, help: "Telegram user ids allowed to talk to Aster, comma separated" },
+    Var { var: "ASTER_PHOTON_SECRET", group: "Remote", kind: "text", secret: true, help: "Webhook signing secret for the iMessage (Photon) remote" },
+    Var { var: "ASTER_REMOTE_USERS", group: "Remote", kind: "text", secret: false, help: "User ids or senders allowed to talk to Aster, comma separated" },
 ];
 
 pub struct Row {

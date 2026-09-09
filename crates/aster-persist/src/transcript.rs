@@ -320,10 +320,14 @@ impl SessionTranscript {
 
     pub fn to_chat_messages(&self) -> Vec<ChatMessage> {
         let mut out = Vec::new();
+        let mut skip = self
+            .latest_summary()
+            .map(|s| s.replaces_through)
+            .unwrap_or(0);
         if let Some(summary) = self.latest_summary() {
             out.push(ChatMessage {
                 role: "assistant".into(),
-                content: format!("Summary of earlier conversation:\n{summary}").into(),
+                content: format!("Summary of earlier conversation:\n{}", summary.content).into(),
             });
         }
         for event in &self.events {
@@ -339,6 +343,10 @@ impl SessionTranscript {
             if content.trim().is_empty() {
                 continue;
             }
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
             out.push(ChatMessage {
                 role: m.role.clone(),
                 content: content.into(),
@@ -347,9 +355,9 @@ impl SessionTranscript {
         out
     }
 
-    fn latest_summary(&self) -> Option<&str> {
+    fn latest_summary(&self) -> Option<&SummaryEvent> {
         self.events.iter().rev().find_map(|e| match e {
-            TranscriptEvent::Summary(s) => Some(s.content.as_str()),
+            TranscriptEvent::Summary(s) => Some(s),
             _ => None,
         })
     }

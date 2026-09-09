@@ -8,6 +8,7 @@
     "dev:vite": "vite",
     "build:vite": "tsc --noEmit && vite build",
     "cli:debug": "cargo build -p aster-cli --bin aster",
+    "test": "bun test",
     "sidecar": "bun scripts/prepare-sidecar.mjs",
     "dev": "tauri dev",
     "build": "tauri build",

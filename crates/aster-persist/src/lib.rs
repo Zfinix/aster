@@ -57,16 +57,6 @@ impl Store {
         )
     }
 
-    /// Out-of-repo directories approved for *writes*, kept apart from
-    /// [`Self::grants`] so approving a read never hands out a write.
-    pub fn write_grants(&self, repo_root: &Path) -> GrantStore {
-        GrantStore::new(
-            self.home
-                .join("write-grants")
-                .join(format!("{}.json", project_slug(repo_root))),
-        )
-    }
-
     /// Credential directories approved per command for `repo_root`, kept apart
     /// from [`Self::grants`] so a sandbox approval never widens the agent's own
     /// file tools. Entries are stored as `<command>\t<dir>`.

@@ -17,7 +17,7 @@ use tokio_stream::{Stream, StreamExt};
 
 use crate::cli::Cli;
 use crate::state::{AppState, Instance};
-use crate::{files, info, run, sessions};
+use crate::{acp, files, info, run, sessions};
 
 pub async fn message(
     State(state): State<Arc<AppState>>,
@@ -77,7 +77,28 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             instance.post_run_state().await;
         }
         "chat" => {
-            if let Err(error) = run::chat(state, &instance, id(), message).await {
+            let settings = state.settings.lock().await;
+            let mode = message
+                .get("permissionMode")
+                .and_then(Value::as_str)
+                .unwrap_or(&settings.permission_mode)
+                .to_string();
+            drop(settings);
+            // A busy tab queues its message; the session bind happens when
+            // the turn runs, so the agent is not moved mid-turn.
+            let idle = instance.chat.lock().await.is_none();
+            let result = async {
+                let agent = if idle {
+                    acp::Agent::for_session(state, &instance, message["session"].as_str()).await?
+                } else {
+                    acp::Agent::ensure(state, &instance).await?
+                };
+                agent.chat(state, &instance, id(), message, &mode).await
+            }
+            .await;
+            // The POST is fire and forget, so a failure has to reach the tab
+            // over the stream or the message just sits there unanswered.
+            if let Err(error) = result {
                 instance.post(json!({ "type": "chatError", "id": id(), "message": error }));
             }
             instance.post_run_state().await;
@@ -88,29 +109,28 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             }
             instance.post_run_state().await;
         }
-        // Cancel both: whichever is idle is a no-op, and this removes any
-        // dependence on the browser guessing which kind of run is in flight.
-        "cancelChat" | "cancelReview" => {
-            run::cancel(&mut *instance.chat.lock().await).await;
+        "cancelChat" => {
+            if let Some(agent) = instance.agent.lock().await.clone() {
+                agent.cancel().await;
+                agent.drop_queue();
+            }
+            // The slot is cleared by the turn task when the prompt call
+            // returns; clearing it here would let a new chat overlap the old
+            // turn's unwind.
+        }
+        // A review is still a per-run child with no agent behind it.
+        "cancelReview" => {
             run::cancel(&mut *instance.review.lock().await).await;
             instance.post_run_state().await;
         }
-        "approval" => {
-            let mut line = json!({ "allow": message["allow"].as_bool().unwrap_or(false) });
-            if message["always"].as_bool() == Some(true) {
-                line["always"] = json!(true);
-            }
-            instance.answer(line).await?;
-        }
-        "answer" => {
-            instance
-                .answer(json!({ "choice": message["choice"] }))
-                .await?
-        }
-        "inject" => {
-            instance
-                .answer(json!({ "message": message["text"] }))
-                .await?
+        "approval" | "answer" | "inject" => {
+            let agent = instance
+                .agent
+                .lock()
+                .await
+                .clone()
+                .ok_or("no turn is running")?;
+            agent.answer(message).await?;
         }
         "setPermissionMode" => {
             let mut settings = state.settings.lock().await;
@@ -161,11 +181,21 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
                 .post(json!({ "type": "sessions", "sessions": sessions::list(&state.cli).await }));
         }
         "loadSession" => {
-            // Switching sessions abandons the turn in flight; stop it so the
-            // loaded session starts clean.
-            run::cancel(&mut *instance.chat.lock().await).await;
-            let turns =
-                sessions::load(&state.cli, message["id"].as_str().unwrap_or_default()).await?;
+            // Switching sessions abandons the turn in flight; stop it and let
+            // the turn task free the slot, so a new chat cannot overlap the
+            // unwind.
+            if let Some(agent) = instance.agent.lock().await.clone() {
+                agent.cancel().await;
+                agent.drop_queue();
+            }
+            let session = message["id"].as_str().unwrap_or_default();
+            // The agent follows the session: if another tab's agent owns it,
+            // that agent moves here and this tab's old one is discarded, so
+            // its next chat starts a fresh session.
+            if !session.is_empty() {
+                acp::Agent::for_session(state, &instance, Some(session)).await?;
+            }
+            let turns = sessions::load(&state.cli, session).await?;
             instance.post(json!({ "type": "sessionLoaded", "id": id(), "turns": turns }));
         }
         // Both answer with the fresh list, so the browser never has to guess
@@ -311,8 +341,6 @@ pub(crate) async fn init(state: &Arc<AppState>) -> Value {
     let root = state.cli.root.clone();
     let settings = state.settings.lock().await.clone();
     let recommended = recommended(state).await;
-    // The vetted shortlist, plus anything typed by hand; `fetchModels` fills in
-    // the endpoint's own catalog when the picker asks.
     // The model in use comes from the config, the same file the CLI reads.
     let model = state
         .cli
@@ -320,17 +348,13 @@ pub(crate) async fn init(state: &Arc<AppState>) -> Value {
         .await
         .ok()
         .and_then(|read| read["model"].as_str().map(str::to_owned));
-    let mut models = recommended.clone();
-    for model in settings
-        .custom_models
-        .iter()
-        .chain(settings.recent_models.iter())
-        .chain(model.iter())
-    {
-        if !models.contains(model) {
-            models.push(model.clone());
-        }
-    }
+    // What this endpoint answered last time, so the picker is not empty while
+    // it is asked again. Another provider's ids are not choices here.
+    let endpoint = info::endpoint(&state.cli).await;
+    let models = match endpoint.as_deref().map(|url| settings.catalog(url)) {
+        Some(models) if !models.is_empty() => models,
+        _ => model.iter().cloned().collect(),
+    };
     json!({
         "type": "init",
         "workspaceRoot": root.display().to_string(),
@@ -378,7 +402,21 @@ async fn models(state: &Arc<AppState>) -> Value {
     };
     match serde_json::from_str::<Value>(out.stdout.trim()) {
         Ok(Value::Array(models)) if out.code == 0 => {
-            json!({ "type": "modelsLoaded", "models": models })
+            let shortlist: Vec<String> = recommended(state)
+                .await
+                .into_iter()
+                .filter(|id| models.contains(&json!(id)))
+                .collect();
+            if let Some(url) = info::endpoint(&state.cli).await {
+                let ids: Vec<String> = models
+                    .iter()
+                    .filter_map(|m| m.as_str().map(str::to_string))
+                    .collect();
+                let mut settings = state.settings.lock().await;
+                settings.remember_catalog(&url, ids);
+                settings.save();
+            }
+            json!({ "type": "modelsLoaded", "models": models, "recommended": shortlist })
         }
         parsed => {
             let error = parsed
@@ -389,7 +427,12 @@ async fn models(state: &Arc<AppState>) -> Value {
                     true => "This endpoint did not list its models.".to_string(),
                     false => out.stderr.trim().to_string(),
                 });
-            json!({ "type": "modelsLoaded", "models": [], "error": error })
+            // The last answer stands rather than emptying the picker.
+            let kept = match info::endpoint(&state.cli).await {
+                Some(url) => state.settings.lock().await.catalog(&url),
+                None => Vec::new(),
+            };
+            json!({ "type": "modelsLoaded", "models": kept, "error": error })
         }
     }
 }

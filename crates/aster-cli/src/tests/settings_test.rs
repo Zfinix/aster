@@ -185,9 +185,11 @@ fn a_repo_that_pins_the_model_is_moved_along_with_the_global_choice() {
     let project = dir.path().join("aster.yaml");
     std::fs::write(&project, "review:\n  model: old\n  min_confidence: 0.9\n").unwrap();
 
-    write_review(&project, &[("model", "new")]).unwrap();
+    write_review(&project, &[("model", "@cf/meta/llama-3.3-70b")]).unwrap();
     let out = std::fs::read_to_string(&project).unwrap();
-    assert!(out.contains("model: new"), "{out}");
+    // Quoted, since a bare `@cf/...` is not a YAML scalar.
+    assert!(out.contains("model: \"@cf/meta/llama-3.3-70b\""), "{out}");
+    serde_yaml::from_str::<serde_yaml::Value>(&out).unwrap();
     // Everything the repo set for itself survives the switch.
     assert!(out.contains("min_confidence: 0.9"), "{out}");
 }

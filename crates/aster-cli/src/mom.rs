@@ -45,12 +45,94 @@ fn accessible_with(
         .is_some_and(|url| aster_ai::keys::resolve_key(url).is_some())
 }
 
+/// The id mom answers to in a model picker. Mom stands in for a model, so it
+/// is turned on the way a model is chosen, from the same list, and picking any
+/// real model turns it off again.
+pub const MOM_MODEL_ID: &str = "mom";
+
+/// Where the manifest lives, honouring `mom.manifest` before the search order
+/// in spec section 5.
+pub fn manifest_path(repo_root: &Path) -> Option<std::path::PathBuf> {
+    let settings = crate::settings::Settings::load(Some(repo_root)).ok();
+    if let Some(pinned) = settings.as_ref().and_then(|s| s.mom.manifest.as_deref()) {
+        let path = repo_root.join(pinned);
+        return path.exists().then_some(path);
+    }
+    let home = dirs::home_dir().map(|h| h.join(".aster"));
+    aster_mom::discover(Some(repo_root), home.as_deref())
+}
+
+/// Whether mom picks the model here. The manifest is the opt-in and the switch
+/// defaults to following it, so a file you wrote runs without a second step;
+/// `mom.enabled: false` stands it down without deleting anything.
+///
+/// This is the whole state. There is no second, invisible copy: mom being on
+/// is as readable as the model it stands in for, in the same file, to every
+/// client.
+pub fn enabled_for(repo_root: &Path) -> bool {
+    migrate_state_file(repo_root);
+    if manifest_path(repo_root).is_none() {
+        return false;
+    }
+    crate::settings::Settings::load(Some(repo_root))
+        .ok()
+        .and_then(|s| s.mom.enabled)
+        .unwrap_or(true)
+}
+
+/// Turn mom on or off, writing it where every client reads it.
+pub fn set_enabled(repo_root: &Path, enabled: bool) {
+    if let Err(e) = crate::settings::persist_mom_enabled(Some(repo_root), enabled) {
+        eprintln!("could not save the mom switch: {e:#}");
+    }
+}
+
+/// Older builds stood mom down in `~/.aster/mom-state.json`, a set of repo
+/// paths no client could see. Fold an entry for this repo into the setting
+/// once, then drop the path so the file empties itself out.
+fn migrate_state_file(repo_root: &Path) {
+    let Some(path) = dirs::home_dir().map(|h| h.join(".aster").join("mom-state.json")) else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let mut repos: BTreeSet<String> = serde_json::from_str(&text).unwrap_or_default();
+    let key = std::fs::canonicalize(repo_root)
+        .unwrap_or_else(|_| repo_root.to_path_buf())
+        .display()
+        .to_string();
+    if !repos.remove(&key) {
+        if repos.is_empty() {
+            let _ = std::fs::remove_file(&path);
+        }
+        return;
+    }
+    if let Err(e) = crate::settings::persist_mom_enabled(Some(repo_root), false) {
+        eprintln!("could not carry the old mom suspension over: {e:#}");
+        return;
+    }
+    if repos.is_empty() {
+        let _ = std::fs::remove_file(&path);
+    } else if let Ok(text) = serde_json::to_string_pretty(&repos) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
 fn provider_id(prefix: &str) -> &str {
     match prefix {
         "google" => "google_gemini",
         "alibaba" => "dashscope",
+        "@cf" => "cloudflare",
         other => other,
     }
+}
+
+fn url_host(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
 }
 
 fn openrouter_slug(model_id: &str) -> String {
@@ -99,10 +181,15 @@ fn pick_model_endpoint(
         return None;
     }
     let (prefix, rest) = model_id.split_once('/')?;
-    if let Some(url) = urls.get(provider_id(prefix))
-        && has_key(url)
-    {
-        return Some((url.clone(), rest.to_string()));
+    if let Some(url) = urls.get(provider_id(prefix)) {
+        // The current endpoint already speaks this provider's id format (for
+        // example Cloudflare's `@cf/...`), so the id belongs where it is.
+        if url_host(url) == url_host(current_base_url) {
+            return None;
+        }
+        if has_key(url) {
+            return Some((url.clone(), rest.to_string()));
+        }
     }
     let openrouter = urls.get("openrouter").filter(|url| has_key(url))?;
     Some((openrouter.clone(), openrouter_slug(model_id)))
@@ -147,14 +234,18 @@ impl MomSession {
                 !known || Some(want) == openrouter
             })
             .and_then(|url| aster_ai::keys::resolve_key(&url).map(|(key, _)| (url, key)));
-        Some(Self {
+        let mut session = Self {
             engine: Engine::new(manifest),
             catalog: Catalog::builtin(),
             demoted: BTreeSet::new(),
             provider_urls,
             openrouter_configured,
             aggregator,
-        })
+        };
+        if !enabled_for(repo_root) {
+            session.engine.suspend_for_user();
+        }
+        Some(session)
     }
 
     fn accessible(&self, model_id: &str) -> bool {
@@ -467,6 +558,16 @@ pub struct MomArgs {
 
 #[derive(Subcommand)]
 enum MomCmd {
+    /// Let the manifest pick the model each turn.
+    On,
+    /// Stand the manifest down; the model you picked stays.
+    Off,
+    /// Older spelling of `off`.
+    #[command(hide = true)]
+    Suspend,
+    /// Older spelling of `on`.
+    #[command(hide = true)]
+    Resume,
     Check {
         #[arg(long)]
         json: bool,
@@ -477,6 +578,8 @@ enum MomCmd {
 
 pub async fn run_mom(args: MomArgs) -> Result<()> {
     match args.cmd {
+        MomCmd::Off | MomCmd::Suspend => flip(false),
+        MomCmd::On | MomCmd::Resume => flip(true),
         MomCmd::Check { json } => check(json),
         MomCmd::Route { message } => route(&message.join(" ")).await,
     }
@@ -513,6 +616,25 @@ async fn route(message: &str) -> Result<()> {
     Ok(())
 }
 
+/// The whole switch: one setting, written where the model is written.
+fn flip(on: bool) -> Result<()> {
+    let repo_root = std::env::current_dir().unwrap_or_default();
+    if manifest_path(&repo_root).is_none() {
+        println!("no mom.yaml found (looked in the project root, .agents/, and ~/.aster)");
+        return Ok(());
+    }
+    set_enabled(&repo_root, on);
+    println!(
+        "{}",
+        if on {
+            "mom is on and picks the model each turn · `aster mom off` hands it back"
+        } else {
+            "mom is off · the model you picked stays until `aster mom on`"
+        }
+    );
+    Ok(())
+}
+
 fn check(json: bool) -> Result<()> {
     let repo_root = std::env::current_dir().unwrap_or_default();
     let Some(session) = MomSession::load(&repo_root) else {
@@ -536,6 +658,7 @@ fn check(json: bool) -> Result<()> {
         })
         .collect();
     if json {
+        let overview = session.overview();
         let value = serde_json::json!({
             "ok": true,
             "name": manifest.name,
@@ -543,6 +666,11 @@ fn check(json: bool) -> Result<()> {
             "start_with": manifest.start_with,
             "router": manifest.router.enabled,
             "rules": manifest.switch.len(),
+            "enabled": !overview.suspended,
+            "suspended": overview.suspended,
+            "current": overview
+                .current
+                .map(|(entry, model)| serde_json::json!({ "entry": entry, "model": model })),
             "entries": resolved
                 .iter()
                 .map(|(name, model, _)| serde_json::json!({ "name": name, "model": model }))

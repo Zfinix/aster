@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from "react";
+import { useState } from "react";
 import { languageFromPath } from "../lib/highlight";
 import { inEditor, post } from "../lib/host";
 import { openFilePreview } from "../lib/filePreview";
@@ -15,6 +15,7 @@ import {
   resultHint,
   toolInput,
   toolPath,
+  webResults,
 } from "../lib/tools";
 import { Disclosure } from "../interior/disclosure";
 import { Code } from "./Code";
@@ -22,66 +23,9 @@ import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { McpMatches } from "./McpMatches";
 import { ToolOutput } from "./ToolOutput";
-import {
-  AgentIcon,
-  AlertIcon,
-  BookIcon,
-  BrainIcon,
-  CheckAllIcon,
-  ChevronIcon,
-  CloudIcon,
-  CompassIcon,
-  ExternalIcon,
-  FileIcon,
-  FileSearchIcon,
-  FlaskIcon,
-  FolderIcon,
-  GlobeIcon,
-  ImageIcon,
-  HistoryIcon,
-  ListOrderedIcon,
-  NetworkIcon,
-  PencilIcon,
-  PlugIcon,
-  QuestionIcon,
-  SearchIcon,
-  TerminalIcon,
-} from "./icons";
-
-const ICONS: Record<string, ReactElement> = {
-  read_file: <FileIcon />,
-  list_files: <FolderIcon />,
-  find_files: <FileSearchIcon />,
-  search_files: <SearchIcon />,
-  edit_file: <PencilIcon />,
-  run_command: <TerminalIcon />,
-  run_tests: <FlaskIcon />,
-  explore: <CompassIcon />,
-  remember: <BrainIcon />,
-  recall: <HistoryIcon />,
-  read_skill: <BookIcon />,
-  update_plan: <ListOrderedIcon />,
-  ask_user: <QuestionIcon />,
-  exit_plan_mode: <CheckAllIcon />,
-  agent: <AgentIcon />,
-  aster_mcp: <PlugIcon />,
-};
-
-const MCP_ICONS: Record<string, ReactElement> = {
-  screenshot: <ImageIcon />,
-  sitemap: <NetworkIcon />,
-  fetch_content: <CloudIcon />,
-  extract: <CloudIcon />,
-};
-
-function toolIcon(name: string, target: string | undefined): ReactElement {
-  if (target) {
-    const [server, action = ""] = target.split("/");
-    if (MCP_ICONS[action]) return MCP_ICONS[action];
-    if (/^web/.test(server)) return <GlobeIcon />;
-  }
-  return ICONS[name] ?? <FileIcon />;
-}
+import { WebResults } from "./WebResults";
+import { AlertIcon, ChevronIcon, ExternalIcon } from "./icons";
+import { toolIcon } from "./toolIcons";
 
 const OPEN_BY_DEFAULT = new Set(["run_command", "run_tests"]);
 
@@ -95,6 +39,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const [expanded, setExpanded] = useState(OPEN_BY_DEFAULT.has(call.name));
   const { verb, detail, code } = describeTool(call);
   const matches = mcpMatches(call);
+  const results = webResults(call);
   const path = toolPath(call);
   const prose = rendersAsMarkdown(call);
   const card = Boolean(output || input);
@@ -185,10 +130,12 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
               >
                 {matches ? (
                   <McpMatches matches={matches} />
+                ) : results ? (
+                  <WebResults results={results} />
                 ) : prose ? (
                   <Markdown text={output} />
                 ) : (
-                  <ToolOutput output={output} lang={languageFromPath(path)} />
+                  <ToolOutput output={output} lang={languageFromPath(path)} path={path} />
                 )}
               </span>
               <button

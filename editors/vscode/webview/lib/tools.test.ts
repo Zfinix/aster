@@ -11,6 +11,7 @@ import {
   outputTitle,
   humanize,
   runLabel,
+  webResults,
   toolInput,
   toolPath,
 } from "./tools";
@@ -390,23 +391,31 @@ describe("describeActivity", () => {
   it("turns a tool line into a verb and what it touched", () => {
     expect(describeActivity("read_file src/chat.rs")).toEqual({
       kind: "tool",
+      name: "read_file",
       verb: "Read",
       detail: "src/chat.rs",
     });
     expect(describeActivity("run_command cargo test -p aster-cli")).toEqual({
       kind: "tool",
+      name: "run_command",
       verb: "Run",
       detail: "cargo test -p aster-cli",
     });
   });
 
   it("keeps a bare tool name as a verb alone", () => {
-    expect(describeActivity("list_files")).toEqual({ kind: "tool", verb: "List", detail: undefined });
+    expect(describeActivity("list_files")).toEqual({
+      kind: "tool",
+      name: "list_files",
+      verb: "List",
+      detail: undefined,
+    });
   });
 
   it("names an unknown tool the way tool rows do", () => {
     expect(describeActivity("linear/save_issue ASTER-12")).toEqual({
       kind: "tool",
+      name: "linear/save_issue",
       verb: "Linear Save Issue",
       detail: "ASTER-12",
     });
@@ -427,5 +436,40 @@ describe("elapsedLabel", () => {
     expect(elapsedLabel(72_000)).toBe("1m 12s");
     expect(elapsedLabel(180_000)).toBe("3m");
     expect(elapsedLabel(11 * 60_000 + 5000)).toBe("11m");
+  });
+});
+
+describe("webResults", () => {
+  const hit = (url: string, title: string, snippet: string): string =>
+    JSON.stringify({ markdown: snippet, metadata: { url, title, description: snippet } });
+
+  it("reads a search payload into hits", () => {
+    const search = call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, `[${hit("https://example.com", "Example", "A page")}]`);
+    expect(webResults(search)).toEqual([
+      { title: "Example", url: "https://example.com", snippet: "A page" },
+    ]);
+  });
+
+  it("counts the hits in the result hint", () => {
+    const search = call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, `[${hit("https://example.com", "Example", "A page")}, ${hit("https://two.com", "Two", "B")} ]`);
+    expect(resultHint(search)).toBe("2 results");
+  });
+
+  it("falls back to the markdown head when the description is missing", () => {
+    const search = call(
+      "aster_mcp",
+      { action: "execute", name: "web/search", arguments: {} },
+      JSON.stringify([{ markdown: "first line\nsecond line", metadata: { url: "https://a.dev" } }])
+    );
+    expect(webResults(search)).toEqual([
+      { title: "https://a.dev", url: "https://a.dev", snippet: "first line" },
+    ]);
+  });
+
+  it("leaves everything else alone", () => {
+    expect(webResults(call("aster_mcp", { action: "execute", name: "web/extract", arguments: {} }, hit("https://example.com", "Example", "A page")))).toBeUndefined();
+    expect(webResults(call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, "{\"pages\":[]}"))).toBeUndefined();
+    expect(webResults(call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, "not json"))).toBeUndefined();
+    expect(webResults(call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, "[]"))).toBeUndefined();
   });
 });

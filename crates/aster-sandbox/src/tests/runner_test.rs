@@ -82,6 +82,25 @@ async fn run_command_times_out_keeps_partial_output() {
     assert!(out.stderr.contains("partial-stderr"), "{}", out.stderr);
 }
 
+#[tokio::test]
+async fn a_backgrounded_grandchild_holding_the_pipes_does_not_hang() {
+    let started = std::time::Instant::now();
+    let out = run_unsandboxed(
+        Path::new("."),
+        "sh",
+        &["-c".into(), "echo started; sleep 30 &".into()],
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(out.stdout.contains("started"), "{}", out.stdout);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 #[ignore = "slow: spawns real sandboxed processes"]

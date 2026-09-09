@@ -12,10 +12,12 @@ const NOTIFIER_BUNDLE_ID: &str = "dev.aster.notifier";
 
 /// Post a desktop notification. On macOS this is a Notification Center banner;
 /// the first one may need the terminal app to be allowed in System Settings.
-pub fn send(title: &str, body: &str) -> Result<()> {
+/// `open_url` is opened in the default browser when the banner is clicked
+/// (terminal-notifier only; the osascript and Linux fallbacks ignore it).
+pub fn send(title: &str, body: &str, open_url: Option<&str>) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        if send_via_notifier_app(title, body).is_ok() {
+        if send_via_notifier_app(title, body, open_url).is_ok() {
             return Ok(());
         }
         let script = format!(
@@ -44,16 +46,18 @@ pub fn send(title: &str, body: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn send_via_notifier_app(title: &str, body: &str) -> Result<()> {
+fn send_via_notifier_app(title: &str, body: &str, open_url: Option<&str>) -> Result<()> {
     ensure_notifier_app()?;
-    let status = std::process::Command::new("terminal-notifier")
-        .args(["-sender", NOTIFIER_BUNDLE_ID])
+    let mut cmd = std::process::Command::new("terminal-notifier");
+    cmd.args(["-sender", NOTIFIER_BUNDLE_ID])
         .arg("-title")
         .arg(title)
         .arg("-message")
-        .arg(body)
-        .status()
-        .context("running terminal-notifier")?;
+        .arg(body);
+    if let Some(url) = open_url {
+        cmd.arg("-open").arg(url);
+    }
+    let status = cmd.status().context("running terminal-notifier")?;
     anyhow::ensure!(
         status.success(),
         "terminal-notifier rejected the notification"

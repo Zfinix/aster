@@ -122,6 +122,7 @@ impl Sink {
         let mut call = ToolCall::new(id.to_string(), title)
             .kind(kind(name, &args))
             .status(ToolCallStatus::InProgress)
+            .name(name.to_string())
             .raw_input(args.clone());
         let path = args["path"].as_str().filter(|p| !p.is_empty());
         match (name, path) {
@@ -255,9 +256,13 @@ impl Sink {
         let fields = ToolCallUpdateFields::new()
             .title(title)
             .content(vec![lines.into()]);
-        vec![SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-            call_id, fields,
-        ))]
+        // The raw event rides in meta so ACP clients that model sub-agents
+        // (the VS Code panel) can rebuild the swarm; other clients just show
+        // the title and the rolling lines.
+        let meta = Meta::from_iter([("agent_event".to_string(), event.clone())]);
+        vec![SessionUpdate::ToolCallUpdate(
+            ToolCallUpdate::new(call_id, fields).meta(Some(meta)),
+        )]
     }
 
     fn file_link(&self, path: &str) -> ResourceLink {

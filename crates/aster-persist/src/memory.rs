@@ -85,12 +85,7 @@ impl MemoryStore {
             }
         }
 
-        let mut blocks = self.list()?;
-        blocks.sort_by(|a, b| {
-            recency(b)
-                .cmp(&recency(a))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        let blocks = self.list_recent()?;
         let total = blocks.len();
         let shown = total.min(MAX_INDEX_ENTRIES);
         let mut index: Vec<String> = blocks
@@ -131,6 +126,24 @@ impl MemoryStore {
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         self.log(MemoryOp::Recall, Some(name), None, None)?;
         Ok(strip_frontmatter(&raw).trim().to_string())
+    }
+
+    /// [`Self::read_block`] without journaling a recall, for views that list
+    /// memory rather than use it.
+    pub fn peek_block(&self, name: &str) -> Result<String> {
+        let Some(path) = self.find_block_path(name) else {
+            anyhow::bail!("no memory block named {name:?}");
+        };
+        let raw =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(strip_frontmatter(&raw).trim().to_string())
+    }
+
+    /// The project file's own text, `None` when nothing has been appended to it.
+    pub fn project_text(&self) -> Option<String> {
+        let text = fs::read_to_string(self.project_path()).ok()?;
+        let text = text.trim().to_string();
+        (!text.is_empty()).then_some(text)
     }
 
     pub fn remember(&self, name: &str, description: &str, body: &str) -> Result<PathBuf> {
@@ -311,6 +324,18 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// [`Self::list`] newest first, the order every view shows memory in: the
+    /// facts most likely to still be true come first.
+    pub fn list_recent(&self) -> Result<Vec<MemoryMeta>> {
+        let mut blocks = self.list()?;
+        blocks.sort_by(|a, b| {
+            recency(b)
+                .cmp(&recency(a))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(blocks)
+    }
+
     pub fn list(&self) -> Result<Vec<MemoryMeta>> {
         let mut blocks = Vec::new();
         let Ok(entries) = fs::read_dir(&self.dir) else {
@@ -389,8 +414,13 @@ fn parse_ts(value: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+/// A block with no dates is a legacy one written before they were kept, so it
+/// sorts oldest rather than claiming to be the newest thing here.
 fn recency(block: &MemoryMeta) -> DateTime<Utc> {
-    block.updated_at.or(block.created_at).unwrap_or(Utc::now())
+    block
+        .updated_at
+        .or(block.created_at)
+        .unwrap_or(DateTime::UNIX_EPOCH)
 }
 
 #[cfg(test)]

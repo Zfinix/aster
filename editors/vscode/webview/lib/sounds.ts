@@ -3,9 +3,9 @@ import { play, setEnabled, type SoundName } from "cuelume";
 const KEY = "aster.sounds";
 
 /** The sounds a finished turn or review can land on. */
-const COMPLETION_SOUNDS = ["ready", "success", "arrival", "bloom"] as const;
+const COMPLETION_SOUNDS = ["sparkle", "ready", "success", "arrival", "bloom"] as const;
 
-let completion: SoundName = "ready";
+let completion: SoundName = "sparkle";
 
 /** Sounds are on unless the user muted them. In the editor the preference is
  *  the `aster.sounds` setting and the host pushes it on init; localStorage is

@@ -1,5 +1,6 @@
 //! Command execution inside the sandbox.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -93,7 +94,35 @@ pub async fn run_command(
     binary: &str,
     args: &[String],
 ) -> Result<CommandOutput> {
-    let backend = detect_backend();
+    run_with_backend(detect_backend(), config, binary, args).await
+}
+
+/// Runs a command with no OS sandbox but the same hardening as the sandboxed
+/// path: a fresh process group, a hard timeout that kills the group, and pipe
+/// readers that give up after a grace period even when a backgrounded
+/// grandchild keeps the pipes open. The full environment is inherited.
+pub async fn run_unsandboxed(
+    repo_root: &Path,
+    binary: &str,
+    args: &[String],
+    timeout_secs: u64,
+) -> Result<CommandOutput> {
+    let profile = SandboxProfile::new(repo_root).timeout(timeout_secs);
+    run_with_backend(
+        SandboxBackend::ProcessLevel,
+        &SandboxConfig::new(profile),
+        binary,
+        args,
+    )
+    .await
+}
+
+async fn run_with_backend(
+    backend: SandboxBackend,
+    config: &SandboxConfig,
+    binary: &str,
+    args: &[String],
+) -> Result<CommandOutput> {
     let timeout = Duration::from_secs(config.profile.timeout_secs);
 
     let mut cmd = match backend {
@@ -107,25 +136,29 @@ pub async fn run_command(
 
     cmd.current_dir(&config.profile.repo_root);
 
-    // Filter environment: drop secrets and explicitly unset vars.
-    cmd.env_clear();
-    for (key, value) in &config.env {
-        cmd.env(key, value);
-    }
-    // Re-add safe environment variables that commands commonly need.
-    for key in INHERITED_ENV {
-        if let Ok(val) = std::env::var(key)
-            && !config.unset_env.iter().any(|k| k == key)
-        {
-            cmd.env(key, val);
+    if backend == SandboxBackend::ProcessLevel {
+        // No sandbox: inherit the full environment, secrets included.
+    } else {
+        // Filter environment: drop secrets and explicitly unset vars.
+        cmd.env_clear();
+        for (key, value) in &config.env {
+            cmd.env(key, value);
         }
-    }
-    // Remove any dropped env that might have been re-added via config.env.
-    for key in DROPPED_ENV {
-        cmd.env_remove(key);
-    }
-    for key in &config.unset_env {
-        cmd.env_remove(key);
+        // Re-add safe environment variables that commands commonly need.
+        for key in INHERITED_ENV {
+            if let Ok(val) = std::env::var(key)
+                && !config.unset_env.iter().any(|k| k == key)
+            {
+                cmd.env(key, val);
+            }
+        }
+        // Remove any dropped env that might have been re-added via config.env.
+        for key in DROPPED_ENV {
+            cmd.env_remove(key);
+        }
+        for key in &config.unset_env {
+            cmd.env_remove(key);
+        }
     }
 
     cmd.stdin(std::process::Stdio::null());

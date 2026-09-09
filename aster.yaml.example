@@ -176,11 +176,13 @@ mcp:
 # Scheduled agent runs, installed with `aster cron install` into the OS
 # scheduler (launchd on macOS, cron on Linux). Names are lowercase-hyphen and
 # unique; cron is a five-field expression in local time. `notify: true` posts
-# a native notification when the run finishes. One-shot reminders are simpler:
-# `aster remind "stand up" "in 30m"`.
+# a native notification when the run finishes; `notify_url` is opened in the
+# default browser when that notification is clicked. One-shot reminders are
+# simpler: `aster remind "stand up" "in 30m"`.
 # schedules:
 #   - name: nightly-review
 #     cron: "0 9 * * *"
 #     agent: sentinel
 #     task: "review yesterday's commits on main"
 #     notify: true
+#     notify_url: "https://github.com/you/you/commits/main"

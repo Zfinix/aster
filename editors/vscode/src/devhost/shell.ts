@@ -27,7 +27,12 @@ export function shell(repo: string, page: Page = "index"): string {
       });
       const events = new EventSource("/events");
       events.onmessage = (e) => {
-        const message = JSON.parse(e.data);
+        let message;
+        try {
+          message = JSON.parse(e.data);
+        } catch {
+          return;
+        }
         // A newer panel took the host over. Say so and stop, or EventSource
         // reconnects and the two tabs take turns evicting each other.
         if (message.type === "displaced") {

@@ -13,6 +13,9 @@ pub struct Schedule {
     pub task: String,
     #[serde(default)]
     pub notify: bool,
+    /// URL opened in the default browser when the notification is clicked.
+    #[serde(default)]
+    pub notify_url: Option<String>,
 }
 
 /// Validate the whole `schedules` list: names must be unique and

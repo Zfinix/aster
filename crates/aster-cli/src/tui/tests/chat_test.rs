@@ -14,7 +14,6 @@ fn chat_app(model: String) -> ChatApp {
             auto: sync::Arc::new(Policy::permissive()),
             edit: sync::Arc::new(Policy::permissive()),
             grants: sync::Arc::new(Grants::default()),
-            write_grants: sync::Arc::new(Grants::default()),
             credentials: sync::Arc::new(aster_policy::CommandGrants::default()),
         },
         tx,
@@ -353,6 +352,62 @@ fn an_edit_renders_as_a_counted_patch() {
     assert!(out.contains("Edited"), "{out}");
     assert!(out.contains("src/lib.rs"));
     assert!(out.contains("+1 −1"), "{out}");
+}
+
+#[test]
+fn repeated_edits_to_one_file_collapse() {
+    let mut app = chat_app("m1".into());
+    for (id, patch) in [("1", "- old\n+ new\n"), ("2", "- gone\n+ here\n")] {
+        app.on_turn_event(TurnEvent::ToolCall {
+            id: id.into(),
+            name: "edit_file".into(),
+            args: "{\"path\":\"src/lib.rs\"}".into(),
+        });
+        app.on_turn_event(TurnEvent::ToolResult {
+            id: id.into(),
+            result: format!("edited src/lib.rs:\n{patch}"),
+            error: false,
+        });
+    }
+    let out = rendered(&app);
+    assert_eq!(out.matches("Edited").count(), 1, "{out}");
+    assert!(out.contains("+2 −2"), "{out}");
+}
+
+#[test]
+fn a_web_search_lists_its_sources() {
+    let mut app = chat_app("m1".into());
+    app.on_turn_event(TurnEvent::ToolCall {
+        id: "1".into(),
+        name: "web/search".into(),
+        args: r#"{"query":"rust async traits"}"#.into(),
+    });
+    app.on_turn_event(TurnEvent::ToolResult {
+        id: "1".into(),
+        result: r##"[{"markdown":"# Page\nbody","metadata":{"url":"https://blog.rs/traits","title":"Async traits in Rust"}},{"markdown":"more","metadata":{"url":"https://docs.rs","title":null}}]"##.into(),
+        error: false,
+    });
+    let out = rendered(&app);
+    assert!(out.contains("Sources"), "{out}");
+    assert!(out.contains("Async traits in Rust"), "{out}");
+    assert!(out.contains("https://docs.rs"), "{out}");
+}
+
+#[test]
+fn an_unparseable_search_result_still_renders_as_a_tool() {
+    let mut app = chat_app("m1".into());
+    app.on_turn_event(TurnEvent::ToolCall {
+        id: "1".into(),
+        name: "web/search".into(),
+        args: r#"{"query":"rust"}"#.into(),
+    });
+    app.on_turn_event(TurnEvent::ToolResult {
+        id: "1".into(),
+        result: "error: no provider answered".into(),
+        error: false,
+    });
+    let out = rendered(&app);
+    assert!(out.contains("no provider answered"), "{out}");
 }
 
 #[test]
@@ -869,4 +924,84 @@ async fn unsent_queued_messages_are_reclaimed_when_the_turn_ends() {
     assert!(app.turn_injected.is_none());
     assert!(app.take_unsent().is_empty());
     turn.unwrap().abort();
+}
+
+fn app_with_memory(dir: &tempfile::TempDir) -> ChatApp {
+    let mut app = chat_app("gpt-4o-mini".into());
+    let store = aster_persist::Store::open(dir.path()).unwrap();
+    let memory = store.memory();
+    memory
+        .remember(
+            "Release process",
+            "tag cli-vX.Y.Z to ship",
+            "Tags build both.",
+        )
+        .unwrap();
+    memory.append_project("Deploys go out from main").unwrap();
+    app.store = Some(store);
+    app
+}
+
+#[test]
+fn memory_index_lists_a_block_with_its_description_and_counts_project_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_memory(&dir);
+
+    app.show_memory(None);
+
+    let out = rendered(&app);
+    assert!(out.contains("1 block"), "{out}");
+    assert!(out.contains("1 fact in ASTER.md"), "{out}");
+    assert!(out.contains("release-process"), "{out}");
+    assert!(out.contains("tag cli-vX.Y.Z to ship"), "{out}");
+}
+
+#[test]
+fn memory_with_a_name_reads_that_block_in_full() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_memory(&dir);
+
+    app.show_memory(Some("release-process"));
+
+    let out = rendered(&app);
+    assert!(out.contains("Tags build both."), "{out}");
+    // Reading a block for the eye is not the agent recalling it.
+    let journal = app.store.as_ref().unwrap().memory().journal().unwrap();
+    assert!(
+        !journal
+            .iter()
+            .any(|e| e.op == aster_persist::MemoryOp::Recall)
+    );
+}
+
+#[test]
+fn memory_forget_removes_the_block_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_memory(&dir);
+
+    app.show_memory(Some("forget release-process"));
+
+    assert!(rendered(&app).contains("forgot release-process"));
+    assert!(
+        app.store
+            .as_ref()
+            .unwrap()
+            .memory()
+            .list()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn memory_says_what_it_has_not_got_rather_than_showing_an_empty_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = chat_app("gpt-4o-mini".into());
+    app.store = Some(aster_persist::Store::open(dir.path()).unwrap());
+
+    app.show_memory(None);
+    assert!(rendered(&app).contains("nothing remembered yet"));
+
+    app.show_memory(Some("no-such-block"));
+    assert!(rendered(&app).contains("nothing remembered as no-such-block"));
 }

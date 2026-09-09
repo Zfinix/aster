@@ -320,6 +320,37 @@ export function appendGoalVerdict(
 /** Rebuild a saved assistant turn in the order the live events arrived: what it
  *  thought, said, then ran. A reopened session used to come back as one flat
  *  text block, losing every reasoning panel and tool step. */
+/** The `agent` tool call's persisted result is the JSON `TaskReport` array the
+ *  swarm produced, so a reopened session can render the same group UI a live
+ *  run did. Anything else (an error string, truncated JSON) falls back to a
+ *  plain tool call. */
+export function parseAgentReports(result: string | undefined): AgentTaskState[] | null {
+  if (!result?.trim().startsWith("[")) return null;
+  try {
+    const parsed = JSON.parse(result) as {
+      agent?: unknown;
+      task?: unknown;
+      report?: unknown;
+      error?: unknown;
+    }[];
+    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((r) => typeof r.agent === "string")) {
+      return null;
+    }
+    return parsed.map((r) => ({
+      callId: "",
+      agent: r.agent as string,
+      task: typeof r.task === "string" ? r.task : undefined,
+      status: typeof r.error === "string" ? ("error" as const) : ("done" as const),
+      report: typeof r.report === "string" ? r.report : undefined,
+      error: typeof r.error === "string" ? r.error : undefined,
+      done: 1,
+      total: 1,
+    }));
+  } catch {
+    return null;
+  }
+}
+
 export function restoreTurn(
   id: string,
   content: string,
@@ -332,7 +363,23 @@ export function restoreTurn(
   }
   turn = appendText(turn, content);
   for (const call of calls) {
-    turn = appendCall(turn, call);
+    const reports = call.name === "agent" ? parseAgentReports(call.result) : null;
+    if (reports) {
+      turn = {
+        ...turn,
+        blocks: [
+          ...turn.blocks,
+          {
+            kind: "agents",
+            id: blockId(),
+            callId: call.id,
+            tasks: reports.map((r) => ({ ...r, callId: call.id })),
+          },
+        ],
+      };
+    } else {
+      turn = appendCall(turn, call);
+    }
   }
   return { ...turn, pending: false };
 }
@@ -465,8 +512,10 @@ export function stopUnfinished(turns: Turn[]): Turn[] {
 const HISTORY_LIMIT = 12;
 
 /** The chat history sent to `aster chat`, from the last compaction onwards.
- *  Review turns are flattened into an assistant message describing their
- *  findings, so "why is finding 2 critical?" has the findings in context. */
+ *  Review turns are flattened into a message describing their findings, so
+ *  "why is finding 2 critical?" has the findings in context. It reads as a user
+ *  message because the chat runner only replays user text into the CLI
+ *  session; an assistant-role line would be silently dropped. */
 export function buildMessages(turns: Turn[], limit = HISTORY_LIMIT): ChatMessage[] {
   const seam = turns.reduce((at, turn, i) => (turn.role === "compaction" ? i : at), -1);
   const folded = seam === -1 ? [] : (turns[seam] as CompactionTurn).messages;
@@ -483,7 +532,7 @@ export function buildMessages(turns: Turn[], limit = HISTORY_LIMIT): ChatMessage
       }
       messages.push({ role: "assistant", content: turn.text });
     } else if (turn.role === "review") {
-      messages.push({ role: "assistant", content: reviewContext(turn.data) });
+      messages.push({ role: "user", content: reviewContext(turn.data) });
     }
   }
   return [...folded, ...(limit === Infinity ? messages : messages.slice(-limit))];

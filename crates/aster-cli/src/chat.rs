@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{env, fs, io};
@@ -38,9 +39,10 @@ pub(crate) struct SessionCtx {
     pub mcp: Option<crate::mcp::McpRuntime>,
     pub limits: Limits,
     pub environment: Option<String>,
-    pub yolo: bool,
+    /// Shared so an ACP session can flip it when the editor changes the mode
+    /// mid-session; the TUI rebuilds the ctx each turn and does not need that.
+    pub yolo: Arc<AtomicBool>,
     pub credentials: Arc<aster_policy::CommandGrants>,
-    pub write_grants: Arc<Grants>,
     pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
     pub previews: Arc<Mutex<HashSet<String>>>,
     pub lookups: Arc<Mutex<HashSet<String>>>,
@@ -635,12 +637,18 @@ paths the tool offers and try again. \
 `replace`. \
 `ast_grep` searches by syntax pattern (e.g. `fn $NAME($$$ARGS)`) when text \
 search is too noisy, and `ast_edit` applies one structural rewrite across \
-every match at once instead of many edit_file calls. After an edit, \
-`lsp_diagnostics` checks one file far faster than a build; `lsp_references` \
-and `lsp_definitions` follow a symbol semantically instead of by name. \
-`run_command` runs a CLI tool or build command. Filesystem writes are \
-restricted to the repo and temp directories, and secrets are dropped from \
-the environment. Use it for builds, tests, and linters. It can also reach \
+every match at once instead of many edit_file calls. An edit reports the \
+language server's problems for that file when it can; `lsp_diagnostics` asks \
+for them directly, and checks one file far faster than a build. \
+`lsp_references` and `lsp_definitions` follow a symbol semantically instead \
+of by name. \
+`run_command` runs a CLI tool or build command. There is no shell: arguments \
+pass verbatim, so `$VAR` is never expanded; wrap the command in \
+`bash -lc \"...\"` when it needs variables, pipes, or redirects. Filesystem \
+writes are restricted to the repo and temp directories, and secrets are \
+dropped from the environment, unless the session is in yolo mode: then \
+there is no sandbox and the full environment, including secrets, is \
+inherited. Use it for builds, tests, and linters. It can also reach \
 the network: prefer `curl` (or a similar CLI) for fetching URLs and calling \
 APIs before suggesting a browser-based tool. Do not shell out \
 to `rg`, `grep`, `find`, or `fd`: `search_files` and `find_files` already \
@@ -828,7 +836,7 @@ pub(crate) async fn consolidate_finished_session(
 
 pub async fn run(args: ChatArgs) -> Result<()> {
     let repo_root = env::current_dir().context("could not determine the current directory")?;
-    let settings = crate::settings::Settings::load(Some(&repo_root))?;
+    let mut settings = crate::settings::Settings::load(Some(&repo_root))?;
     let mut client = match crate::config::provider::resolve_client(&settings, args.model.as_deref())
     {
         Ok(client) => client,
@@ -845,13 +853,22 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 }));
                 return Ok(());
             }
-            if crate::openrouter_auth::offer_sign_in(&err.to_string()).await? {
+            // Nothing is set up and there is a person here: onboarding is the
+            // answer, not an error telling them to run a command they have not
+            // heard of yet.
+            if err.is::<MissingCredentials>()
+                && console::Term::stdout().features().is_attended()
+                && !crate::json_mode()
+                && crate::init::first_run().await?
+            {
+                settings = crate::settings::Settings::load(Some(&repo_root))?;
                 crate::config::provider::resolve_client(&settings, args.model.as_deref())?
             } else {
                 return Err(err);
             }
         }
     };
+    let settings = settings;
 
     if args.model.is_none()
         && let Some(mut mom) = crate::mom::MomSession::load(&repo_root)
@@ -1071,7 +1088,6 @@ fn prepare_turn(
         recorder,
         store,
         credentials,
-        write_grants: Arc::new(configured_write_grants(repo_root)),
         skills: discover_skills(repo_root),
         instructions: Arc::new(crate::instructions::discover(repo_root)),
         probe: Arc::new(bash_tools::ToolProbe::detect()),
@@ -1081,7 +1097,7 @@ fn prepare_turn(
         environment: environment_note(repo_root),
         // Yolo is a mode, not just a per-call flag: asking for it once must
         // drop the sandbox too, otherwise commands still fail on writes.
-        yolo,
+        yolo: Arc::new(AtomicBool::new(yolo)),
         reads: Default::default(),
         previews: Default::default(),
         lookups: Default::default(),
@@ -1435,7 +1451,7 @@ pub(crate) fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
     }
 }
 
-fn attach_images(turns: &mut [ChatMessage], repo_root: &Path) {
+pub(crate) fn attach_images(turns: &mut [ChatMessage], repo_root: &Path) {
     if let Some(last) = turns.last_mut().filter(|m| m.role == "user") {
         last.content = crate::images::attach(&last.content.text(), repo_root);
     }
@@ -1625,6 +1641,14 @@ const EMPTY_CORRECTION: &str = "Your last reply was empty: no text and no tool \
 const SILENT_MODEL: &str = "The model returned nothing, twice over and again \
     when asked for a plain answer. Everything above this line still happened and \
     is saved. Send the message again, or switch models if it keeps up.";
+
+const MAX_DEGENERATE_RETRIES: usize = 2;
+
+const DEGENERATE_CORRECTION: &str = "Your last reply degenerated into repeated \
+    text and was cut off; everything before it still stands. Continue from where \
+    it stopped: keep replies short, act with tool calls instead of long prose, \
+    and keep any final report to tight bullets. Do not restate text you already \
+    wrote.";
 
 fn barren_correction(rounds: usize) -> String {
     format!(
@@ -1841,6 +1865,8 @@ pub(crate) async fn agent_loop(
     let mut budget_told = false;
     // Consecutive silent rounds, reset by any round that produces something.
     let mut empties = 0usize;
+    // Degenerate replies steered back on track this turn.
+    let mut degenerations = 0usize;
     // The dangling-intent steer fires at most twice a turn, then the reply
     // stands rather than burning rounds on a model that will not act.
     let mut promised = 0usize;
@@ -1967,6 +1993,21 @@ pub(crate) async fn agent_loop(
                         .with_usage(round_usage(before, client.usage_snapshot())),
                 );
                 return Ok((reply, compacted));
+            }
+            // A reply that collapsed into verbatim repetition is steered, not
+            // fatal: every round above is still on the wire, so a correction
+            // and one more round keeps the whole turn's work alive.
+            Err(e) if e.downcast_ref::<DegenerateOutput>().is_some() => {
+                degenerations += 1;
+                if degenerations > MAX_DEGENERATE_RETRIES {
+                    return Err(e);
+                }
+                tracing::warn!(
+                    degenerations,
+                    "reply degenerated into repeated text; steering and retrying the round"
+                );
+                steer(&mut wire, DEGENERATE_CORRECTION.to_string());
+                continue;
             }
             Err(e) => return Err(e),
         };
@@ -2902,7 +2943,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run a CLI command. There is no shell: `&&`, `|`, `>`, `*`, and `cd` are not interpreted, so to chain or pipe pass command:`bash` with args `[\"-lc\", \"one && two | head\"]`. Filesystem writes are restricted to the repository and temp directories (`.git` and CI workflow files are not writable), and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution. Returns stdout, stderr, and exit code.",
+            "description": "Run a CLI command. There is no shell: `&&`, `|`, `>`, `*`, and `cd` are not interpreted, so to chain or pipe pass command:`bash` with args `[\"-lc\", \"one && two | head\"]`. Filesystem writes are restricted to the repository and temp directories (`.git` and CI workflow files are not writable), and secrets are dropped from the environment. Pass turbo:true for offline mode (no network). Pass yolo:true only when the user explicitly asks for unrestricted execution. In yolo mode (session mode or yolo:true) there is no sandbox at all: the full environment, including secrets, is inherited. Returns stdout, stderr, and exit code.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3256,6 +3297,10 @@ async fn exec_tool(
                 // still be raised.
                 Some(path) => format!("{done}\n\n{path} sets the rules for this directory. Read it if you have not, and revisit this edit if it conflicts."),
                 None => done,
+            })
+            .map(|done| match args["path"].as_str().and_then(|path| crate::lsp_tools::after_edit(repo_root, path)) {
+                Some(problems) => format!("{done}\n\n{problems}"),
+                None => done,
             }),
         "run_command" => match command_argv(&args).context(MISSING_COMMAND) {
             Ok((cmd, cmd_args)) => {
@@ -3265,7 +3310,7 @@ async fn exec_tool(
                     approver,
                     credentials: &ctx.credentials,
                     store: ctx.store.as_ref(),
-                    yolo: ctx.yolo,
+                    yolo: ctx.yolo.load(Ordering::Relaxed),
                 };
                 run_command_tool(&env, &cmd, &cmd_args, run_opts(&args, ctx)).await
             }
@@ -3291,7 +3336,7 @@ async fn exec_tool(
                 approver,
                 credentials: &ctx.credentials,
                 store: ctx.store.as_ref(),
-                yolo: ctx.yolo,
+                yolo: ctx.yolo.load(Ordering::Relaxed),
             };
             run_tests_tool(
                 &env,
@@ -3464,8 +3509,8 @@ fn step_refused(tool: &str) -> String {
         return format!("`{tool}` is not a lookup; call it on its own");
     }
     format!(
-        "`{tool}` did not run in a batch (a required argument is missing, or the path \
-         is outside the repository); call it on its own"
+        "`{tool}` did not run in the batch (its `args` were missing or malformed); \
+         call it on its own"
     )
 }
 
@@ -3494,9 +3539,13 @@ fn read_only_call(
             None => Some(Ok(repo_root.to_path_buf())),
         };
 
+    let missing =
+        |key: &str| format!("`{name}` needs a `{key}` argument in `args`; call it on its own");
     let result = match name {
         "read_file" => {
-            let path = str_arg("path")?;
+            let Some(path) = str_arg("path") else {
+                return Some(missing("path"));
+            };
             if !edits::exists_anywhere(repo_root, &path) {
                 return Some(missing_path(repo_root, &path));
             }
@@ -3518,7 +3567,9 @@ fn read_only_call(
             },
         },
         "search_files" => {
-            let query = str_arg("query")?;
+            let Some(query) = str_arg("query") else {
+                return Some(missing("query"));
+            };
             match missing_dir(repo_root, &str_arg("dir")) {
                 Some(dir) => search_files(&ctx.probe, repo_root, policy, &query, repo_root)
                     .map(|hits| widened(&dir, hits)),
@@ -3529,7 +3580,9 @@ fn read_only_call(
             }
         }
         "find_files" => {
-            let pattern = str_arg("pattern")?;
+            let Some(pattern) = str_arg("pattern") else {
+                return Some(missing("pattern"));
+            };
             match missing_dir(repo_root, &str_arg("dir")) {
                 Some(dir) => bash_tools::find(repo_root, repo_root, &pattern, MAX_FIND_HITS)
                     .map(|hits| widened(&dir, hits)),
@@ -3539,8 +3592,14 @@ fn read_only_call(
                 },
             }
         }
-        "recall" => recall(ctx, &str_arg("name")?),
-        "read_skill" => read_skill(ctx, &str_arg("name")?),
+        "recall" => match str_arg("name") {
+            Some(name) => recall(ctx, &name),
+            None => return Some(missing("name")),
+        },
+        "read_skill" => match str_arg("name") {
+            Some(name) => read_skill(ctx, &name),
+            None => return Some(missing("name")),
+        },
         _ => return None,
     };
     Some(result.unwrap_or_else(|e| format!("error: {e:#}")))
@@ -3895,7 +3954,7 @@ fn string_list(value: &Value) -> Vec<String> {
 fn run_opts(args: &Value, ctx: &SessionCtx) -> RunOpts {
     RunOpts {
         turbo: args["turbo"].as_bool().unwrap_or(false),
-        yolo: args["yolo"].as_bool().unwrap_or(false) || ctx.yolo,
+        yolo: args["yolo"].as_bool().unwrap_or(false) || ctx.yolo.load(Ordering::Relaxed),
         timeout_secs: ctx.limits.command_timeout_secs as u64,
     }
 }
@@ -3993,21 +4052,8 @@ async fn run_raw(
     opts: RunOpts,
 ) -> Result<aster_sandbox::CommandOutput> {
     if opts.yolo {
-        let output = tokio::process::Command::new(binary)
-            .args(args)
-            .current_dir(env.repo_root)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-            .context("running command")?;
-        return Ok(aster_sandbox::CommandOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code(),
-            timed_out: false,
-        });
+        return aster_sandbox::run_unsandboxed(env.repo_root, binary, args, opts.timeout_secs)
+            .await;
     }
     let profile = aster_sandbox::SandboxProfile::new(env.repo_root)
         .timeout(opts.timeout_secs)
@@ -4017,7 +4063,46 @@ async fn run_raw(
                 .dirs_for(&aster_sandbox::command_name(binary)),
         );
     let config = aster_sandbox::SandboxConfig::new(profile);
-    aster_sandbox::run_command(&config, binary, args).await
+    let output = aster_sandbox::run_command(&config, binary, args).await?;
+    // The sandbox refusing a path or the network is not the command failing.
+    // Ask once to rerun it outside, rather than making the model route around
+    // the denial for a turn.
+    if sandbox_denial(&output) {
+        let preview = format!(
+            "`{binary}` failed inside the sandbox, likely on a blocked path or \
+             no network. Run it without the sandbox?"
+        );
+        if request_approval(env.approver, preview, None)
+            .await
+            .allowed()
+        {
+            return aster_sandbox::run_unsandboxed(env.repo_root, binary, args, opts.timeout_secs)
+                .await;
+        }
+    }
+    Ok(output)
+}
+
+/// A failed command whose output looks like the sandbox refusing a write path
+/// or the network, not the command itself failing. ssh's "Permission denied
+/// (publickey)" is auth, not the sandbox.
+fn sandbox_denial(output: &aster_sandbox::CommandOutput) -> bool {
+    if output.exit_code == Some(0) {
+        return false;
+    }
+    let lower = format!("{}\n{}", output.stdout, output.stderr).to_lowercase();
+    // Only match the sandbox's own denial text, not generic permission
+    // errors, which usually mean the command itself was refused (e.g. by a
+    // remote host or a file the user cannot access).
+    [
+        "seccomp",
+        "landlock",
+        "sandbox denied",
+        "sandboxed: denied",
+        "operation not permitted by sandbox",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn command_coaching(output: &aster_sandbox::CommandOutput, sandboxed: bool) -> Vec<String> {
@@ -4256,17 +4341,6 @@ pub(crate) fn configured_grants(
     Grants::new(configured.chain(persisted))
 }
 
-/// Seed the session's write grants from the ones already persisted for this
-/// repo. There is no config key to match `additional_directories`: a directory
-/// outside the repo becomes writable only once the user has said so.
-pub(crate) fn configured_write_grants(repo_root: &Path) -> Grants {
-    Grants::new(
-        crate::persist::store()
-            .map(|store| store.write_grants(repo_root).load())
-            .unwrap_or_default(),
-    )
-}
-
 /// Seed credential grants from `permissions.allow_credentials` (`<command>:<dir>`)
 /// and the persisted store (`<command>\t<dir>`). A malformed entry is dropped, so
 /// a typo in aster.yaml cannot stop the agent from starting.
@@ -4310,7 +4384,7 @@ fn resolve_in_repo(
     };
     if !matches!(scope, edits::Scope::InRepo) {
         // Yolo has already dropped the sandbox, so it drops this gate too.
-        return ctx.yolo.then_some(Ok(resolved));
+        return ctx.yolo.load(Ordering::Relaxed).then_some(Ok(resolved));
     }
     let root = repo_root.canonicalize().unwrap_or_default();
     let relative = resolved.strip_prefix(&root).unwrap_or(&resolved);
@@ -4497,7 +4571,7 @@ async fn edit_file(
     repo_root: &Path,
     policy: &Policy,
     approver: Option<&UiSender>,
-    ctx: &SessionCtx,
+    _ctx: &SessionCtx,
     args: &Value,
     edited: &mut Vec<String>,
 ) -> Result<String> {
@@ -4516,6 +4590,9 @@ async fn edit_file(
         if resolved.exists() {
             bail!("{path} already exists; put the text to replace in `search`");
         }
+        if let Some(hint) = edits::wrong_directory_hint(&resolved) {
+            bail!("{hint}");
+        }
         (resolved, scope, block.replace.clone())
     } else {
         let (resolved, scope, content) = edits::read_file_anywhere(repo_root, path)?;
@@ -4524,9 +4601,20 @@ async fn edit_file(
     };
     let verb = if creating { "create" } else { "edit" };
 
-    if matches!(scope, edits::Scope::Outside) {
-        approve_outside_write(repo_root, approver, ctx, &resolved, verb).await?;
-    } else {
+    // Writes outside the repo need approval unless yolo lifts it.
+    if matches!(scope, edits::Scope::Outside) && !_ctx.yolo.load(Ordering::Relaxed) {
+        let preview = format!(
+            "{verb} {path} (outside the repo):\n{}",
+            edits::preview(&block)
+        );
+        if !request_approval(approver, preview, None).await.allowed() {
+            bail!(
+                "write to {path} needs user approval because it is outside the repo; \
+                 it was rejected or no interactive approver is available"
+            );
+        }
+    }
+    if matches!(scope, edits::Scope::InRepo) {
         // Against the resolved path, not the argument: an absolute path inside
         // the repo would otherwise match none of the protected globs.
         let root = repo_root.canonicalize().unwrap_or_default();
@@ -4560,40 +4648,6 @@ async fn edit_file(
     }
     let done = if creating { "created" } else { "edited" };
     Ok(format!("{done} {path}:\n{}", edits::preview(&block)))
-}
-
-async fn approve_outside_write(
-    repo_root: &Path,
-    approver: Option<&UiSender>,
-    ctx: &SessionCtx,
-    resolved: &Path,
-    verb: &str,
-) -> Result<()> {
-    if ctx.yolo || ctx.write_grants.allows(resolved) {
-        return Ok(());
-    }
-    let root = grant_root(resolved);
-    let preview = format!("{verb} outside the repository:\n  {}", resolved.display());
-    match request_approval(approver, preview, Some(root.clone())).await {
-        Answer::No => bail!(
-            "{} is outside the repository and needs the user's approval; \
-             it was rejected or this run has no way to ask",
-            resolved.display()
-        ),
-        Answer::Yes => ctx.write_grants.grant(root),
-        Answer::Always => {
-            ctx.write_grants.grant(root.clone());
-            if let Some(store) = &ctx.store
-                && let Err(e) = store.write_grants(repo_root).add(&root)
-            {
-                tracing::warn!(
-                    "could not persist the write grant for {}: {e:#}",
-                    root.display()
-                );
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Ask the front-end to approve a pending action. Headless callers have no
@@ -4744,6 +4798,7 @@ async fn dispatch_agent_tool(
         limits: ctx.limits,
         swarm: ctx.swarm.clone(),
         session_registry: ctx.agents.clone(),
+        yolo: ctx.yolo.load(Ordering::Relaxed),
     };
 
     // Seed the UI with the whole batch up front so it can show "2/3"-style

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode
 import type {
   Effort,
   McpServer,
+  MomState,
   PastedFile,
   PermissionMode,
   Provider,
@@ -14,7 +15,7 @@ import { useListNav } from "../lib/listnav";
 import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
 import { modelChip, modelShort } from "../lib/model";
 import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicker";
-import { displayName, fileIconKind, fileUrl, splitMentions } from "./UserText";
+import { displayName, fileIconKind, fileUrl, mentionPattern, splitMentions } from "./UserText";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
@@ -40,11 +41,14 @@ import {
   GitPullRequestIcon,
   HistoryIcon,
   MinimizeIcon,
+  MomIcon,
   NewChatIcon,
   PlugIcon,
   PlusIcon,
   ReviewIcon,
   ShieldIcon,
+  SoundOffIcon,
+  SoundOnIcon,
   TargetIcon,
   TrashIcon,
   UploadIcon,
@@ -61,6 +65,7 @@ const ICONS: Record<string, ReactElement> = {
   compact: <MinimizeIcon />,
   resume: <HistoryIcon />,
   mention: <AtIcon />,
+  mom: <MomIcon />,
   model: <CubeIcon />,
   provider: <CloudIcon />,
   effort: <GaugeIcon />,
@@ -72,9 +77,11 @@ const ICONS: Record<string, ReactElement> = {
   diff: <DiffIcon />,
   status: <ActivityIcon />,
   memory: <BrainIcon />,
+  remember: <BrainIcon />,
   thinking: <BrainIcon />,
   mcp: <PlugIcon />,
   skill: <BookIcon />,
+  sounds: <SoundOnIcon />,
 };
 
 const SKILLS_SHOWN = 5;
@@ -121,13 +128,17 @@ export function Composer({
   onEffort,
   onProvider,
   onToggleMcp,
+  soundsOn,
+  onToggleSounds,
   queued,
   onSteerQueued,
   onEditQueued,
   onReorderQueued,
   onUnqueue,
+  mom,
 }: {
   busy: boolean;
+  mom: MomState | null;
   model: string | null;
   models: string[];
   recommended: string[];
@@ -158,12 +169,15 @@ export function Composer({
   onEffort: (effort: Effort | null) => void;
   onProvider: (provider: Provider) => void;
   onToggleMcp: (name: string, disabled: boolean) => void;
+  soundsOn: boolean;
+  onToggleSounds: (on: boolean) => void;
   queued: { id: string; text: string }[];
   onSteerQueued: (id: string) => void;
   onEditQueued: (id: string, text: string) => void;
   onReorderQueued: (from: number, to: number) => void;
   onUnqueue: (id: string) => void;
 }) {
+  const momActive = !!mom && !mom.suspended;
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -487,6 +501,14 @@ export function Composer({
             run: (rest: string) => compose("@", rest),
           },
           {
+            kind: "toggle" as const,
+            id: "sounds",
+            label: "Sounds",
+            icon: soundsOn ? <SoundOnIcon /> : <SoundOffIcon />,
+            on: soundsOn,
+            onToggle: onToggleSounds,
+          },
+          {
             kind: "action" as const,
             id: "settings",
             label: "Settings",
@@ -499,6 +521,19 @@ export function Composer({
       {
         title: "Model",
         items: [
+          ...(momActive
+            ? [
+                {
+                  kind: "action" as const,
+                  id: "mom",
+                  label: `mom policy · ${mom.entry ?? mom.model ?? "on"}`,
+                  hint: "mom.yaml picks the model for each turn",
+                  icon: ICONS.mom,
+                  slash: "/mom",
+                  run: () => onCommand("mom"),
+                },
+              ]
+            : []),
           opens("model", "Switch model…", "model", modelShort(model)),
           opens("provider", "Switch provider…", "provider", provider?.name),
           {
@@ -529,7 +564,12 @@ export function Composer({
           action("review-pr", "Review a GitHub PR…"),
           action("diff", "Show uncommitted changes"),
           action("status", "Status"),
-          action("memory", "Memory"),
+          action("memory", "Memory…"),
+          {
+            ...action("remember", "Remember a fact…"),
+            takesArg: true,
+            run: (rest: string) => compose("/remember", rest),
+          },
           action("mom", "Model policy"),
           opens(
             "mcp",
@@ -556,7 +596,20 @@ export function Composer({
         })),
       },
     ];
-  }, [menuOpen, model, providers, effort, permissionMode, mcpServers, skills, onCommand, onEffort]);
+  }, [
+    menuOpen,
+    mom,
+    model,
+    providers,
+    effort,
+    permissionMode,
+    mcpServers,
+    skills,
+    soundsOn,
+    onCommand,
+    onEffort,
+    onToggleSounds,
+  ]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // The command menu reads its own keys off the document, ahead of this, so
@@ -741,12 +794,21 @@ export function Composer({
             ref={chipRef}
             className="ghost model-btn"
             onMouseDown={toggle("settings")}
-            title={effort ? `${model ?? "Model"} · ${effort} effort` : (model ?? "Model")}
+            title={
+              momActive
+                ? `mom.yaml picks the model for each turn · ${mom.suspended ? "suspended: your choice stands" : "active"}`
+                : effort
+                  ? `${model ?? "Model"} · ${effort} effort`
+                  : (model ?? "Model")
+            }
             aria-haspopup="menu"
             aria-expanded={menu === "settings"}
           >
-            <span className="model-label">{modelChip(model)}</span>
-            {effort && <span className="model-effort">{effortShort(effort)}</span>}
+            {momActive && <MomIcon />}
+            <span className={momActive ? "model-label mom-label" : "model-label"}>
+              {momActive ? `mom · ${mom.entry ?? mom.model ?? "policy"}` : modelChip(model)}
+            </span>
+            {effort && !momActive && <span className="model-effort">{effortShort(effort)}</span>}
           </button>
 
           <ContextMeter used={contextUsed} budget={contextBudget} onCompact={() => onCommand("compact")} />
@@ -856,7 +918,7 @@ function renderMentions(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   // Space-aware the way the real renderer is, so a macOS path like
   // ".../Screenshot 2026-09-01 at 1.33.55 PM.png" stays one mention.
-  const pattern = /(^|\s)@([^\s@]+(?: [^\s@]+)*?\.(?:[a-z0-9]+))(?=\s|$)/gi;
+  const pattern = mentionPattern("[a-z0-9]+");
   let cursor = 0;
   let match: RegExpExecArray | null;
   let key = 0;

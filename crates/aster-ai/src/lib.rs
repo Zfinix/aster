@@ -15,6 +15,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use tokio::sync::OnceCell;
 
+mod cloudflare;
 pub mod codex;
 pub mod codex_api;
 mod error_log;
@@ -30,6 +31,8 @@ pub use effort::Effort;
 
 mod inline_tools;
 use inline_tools::{TokenGate, split_inline_tool_calls};
+
+mod tool_args;
 
 mod repetition;
 pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
@@ -66,6 +69,11 @@ const DEFAULT_PRICE_COMPLETION_PER_M: f64 = 0.60;
 const MAX_CAPTIONS: usize = 4;
 
 const CAPTION_PROMPT: &str = "Describe this image in detail: what it shows, any visible text, numbers, or interface elements, and anything that looks like an error or problem.";
+
+// When a reply stops because it hit the output budget (finish_reason "length"),
+// feed the partial back and ask the model to finish, so a long answer is
+// stitched together instead of truncated. Each continuation has its own budget.
+const MAX_CONTINUATION_PASSES: usize = 3;
 
 #[derive(Default)]
 struct UsageCounter {
@@ -104,7 +112,7 @@ pub struct AiClient {
     max_tokens: Option<u32>,
     effort: Effort,
     web_search: bool,
-    images: Arc<OnceCell<bool>>,
+    info: Arc<OnceCell<Option<ModelInfo>>>,
     attribution_headers: Vec<(String, String)>,
 }
 
@@ -196,7 +204,7 @@ impl AiClient {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_default(),
             web_search: env_truthy("ASTER_WEB_SEARCH"),
-            images: Arc::new(OnceCell::new()),
+            info: Arc::new(OnceCell::new()),
             attribution_headers: Vec::new(),
         }
     }
@@ -408,32 +416,45 @@ impl AiClient {
             self.caption_chat_messages(&mut messages).await;
         }
         let mut request = self.build_request_from(&self.model, messages, temperature, false);
+        let mut content = String::new();
 
-        let response = match self.send_with_retry(&request, "chat request").await {
-            Err(err) if images && rejected_images(&err) => {
-                tracing::debug!(model = %self.model, "endpoint rejected the images; describing them instead");
-                self.caption_chat_messages(&mut request.messages).await;
-                if request.messages.iter().any(|m| m.content.has_images()) {
-                    request
-                        .messages
-                        .iter_mut()
-                        .for_each(|m| m.content.strip_images());
+        for pass in 0..=MAX_CONTINUATION_PASSES {
+            let response = match self.send_with_retry(&request, "chat request").await {
+                Err(err) if images && pass == 0 && rejected_images(&err) => {
+                    tracing::debug!(model = %self.model, "endpoint rejected the images; describing them instead");
+                    self.caption_chat_messages(&mut request.messages).await;
+                    if request.messages.iter().any(|m| m.content.has_images()) {
+                        request
+                            .messages
+                            .iter_mut()
+                            .for_each(|m| m.content.strip_images());
+                    }
+                    self.send_with_retry(&request, "chat request").await?
                 }
-                self.send_with_retry(&request, "chat request").await?
-            }
-            result => result?,
-        };
-        let body = response.text().await.context("reading response body")?;
+                result => result?,
+            };
+            let body = response.text().await.context("reading response body")?;
 
-        let parsed: ChatResponse =
-            serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
-        let content = parsed
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message.content.text().into_owned())
-            .context("no choices in model response")?;
-        self.record_usage(parsed.usage, prompt_chars, content.len());
+            let parsed: ChatResponse =
+                serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+            let choice = parsed
+                .choices
+                .into_iter()
+                .next()
+                .context("no choices in model response")?;
+            content.push_str(&choice.message.content.text());
+            self.record_usage(parsed.usage, prompt_chars, content.len());
+            if choice.finish_reason.as_deref() != Some("length") {
+                return Ok(content);
+            }
+            // The reply hit the output budget mid-sentence; feed the partial
+            // back so the model finishes it instead of returning a cut reply.
+            tracing::debug!(model = %self.model, pass, "reply hit max_tokens; continuing");
+            request.messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: choice.message.content,
+            });
+        }
         Ok(content)
     }
 
@@ -444,20 +465,33 @@ impl AiClient {
         user: &str,
         temperature: f64,
     ) -> Result<String> {
-        let request = self.build_request(model, system, user, temperature, false);
+        let mut request = self.build_request(model, system, user, temperature, false);
+        let mut content = String::new();
 
-        let response = self.send_with_retry(&request, "chat request").await?;
-        let body = response.text().await.context("reading response body")?;
+        for _ in 0..=MAX_CONTINUATION_PASSES {
+            let response = self.send_with_retry(&request, "chat request").await?;
+            let body = response.text().await.context("reading response body")?;
 
-        let parsed: ChatResponse =
-            serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
-        let content = parsed
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message.content.text().into_owned())
-            .context("no choices in model response")?;
-        self.record_usage(parsed.usage, system.len() + user.len(), content.len());
+            let parsed: ChatResponse =
+                serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+            let choice = parsed
+                .choices
+                .into_iter()
+                .next()
+                .context("no choices in model response")?;
+            content.push_str(&choice.message.content.text());
+            self.record_usage(parsed.usage, system.len() + user.len(), content.len());
+            if choice.finish_reason.as_deref() != Some("length") {
+                return Ok(content);
+            }
+            // The reply hit the output budget mid-sentence; feed the partial
+            // back so the model finishes it instead of returning a cut reply.
+            tracing::debug!(model, "reply hit max_tokens; continuing");
+            request.messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: choice.message.content,
+            });
+        }
         Ok(content)
     }
 
@@ -485,6 +519,9 @@ impl AiClient {
             apply_cache_control(&mut messages);
         }
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
+        // Tool schemas are sent with every turn and are large, so the output
+        // budget has to count them as prompt.
+        let request_chars = prompt_chars + json_chars(&tools);
         let mut request = ToolChatRequest {
             model: model.to_string(),
             temperature: Some(temperature),
@@ -493,61 +530,88 @@ impl AiClient {
             stream: false,
             stream_options: None,
             seed: self.seed,
-            max_tokens: self.max_tokens,
+            max_tokens: self.output_budget(request_chars).await,
             reasoning: self.reasoning(),
             plugins: Vec::new(),
         };
 
-        let response = match self.send_with_retry(&request, "tool chat request").await {
-            Err(err) if images && rejected_images(&err) => {
-                tracing::debug!(
-                    model,
-                    "endpoint rejected the images; describing them instead"
-                );
-                self.caption_values(&mut request.messages).await;
-                if carries_images(&request.messages) {
-                    strip_image_parts(&mut request.messages);
+        let mut request_content = String::new();
+        for pass in 0..=MAX_CONTINUATION_PASSES {
+            let response = match self.send_with_retry(&request, "tool chat request").await {
+                Err(err) if images && pass == 0 && rejected_images(&err) => {
+                    tracing::debug!(
+                        model,
+                        "endpoint rejected the images; describing them instead"
+                    );
+                    self.caption_values(&mut request.messages).await;
+                    if carries_images(&request.messages) {
+                        strip_image_parts(&mut request.messages);
+                    }
+                    self.send_with_retry(&request, "tool chat request").await?
                 }
-                self.send_with_retry(&request, "tool chat request").await?
-            }
-            result => result?,
-        };
-        let body = response.text().await.context("reading response body")?;
+                result => result?,
+            };
+            let body = response.text().await.context("reading response body")?;
 
-        let parsed: ToolChatResponse =
-            serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
-        let mut message = parsed
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message)
-            .context("no choices in model response")?;
-        if message.tool_calls.is_empty()
-            && let Some(content) = message.content.as_deref()
-        {
-            let (text, inline) = split_inline_tool_calls(content);
-            if !inline.is_empty() {
-                tracing::debug!(model, calls = inline.len(), "recovered inline tool calls");
-                message.content = (!text.is_empty()).then_some(text);
-                message.tool_calls = inline;
+            let parsed: ToolChatResponse =
+                serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+            let choice = parsed
+                .choices
+                .into_iter()
+                .next()
+                .context("no choices in model response")?;
+            let mut message = choice.message;
+            if message.tool_calls.is_empty()
+                && let Some(content) = message.content.as_deref()
+            {
+                let (text, inline) = split_inline_tool_calls(content);
+                if !inline.is_empty() {
+                    tracing::debug!(model, calls = inline.len(), "recovered inline tool calls");
+                    message.content = (!text.is_empty()).then_some(text);
+                    message.tool_calls = inline;
+                }
             }
+            tool_args::heal_calls(&mut message.tool_calls);
+
+            // A tool turn ends the reply; return it as-is (the caller loops).
+            if !message.tool_calls.is_empty() {
+                let completion_chars = message.content.as_deref().map(str::len).unwrap_or(0)
+                    + message
+                        .tool_calls
+                        .iter()
+                        .map(|t| t.function.arguments.len())
+                        .sum::<usize>();
+                self.record_usage(parsed.usage, prompt_chars, completion_chars);
+                return Ok(message);
+            }
+
+            // Prose reply: accumulate it, and if it hit the output budget, feed
+            // it back so the model finishes it instead of returning a cut reply.
+            let fragment = message.content.take().unwrap_or_default();
+            request_content.push_str(&fragment);
+            if is_degenerate(&request_content) {
+                return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
+            }
+            self.record_usage(parsed.usage, prompt_chars, request_content.len());
+            if choice.finish_reason.as_deref() != Some("length") {
+                return Ok(AssistantMessage {
+                    content: Some(request_content),
+                    ..message
+                });
+            }
+            tracing::debug!(model, pass, "reply hit max_tokens; continuing");
+            request.messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": request_content,
+            }));
         }
-        if message
-            .content
-            .as_deref()
-            .map(is_degenerate)
-            .unwrap_or(false)
-        {
-            return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
-        }
-        let completion_chars = message.content.as_deref().map(str::len).unwrap_or(0)
-            + message
-                .tool_calls
-                .iter()
-                .map(|t| t.function.arguments.len())
-                .sum::<usize>();
-        self.record_usage(parsed.usage, prompt_chars, completion_chars);
-        Ok(message)
+        Ok(AssistantMessage {
+            content: Some(request_content),
+            tool_calls: Vec::new(),
+            annotations: Vec::new(),
+            reasoning_details: Vec::new(),
+            reasoning_content: None,
+        })
     }
 
     /// Streaming completion. `on_token` is called with each content delta; the
@@ -637,6 +701,7 @@ impl AiClient {
             apply_cache_control(&mut messages);
         }
         let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum();
+        let request_chars = prompt_chars + json_chars(&tools);
         let mut request = ToolChatRequest {
             model: model.to_string(),
             temperature: Some(temperature),
@@ -647,7 +712,7 @@ impl AiClient {
                 include_usage: true,
             }),
             seed: self.seed,
-            max_tokens: self.max_tokens,
+            max_tokens: self.output_budget(request_chars).await,
             reasoning: self.reasoning(),
             plugins: Vec::new(),
         };
@@ -710,6 +775,14 @@ impl AiClient {
             }
             if !choice.delta.annotations.is_empty() {
                 annotations = choice.delta.annotations;
+            }
+            if let Some(thinking) = choice
+                .delta
+                .reasoning_content
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                on_reasoning(thinking);
             }
             for fragment in choice.delta.reasoning_details {
                 if let Some(delta) = fragment
@@ -784,6 +857,7 @@ impl AiClient {
                 tool_calls = inline;
             }
         }
+        tool_args::heal_calls(&mut tool_calls);
         // Second net for a whole response that repeats itself, when the stream
         // guard never saw enough chunks (single-delta or non-streamed replies).
         if is_degenerate(&content) {
@@ -799,6 +873,8 @@ impl AiClient {
 
         Ok(AssistantMessage {
             content: (!content.is_empty()).then_some(content),
+            // Already streamed as reasoning; history replays reasoning_details.
+            reasoning_content: None,
             tool_calls,
             annotations,
             reasoning_details,
@@ -898,6 +974,13 @@ impl AiClient {
         codex: bool,
         body: &serde_json::Value,
     ) -> reqwest_middleware::Result<reqwest::Response> {
+        let adapted;
+        let body = if cloudflare::is_workers_ai(&self.base_url) {
+            adapted = cloudflare::adapt_request(body);
+            &adapted
+        } else {
+            body
+        };
         let mut post = self.http.post(url).bearer_auth(bearer);
         if codex {
             post = post.header("OpenAI-Beta", "responses=experimental");
@@ -944,10 +1027,13 @@ impl AiClient {
     }
 
     async fn get_with_retry(&self, path: &str, ctx: &str) -> Result<reqwest::Response> {
-        let url = format!("{}{path}", self.base_url);
+        self.get_url(&format!("{}{path}", self.base_url), ctx).await
+    }
+
+    async fn get_url(&self, url: &str, ctx: &str) -> Result<reqwest::Response> {
         let response = self
             .http
-            .get(&url)
+            .get(url)
             .bearer_auth(self.bearer().await?)
             .send()
             .await
@@ -993,8 +1079,12 @@ impl AiClient {
                 .map(|id| ModelInfo {
                     id,
                     takes_images: None,
+                    context_window: None,
                 })
                 .collect());
+        }
+        if cloudflare::is_workers_ai(&self.base_url) {
+            return self.fetch_workers_ai_models().await;
         }
         let response = self
             .get_with_retry("/models", "fetching model list")
@@ -1002,7 +1092,63 @@ impl AiClient {
         let body = response.text().await.context("reading models response")?;
         let parsed: ModelListResponse = serde_json::from_str(&body)
             .with_context(|| format!("parsing models response: {body}"))?;
-        Ok(parsed.data.into_iter().map(ModelInfo::from).collect())
+        let strip = Self::lists_resource_names(&self.base_url);
+        Ok(parsed
+            .data
+            .into_iter()
+            .map(ModelInfo::from)
+            .map(|mut m| {
+                if strip && let Some(rest) = m.id.strip_prefix("models/") {
+                    m.id = rest.to_string();
+                }
+                m
+            })
+            .collect())
+    }
+
+    /// Gemini lists its models as resource names (`models/gemini-3.1-pro`) but
+    /// takes the bare id in a request. Left as listed, every id a picker offers
+    /// would look unserved and be filtered away.
+    fn lists_resource_names(base_url: &str) -> bool {
+        base_url.contains("generativelanguage.googleapis.com")
+    }
+
+    /// Workers AI pages its own model list, so it is walked until a short page
+    /// says the catalog is done. A search that answers nothing or errors falls
+    /// back to the gist catalog, so the picker still has a list.
+    async fn fetch_workers_ai_models(&self) -> Result<Vec<ModelInfo>> {
+        let mut models = Vec::new();
+        for page in 1..=cloudflare::MAX_PAGES {
+            let url = cloudflare::models_url(&self.base_url, page);
+            let Ok(response) = self.get_url(&url, "fetching model list").await else {
+                return Ok(self.remote_catalog().await);
+            };
+            let body = response.text().await.context("reading models response")?;
+            let batch = cloudflare::parse_models(&body)?;
+            let done = batch.len() < cloudflare::PER_PAGE;
+            models.extend(batch);
+            if done {
+                break;
+            }
+        }
+        if models.is_empty() {
+            return Ok(self.remote_catalog().await);
+        }
+        Ok(models)
+    }
+
+    /// The gist copy of the catalog, so it can be updated without a rebuild.
+    async fn remote_catalog(&self) -> Vec<ModelInfo> {
+        let Ok(response) = self
+            .get_url(cloudflare::GIST_MODELS_URL, "fetching the model catalog")
+            .await
+        else {
+            return Vec::new();
+        };
+        let Ok(body) = response.text().await else {
+            return Vec::new();
+        };
+        cloudflare::parse_catalog(&body).unwrap_or_default()
     }
 
     async fn settle_images(&self, messages: &mut [serde_json::Value]) -> bool {
@@ -1155,24 +1301,58 @@ impl AiClient {
     /// that declares its modalities and leaves images out answers `false`, since most
     /// declare nothing and refusing there is worse than trying.
     pub async fn supports_images(&self) -> bool {
-        *self
-            .images
+        self.model_info()
+            .await
+            .as_ref()
+            .and_then(|m| m.takes_images)
+            .unwrap_or(true)
+    }
+
+    /// What the endpoint says about this client's model, asked once. [`None`]
+    /// when the endpoint cannot be reached or does not list the model.
+    async fn model_info(&self) -> &Option<ModelInfo> {
+        self.info
             .get_or_init(|| async {
                 match self.fetch_model_catalog().await {
-                    Ok(catalog) => catalog
-                        .into_iter()
-                        .find(|m| m.id == self.model)
-                        .and_then(|m| m.takes_images)
-                        .unwrap_or(true),
+                    Ok(catalog) => catalog.into_iter().find(|m| m.id == self.model),
                     Err(err) => {
-                        tracing::debug!(%err, "model catalog unavailable; assuming image input");
-                        true
+                        tracing::debug!(%err, "model catalog unavailable; assuming no limits");
+                        None
                     }
                 }
             })
             .await
     }
+
+    /// The output cap to send with a prompt of `prompt_chars`. A small context
+    /// window is spent mostly on the prompt, and providers count the cap
+    /// against the window before generating, so asking for the full default
+    /// gets the whole request refused rather than a shorter answer.
+    async fn output_budget(&self, prompt_chars: usize) -> Option<u32> {
+        let want = self.max_tokens?;
+        let Some(window) = self.model_info().await.as_ref()?.context_window else {
+            return Some(want);
+        };
+        let prompt = (prompt_chars / CHARS_PER_TOKEN) as u32;
+        let room = window.saturating_sub(prompt).saturating_sub(WINDOW_SLACK);
+        Some(want.min(room).max(MIN_OUTPUT_TOKENS))
+    }
 }
+
+fn json_chars(values: &[serde_json::Value]) -> usize {
+    values.iter().map(|v| v.to_string().len()).sum()
+}
+
+/// Rough bytes per token, for sizing a request against a context window. Only
+/// ever an estimate: no tokenizer here is the provider's.
+const CHARS_PER_TOKEN: usize = 4;
+
+/// Held back so an under-counted prompt still leaves the cap inside the window.
+const WINDOW_SLACK: u32 = 512;
+
+/// Below this an answer is truncated mid-sentence, which reads worse than the
+/// provider's own refusal, so the cap never drops further.
+const MIN_OUTPUT_TOKENS: u32 = 512;
 
 fn rejected_images(err: &anyhow::Error) -> bool {
     let text = err.to_string().to_lowercase();
@@ -1185,6 +1365,9 @@ fn rejected_images(err: &anyhow::Error) -> bool {
 pub struct ModelInfo {
     pub id: String,
     pub takes_images: Option<bool>,
+    /// Total tokens the model reads and writes in one call, when the endpoint
+    /// says. [`None`] means unknown, not unlimited.
+    pub context_window: Option<u32>,
 }
 
 impl From<ModelEntry> for ModelInfo {
@@ -1196,6 +1379,7 @@ impl From<ModelEntry> for ModelInfo {
         Self {
             id: entry.id,
             takes_images,
+            context_window: entry.context_length,
         }
     }
 }
@@ -1205,6 +1389,8 @@ struct ModelEntry {
     id: String,
     #[serde(default)]
     architecture: Option<Architecture>,
+    #[serde(default)]
+    context_length: Option<u32>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1312,8 +1498,9 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
         _ => "request failed",
     };
     // Every wire shape seen in the wild: OpenAI `error.message`, OpenRouter's
-    // upstream `error.metadata.raw`, bare `error`/`message` strings, and the
-    // ChatGPT backend's FastAPI `detail` (a string, or a list of {msg}).
+    // upstream `error.metadata.raw`, bare `error`/`message` strings, the
+    // ChatGPT backend's FastAPI `detail` (a string, or a list of {msg}), and
+    // Cloudflare's `errors` envelope.
     let detail = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| {
@@ -1324,6 +1511,7 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
                 .or_else(|| v["message"].as_str())
                 .or_else(|| v["detail"].as_str())
                 .or_else(|| v["detail"][0]["msg"].as_str())
+                .or_else(|| v["errors"][0]["message"].as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)

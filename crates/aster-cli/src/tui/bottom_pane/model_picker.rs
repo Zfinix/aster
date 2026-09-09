@@ -128,13 +128,7 @@ impl ModelPickerView {
         if self.query.is_empty() {
             return Line::from(vec![
                 Span::styled("> ", theme::get().dimmer_style()),
-                Span::styled(
-                    " ",
-                    Style::default()
-                        .add_modifier(Modifier::REVERSED)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-                Span::styled(" search models", theme::get().faint_style()),
+                Span::styled("search models", theme::get().faint_style()),
             ]);
         }
         let pos = self.cursor.min(self.query.len());
@@ -155,9 +149,7 @@ impl ModelPickerView {
             Span::raw(prefix),
             Span::styled(
                 cursor_char,
-                Style::default()
-                    .add_modifier(Modifier::REVERSED)
-                    .add_modifier(Modifier::SLOW_BLINK),
+                Style::default().add_modifier(Modifier::UNDERLINED),
             ),
             Span::raw(after),
         ])
