@@ -1,6 +1,6 @@
 [package]
 name = "aster-desktop"
-version = "0.5.1"
+version = "0.5.2"
 description = "Desktop app for the aster AI code reviewer"
 edition = "2021"
 license = "Apache-2.0"
