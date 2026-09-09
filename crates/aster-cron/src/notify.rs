@@ -35,6 +35,8 @@ pub fn send(title: &str, body: &str, open_url: Option<&str>) -> Result<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // notify-send has no click action to attach a URL to.
+        let _ = open_url;
         let status = std::process::Command::new("notify-send")
             .arg(title)
             .arg(body)
