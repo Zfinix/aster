@@ -25,10 +25,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The runner's glibc becomes the build's floor, so these sit on the
+          # oldest image GitHub still offers (2.35) rather than ubuntu-latest,
+          # whose 2.39 shut out Debian 12, Ubuntu 22.04 and RHEL 9.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          # Static, so there is no floor at all. install.sh reaches for these
+          # when the system glibc is older than the gnu build needs, and they
+          # are what Alpine gets.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            musl: true
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+            musl: true
           # Termux and any other on-device Android shell. bionic, not glibc, so
           # the linux-gnu build cannot run here at all.
           - target: aarch64-linux-android
@@ -72,6 +84,17 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun run build:web
+
+      # The `cc` build scripts need a musl-targeting compiler; rust links the
+      # binary itself with its own self-contained crt.
+      - name: Install the musl toolchain
+        if: matrix.musl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools musl-dev
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+        env:
+          TARGET: ${{ matrix.target }}
 
       # cargo picks the host linker unless told otherwise, and the `cc` build
       # scripts (aws-lc-sys, libsqlite3-sys, tree-sitter) each need the NDK
@@ -138,7 +161,7 @@ jobs:
             ${{ steps.pkg.outputs.asset }}${{ steps.pkg_win.outputs.asset }}.sha256
 
       - name: Upload CLI binary for the desktop sidecar
-        if: ${{ !matrix.android }}
+        if: ${{ !matrix.android && !matrix.musl }}
         uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.target }}

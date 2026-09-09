@@ -53,9 +53,35 @@ is_android() {
   return 1
 }
 
+# The gnu build is compiled against the release runner's glibc and refuses to
+# start on anything older, so a system below that floor takes the static musl
+# build instead. Alpine and friends report no glibc at all and land there too.
+GLIBC_FLOOR_MAJOR=2
+GLIBC_FLOOR_MINOR=35
+
+glibc_too_old() {
+  local v
+  # musl's ldd exits non-zero and prints nothing matchable; pipefail would take
+  # the whole script down with it, so the failure has to be swallowed here.
+  v="$(ldd --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+' | tail -n1 || true)"
+  [ -z "$v" ] && return 0
+  local major="${v%%.*}" minor="${v#*.}"
+  [ "$major" -lt "$GLIBC_FLOOR_MAJOR" ] && return 0
+  [ "$major" -eq "$GLIBC_FLOOR_MAJOR" ] && [ "$minor" -lt "$GLIBC_FLOOR_MINOR" ] && return 0
+  return 1
+}
+
 case "$OS" in
   Darwin) os_id="apple-darwin" ;;
-  Linux)  if is_android; then os_id="linux-android"; else os_id="unknown-linux-gnu"; fi ;;
+  Linux)
+    if is_android; then
+      os_id="linux-android"
+    elif glibc_too_old; then
+      os_id="unknown-linux-musl"
+    else
+      os_id="unknown-linux-gnu"
+    fi
+    ;;
   *) err "unsupported OS: $OS"; exit 1 ;;
 esac
 
@@ -91,8 +117,25 @@ else
 fi
 
 PLAIN_VERSION="${TAG#cli-v}"
+
+asset_url() { printf 'https://github.com/%s/releases/download/%s/aster-%s-%s.tar.gz' "$REPO" "$TAG" "$PLAIN_VERSION" "$1"; }
+
+# A release older than the musl builds has no such asset, and a glibc build can
+# still be the only thing published. Fall back rather than fail on a 404.
+if ! curl -fsIL "$(asset_url "$TARGET")" >/dev/null 2>&1; then
+  case "$TARGET" in
+    *-unknown-linux-musl) FALLBACK="${arch_id}-unknown-linux-gnu" ;;
+    *-unknown-linux-gnu)  FALLBACK="${arch_id}-unknown-linux-musl" ;;
+    *) FALLBACK="" ;;
+  esac
+  if [ -n "$FALLBACK" ] && curl -fsIL "$(asset_url "$FALLBACK")" >/dev/null 2>&1; then
+    info "No ${TARGET} build in ${TAG}; using ${FALLBACK}"
+    TARGET="$FALLBACK"
+  fi
+fi
+
 ASSET="aster-${PLAIN_VERSION}-${TARGET}.tar.gz"
-URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+URL="$(asset_url "$TARGET")"
 SHA_URL="${URL}.sha256"
 
 info "Installing aster ${PLAIN_VERSION} (${TARGET})"

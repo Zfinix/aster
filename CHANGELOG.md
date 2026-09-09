@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-09
+
+### Fixed
+
+- **The Linux builds no longer need a glibc newer than most servers have.**
+  They were compiled on the newest runner image, so its glibc 2.39 became the
+  floor and `curl | sh` produced a binary that would not start on Debian 12,
+  Ubuntu 22.04, RHEL 9 or Amazon Linux 2023. The gnu builds now come off the
+  oldest image GitHub offers, which lowers the floor to 2.35.
+
+### Added
+
+- **Static musl builds** for `x86_64` and `aarch64`, which have no glibc floor
+  at all. `install.sh` reads the system glibc and reaches for these when it is
+  older than the gnu build needs, so Alpine and older enterprise distros get a
+  binary that runs. If a release is missing one of the two, the installer falls
+  back to the other rather than failing on a 404.
+
 ## [0.5.1] - 2026-09-09
 
 ### Added
@@ -980,4 +998,5 @@ taught workflows without touching its prompt.
 [0.4.0]: https://github.com/Zfinix/aster/compare/cli-v0.3.0...cli-v0.4.0
 [0.5.0]: https://github.com/Zfinix/aster/compare/cli-v0.4.1...cli-v0.5.0
 [0.5.1]: https://github.com/Zfinix/aster/compare/cli-v0.5.0...cli-v0.5.1
-[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.5.1...HEAD
+[0.5.2]: https://github.com/Zfinix/aster/compare/cli-v0.5.1...cli-v0.5.2
+[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.5.2...HEAD
