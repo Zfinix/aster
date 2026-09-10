@@ -72,6 +72,7 @@ struct ChatState {
     pending: Option<Pending>,
     running: Option<AbortHandle>,
     queued: VecDeque<(i64, String)>,
+    queue_notice: Option<i64>,
     mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
@@ -270,13 +271,13 @@ async fn handle_message(
         .unwrap_or_default();
     if !cfg.allowed_users.contains(&sender) {
         let text = format!(
-            "Not authorized. Your Telegram user id is {sender}; restart the bridge with --user {sender} to allow it."
+            "This bot isn't set up for you yet. Your user id is {sender}. Restart it with --user {sender} to allow it."
         );
         api.send_text(chat_id, &text).await;
         return;
     }
     let Some(text) = message.get("text").and_then(Value::as_str) else {
-        api.send_text(chat_id, "Only text messages are supported for now.")
+        api.send_text(chat_id, "I can only read text for now.")
             .await;
         return;
     };
@@ -333,8 +334,8 @@ async fn handle_command(
                 state.history.clear();
                 state.queued.clear();
             }
-            api.send_text(chat_id, "Started a fresh conversation.")
-                .await;
+            clear_queue_card(api, chats, chat_id).await;
+            api.send_text(chat_id, "Started a new conversation.").await;
         }
         "stop" => {
             let (running, queued) = {
@@ -347,14 +348,15 @@ async fn handle_command(
             match running {
                 Some(handle) => {
                     handle.abort();
-                    let text = if queued > 0 {
-                        format!("Stopped the current turn and dropped {queued} queued message(s).")
-                    } else {
-                        "Stopped the current turn.".to_string()
+                    clear_queue_card(api, chats, chat_id).await;
+                    let text = match queued {
+                        0 => "Stopped.".to_string(),
+                        1 => "Stopped, and cleared 1 waiting message.".to_string(),
+                        n => format!("Stopped, and cleared {n} waiting messages."),
                     };
                     api.send_text(chat_id, &text).await;
                 }
-                None => api.send_text(chat_id, "Nothing is running.").await,
+                None => api.send_text(chat_id, "Nothing to stop.").await,
             }
         }
         "mode" => match set_override(chats, chat_id, arg, MODES, |state| &mut state.mode) {
@@ -363,7 +365,7 @@ async fn handle_command(
                 let current = get_override(chats, chat_id, |state| state.mode.clone())
                     .unwrap_or_else(|| cfg.mode.clone());
                 let keyboard = choice_keyboard("m", MODES, &current);
-                api.send_keyboard(chat_id, "<b>Mode</b> — how the agent acts", keyboard)
+                api.send_keyboard(chat_id, "<b>Mode</b>\nHow the agent acts", keyboard)
                     .await;
             }
         },
@@ -373,15 +375,19 @@ async fn handle_command(
                 let current = get_override(chats, chat_id, |state| state.effort.clone())
                     .unwrap_or_else(|| "default".into());
                 let keyboard = choice_keyboard("e", EFFORTS, &current);
-                api.send_keyboard(chat_id, "<b>Effort</b> — reasoning budget", keyboard)
-                    .await;
+                api.send_keyboard(
+                    chat_id,
+                    "<b>Effort</b>\nHow much it thinks before answering",
+                    keyboard,
+                )
+                .await;
             }
         },
         "model" => {
             if arg == "default" {
                 chat_state(chats, chat_id, |state| state.model = None);
                 save_settings(chats, chat_id);
-                api.send_text(chat_id, "Model reset to the configured default.")
+                api.send_text(chat_id, "Model is back to the default.")
                     .await;
             } else {
                 // Bare /model lists the catalog; an argument filters it.
@@ -401,7 +407,7 @@ async fn handle_command(
             let text = format!(
                 "Repo: {}\nSession: telegram-{chat_id}\nMode: {mode}\nModel: {model}\nEffort: {effort}\nHistory: {turns} messages\nState: {}",
                 cfg.repo_root.display(),
-                if busy { "working" } else { "idle" },
+                if busy { "Working" } else { "Idle" },
             );
             api.send_text(chat_id, &text).await;
         }
@@ -413,9 +419,9 @@ async fn handle_command(
                 api.send_text(
                     chat_id,
                     if busy {
-                        "Nothing queued; the current turn is running."
+                        "Nothing is queued. A turn is running."
                     } else {
-                        "Nothing queued and nothing is running."
+                        "Nothing is queued."
                     },
                 )
                 .await;
@@ -444,7 +450,7 @@ async fn handle_command(
                 .await;
             let text = match output {
                 Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-                Err(e) => format!("git diff failed: {e}"),
+                Err(e) => format!("Couldn't read the diff: {e}"),
             };
             if text.is_empty() {
                 api.send_text(chat_id, "No uncommitted changes.").await;
@@ -461,7 +467,7 @@ async fn handle_command(
                 let prompt = skill_prompt(skill, arg);
                 start_turn(api, cfg, chats, chat_id, message_id, &prompt);
             } else {
-                api.send_text(chat_id, "Unknown command; /help lists what I know.")
+                api.send_text(chat_id, "I don't know that command. /help has the list.")
                     .await;
             }
         }
@@ -569,7 +575,7 @@ async fn send_commit_proposal(
     };
 
     if git(&["status", "--short"]).await.is_empty() {
-        api.send_text(chat_id, "Nothing to commit; the tree is clean.")
+        api.send_text(chat_id, "Nothing to commit. The tree is clean.")
             .await;
         return;
     }
@@ -595,14 +601,14 @@ async fn send_commit_proposal(
     let message = match aster_remote_ask(cfg, &prompt).await {
         Ok(message) => message,
         Err(e) => {
-            api.send_text(chat_id, &format!("Could not draft a message: {e:#}"))
+            api.send_text(chat_id, &format!("Couldn't draft a commit message: {e:#}"))
                 .await;
             return;
         }
     };
     let subject = message.lines().next().unwrap_or_default().to_string();
     if subject.is_empty() {
-        api.send_text(chat_id, "The model returned an empty message.")
+        api.send_text(chat_id, "The model sent back an empty message.")
             .await;
         return;
     }
@@ -613,7 +619,7 @@ async fn send_commit_proposal(
         "all changes"
     };
     let text = format!(
-        "<b>Commit</b> — {scope}\n<pre>{}</pre>\n{}",
+        "<b>Commit</b> · {scope}\n<pre>{}</pre>\n{}",
         markdown::escape(&message),
         markdown::escape(&truncate(&stat, 1000))
     );
@@ -749,8 +755,8 @@ async fn send_model_picker(
     }
 
     let header = match current {
-        Some(model) => format!("<b>Model</b> — now {}", markdown::escape(&model)),
-        None => "<b>Model</b> — now the configured default".to_string(),
+        Some(model) => format!("<b>Model</b>\nNow {}", markdown::escape(&model)),
+        None => "<b>Model</b>\nNow the default".to_string(),
     };
     let text = format!(
         "{header}\n{} models{}",
@@ -803,7 +809,7 @@ fn set_override(
         *slot(state) = Some(arg.to_string());
     });
     save_settings(chats, chat_id);
-    Some(format!("Set to {arg}."))
+    Some(format!("Now {arg}."))
 }
 
 fn get_override<T>(chats: &Chats, chat_id: i64, read: impl FnOnce(&ChatState) -> T) -> T {
@@ -842,17 +848,25 @@ fn start_turn(
                 (true, state.queued.len())
             }
         });
-        let text = if accepted && depth == 1 {
-            "Working on your previous message; this one is queued and will run next.".to_string()
-        } else if accepted {
-            format!("Queued as number {depth}; I'll run it after the current ones.")
-        } else {
-            format!("The queue is full (max {MAX_QUEUED}); /stop the current turn first.")
-        };
-        // Fire the notice from its own task so start_turn never awaits; the
-        // notice is fire-and-forget and the turn body below spawns its own task.
+        // Fire the notice from its own task so start_turn never awaits: the
+        // reaction and the queue card are both fire-and-forget.
         let api = api.clone();
-        tokio::spawn(async move { api.send_text(chat_id, &text).await });
+        let chats = Arc::clone(chats);
+        tokio::spawn(async move {
+            if accepted {
+                // A reaction says "seen, in line" without adding a message.
+                let _ = api.react(chat_id, message_id, "👀").await;
+                set_queue_card(&api, &chats, chat_id, depth).await;
+            } else {
+                api.send_text(
+                    chat_id,
+                    &format!(
+                        "My queue is full ({MAX_QUEUED}). /stop the current turn to make room."
+                    ),
+                )
+                .await;
+            }
+        });
         return;
     };
 
@@ -899,8 +913,17 @@ fn start_turn(
     let repo_root = cfg.repo_root.clone();
     let cfg = cfg.clone();
     tokio::spawn(async move {
-        let result = drive_turn(&api, &chats, chat_id, events_rx, turn_task).await;
-        finish_turn(&api, &cfg, &chats, chat_id, Some(&repo_root), result).await;
+        let result = drive_turn(&api, &chats, chat_id, message_id, events_rx, turn_task).await;
+        finish_turn(
+            &api,
+            &cfg,
+            &chats,
+            chat_id,
+            message_id,
+            Some(&repo_root),
+            result,
+        )
+        .await;
     });
 }
 
@@ -908,6 +931,7 @@ async fn drive_turn(
     api: &Api,
     chats: &Chats,
     chat_id: i64,
+    reply_to: i64,
     mut events: mpsc::Receiver<TurnEvent>,
     turn_task: tokio::task::JoinHandle<Result<TurnOutcome>>,
 ) -> Result<TurnOutcome> {
@@ -923,7 +947,7 @@ async fn drive_turn(
         }
     });
 
-    let mut activity = Activity::new(api.clone(), chat_id);
+    let mut activity = Activity::new(api.clone(), chat_id, reply_to);
     let mut plan_id: Option<i64> = None;
     while let Some(event) = events.recv().await {
         match event {
@@ -966,18 +990,19 @@ async fn drive_turn(
                 activity.flush(true).await;
                 let subject = approval_subject(&preview);
                 let mut text = format!(
-                    "<b>Approval needed</b>\n<pre>{}</pre>",
+                    "<b>Needs your go-ahead</b>\n<pre>{}</pre>",
                     markdown::escape(&truncate(&subject, 3000))
                 );
                 if let Some(scope) = scope {
                     text.push_str(&format!("\n<code>{}</code>", markdown::escape(&scope)));
                 }
                 let keyboard = json!([[
-                    {"text": "Allow", "callback_data": "a:allow"},
-                    {"text": "Always", "callback_data": "a:always"},
+                    {"text": "Allow once", "callback_data": "a:allow"},
+                    {"text": "Always allow", "callback_data": "a:always"},
                     {"text": "Deny", "callback_data": "a:deny"},
                 ]]);
-                api.send_keyboard(chat_id, &text, keyboard).await;
+                api.send_keyboard_reply(chat_id, &text, keyboard, Some(reply_to))
+                    .await;
                 eprintln!(
                     "[{chat_id}] ⏸ approval needed: {}",
                     console_text(&subject, 120)
@@ -1011,7 +1036,8 @@ async fn drive_turn(
                     "resize_keyboard": true,
                     "input_field_placeholder": "Pick an option or type an answer",
                 });
-                api.send_reply_keyboard(chat_id, &text, keyboard).await;
+                api.send_reply_keyboard_reply(chat_id, &text, keyboard, Some(reply_to))
+                    .await;
                 set_pending(chats, chat_id, Pending::Question(respond));
             }
         }
@@ -1036,6 +1062,7 @@ async fn finish_turn(
     cfg: &Arc<TelegramConfig>,
     chats: &Chats,
     chat_id: i64,
+    reply_to: i64,
     repo_root: Option<&std::path::Path>,
     result: Result<TurnOutcome>,
 ) {
@@ -1056,7 +1083,8 @@ async fn finish_turn(
         Ok(outcome) => {
             let (text, gifs) = extract_gifs(&outcome.reply);
             for chunk in markdown::to_html_chunks(&text, CHUNK_LIMIT) {
-                api.send_html_or_plain(chat_id, &chunk).await;
+                api.send_html_or_plain_reply(chat_id, &chunk, Some(reply_to))
+                    .await;
             }
             for gif in gifs {
                 api.send_animation(chat_id, &gif).await;
@@ -1066,7 +1094,8 @@ async fn finish_turn(
             }
         }
         Err(e) => {
-            api.send_text(chat_id, &format!("Turn failed: {e:#}")).await;
+            let text = format!("I couldn't finish that. Send it again to retry.\n\n{e:#}");
+            api.send_text_reply(chat_id, &text, Some(reply_to)).await;
         }
     }
     // This turn is done and running is cleared, so start the next queued
@@ -1093,19 +1122,49 @@ async fn drain_queued(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_
         };
         match next {
             Some(((message_id, prompt), remaining)) => {
-                api.send_text(
-                    chat_id,
-                    &format!(
-                        "▶ Running your queued message ({} left): {}",
-                        remaining,
-                        console_text(&prompt, 200)
-                    ),
-                )
-                .await;
+                // The queue card is the queue's only voice: keep it while more
+                // messages wait, drop it when this was the last one.
+                if remaining > 0 {
+                    set_queue_card(api, chats, chat_id, remaining).await;
+                } else {
+                    clear_queue_card(api, chats, chat_id).await;
+                }
+                api.clear_reaction(chat_id, message_id).await;
+                eprintln!("[{chat_id}] queued: {}", console_text(&prompt, 200));
                 start_turn(api, cfg, chats, chat_id, message_id, &prompt);
             }
             None => break,
         }
+    }
+}
+
+/// One card per chat, edited as the queue grows or drains, so waiting never
+/// costs a message per message.
+async fn set_queue_card(api: &Api, chats: &Chats, chat_id: i64, depth: usize) {
+    let existing = get_override(chats, chat_id, |state| state.queue_notice);
+    let text = queue_card(depth);
+    match existing {
+        Some(id) => api.edit_html(chat_id, id, &text).await,
+        None => {
+            let id = api.send_html(chat_id, &text).await;
+            if id.is_some() {
+                chat_state(chats, chat_id, |state| state.queue_notice = id);
+            }
+        }
+    }
+}
+
+async fn clear_queue_card(api: &Api, chats: &Chats, chat_id: i64) {
+    if let Some(id) = chat_state(chats, chat_id, |state| state.queue_notice.take()) {
+        api.delete_message(chat_id, id).await;
+    }
+}
+
+fn queue_card(depth: usize) -> String {
+    if depth <= 1 {
+        "<b>In line</b>\nI'll start this the moment the current turn ends.".to_string()
+    } else {
+        format!("<b>In line</b> · {depth} waiting")
     }
 }
 
@@ -1154,7 +1213,7 @@ async fn handle_callback(
             state.mode = Some(choice.to_string())
         });
         save_settings(chats, chat_id);
-        let note = format!("Mode set to {choice}. It applies from the next message.");
+        let note = format!("Mode is now {choice}. It applies from your next message.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
         return;
@@ -1164,7 +1223,7 @@ async fn handle_callback(
             state.effort = Some(choice.to_string())
         });
         save_settings(chats, chat_id);
-        let note = format!("Effort set to {choice}.");
+        let note = format!("Effort is now {choice}.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
         return;
@@ -1176,7 +1235,7 @@ async fn handle_callback(
     if let Some(action) = data.strip_prefix("C:") {
         let pending = chat_state(chats, chat_id, |state| state.pending_commit.take());
         let Some(commit) = pending.filter(|_| action == "ok") else {
-            api.answer_callback(callback_id, "Cancelled").await;
+            api.answer_callback(callback_id, "Cancelled.").await;
             api.settle_callback_message(callback, "Commit cancelled.")
                 .await;
             return;
@@ -1225,7 +1284,7 @@ async fn handle_callback(
             state.model = Some(model.to_string())
         });
         save_settings(chats, chat_id);
-        let note = format!("Model set to {model}.");
+        let note = format!("Model is now {model}.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
         return;
@@ -1240,7 +1299,7 @@ async fn handle_callback(
     let (toast, answered) = match (pending, data) {
         (Some(Pending::Approval { respond, .. }), "a:allow") => {
             let _ = respond.send(Answer::Allow);
-            ("Allowed", true)
+            ("Allowed once", true)
         }
         (Some(Pending::Approval { respond, .. }), "a:always") => {
             let _ = respond.send(Answer::AlwaysAllow);
@@ -1249,11 +1308,11 @@ async fn handle_callback(
         (Some(Pending::Approval { subject, respond }), "a:deny") => {
             let _ = respond.send(Answer::Deny);
             // A denial has no step to show, so it leaves a line behind.
-            api.settle_callback_message(callback, &format!("🚫 {subject}"))
+            api.settle_callback_message(callback, &format!("Denied · {subject}"))
                 .await;
             ("Denied", false)
         }
-        (None, _) => ("This prompt already expired.", false),
+        (None, _) => ("That prompt has expired.", false),
         (Some(pending), _) => {
             // Unrecognized data: put the prompt back rather than dropping it.
             set_pending(chats, chat_id, pending);
@@ -1269,6 +1328,7 @@ async fn handle_callback(
 struct Activity {
     api: Api,
     chat_id: i64,
+    reply_to: i64,
     message_id: Option<i64>,
     lines: Vec<Step>,
     last_flush: Instant,
@@ -1299,10 +1359,11 @@ enum Status {
 }
 
 impl Activity {
-    fn new(api: Api, chat_id: i64) -> Self {
+    fn new(api: Api, chat_id: i64, reply_to: i64) -> Self {
         Self {
             api,
             chat_id,
+            reply_to,
             message_id: None,
             lines: Vec::new(),
             last_flush: Instant::now()
@@ -1378,7 +1439,12 @@ impl Activity {
         }
         let text = self.render("<b>Working…</b>");
         match self.message_id {
-            None => self.message_id = self.api.send_html(self.chat_id, &text).await,
+            None => {
+                self.message_id = self
+                    .api
+                    .send_html_reply(self.chat_id, &text, Some(self.reply_to))
+                    .await;
+            }
             Some(id) => self.api.edit_html(self.chat_id, id, &text).await,
         }
         self.last_flush = Instant::now();
@@ -1395,7 +1461,12 @@ impl Activity {
         };
         let text = self.render(&header);
         match self.message_id {
-            None => self.message_id = self.api.send_html(self.chat_id, &text).await,
+            None => {
+                self.message_id = self
+                    .api
+                    .send_html_reply(self.chat_id, &text, Some(self.reply_to))
+                    .await;
+            }
             Some(id) => self.api.edit_html(self.chat_id, id, &text).await,
         }
     }
@@ -1579,7 +1650,7 @@ fn mcp_line(id: &str, args: &Value, step: &dyn Fn(&str, &str, &str) -> String) -
         "telegram/send_gif" => "🎞 <b>Sending a gif</b>".into(),
         "telegram/send_photo" => "🖼 <b>Sending a photo</b>".into(),
         "telegram/send_document" => "📎 <b>Sending a file</b>".into(),
-        "telegram/send_code_page" => "📄 <b>Publishing a code page</b>".into(),
+        "telegram/send_code_page" => "📄 <b>Sending the code</b>".into(),
         "telegram/send_poll" => "📊 <b>Asking a poll</b>".into(),
         other => format!("⚙️ <b>{}</b>", markdown::escape(&humanize_tool_name(other))),
     }
@@ -1778,22 +1849,32 @@ fn unwrap_result(method: &str, response: Value) -> Result<Value> {
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
+/// A reply whose parent is gone must still send, so the parent is a hint.
+fn add_reply(payload: &mut Value, reply_to: Option<i64>) {
+    if let Some(message_id) = reply_to.filter(|id| *id > 0) {
+        payload["reply_parameters"] = json!({
+            "message_id": message_id,
+            "allow_sending_without_reply": true,
+        });
+    }
+}
+
 fn help(cfg: &TelegramConfig) -> String {
     format!(
-        "<b>Aster remote control</b>\n\
+        "<b>Aster</b>\n\
          Send a message to run the agent on <code>{}</code>.\n\
-         Approvals arrive as buttons; activity streams live.\n\n\
-         /new — start a fresh conversation\n\
-         /clear — same as /new\n\
-         /stop — cancel the running turn\n\
-         /mode — how the agent acts (plan, manual, auto, edit, yolo)\n\
-         /model — switch the model for this chat\n\
-         /effort — reasoning budget (off, low, medium, high)\n\
-         /status — session, mode, model, and history\n\
-         /queued — list messages waiting while I'm busy\n\
-         /diff — uncommitted changes in the repo\n\
-         /commit — draft a commit message and commit\n\
-         /help — this message\n\n\
+         Approvals arrive as buttons; the work streams live.\n\n\
+         /new - start fresh\n\
+         /clear - same as /new\n\
+         /stop - cancel the running turn\n\
+         /mode - how the agent acts (plan, manual, auto, edit, yolo)\n\
+         /model - switch the model for this chat\n\
+         /effort - how much it thinks before answering (off, low, medium, high)\n\
+         /status - session, mode, model, and history\n\
+         /queued - what is waiting while I am busy\n\
+         /diff - uncommitted changes in the repo\n\
+         /commit - draft a commit message and commit\n\
+         /help - this message\n\n\
          Installed skills show up as /commands too.",
         markdown::escape(
             &cfg.repo_root
@@ -1875,11 +1956,11 @@ impl Api {
 
     async fn register_commands(&self, skills: &Skills) {
         let mut commands = vec![
-            json!({"command": "new", "description": "Start a fresh conversation"}),
+            json!({"command": "new", "description": "Start fresh"}),
             json!({"command": "stop", "description": "Cancel the running turn"}),
             json!({"command": "mode", "description": "How the agent acts (plan/manual/auto/edit/yolo)"}),
             json!({"command": "model", "description": "Switch the model for this chat"}),
-            json!({"command": "effort", "description": "Reasoning budget (off/low/medium/high)"}),
+            json!({"command": "effort", "description": "How much it thinks before answering"}),
             json!({"command": "status", "description": "Session, mode, model, and history"}),
             json!({"command": "diff", "description": "Uncommitted changes in the repo"}),
             json!({"command": "help", "description": "How this bot works"}),
@@ -1921,19 +2002,34 @@ impl Api {
     }
 
     async fn send_text(&self, chat_id: i64, text: &str) {
-        let payload = json!({ "chat_id": chat_id, "text": text });
+        self.send_text_reply(chat_id, text, None).await;
+    }
+
+    async fn send_text_reply(&self, chat_id: i64, text: &str, reply_to: Option<i64>) {
+        let mut payload = json!({ "chat_id": chat_id, "text": text });
+        add_reply(&mut payload, reply_to);
         if let Err(e) = self.call("sendMessage", payload).await {
             tracing::warn!("sendMessage failed: {e:#}");
         }
     }
 
     async fn send_html(&self, chat_id: i64, html: &str) -> Option<i64> {
-        let payload = json!({
+        self.send_html_reply(chat_id, html, None).await
+    }
+
+    async fn send_html_reply(
+        &self,
+        chat_id: i64,
+        html: &str,
+        reply_to: Option<i64>,
+    ) -> Option<i64> {
+        let mut payload = json!({
             "chat_id": chat_id,
             "text": html,
             "parse_mode": "HTML",
             "link_preview_options": { "is_disabled": true },
         });
+        add_reply(&mut payload, reply_to);
         match self.call("sendMessage", payload).await {
             Ok(message) => message.get("message_id").and_then(Value::as_i64),
             Err(e) => {
@@ -1944,8 +2040,45 @@ impl Api {
     }
 
     async fn send_html_or_plain(&self, chat_id: i64, html: &str) {
-        if self.send_html(chat_id, html).await.is_none() {
-            self.send_text(chat_id, html).await;
+        self.send_html_or_plain_reply(chat_id, html, None).await;
+    }
+
+    async fn send_html_or_plain_reply(&self, chat_id: i64, html: &str, reply_to: Option<i64>) {
+        if self
+            .send_html_reply(chat_id, html, reply_to)
+            .await
+            .is_none()
+        {
+            self.send_text_reply(chat_id, html, reply_to).await;
+        }
+    }
+
+    /// React to a message so a quiet event reads without adding a message.
+    pub(crate) async fn react(&self, chat_id: i64, message_id: i64, emoji: &str) -> Result<Value> {
+        let payload = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{ "type": "emoji", "emoji": emoji }],
+        });
+        self.call("setMessageReaction", payload).await
+    }
+
+    async fn clear_reaction(&self, chat_id: i64, message_id: i64) {
+        if message_id <= 0 {
+            return;
+        }
+        let payload = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [],
+        });
+        let _ = self.call("setMessageReaction", payload).await;
+    }
+
+    async fn delete_message(&self, chat_id: i64, message_id: i64) {
+        let payload = json!({ "chat_id": chat_id, "message_id": message_id });
+        if let Err(e) = self.call("deleteMessage", payload).await {
+            tracing::debug!("deleteMessage failed: {e:#}");
         }
     }
 
@@ -1962,12 +2095,24 @@ impl Api {
     }
 
     async fn send_keyboard(&self, chat_id: i64, html: &str, keyboard: Value) {
-        let payload = json!({
+        self.send_keyboard_reply(chat_id, html, keyboard, None)
+            .await;
+    }
+
+    async fn send_keyboard_reply(
+        &self,
+        chat_id: i64,
+        html: &str,
+        keyboard: Value,
+        reply_to: Option<i64>,
+    ) {
+        let mut payload = json!({
             "chat_id": chat_id,
             "text": html,
             "parse_mode": "HTML",
             "reply_markup": { "inline_keyboard": keyboard },
         });
+        add_reply(&mut payload, reply_to);
         if let Err(e) = self.call("sendMessage", payload).await {
             tracing::warn!("sendMessage failed: {e:#}");
         }
@@ -1982,7 +2127,11 @@ impl Api {
     }
 
     async fn send_typing(&self, chat_id: i64) {
-        let payload = json!({ "chat_id": chat_id, "action": "typing" });
+        self.send_chat_action(chat_id, "typing").await;
+    }
+
+    pub(crate) async fn send_chat_action(&self, chat_id: i64, action: &str) {
+        let payload = json!({ "chat_id": chat_id, "action": action });
         let _ = self.call("sendChatAction", payload).await;
     }
 
@@ -2013,13 +2162,20 @@ impl Api {
         }
     }
 
-    async fn send_reply_keyboard(&self, chat_id: i64, html: &str, keyboard: Value) {
-        let payload = json!({
+    async fn send_reply_keyboard_reply(
+        &self,
+        chat_id: i64,
+        html: &str,
+        keyboard: Value,
+        reply_to: Option<i64>,
+    ) {
+        let mut payload = json!({
             "chat_id": chat_id,
             "text": html,
             "parse_mode": "HTML",
             "reply_markup": keyboard,
         });
+        add_reply(&mut payload, reply_to);
         if let Err(e) = self.call("sendMessage", payload).await {
             tracing::warn!("sendMessage failed: {e:#}");
         }

@@ -977,9 +977,11 @@ impl Agent {
                         .to_string();
                     if let Some(turn) = inner.turn.as_mut() {
                         turn.tool_names.insert(id.clone(), name.clone());
-                        if name == "edit_file" && update["rawInput"]["path"].is_string() {
-                            turn.edits
-                                .push(update["rawInput"]["path"].as_str().unwrap().to_string());
+                        if name == "edit_file"
+                            && let Some(path) = update["rawInput"]["path"].as_str()
+                            && !turn.edits.iter().any(|p| p == path)
+                        {
+                            turn.edits.push(path.to_string());
                         }
                     }
                     let raw = &update["rawInput"];

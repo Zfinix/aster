@@ -41,6 +41,21 @@ fn format_api_error_uses_raw_body_when_not_json() {
     assert_eq!(msg, "provider error (500): upstream down");
 }
 
+#[tokio::test]
+async fn a_dns_failure_becomes_one_plain_sentence() {
+    let err = reqwest::Client::new()
+        .post("http://nonexistent.invalid/v1/chat/completions")
+        .send()
+        .await
+        .expect_err(".invalid never resolves");
+    assert!(err.is_connect());
+    let msg = network_error("http://nonexistent.invalid", err.into()).to_string();
+    assert_eq!(
+        msg,
+        "Couldn't reach nonexistent.invalid. Check your internet connection and try again."
+    );
+}
+
 #[test]
 fn a_catalog_entry_without_an_architecture_says_nothing_about_images() {
     let entry: ModelEntry = serde_json::from_str(r#"{"id":"local/model"}"#).unwrap();

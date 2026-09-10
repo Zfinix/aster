@@ -42,6 +42,13 @@ frontmatter fence; `description` is required, non-empty, max 1024 characters;
 `name` is optional (falls back to the directory name) but when present must be
 lowercase letters, digits, and hyphens, max 64 characters.
 
+`always: true` is for a skill with no "when": one that governs every message of
+a session, such as a harness where the device is the whole subject. Its body
+goes into the system prompt once, it is left out of the list the model scans,
+and `read_skill` on it just says it is already loaded. Everything else stays
+on-demand: an always-on skill spends its tokens on every turn whether or not
+the turn needs it.
+
 Scaffold and lint from the CLI:
 
 ```sh

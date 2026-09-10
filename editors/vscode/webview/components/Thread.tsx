@@ -200,7 +200,7 @@ export function Thread({
                 {turn.edits && turn.edits.length > 0 && (
                   <div className="edits">
                     <span className="edits-label">Edited</span>
-                    {turn.edits.map((path) => (
+                    {[...new Set(turn.edits)].map((path) => (
                       <button
                         key={path}
                         className="edit-chip"

@@ -165,6 +165,7 @@ fn record_scheduled_session(
         &deps.repo_root,
         &deps.repo_root,
         Some(deps.client.model.clone()),
+        Some(deps.client.base_url().to_string()),
         Some(schedule),
     )?;
     writer.append_message(aster_persist::MessageEvent::user(&args.task))?;

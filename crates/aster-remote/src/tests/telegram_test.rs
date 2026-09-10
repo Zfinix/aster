@@ -1,4 +1,4 @@
-use super::{extract_gifs, tool_line, truncate};
+use super::{extract_gifs, queue_card, tool_line, truncate};
 
 #[test]
 fn extract_gifs_removes_bare_url_lines() {
@@ -123,4 +123,13 @@ fn truncate_respects_char_boundaries() {
     let cut = truncate(&text, 41);
     assert!(cut.ends_with('…'));
     assert!(cut.len() <= 44);
+}
+
+#[test]
+fn queue_card_is_quiet_for_one_and_counts_more() {
+    assert_eq!(
+        queue_card(1),
+        "<b>In line</b>\nI'll start this the moment the current turn ends."
+    );
+    assert_eq!(queue_card(3), "<b>In line</b> · 3 waiting");
 }

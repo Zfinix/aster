@@ -8,6 +8,7 @@ fn writer(dir: &Path) -> SessionWriter {
         cwd: "/repo".into(),
         repo_root: "/repo".into(),
         model: None,
+        base_url: None,
         aster_version: None,
         title: None,
         schedule: None,

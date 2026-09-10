@@ -161,6 +161,7 @@ fn under_gate_consolidation_is_skipped() {
             cwd: "/tmp/repo".into(),
             repo_root: "/tmp/repo".into(),
             model: None,
+            base_url: None,
             aster_version: None,
             title: None,
             schedule: None,

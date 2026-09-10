@@ -23,6 +23,11 @@ pub struct Skill {
     /// Guides the agent's own conduct. Indexed for the model, hidden from every
     /// list the user sees, and never shown as a step when read.
     pub internal: bool,
+    /// Always relevant, so its body rides in the system prompt once instead of
+    /// being loaded again on every message. For a skill that has no "when": the
+    /// phone harness, for instance, where the device is the subject of the whole
+    /// session.
+    pub always: bool,
     builtin: Option<&'static str>,
 }
 
@@ -168,12 +173,13 @@ pub fn install_bundled(name: &str, dest_root: &Path, overwrite: bool) -> Result<
 }
 
 fn builtin_skill(raw: &'static str, internal: bool) -> Result<Skill> {
-    let (name, description) = parse_frontmatter(raw, "")?;
+    let front = parse_frontmatter(raw, "")?;
     Ok(Skill {
-        name,
-        description,
+        name: front.name,
+        description: front.description,
         path: PathBuf::new(),
         internal,
+        always: front.always,
         builtin: Some(raw),
     })
 }
@@ -281,26 +287,47 @@ impl SkillSet {
         if self.skills.is_empty() {
             return None;
         }
-        let mut out = String::from(
-            "## Skills\n\n\
-            Skills are reusable instruction sets for specific tasks, listed as a \
-            name and a description of when to use each. Before your first action \
-            on every user message, scan this list against what the user wants and \
-            load anything that matches with `read_skill` (batch it into your \
-            `explore` call; it costs no extra round). Match on meaning and tone, \
-            not keywords: a task implies its workflow skills, a complaint or \
-            correction matches a correction skill, whatever the exact words. \
-            When nothing matches, load nothing. Skipping a matching skill and \
-            improvising is how avoidable mistakes happen.\n",
-        );
-        for skill in &self.skills {
+        let (always, on_demand): (Vec<&Skill>, Vec<&Skill>) =
+            self.skills.iter().partition(|s| s.always);
+        let mut out = String::new();
+        if !on_demand.is_empty() {
+            out.push_str(
+                "## Skills\n\n\
+                Skills are reusable instruction sets for specific tasks, listed as a \
+                name and a description of when to use each. Before your first action \
+                on every user message, scan this list against what the user wants and \
+                load anything that matches with `read_skill` (batch it into your \
+                `explore` call; it costs no extra round). Match on meaning and tone, \
+                not keywords: a task implies its workflow skills, a complaint or \
+                correction matches a correction skill, whatever the exact words. \
+                When nothing matches, load nothing. Skipping a matching skill and \
+                improvising is how avoidable mistakes happen.\n",
+            );
+            for skill in &on_demand {
+                out.push_str(&format!(
+                    "\n- **{}**: {}",
+                    skill.name,
+                    first_sentences(&skill.description, INDEX_DESCRIPTION_CHARS)
+                ));
+            }
+        }
+        for skill in &always {
+            let Ok(body) = skill.load_body() else {
+                tracing::warn!(skill = %skill.name, "skipping an always-on skill that will not load");
+                continue;
+            };
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
             out.push_str(&format!(
-                "\n- **{}**: {}",
-                skill.name,
-                first_sentences(&skill.description, INDEX_DESCRIPTION_CHARS)
+                "## Skill: {}\n\n\
+                This one applies to every message in this session, so it is here in \
+                full rather than in the list above. Follow it; there is nothing to \
+                load.\n\n{}",
+                skill.name, body
             ));
         }
-        Some(out)
+        (!out.is_empty()).then_some(out)
     }
 }
 
@@ -488,21 +515,29 @@ fn scan_dir(root: &Path, internal: bool) -> Vec<Skill> {
 fn load_skill(manifest: &Path, dir_name: &str, internal: bool) -> Result<Skill> {
     let raw =
         fs::read_to_string(manifest).with_context(|| format!("reading {}", manifest.display()))?;
-    let (name, description) = parse_frontmatter(&raw, dir_name)?;
+    let front = parse_frontmatter(&raw, dir_name)?;
     Ok(Skill {
-        name,
-        description,
+        name: front.name,
+        description: front.description,
         path: manifest.to_path_buf(),
         internal,
+        always: front.always,
         builtin: None,
     })
 }
 
-fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
+struct Front {
+    name: String,
+    description: String,
+    always: bool,
+}
+
+fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<Front> {
     let front = frontmatter(raw).context("missing `---` frontmatter fence")?;
 
     let mut name = None;
     let mut description = None;
+    let mut always = false;
     let mut lines = front.lines().peekable();
     while let Some(line) = lines.next() {
         // Indented lines belong to the value above, never open a key of their own.
@@ -516,6 +551,7 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
         match key.trim() {
             "name" => name = Some(value),
             "description" => description = Some(value),
+            "always" => always = matches!(value.trim(), "true" | "yes"),
             _ => {}
         }
     }
@@ -535,7 +571,11 @@ fn parse_frontmatter(raw: &str, dir_name: &str) -> Result<(String, String)> {
         bail!("`description` exceeds {MAX_DESCRIPTION_LEN} characters");
     }
 
-    Ok((name, description))
+    Ok(Front {
+        name,
+        description,
+        always,
+    })
 }
 
 fn read_value(inline: &str, lines: &mut std::iter::Peekable<std::str::Lines>) -> String {

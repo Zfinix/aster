@@ -136,7 +136,7 @@ These are the tools the model calls. Knowing them tells you what to ask for.
 | `security_scan` | Static security scan of the working tree |
 | MCP tools | Anything a configured server exposes, injected progressively; `web/search` and `web/extract` ship built in |
 
-Limits: `agent.max_tool_rounds` (60), `agent.command_timeout_secs` (300), `agent.compact_budget_chars` (192000), env `ASTER_MAX_TOOL_ROUNDS`, `ASTER_COMMAND_TIMEOUT`, `ASTER_COMPACT_BUDGET`.
+Limits: `agent.max_tool_rounds` (60), `agent.command_timeout_secs` (300), `agent.compact_budget_chars` (192000), `agent.max_output_tokens` (8000), env `ASTER_MAX_TOOL_ROUNDS`, `ASTER_COMMAND_TIMEOUT`, `ASTER_COMPACT_BUDGET`, `ASTER_MAX_TOKENS`.
 
 ## Review
 

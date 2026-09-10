@@ -11,7 +11,7 @@ use aster_ai::{AiClient, DEFAULT_BASE_URL, Effort};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use crate::settings::{Review, Saved, Settings};
+use crate::settings::{Agent, Review, Saved, Settings};
 
 /// Data needed for user authentication, sent as `setup` on stream error or in `aster config key --json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -204,11 +204,42 @@ pub(crate) fn resolve_effort(review: &Review) -> Effort {
         .unwrap_or_default()
 }
 
+/// The output cap for one request. `0`, `none` or `off` lifts it and lets the
+/// provider decide, which some accounts refuse outright, so it stays opt-in.
+pub(crate) fn resolve_max_tokens(agent: &Agent) -> Option<u32> {
+    max_tokens_from(agent, env_or("ASTER_MAX_TOKENS", None))
+}
+
+fn max_tokens_from(agent: &Agent, env: Option<String>) -> Option<u32> {
+    let configured = match env {
+        Some(raw) => match raw.trim() {
+            "0" | "none" | "off" => return None,
+            raw => match raw.parse() {
+                Ok(cap) => Some(cap),
+                Err(_) => {
+                    eprintln!("note: ignoring max tokens {raw:?} from the environment");
+                    agent.max_output_tokens
+                }
+            },
+        },
+        None => agent.max_output_tokens,
+    };
+    match configured {
+        Some(0) => None,
+        Some(cap) => Some(cap),
+        None => Some(aster_ai::DEFAULT_MAX_TOKENS),
+    }
+}
+
 fn resolve_web_search(review: &Review) -> bool {
     env_or("ASTER_WEB_SEARCH", None)
         .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
         .unwrap_or(review.web_search.unwrap_or(false))
 }
+
+#[cfg(test)]
+#[path = "../tests/provider_test.rs"]
+mod tests;
 
 const ASTER_HTTP_REFERER: &str = "https://withaster.dev";
 const ASTER_TITLE: &str = "Aster";
@@ -217,7 +248,8 @@ pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Resu
     let llm = resolve(&settings.review, model_override)?;
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model)
         .with_effort(llm.effort)
-        .with_web_search(llm.web_search);
+        .with_web_search(llm.web_search)
+        .with_max_tokens(resolve_max_tokens(&settings.agent));
     // Only attribute if endpoint is openrouter.
     if is_openrouter(client.base_url()) {
         return Ok(client.with_attribution_headers([

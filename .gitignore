@@ -35,5 +35,5 @@ editors/zed/target/
 editors/vscode/bin/
 
 # Desloppify local state
-.desloppify/
 .sandbox-audit/
+experiments/

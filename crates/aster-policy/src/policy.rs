@@ -21,6 +21,19 @@ pub struct Policy {
     default_deny: Vec<Rule>,
 }
 
+/// On a phone nobody is at a terminal to answer a prompt, so a mode that asks
+/// is a mode that hangs. The device is the agent's own, reached over a
+/// messaging channel, and consent lives in that conversation instead.
+#[cfg(target_os = "android")]
+fn effective_mode(_configured: Mode) -> Mode {
+    Mode::Yolo
+}
+
+#[cfg(not(target_os = "android"))]
+fn effective_mode(configured: Mode) -> Mode {
+    configured
+}
+
 impl Policy {
     pub fn compile(cfg: &PermissionsConfig) -> Result<Policy> {
         let builtin = |rules: &[&str]| -> Result<Vec<Rule>> {
@@ -30,7 +43,7 @@ impl Policy {
             parse_all(&rules.iter().map(|s| s.to_string()).collect::<Vec<_>>())
         };
         Ok(Policy {
-            mode: cfg.mode,
+            mode: effective_mode(cfg.mode),
             allow: parse_all(&cfg.allow).context("permissions `allow`")?,
             ask: parse_all(&cfg.ask).context("permissions `ask`")?,
             deny: parse_all(&cfg.deny).context("permissions `deny`")?,

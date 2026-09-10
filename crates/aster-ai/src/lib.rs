@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
@@ -54,6 +54,9 @@ use models::{
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
+/// Output cap sent with every request when nothing configures one.
+pub const DEFAULT_MAX_TOKENS: u32 = 8000;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -196,7 +199,7 @@ impl AiClient {
             max_tokens: match env::var("ASTER_MAX_TOKENS").ok().as_deref() {
                 Some("0") | Some("none") | Some("off") => None,
                 Some(v) => v.parse().ok(),
-                None => Some(8000),
+                None => Some(DEFAULT_MAX_TOKENS),
             },
             effort: env::var("ASTER_EFFORT")
                 .or_else(|_| env::var("ASTER_REASONING_EFFORT"))
@@ -212,6 +215,12 @@ impl AiClient {
     /// Builder form of [`AiClient::set_effort`], for a client built from config.
     pub fn with_effort(mut self, effort: Effort) -> Self {
         self.effort = effort;
+        self
+    }
+
+    /// Builder form of [`AiClient::set_max_tokens`], for a client built from config.
+    pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
+        self.max_tokens = max_tokens;
         self
     }
 
@@ -251,6 +260,17 @@ impl AiClient {
     /// call keep the old one, so set it before handing the client to a task.
     pub fn set_web_search(&mut self, enabled: bool) {
         self.web_search = enabled;
+    }
+
+    /// Change the output cap for later requests. `None` sends no cap at all,
+    /// leaving the limit to the provider. Clones made before this call keep the
+    /// old one, so set it before handing the client to a task.
+    pub fn set_max_tokens(&mut self, max_tokens: Option<u32>) {
+        self.max_tokens = max_tokens;
+    }
+
+    pub fn max_tokens(&self) -> Option<u32> {
+        self.max_tokens
     }
 
     pub fn web_search(&self) -> bool {
@@ -973,7 +993,7 @@ impl AiClient {
         bearer: &str,
         codex: bool,
         body: &serde_json::Value,
-    ) -> reqwest_middleware::Result<reqwest::Response> {
+    ) -> Result<reqwest::Response> {
         let adapted;
         let body = if cloudflare::is_workers_ai(&self.base_url) {
             adapted = cloudflare::adapt_request(body);
@@ -1001,7 +1021,10 @@ impl AiClient {
             }
             post = post.headers(headers);
         }
-        post.json(body).send().await
+        post.json(body)
+            .send()
+            .await
+            .map_err(|err| network_error(url, err))
     }
 
     async fn bearer(&self) -> Result<String> {
@@ -1486,6 +1509,28 @@ async fn read_sse(
         }
     }
     Ok(())
+}
+
+/// Transport-level failures (DNS, refused, timeout) get one plain sentence
+/// instead of the full error chain.
+fn network_error(url: &str, err: reqwest_middleware::Error) -> anyhow::Error {
+    let reqwest_middleware::Error::Reqwest(inner) = &err else {
+        return err.into();
+    };
+    let host = inner
+        .url()
+        .and_then(|u| u.host_str())
+        .map(str::to_owned)
+        .or_else(|| reqwest::Url::parse(url).ok()?.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "the provider".into());
+    let lead = if inner.is_timeout() {
+        format!("The request to {host} timed out. Check your internet connection and try again.")
+    } else if inner.is_connect() {
+        format!("Couldn't reach {host}. Check your internet connection and try again.")
+    } else {
+        return err.into();
+    };
+    anyhow!("{lead}")
 }
 
 fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {

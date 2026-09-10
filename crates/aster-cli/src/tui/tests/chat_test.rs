@@ -165,6 +165,7 @@ fn an_approved_plan_promotes_the_session_not_just_the_turn() {
             scope: None,
         },
         &mut client,
+        &mut p,
     );
 
     assert_eq!(app.mode, Mode::Edit, "the footer and the next turn agree");
@@ -189,6 +190,7 @@ fn an_editable_session_is_asked_and_keeps_its_mode() {
             scope: None,
         },
         &mut client,
+        &mut p,
     );
 
     assert_eq!(
@@ -213,6 +215,7 @@ fn a_rejected_plan_leaves_the_session_in_plan() {
             scope: None,
         },
         &mut client,
+        &mut p,
     );
 
     assert_eq!(app.mode, Mode::Plan);
@@ -223,12 +226,14 @@ fn a_one_off_edit_approval_does_not_promote_the_session() {
     let mut app = chat_app("m1".into());
     app.mode = Mode::Manual;
     let mut client = AiClient::new("http://localhost", "k", "m1");
+    let (mut pane, _rx) = pane();
     app.on_app_event(
         AppEvent::ApprovalDecided {
             answer: Answer::Yes,
             scope: None,
         },
         &mut client,
+        &mut pane,
     );
     assert_eq!(app.mode, Mode::Manual);
 }
@@ -249,6 +254,7 @@ fn a_locked_run_cannot_be_promoted_by_approving_a_plan() {
             scope: None,
         },
         &mut client,
+        &mut p,
     );
 
     assert_eq!(app.mode, Mode::Plan, "a read-only run stays read-only");
@@ -266,6 +272,7 @@ fn approval_always_promotes_the_session_to_edit() {
             scope: None,
         },
         &mut client,
+        &mut p,
     );
     assert_eq!(app.mode, Mode::Edit);
 
@@ -288,12 +295,14 @@ fn approval_always_stays_locked_when_permissions_deny() {
     let mut app = chat_app("m1".into());
     app.edits_locked = true;
     let mut client = AiClient::new("http://localhost", "k", "m1");
+    let (mut pane, _rx) = pane();
     app.on_app_event(
         AppEvent::ApprovalDecided {
             answer: Answer::Always,
             scope: None,
         },
         &mut client,
+        &mut pane,
     );
     assert_eq!(app.mode, Mode::Plan);
 }
@@ -538,7 +547,7 @@ fn yolo_asks_before_it_switches() {
     );
     assert!(app.flash.is_none(), "{:?}", app.flash);
 
-    app.on_app_event(AppEvent::YoloConfirmed, &mut client);
+    app.on_app_event(AppEvent::YoloConfirmed, &mut client, &mut p);
     assert_eq!(app.mode, Mode::Yolo);
     assert!(app.takeover.is_some(), "the switch plays the takeover");
 
@@ -563,7 +572,7 @@ fn declining_yolo_leaves_the_mode_alone() {
     let (mut p, _rx) = pane();
 
     app.handle_command("yolo", &mut client, &mut p);
-    app.on_app_event(AppEvent::SetMode(Mode::Edit), &mut client);
+    app.on_app_event(AppEvent::SetMode(Mode::Edit), &mut client, &mut p);
     assert_eq!(app.mode, Mode::Edit);
 }
 
@@ -669,13 +678,15 @@ fn resume_seeds_history_from_prior_session() {
     let store = Store::open(home.path()).unwrap();
     let repo = std::path::Path::new("/tmp/aster-resume-repo");
     {
-        let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+        let mut w = store
+            .new_session(repo, repo, Some("m".into()), None)
+            .unwrap();
         w.append_message(MessageEvent::user("hello")).unwrap();
         w.append_message(MessageEvent::assistant(Some("hi there".into()), vec![]))
             .unwrap();
     }
 
-    let (recorder, messages) = resume_or_new(&store, repo, &Resume::Latest)
+    let (recorder, messages, _provider) = resume_or_new(&store, repo, &Resume::Latest)
         .unwrap()
         .unwrap();
     assert_eq!(messages.len(), 2);
@@ -709,18 +720,22 @@ fn resume_by_id_reopens_that_session() {
     let store = Store::open(home.path()).unwrap();
     let repo = std::path::Path::new("/tmp/aster-by-id-repo");
     let id = {
-        let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+        let mut w = store
+            .new_session(repo, repo, Some("m".into()), None)
+            .unwrap();
         w.append_message(MessageEvent::user("the first one"))
             .unwrap();
         w.meta().id.clone()
     };
     {
-        let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+        let mut w = store
+            .new_session(repo, repo, Some("m".into()), None)
+            .unwrap();
         w.append_message(MessageEvent::user("the second one"))
             .unwrap();
     }
 
-    let (_, messages) = resume_or_new(&store, repo, &Resume::Id(id))
+    let (_, messages, _) = resume_or_new(&store, repo, &Resume::Id(id))
         .unwrap()
         .unwrap();
     assert_eq!(messages.len(), 1);
@@ -745,9 +760,13 @@ fn the_session_picker_skips_empty_transcripts() {
     let home = tempfile::tempdir().unwrap();
     let store = Store::open(home.path()).unwrap();
     let repo = std::path::Path::new("/tmp/aster-picker-repo");
-    store.new_session(repo, repo, Some("m".into())).unwrap();
+    store
+        .new_session(repo, repo, Some("m".into()), None)
+        .unwrap();
     {
-        let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+        let mut w = store
+            .new_session(repo, repo, Some("m".into()), None)
+            .unwrap();
         w.append_message(MessageEvent::user("real work")).unwrap();
     }
 
@@ -770,7 +789,9 @@ fn the_session_picker_says_so_when_there_is_nothing_to_resume() {
     let home = tempfile::tempdir().unwrap();
     let store = Store::open(home.path()).unwrap();
     let repo = std::path::Path::new("/tmp/aster-empty-picker-repo");
-    store.new_session(repo, repo, Some("m".into())).unwrap();
+    store
+        .new_session(repo, repo, Some("m".into()), None)
+        .unwrap();
 
     let mut app = chat_app("m".into());
     app.store = Some(store);
@@ -792,7 +813,9 @@ fn picking_a_session_seeds_its_history_and_reopens_its_transcript() {
     let store = Store::open(home.path()).unwrap();
     let repo = std::path::Path::new("/tmp/aster-adopt-repo");
     let id = {
-        let mut w = store.new_session(repo, repo, Some("m".into())).unwrap();
+        let mut w = store
+            .new_session(repo, repo, Some("m".into()), None)
+            .unwrap();
         w.append_message(MessageEvent::user("earlier question"))
             .unwrap();
         w.append_message(MessageEvent::assistant(
@@ -807,7 +830,8 @@ fn picking_a_session_seeds_its_history_and_reopens_its_transcript() {
     app.store = Some(store);
     app.repo_root = repo.to_path_buf();
     let mut client = AiClient::new("http://localhost", "k", "m");
-    app.on_app_event(AppEvent::SessionPicked(id), &mut client);
+    let (mut pane, _rx) = pane();
+    app.on_app_event(AppEvent::SessionPicked(id), &mut client, &mut pane);
 
     assert_eq!(app.history.len(), 2);
     assert!(app.recorder.is_some(), "later turns append to that session");

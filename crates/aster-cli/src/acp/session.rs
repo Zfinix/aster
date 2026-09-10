@@ -191,12 +191,22 @@ pub(super) async fn open(
                 .resume(&repo_root, id)
                 .map(|t| t.to_chat_messages())
                 .unwrap_or_default();
-            let writer =
-                store.session_writer_for(&repo_root, id, &repo_root, Some(client.model.clone()))?;
+            let writer = store.session_writer_for(
+                &repo_root,
+                id,
+                &repo_root,
+                Some(client.model.clone()),
+                Some(client.base_url().to_string()),
+            )?;
             (Some(Arc::new(Mutex::new(writer))), prior, id.to_string())
         }
         (Some(store), None) => {
-            let writer = store.new_session(&repo_root, &repo_root, Some(client.model.clone()))?;
+            let writer = store.new_session(
+                &repo_root,
+                &repo_root,
+                Some(client.model.clone()),
+                Some(client.base_url().to_string()),
+            )?;
             let id = writer.id().to_string();
             (Some(Arc::new(Mutex::new(writer))), Vec::new(), id)
         }

@@ -45,14 +45,16 @@ pub struct Ui {
     pub welcome: Option<bool>,
 }
 
-/// Limits on one agent turn. Both are also settable per run via
-/// `ASTER_MAX_TOOL_ROUNDS` and `ASTER_COMMAND_TIMEOUT`.
+/// Limits on one agent turn. Each is also settable per run via
+/// `ASTER_MAX_TOOL_ROUNDS`, `ASTER_COMMAND_TIMEOUT`, `ASTER_COMPACT_BUDGET`,
+/// and `ASTER_MAX_TOKENS`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
     pub max_tool_rounds: Option<usize>,
     pub command_timeout_secs: Option<u64>,
     pub compact_budget_chars: Option<usize>,
+    pub max_output_tokens: Option<u32>,
 }
 
 /// Swarm configuration for sub-agent fan-out.  Also settable per run via
@@ -141,6 +143,10 @@ impl Settings {
                     .agent
                     .compact_budget_chars
                     .or(self.agent.compact_budget_chars),
+                max_output_tokens: project
+                    .agent
+                    .max_output_tokens
+                    .or(self.agent.max_output_tokens),
             },
             agents: Agents {
                 collector_model: project

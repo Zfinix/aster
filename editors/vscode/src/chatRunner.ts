@@ -579,7 +579,7 @@ export class ChatRunner {
       turn?.toolNames.set(id, name);
       const raw = update["rawInput"];
       const edited = editedPath(update as ToolCallWire);
-      if (edited && turn) {
+      if (edited && turn && !turn.edits.includes(edited)) {
         turn.edits.push(edited);
       }
       this.emit({

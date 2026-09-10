@@ -587,6 +587,7 @@ fn write_session(
         cwd: repo_root.to_string_lossy().into_owned(),
         repo_root: repo_root.to_string_lossy().into_owned(),
         model: session.model.clone(),
+        base_url: None,
         aster_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
         title: session.title.clone(),
         schedule: None,

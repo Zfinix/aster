@@ -167,15 +167,7 @@ async fn dispatch(
                 REACTIONS.join(" ")
             );
             let message_id = message_id.context("there is no user message to react to")?;
-            api.call(
-                "setMessageReaction",
-                json!({
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "reaction": [{ "type": "emoji", "emoji": emoji }],
-                }),
-            )
-            .await?;
+            api.react(chat_id, message_id, &emoji).await?;
             json!({ "ok": true })
         }
         "send_gif" | "send_photo" => {
@@ -184,10 +176,12 @@ async fn dispatch(
                 url.starts_with("https://") || url.starts_with("http://"),
                 "url must be http(s)"
             );
-            let (method, field) = match name {
-                "send_gif" => ("sendAnimation", "animation"),
-                _ => ("sendPhoto", "photo"),
+            let (method, field, action) = match name {
+                "send_gif" => ("sendAnimation", "animation", "upload_video"),
+                _ => ("sendPhoto", "photo", "upload_photo"),
             };
+            // Show the right in-chat status while the upload runs.
+            api.send_chat_action(chat_id, action).await;
             let mut payload = json!({ "chat_id": chat_id, field: url });
             if let Some(caption) = text("caption") {
                 payload["caption"] = caption.into();
@@ -197,6 +191,7 @@ async fn dispatch(
         }
         "send_document" => {
             let path = text("path").context("path is required")?;
+            api.send_chat_action(chat_id, "upload_document").await;
             let sent = api
                 .send_document_file(chat_id, &path, text("caption").as_deref())
                 .await?;
@@ -206,6 +201,7 @@ async fn dispatch(
             let title = text("title").context("title is required")?;
             let code = text("code").context("code is required")?;
             let path = write_scratch_document(&title, &code).await?;
+            api.send_chat_action(chat_id, "upload_document").await;
             let result = api
                 .send_document_file(chat_id, &path, text("note").as_deref())
                 .await;

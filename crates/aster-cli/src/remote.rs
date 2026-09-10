@@ -17,6 +17,9 @@ enum Channel {
     Telegram(TelegramArgs),
     /// Bridge iMessage through a Photon agent server (signed webhooks).
     Photon(PhotonArgs),
+    /// Bridge iMessage natively via Messages.app (free, macOS only).
+    #[command(name = "imessage", alias = "i-message")]
+    IMessage(IMessageArgs),
     /// Internal: MCP server with Telegram chat tools, spawned per bridge turn.
     #[command(hide = true, name = "mcp-telegram")]
     McpTelegram,
@@ -64,8 +67,48 @@ pub async fn run(args: RemoteArgs) -> Result<()> {
     match args.channel {
         Channel::Telegram(args) => telegram(args).await,
         Channel::Photon(args) => photon(args).await,
+        Channel::IMessage(args) => imessage(args).await,
         Channel::McpTelegram => aster_remote::run_mcp_telegram().await,
     }
+}
+
+#[derive(Args)]
+struct IMessageArgs {
+    /// iMessage sender (handle or phone) allowed to drive the agent (repeatable).
+    /// Defaults to ASTER_REMOTE_USERS, a comma-separated list.
+    #[arg(long = "sender", value_name = "SENDER")]
+    senders: Vec<String>,
+
+    /// Permission mode for remote turns; prompts arrive as plain questions.
+    #[arg(long, value_name = "MODE", default_value = "manual",
+          value_parser = ["plan", "manual", "auto", "edit", "yolo"])]
+    mode: String,
+}
+
+async fn imessage(args: IMessageArgs) -> Result<()> {
+    let mut senders = args.senders;
+    if senders.is_empty()
+        && let Ok(raw) = env::var("ASTER_REMOTE_USERS")
+    {
+        senders = raw
+            .split(',')
+            .filter_map(|s| {
+                let s = s.trim();
+                (!s.is_empty()).then(|| s.to_string())
+            })
+            .collect();
+    }
+    let db_path = env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Messages/chat.db"))
+        .context("could not determine HOME")?;
+    let config = aster_remote::IMessageConfig {
+        allowed_senders: senders,
+        db_path,
+        bin: env::current_exe().context("resolving the aster binary path")?,
+        repo_root: env::current_dir().context("could not determine the current directory")?,
+        mode: args.mode,
+    };
+    aster_remote::run_imessage(config).await
 }
 
 async fn photon(args: PhotonArgs) -> Result<()> {

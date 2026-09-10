@@ -298,3 +298,42 @@ fn an_installed_internal_folder_marks_its_skills_internal() {
         ["deploy"]
     );
 }
+
+#[test]
+fn an_always_skill_rides_in_the_index_instead_of_being_listed() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_skill(
+        tmp.path(),
+        "android-use",
+        "---\nname: android-use\ndescription: drive the phone\nalways: true\n---\n\ntap things",
+    );
+    write_skill(
+        tmp.path(),
+        "on-demand",
+        "---\nname: on-demand\ndescription: only sometimes\n---\n\nbody",
+    );
+    let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+    assert!(set.get("android-use").unwrap().always);
+    assert!(!set.get("on-demand").unwrap().always);
+
+    let index = set.render_index().unwrap();
+    assert!(index.contains("- **on-demand**"));
+    assert!(!index.contains("- **android-use**"));
+    assert!(index.contains("## Skill: android-use"));
+    assert!(index.contains("tap things"));
+}
+
+#[test]
+fn an_always_skill_alone_renders_no_scan_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_skill(
+        tmp.path(),
+        "android-use",
+        "---\nname: android-use\ndescription: drive the phone\nalways: yes\n---\n\ntap things",
+    );
+    let index = SkillSet::discover(&[tmp.path().to_path_buf()])
+        .render_index()
+        .unwrap();
+    assert!(!index.contains("## Skills"));
+    assert!(index.starts_with("## Skill: android-use"));
+}

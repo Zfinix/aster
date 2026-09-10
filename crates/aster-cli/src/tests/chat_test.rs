@@ -589,6 +589,7 @@ fn limits_come_from_the_agent_block() {
         max_tool_rounds: Some(9),
         command_timeout_secs: Some(11),
         compact_budget_chars: Some(64_000),
+        max_output_tokens: None,
     };
     let limits = Limits::resolve(&agent);
     assert_eq!(limits.max_tool_rounds, 9);

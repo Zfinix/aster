@@ -77,8 +77,9 @@ impl Store {
         repo_root: &Path,
         cwd: &Path,
         model: Option<String>,
+        base_url: Option<String>,
     ) -> Result<SessionWriter> {
-        self.new_session_with_schedule(repo_root, cwd, model, None)
+        self.new_session_with_schedule(repo_root, cwd, model, base_url, None)
     }
 
     /// Like [`Self::new_session`], but tags the session with the schedule that
@@ -88,6 +89,7 @@ impl Store {
         repo_root: &Path,
         cwd: &Path,
         model: Option<String>,
+        base_url: Option<String>,
         schedule: Option<&str>,
     ) -> Result<SessionWriter> {
         let id = Ulid::new().to_string();
@@ -98,6 +100,7 @@ impl Store {
             cwd: cwd.to_string_lossy().into_owned(),
             repo_root: repo_root.to_string_lossy().into_owned(),
             model,
+            base_url,
             aster_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             title: None,
             schedule: schedule.map(str::to_string),
@@ -112,6 +115,7 @@ impl Store {
         id: &str,
         cwd: &Path,
         model: Option<String>,
+        base_url: Option<String>,
     ) -> Result<SessionWriter> {
         let id = slugify(id);
         let id = if id.is_empty() {
@@ -131,6 +135,7 @@ impl Store {
             cwd: cwd.to_string_lossy().into_owned(),
             repo_root: repo_root.to_string_lossy().into_owned(),
             model,
+            base_url,
             aster_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             title: None,
             schedule: None,

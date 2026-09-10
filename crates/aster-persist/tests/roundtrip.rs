@@ -26,6 +26,7 @@ fn append_and_reload_preserves_full_fidelity() {
                 repo,
                 Path::new("/tmp/example-repo"),
                 Some("test-model".into()),
+                Some("https://example.test/v1".into()),
             )
             .unwrap();
         let id = writer.id().to_string();
@@ -52,6 +53,10 @@ fn append_and_reload_preserves_full_fidelity() {
 
     let transcript = store.resume(repo, &id).unwrap();
     assert_eq!(transcript.meta.model.as_deref(), Some("test-model"));
+    assert_eq!(
+        transcript.meta.base_url.as_deref(),
+        Some("https://example.test/v1")
+    );
 
     let tool_calls: Vec<_> = transcript
         .events
@@ -84,13 +89,13 @@ fn latest_returns_most_recent_session() {
     let repo = Path::new("/tmp/repo");
 
     let first = store
-        .new_session(repo, repo, None)
+        .new_session(repo, repo, None, None)
         .unwrap()
         .id()
         .to_string();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let second = store
-        .new_session(repo, repo, None)
+        .new_session(repo, repo, None, None)
         .unwrap()
         .id()
         .to_string();
@@ -109,13 +114,13 @@ fn session_writer_for_opens_or_creates_by_id() {
 
     {
         let mut w = store
-            .session_writer_for(repo, "conv-1", repo, Some("m".into()))
+            .session_writer_for(repo, "conv-1", repo, Some("m".into()), None)
             .unwrap();
         w.append_message(MessageEvent::user("first")).unwrap();
     }
     {
         let mut w = store
-            .session_writer_for(repo, "conv-1", repo, Some("m".into()))
+            .session_writer_for(repo, "conv-1", repo, Some("m".into()), None)
             .unwrap();
         w.append_message(MessageEvent::user("second")).unwrap();
     }

@@ -35,6 +35,7 @@ use crate::chat::{
 use crate::persist::Recorder;
 
 type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
+type Resumed = (Recorder, Vec<ChatMessage>, Option<(String, String)>);
 
 const QUIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -208,9 +209,14 @@ pub async fn run_chat(
     let mut seeded: Option<Vec<ChatMessage>> = None;
     if let Ok(store) = crate::persist::store() {
         match resume_or_new(&store, &repo_root, &resume) {
-            Ok(Some((recorder, messages))) => {
+            Ok(Some((recorder, messages, provider))) => {
                 app.recorder = Some(recorder);
                 seeded = Some(messages);
+                // The session carries its own provider pair; adopting it beats
+                // sending the settings' model to whatever endpoint is current.
+                if let Some((base_url, model)) = provider {
+                    app.adopt_provider(base_url, model, &mut client, &mut pane);
+                }
             }
             // `Pick`: the picker opens below, and the choice arrives as an event.
             Ok(None) => {}
@@ -390,7 +396,7 @@ pub async fn run_chat(
                     }
 
                     AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
-                    ev => app.on_app_event(ev, &mut client),
+                    ev => app.on_app_event(ev, &mut client, &mut pane),
                 }
                 // A mode change swaps the theme here; without a frame the
                 // transition would expire before anything redrew.
@@ -710,7 +716,7 @@ fn resume_or_new(
     store: &Store,
     repo_root: &std::path::Path,
     resume: &Resume,
-) -> Result<Option<(Recorder, Vec<ChatMessage>)>> {
+) -> Result<Option<Resumed>> {
     let prev = match resume {
         Resume::New | Resume::Pick => return Ok(None),
         Resume::Latest => store.latest(repo_root)?,
@@ -725,7 +731,12 @@ fn resume_or_new(
     };
     let messages = prev.to_chat_messages();
     let writer = store.resume_writer(repo_root, &prev.meta.id)?;
-    Ok(Some((sync::Arc::new(sync::Mutex::new(writer)), messages)))
+    let provider = prev.meta.base_url.clone().zip(prev.meta.model.clone());
+    Ok(Some((
+        sync::Arc::new(sync::Mutex::new(writer)),
+        messages,
+        provider,
+    )))
 }
 
 fn agent_report_text(rows: &[AgentRow]) -> String {
@@ -1798,7 +1809,12 @@ impl ChatApp {
         let Some(store) = &self.store else {
             return;
         };
-        match store.new_session(&self.repo_root, &self.repo_root, Some(self.model.clone())) {
+        match store.new_session(
+            &self.repo_root,
+            &self.repo_root,
+            Some(self.model.clone()),
+            Some(self.provider_base_url.clone()),
+        ) {
             Ok(writer) => self.recorder = Some(sync::Arc::new(sync::Mutex::new(writer))),
             Err(e) => tracing::warn!("failed to start a new session: {e:#}"),
         }
@@ -1880,7 +1896,12 @@ impl ChatApp {
         );
     }
 
-    fn on_app_event(&mut self, ev: AppEvent, client: &mut AiClient) {
+    fn on_app_event(
+        &mut self,
+        ev: AppEvent,
+        client: &mut AiClient,
+        pane: &mut BottomPane<AppEvent>,
+    ) {
         match ev {
             // Handled on the run loop, which owns the turn a hold replays into.
             AppEvent::McpReady { .. } => {}
@@ -1926,14 +1947,14 @@ impl ChatApp {
                 drop(self.pending_question.take());
                 self.note("question dismissed");
             }
-            AppEvent::SessionPicked(id) => self.resume_session(&id),
+            AppEvent::SessionPicked(id) => self.resume_session(&id, client, pane),
             AppEvent::McpToggle { name, disabled } => self.toggle_mcp(&name, disabled),
             AppEvent::ModelChanged(model) => match model.as_str() {
                 crate::mom::MOM_MODEL_ID => self.mom_on(),
                 _ => self.set_model(model, client),
             },
             AppEvent::ProviderPicked { base_url, model } => {
-                self.switch_provider(base_url, model, client)
+                self.switch_provider(base_url, model, client, pane)
             }
             AppEvent::UpdateAvailable(info) => {
                 let block = history::update(&info, self.width);
@@ -2031,7 +2052,7 @@ impl ChatApp {
         pane.push_picker("Resume a session", items, None);
     }
 
-    fn resume_session(&mut self, id: &str) {
+    fn resume_session(&mut self, id: &str, client: &mut AiClient, pane: &mut BottomPane<AppEvent>) {
         let Some(store) = &self.store else {
             return;
         };
@@ -2048,6 +2069,16 @@ impl ChatApp {
                 self.note(&format!("could not reopen {id} for writing: {e:#}"));
                 return;
             }
+        }
+        // The session's own provider pair wins over whatever the settings hold;
+        // replaying its history on another endpoint is how the 404s happen.
+        if let Some((base_url, model)) = transcript
+            .meta
+            .base_url
+            .clone()
+            .zip(transcript.meta.model.clone())
+        {
+            self.adopt_provider(base_url, model, client, pane);
         }
         self.load_history(transcript.to_chat_messages());
     }
@@ -2541,7 +2572,31 @@ impl ChatApp {
         pane.push_unified(items);
     }
 
-    fn switch_provider(&mut self, base_url: String, model: String, client: &mut AiClient) {
+    /// Put a resumed session back on the provider it ran on, so its history is
+    /// never replayed against an endpoint that does not know the model.
+    fn adopt_provider(
+        &mut self,
+        base_url: String,
+        model: String,
+        client: &mut AiClient,
+        pane: &mut BottomPane<AppEvent>,
+    ) {
+        if base_url.trim_end_matches('/') != self.provider_base_url.trim_end_matches('/') {
+            self.switch_provider(base_url, model, client, pane);
+            return;
+        }
+        if model != self.model {
+            self.set_model(model, client);
+        }
+    }
+
+    fn switch_provider(
+        &mut self,
+        base_url: String,
+        model: String,
+        client: &mut AiClient,
+        pane: &mut BottomPane<AppEvent>,
+    ) {
         // The same resolution every command uses, so the picker cannot hand
         // this endpoint a key that chat would then refuse.
         match aster_ai::keys::resolve_key(&base_url) {
@@ -2566,6 +2621,17 @@ impl ChatApp {
             crate::settings::persist_user_review(Some(&self.repo_root), &[("base_url", &base_url)])
         {
             self.note(&format!("could not save the provider choice: {e:#}"));
+        }
+        if model.is_empty() {
+            // Nothing to adopt, and the old model id belongs to the old
+            // endpoint, so ask the new one what it serves instead.
+            self.flash = Some(format!(
+                "provider {} · pick a model",
+                crate::init::provider_label(&base_url)
+            ));
+            let tx = pane.sender();
+            self.request_models(client, tx);
+            return;
         }
         self.set_model(model, client);
         self.flash = Some(format!(
@@ -2602,12 +2668,11 @@ impl ChatApp {
                 // Typed targets resolve like `aster provider use`: an id, a
                 // name, or any base URL, so custom endpoints need no picker row.
                 Some(target) => match crate::init::find_provider(target) {
+                    // An empty example model goes through as empty: reusing
+                    // this session's model would send the old provider's id
+                    // to the new endpoint, which is the "Model not found" 404.
                     Ok((_, base_url, example_model)) => {
-                        let model = match example_model.is_empty() {
-                            true => self.model.clone(),
-                            false => example_model,
-                        };
-                        self.switch_provider(base_url, model, client);
+                        self.switch_provider(base_url, example_model, client, pane);
                     }
                     Err(e) => self.flash = Some(format!("{e:#}")),
                 },

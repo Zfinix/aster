@@ -329,6 +329,9 @@ pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
         std::env::consts::ARCH,
         chrono::Local::now().format("%Y-%m-%d")
     ));
+    if let Some(device) = android_note() {
+        note.push_str(&device);
+    }
     if let Some(git) = git_snapshot(repo_root) {
         note.push_str(&git);
     }
@@ -339,6 +342,50 @@ pub(crate) fn environment_note(repo_root: &Path) -> Option<String> {
         note.push_str(&runners);
     }
     Some(note)
+}
+
+/// On a phone there is no repository to look at; the device is the subject. Say
+/// which device it is, and whether the tool that reads the screen is reachable,
+/// so the model does not have to discover either.
+#[cfg(target_os = "android")]
+fn android_note() -> Option<String> {
+    let prop = |key: &str| -> Option<String> {
+        let out = std::process::Command::new("getprop")
+            .arg(key)
+            .output()
+            .ok()?;
+        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!value.is_empty()).then_some(value)
+    };
+    let mut note = String::from(
+        "## Device\n- Running on the Android device itself, not on a machine attached to one\n",
+    );
+    if let Some(model) = prop("ro.product.model") {
+        note.push_str(&format!("- Model: {model}\n"));
+    }
+    if let (Some(release), Some(sdk)) = (
+        prop("ro.build.version.release"),
+        prop("ro.build.version.sdk"),
+    ) {
+        note.push_str(&format!("- Android {release} (API {sdk})\n"));
+    }
+    note.push_str(match which_asterctl() {
+        true => "- `asterctl` reads the screen and taps it: `map`, `find`, `tap`, `scroll`, `type`, `key`, `ocr`, `notes`\n",
+        false => "- No `asterctl` on PATH, so the screen cannot be seen or touched from here\n",
+    });
+    Some(note)
+}
+
+#[cfg(target_os = "android")]
+fn which_asterctl() -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("asterctl").exists()))
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_note() -> Option<String> {
+    None
 }
 
 const MAX_SCRIPT_NAMES: usize = 12;
@@ -496,7 +543,7 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
         }
         return prompt;
     }
-    let mut prompt = String::from(AGENT_SYSTEM_PROMPT);
+    let mut prompt = base_system_prompt();
     // Ahead of tools and memory: these are the repo's standing rules, and they
     // shape how every other section gets used.
     if let Some(project) = ctx.instructions.render() {
@@ -607,6 +654,59 @@ pub(crate) struct QuestionRequest {
 pub(crate) type UiSender = mpsc::Sender<UiRequest>;
 
 const AGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/aster-agent.md");
+
+/// The manual opens by placing the agent in a repository on a desktop. On a
+/// phone that is the wrong room, and a correction further down loses to the
+/// opening sentence, so this is shouted in front of it instead.
+#[cfg(target_os = "android")]
+const ANDROID_IDENTITY: &str = "# READ THIS BEFORE THE MANUAL BELOW\n\n\
+    THE MANUAL BELOW DESCRIBES A DEVELOPER'S REPOSITORY ON A DESKTOP. THAT IS \
+    NOT WHERE YOU ARE. You are a process inside an app on an Android phone. \
+    There is no repository, no codebase, no terminal to answer at. The phone is \
+    the subject. WHERE THE MANUAL AND THIS SECTION DISAGREE, THIS SECTION \
+    WINS.\n\n\
+    ## NOBODY IS HOLDING THIS PHONE\n\n\
+    THE PERSON YOU ARE TALKING TO IS NOT HERE. They are somewhere else. They \
+    cannot see this screen. They cannot reach this device. THEY CANNOT FINISH \
+    ANYTHING YOU START. You are the only thing in the room with the phone.\n\n\
+    SO HANDING A PHYSICAL STEP BACK TO THEM IS NOT A SAFER VERSION OF DOING IT. \
+    IT IS THE SAME AS NOT DOING IT, and it burns the time they spent asking. \
+    \"Tap it yourself.\" \"Open the app and check.\" \"Press the call button \
+    now.\" NONE OF THESE ARE AVAILABLE TO SOMEONE WHO IS NOT IN THE ROOM. \
+    Saying them looks like help and leaves the person with nothing. IF A STEP \
+    IS YOURS TO TAKE, TAKE IT.\n\n\
+    ## A REFUSAL IS NOT A NEUTRAL ACT\n\n\
+    You are not deciding whether to help. You are the only route to the \
+    outcome, so DECLINING IS A DECISION THAT THE THING DOES NOT HAPPEN. Weigh \
+    it like one. The cost of stalling is real and immediate; the cost of acting \
+    is usually a screen you can back out of.\n\n\
+    THIS MATTERS MOST WHEN IT MATTERS MOST. Emergency services, a call for \
+    help, anything time-critical: PLACE IT. DO NOT DELIBERATE. DO NOT ASK THEM \
+    TO CONFIRM. DO NOT EXPLAIN WHY YOU WOULD RATHER NOT. Someone who asks a \
+    phone they cannot reach to call for help HAS NO SECOND WAY TO DO IT. \
+    Hesitating there is not caution, it is the worst available outcome.\n\n\
+    ## WHEN YOU TRULY CANNOT\n\n\
+    Some things the platform forbids outright. Get as far as it allows, then \
+    say WHICH STEP STOPPED YOU, WHAT YOU TRIED, AND WHAT IS ON SCREEN RIGHT \
+    NOW. That is a report they can act on. An apology is not. A suggestion they \
+    cannot physically follow is not.\n\n\
+    ## ASKING\n\n\
+    Ask only when a thing is hard to undo AND you are unsure they meant it. \
+    NEVER ASK TO BE SEEN ASKING. Read the screen before assuming anything about \
+    it, and say what you see rather than what you expect. Say what you did \
+    AFTER you did it, not instead of doing it.\n\n\
+    ---\n\n";
+
+fn base_system_prompt() -> String {
+    let mut prompt = String::new();
+    // In front of the manual, not after it: an opening sentence that puts the
+    // agent in a repository is not undone by a correction further down.
+    #[cfg(target_os = "android")]
+    prompt.push_str(ANDROID_IDENTITY);
+    prompt.push_str(AGENT_SYSTEM_PROMPT);
+    prompt
+}
+
 const CHAT_TEMPERATURE: f64 = 0.4;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
@@ -1080,8 +1180,13 @@ fn prepare_turn(
     expand_skill_asks(&mut new_turns, repo_root);
     attach_images(&mut new_turns, repo_root);
     let store = crate::persist::store().ok();
-    let (recorder, prior) =
-        resolve_headless_session(store.as_ref(), repo_root, args, &client.model)?;
+    let (recorder, prior) = resolve_headless_session(
+        store.as_ref(),
+        repo_root,
+        args,
+        &client.model,
+        client.base_url(),
+    )?;
     let agents = crate::agents::discover_agents(repo_root);
     let swarm = SwarmLimits::default();
     let ctx = SessionCtx {
@@ -1527,6 +1632,7 @@ fn resolve_headless_session(
     repo_root: &Path,
     args: &ChatArgs,
     model: &str,
+    base_url: &str,
 ) -> Result<(Option<Recorder>, Vec<ChatMessage>)> {
     let Some(store) = store else {
         return Ok((None, Vec::new()));
@@ -1539,7 +1645,13 @@ fn resolve_headless_session(
         let Some(id) = &args.session else {
             return Ok((None, Vec::new()));
         };
-        let writer = store.session_writer_for(repo_root, id, repo_root, Some(model.to_string()))?;
+        let writer = store.session_writer_for(
+            repo_root,
+            id,
+            repo_root,
+            Some(model.to_string()),
+            Some(base_url.to_string()),
+        )?;
         return Ok((Some(recorder(writer)), Vec::new()));
     }
 
@@ -1548,7 +1660,13 @@ fn resolve_headless_session(
             .resume(repo_root, id)
             .map(|t| t.to_chat_messages())
             .unwrap_or_default();
-        let writer = store.session_writer_for(repo_root, id, repo_root, Some(model.to_string()))?;
+        let writer = store.session_writer_for(
+            repo_root,
+            id,
+            repo_root,
+            Some(model.to_string()),
+            Some(base_url.to_string()),
+        )?;
         return Ok((Some(recorder(writer)), prior));
     }
 
@@ -4321,6 +4439,12 @@ fn read_skill(ctx: &SessionCtx, name: &str) -> Result<String> {
         .skills
         .get(name)
         .with_context(|| format!("no skill named {name:?}; check the Skills list"))?;
+    if skill.always {
+        return Ok(format!(
+            "{name} is already in your system prompt in full, under \"Skill: {name}\". \
+             Read it there rather than loading it again."
+        ));
+    }
     skill.load_body()
 }
 

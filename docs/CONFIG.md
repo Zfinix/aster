@@ -293,6 +293,7 @@ Limits on one agent turn.
 | `max_tool_rounds` | int | `60` | Tool rounds before the agent must answer with what it has. It says so when it hits the cap. Env `ASTER_MAX_TOOL_ROUNDS`. |
 | `command_timeout_secs` | int | `300` | Seconds one `run_command` may take. Builds and test suites live here. Env `ASTER_COMMAND_TIMEOUT`. |
 | `compact_budget_chars` | int | `192000` | History size above which older turns fold into a summary. Roughly 48k tokens; lower it for small-context models. Env `ASTER_COMPACT_BUDGET`. |
+| `max_output_tokens` | int | `8000` | Tokens one reply may run to. Lower it when a provider turns the request down as too large; `0` sends no cap and leaves the limit to the provider. Env `ASTER_MAX_TOKENS`. |
 
 ## `agents`
 
@@ -400,7 +401,6 @@ A few knobs have no `aster.yaml` key.
 | Env var | What it does | Default |
 | --- | --- | --- |
 | `ASTER_API_KEY` | Provider key, used for any endpoint without a var of its own. A var named for the endpoint beats it; see [Precedence](#precedence). | required |
-| `ASTER_MAX_TOKENS` | Cap on generated tokens; `0`, `none`, or `off` removes the cap. | `8000` |
 | `ASTER_SEED` | Fixed sampling seed; `none` or `off` disables it. | `0` |
 | `ASTER_VERIFY_CONCURRENCY` | Verify passes run at once during review. | `8` |
 | `ASTER_REPO` | Repository name recorded on a local review. | `local` |
