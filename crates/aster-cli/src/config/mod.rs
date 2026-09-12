@@ -427,6 +427,19 @@ impl Key {
 const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 
+#[cfg(target_os = "android")]
+const DEFAULT_MAX_TOOL_ROUNDS: &str = "200";
+#[cfg(not(target_os = "android"))]
+const DEFAULT_MAX_TOOL_ROUNDS: &str = "60";
+#[cfg(target_os = "android")]
+const DEFAULT_COMMAND_TIMEOUT_SECS: &str = "1800";
+#[cfg(not(target_os = "android"))]
+const DEFAULT_COMMAND_TIMEOUT_SECS: &str = "300";
+#[cfg(target_os = "android")]
+const DEFAULT_AGENT_TIMEOUT_SECS: &str = "1800";
+#[cfg(not(target_os = "android"))]
+const DEFAULT_AGENT_TIMEOUT_SECS: &str = "300";
+
 const KEYS: &[Key] = &[
     Key {
         name: "review.model",
@@ -575,7 +588,7 @@ const KEYS: &[Key] = &[
         kind: Kind::Number,
         unit: Unit::None,
         env: &["ASTER_MAX_TOOL_ROUNDS"],
-        default: "60",
+        default: DEFAULT_MAX_TOOL_ROUNDS,
         help: "Rounds before the agent must answer with what it has",
     },
     Key {
@@ -585,7 +598,7 @@ const KEYS: &[Key] = &[
         kind: Kind::Number,
         unit: Unit::Seconds,
         env: &["ASTER_COMMAND_TIMEOUT"],
-        default: "300",
+        default: DEFAULT_COMMAND_TIMEOUT_SECS,
         help: "How long one command may run. Builds and test suites live here",
     },
     Key {
@@ -607,6 +620,16 @@ const KEYS: &[Key] = &[
         env: &["ASTER_MAX_TOKENS"],
         default: "8000",
         help: "How long one reply may run. Lower it if a provider turns the request down as too large",
+    },
+    Key {
+        name: "agent.language",
+        label: "Reply language",
+        group: Group::Agent,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &["ASTER_LANGUAGE"],
+        default: "the user's",
+        help: "Language every reply is written in, such as English or Français. Unset follows the user",
     },
     Key {
         name: "agents.collector_model",
@@ -645,7 +668,7 @@ const KEYS: &[Key] = &[
         kind: Kind::Number,
         unit: Unit::Seconds,
         env: &["ASTER_AGENT_TIMEOUT"],
-        default: "300",
+        default: DEFAULT_AGENT_TIMEOUT_SECS,
         help: "How long a single sub-agent may run",
     },
     Key {
@@ -838,6 +861,7 @@ fn configured(settings: &Settings, name: &str) -> Value {
         "agent.command_timeout_secs" => json!(agent.command_timeout_secs),
         "agent.compact_budget_chars" => json!(agent.compact_budget_chars),
         "agent.max_output_tokens" => json!(agent.max_output_tokens),
+        "agent.language" => json!(agent.language),
         "agents.collector_model" => json!(agents.collector_model),
         "agents.max_concurrent" => json!(agents.max_concurrent),
         "agents.max_per_turn" => json!(agents.max_per_turn),

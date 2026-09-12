@@ -19,13 +19,13 @@ aster-cron = { path = "../aster-cron" }
 aster-lsp = { path = "../aster-lsp" }
 aster-ai = { path = "../aster-ai" }
 aster-mom = { path = "../aster-mom" }
-aster-eval = { path = "../aster-eval" }
 aster-harness = { path = "../aster-harness" }
 aster-mcp = { path = "../aster-mcp" }
 aster-memory = { path = "../aster-memory" }
 aster-models = { path = "../aster-models" }
 aster-plugins = { path = "../aster-plugins" }
 aster-policy = { path = "../aster-policy" }
+aster-eval = { path = "../aster-eval" }
 aster-persist = { path = "../aster-persist" }
 aster-remote = { path = "../aster-remote" }
 aster-sandbox = { path = "../aster-sandbox" }
@@ -79,6 +79,9 @@ tracing = { workspace = true }
 tracing-subscriber = { features = ["env-filter"], version = "0.3" }
 unicode-width = "0.2"
 ulid = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+rustpython = { version = "0.5.0", default-features = false, features = ["freeze-stdlib", "importlib", "stdio", "host_env"] }
 
 [dev-dependencies]
 wiremock = "0.6"

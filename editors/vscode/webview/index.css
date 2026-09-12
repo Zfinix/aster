@@ -2004,12 +2004,6 @@ code {
 }
 
 /* A batch of one: the row is the card, so its own chrome comes off. */
-.agent-net-solo .agent-node {
-  border-radius: 0;
-  background: none;
-  padding: var(--s2) var(--s3);
-}
-
 /* A judged goal loop: condition in the head, one timeline row per verdict. */
 .goal-card {
   display: flex;

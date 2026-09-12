@@ -12,6 +12,7 @@ fn session(mode: Mode) -> Session {
         repo_root: std::env::temp_dir(),
         client: Mutex::new(AiClient::new("http://localhost", "k", "m1")),
         ctx: SessionCtx::default(),
+        skills: Mutex::new((0, Arc::new(aster_skills::SkillSet::default()))),
         grants: Arc::new(Grants::default()),
         history: Mutex::new(Vec::new()),
         permissions: Mutex::new(permissions.clone()),

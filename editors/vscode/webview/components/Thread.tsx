@@ -134,20 +134,12 @@ export function Thread({
                 </div>
               );
             }
-            // An `agent` call's swarm card says everything its tool row would,
-            // so the row is dropped once the card exists.
-            const swarmCalls = new Set(
-              turn.blocks.flatMap((b) => (b.kind === "agents" ? [b.callId] : []))
-            );
             return (
               <div key={turn.id} className="turn-assistant">
                 {/* Arrival order, so steps sit under the thought that led to them. */}
                 {turn.blocks.map((block) =>
                   block.kind === "tools" ? (
-                    <ToolGroup
-                      key={block.id}
-                      calls={block.calls.filter((c) => !swarmCalls.has(c.id))}
-                    />
+                    <ToolGroup key={block.id} calls={block.calls} />
                   ) : block.kind === "reasoning" ? (
                     <ReasoningBlock
                       key={block.id}

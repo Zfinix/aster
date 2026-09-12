@@ -33,10 +33,11 @@ interface Wire {
   status: AgentTaskState["status"];
 }
 
-/** One `agent` tool call's swarm as a wired graph in a card: the orchestrator
- *  node fans out to a live node per sub-agent; a settled node opens its report. */
+/** A round's sub-agents as a wired graph in a card: the orchestrator node fans
+ *  out to a live node per sub-agent; a settled node opens its report. One agent
+ *  gets the same card as twelve, so a fan-out always reads as one. */
 export function AgentGroup({ tasks }: { tasks: AgentTaskState[] }) {
-  return tasks.length === 1 ? <AgentSolo task={tasks[0]} /> : <AgentSwarm tasks={tasks} />;
+  return <AgentSwarm tasks={tasks} />;
 }
 
 function actionCount(task: AgentTaskState): number {
@@ -87,20 +88,6 @@ function elapsed(task: AgentTaskState, now: number): string | undefined {
   if (!task.startedAt) return undefined;
   const end = task.status === "running" ? now : (task.endedAt ?? now);
   return elapsedLabel(end - task.startedAt);
-}
-
-function AgentSolo({ task }: { task: AgentTaskState }) {
-  const [open, setOpen] = useState(false);
-  const now = useNow(task.status === "running");
-
-  return (
-    <div className="agent-net agent-net-solo">
-      <AgentNode task={task} selected={open} onSelect={() => setOpen(!open)} />
-      <Disclosure open={open}>
-        <AgentPanel task={task} now={now} />
-      </Disclosure>
-    </div>
-  );
 }
 
 function AgentSwarm({ tasks }: { tasks: AgentTaskState[] }) {

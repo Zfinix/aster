@@ -317,5 +317,5 @@ fn missing_credentials_message_points_at_the_fix() {
         provider::MissingCredentials(provider::Setup::for_endpoint("https://api.deepseek.com"));
     let text = deepseek.to_string();
     assert!(text.contains("DEEPSEEK_API_KEY"), "{text}");
-    assert!(!text.contains("aster login"), "{text}");
+    assert!(!text.contains("aster login deepseek"), "{text}");
 }

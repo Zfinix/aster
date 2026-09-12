@@ -11,6 +11,7 @@ import {
   restoreTurn,
   stopUnfinished,
   upsertAgentState,
+  applyAgentReports,
   type AssistantTurn,
   type ToolCall,
   type Turn,
@@ -138,7 +139,7 @@ describe("restoreTurn", () => {
     ]);
     const block = turn.blocks[0];
     if (block.kind !== "agents") throw new Error("expected an agents block");
-    expect(block.callId).toBe("c1");
+    expect(block.callIds).toEqual(["c1"]);
     expect(
       block.tasks.map((t) => [t.agent, t.status, t.report, t.error])
     ).toEqual([
@@ -147,11 +148,14 @@ describe("restoreTurn", () => {
     ]);
   });
 
-  it("keeps an unparseable agent result as a plain tool call", () => {
+  it("shows an unparseable agent result as a failed node", () => {
     const turn = restoreTurn("t1", "", undefined, [
       { id: "c1", name: "agent", arguments: "{}", result: "error: agent arguments were not valid JSON: bad" },
     ]);
-    expect(shape(turn)).toEqual(["tools:c1"]);
+    const block = turn.blocks[0];
+    if (block.kind !== "agents") throw new Error("expected an agents block");
+    expect(block.tasks[0].status).toBe("error");
+    expect(block.tasks[0].error).toBe("agent arguments were not valid JSON: bad");
   });
 });
 
@@ -353,5 +357,72 @@ describe("buildMessages across a compaction", () => {
       { role: "user", content: expect.stringContaining("no issues") },
       { role: "user", content: "why nothing?" },
     ]);
+  });
+});
+
+describe("agent calls without status events", () => {
+  const args = JSON.stringify({
+    tasks: [
+      { agent: "scout", task: "the bridge" },
+      { agent: "scout", task: "the session" },
+    ],
+  });
+
+  it("draws a node per task the moment the call arrives", () => {
+    const turn = appendCall(newTurn("t1"), { id: "c1", name: "agent", arguments: args });
+    const block = turn.blocks[0];
+    if (block.kind !== "agents") throw new Error("expected an agents block");
+    expect(block.tasks.map((t) => [t.agent, t.task, t.status])).toEqual([
+      ["scout", "the bridge", "running"],
+      ["scout", "the session", "running"],
+    ]);
+  });
+
+  it("folds sibling agent calls into one card", () => {
+    let turn = appendCall(newTurn("t1"), {
+      id: "c1",
+      name: "agent",
+      arguments: JSON.stringify({ agent: "scout", task: "one" }),
+    });
+    turn = appendCall(turn, {
+      id: "c2",
+      name: "agent",
+      arguments: JSON.stringify({ agent: "scout", task: "two" }),
+    });
+    expect(shape(turn)).toEqual(["agents:scout,scout"]);
+    const block = turn.blocks[0];
+    if (block.kind !== "agents") throw new Error("expected an agents block");
+    expect(block.callIds).toEqual(["c1", "c2"]);
+  });
+
+  it("fills the seeded nodes in from the call result", () => {
+    let turn = appendCall(newTurn("t1"), { id: "c1", name: "agent", arguments: args });
+    turn = applyAgentReports(
+      turn,
+      "c1",
+      JSON.stringify([
+        { agent: "scout", task: "the bridge", report: "it is in bridge.rs" },
+        { agent: "scout", task: "the session", error: "timed out" },
+      ])
+    );
+    const block = turn.blocks[0];
+    if (block.kind !== "agents") throw new Error("expected an agents block");
+    expect(block.tasks.map((t) => [t.status, t.report ?? t.error])).toEqual([
+      ["done", "it is in bridge.rs"],
+      ["error", "timed out"],
+    ]);
+  });
+
+  it("lets a status event claim a seeded node the arguments did not name", () => {
+    let turn = appendCall(newTurn("t1"), { id: "c1", name: "agent", arguments: "not json" });
+    turn = upsertAgentState(turn, {
+      callId: "c1",
+      agent: "scout",
+      task: "the bridge",
+      status: "running",
+      done: 0,
+      total: 1,
+    });
+    expect(shape(turn)).toEqual(["agents:scout"]);
   });
 });

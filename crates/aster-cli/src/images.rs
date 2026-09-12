@@ -132,6 +132,21 @@ pub(crate) fn read_text_or_document(target: &Path) -> Result<String> {
     }
 }
 
+/// An image file as the model's own view of it. The only way a picture reaches
+/// the model from a tool: it has to ask, since each image is re-sent every round.
+pub(crate) fn read_image(target: &Path) -> Result<MessageParts> {
+    let url = encode(target)?;
+    Ok(MessageParts {
+        text: format!("{} is an image; it is attached below", target.display()),
+        images: vec![url],
+    })
+}
+
+pub(crate) struct MessageParts {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
 fn display(path: &Path, repo_root: &Path) -> String {
     path.strip_prefix(repo_root)
         .unwrap_or(path)
@@ -210,7 +225,7 @@ fn trim_punctuation(token: &str) -> &str {
     token.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':'))
 }
 
-fn has_image_extension(token: &str) -> bool {
+pub(crate) fn has_image_extension(token: &str) -> bool {
     Path::new(token)
         .extension()
         .and_then(|e| e.to_str())
@@ -234,7 +249,7 @@ fn resolve(token: &str, repo_root: &Path) -> PathBuf {
     repo_root.join(path)
 }
 
-fn encode(path: &Path) -> anyhow::Result<String> {
+pub(crate) fn encode(path: &Path) -> anyhow::Result<String> {
     encode_bytes(&std::fs::read(path)?)
 }
 

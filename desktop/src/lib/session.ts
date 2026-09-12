@@ -138,6 +138,8 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return `Forgot ${s(args.name)}`;
     case "read_skill":
       return `Read skill ${s(args.name)}`;
+    case "chat_history":
+      return args.id ? `Read chat ${s(args.id)}` : "Listed saved chats";
     case "agent": {
       const tasks = Array.isArray(args.tasks)
         ? (args.tasks as { agent?: unknown }[])

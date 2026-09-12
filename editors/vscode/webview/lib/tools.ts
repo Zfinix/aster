@@ -307,6 +307,12 @@ export function describeTool(call: ToolCall): ToolDescription {
       return { verb: "Forget", detail: arg(call, "name") };
     case "read_skill":
       return { verb: "Skill", detail: arg(call, "name"), code: true };
+    case "chat_history": {
+      const id = arg(call, "id");
+      if (id) return { verb: "History", detail: id === "current" ? "this chat" : id, code: id !== "current" };
+      const query = arg(call, "query");
+      return { verb: "History", detail: query ? `chats mentioning ${query}` : "saved chats" };
+    }
     case "update_plan":
       return { verb: "Plan", detail: `${steps(call).length} steps` };
     case "ask_user":

@@ -156,6 +156,28 @@ async fn run_command_times_out_kills_grandchildren() {
 
 #[tokio::test]
 #[ignore = "slow: spawns real sandboxed processes"]
+async fn a_cancelled_run_kills_grandchildren() {
+    if !can_run_sandboxed().await {
+        return;
+    }
+    let repo = tempfile::tempdir().unwrap();
+    let cfg = SandboxConfig::new(SandboxProfile::new(repo.path()));
+    let script = "sleep 30 & echo $! > child.pid; wait";
+    let run = tokio::spawn({
+        let cfg = cfg.clone();
+        async move { run_command(&cfg, "sh", &["-c".into(), script.into()]).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    run.abort();
+    let _ = run.await;
+
+    let pid = std::fs::read_to_string(repo.path().join("child.pid")).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!process_alive(pid.trim()), "grandchild survived the cancel");
+}
+
+#[tokio::test]
+#[ignore = "slow: spawns real sandboxed processes"]
 async fn run_command_output_is_capped() {
     if !can_run_sandboxed().await {
         return;

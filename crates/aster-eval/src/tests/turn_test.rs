@@ -42,6 +42,22 @@ pub(crate) fn calls(at: &str, tools: &[(&str, &str)]) -> String {
     )
 }
 
+pub(crate) fn calls_with_args(at: &str, tools: &[(&str, &str, &str)]) -> String {
+    let calls: Vec<String> = tools
+        .iter()
+        .map(|(id, name, args)| {
+            let args = args.replace('"', "\\\"");
+            format!(
+                r#"{{"id":"{id}","type":"function","function":{{"name":"{name}","arguments":"{args}"}}}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"type":"message","role":"assistant","tool_calls":[{}],"ts":"{at}"}}"#,
+        calls.join(",")
+    )
+}
+
 pub(crate) fn result(at: &str, id: &str, content: &str) -> String {
     format!(
         r#"{{"type":"message","role":"tool","tool_call_id":"{id}","content":"{content}","ts":"{at}"}}"#

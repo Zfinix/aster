@@ -60,6 +60,7 @@ Request tuning:
 
 - `ASTER_TIMEOUT_SECS` / `ASTER_MAX_RETRIES` / `ASTER_DEADLINE_SECS` - HTTP timeout, retry count, overall deadline
 - `ASTER_MAX_TOKENS` / `ASTER_SEED` / `ASTER_REASONING_EFFORT` - completion caps, deterministic seed, reasoning effort
+- `ASTER_LANGUAGE` - language every reply is written in; unset follows the user
 - `ASTER_PRICE_PROMPT_PER_M` / `ASTER_PRICE_COMPLETION_PER_M` - $ per million tokens, for cost reporting
 
 Review:

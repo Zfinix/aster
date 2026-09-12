@@ -142,6 +142,9 @@ pub(super) struct Session {
     pub repo_root: PathBuf,
     client: Mutex<AiClient>,
     pub ctx: SessionCtx,
+    /// The skills index and the stamp it was read at; a learned skill written
+    /// between turns must show up on the next one, not after a restart.
+    skills: Mutex<(u64, Arc<aster_skills::SkillSet>)>,
     grants: Arc<Grants>,
     history: Mutex<Vec<ChatMessage>>,
     permissions: Mutex<PermissionsConfig>,
@@ -235,11 +238,13 @@ pub(super) async fn open(
         swarm: SwarmLimits::resolve(&settings.agents),
     };
 
+    let skills = Mutex::new((chat::skills_stamp(&repo_root), Arc::clone(&ctx.skills)));
     let session = Arc::new(Session {
         id,
         repo_root,
         client: Mutex::new(client),
         ctx,
+        skills,
         grants,
         history: Mutex::new(prior.clone()),
         permissions: Mutex::new(permissions),
@@ -256,6 +261,25 @@ pub(super) async fn open(
 mod tests;
 
 impl Session {
+    /// The context for one turn, with the skills index re-read when anything
+    /// under the skills roots changed since it was last read.
+    fn refreshed_ctx(&self) -> SessionCtx {
+        let stamp = chat::skills_stamp(&self.repo_root);
+        let skills = match self.skills.lock() {
+            Ok(mut cached) => {
+                if cached.0 != stamp {
+                    *cached = (stamp, chat::discover_skills(&self.repo_root));
+                }
+                Arc::clone(&cached.1)
+            }
+            Err(_) => chat::discover_skills(&self.repo_root),
+        };
+        SessionCtx {
+            skills,
+            ..self.ctx.clone()
+        }
+    }
+
     pub fn mode(&self) -> Mode {
         self.permissions.lock().map(|p| p.mode).unwrap_or_default()
     }
@@ -486,7 +510,7 @@ impl Session {
         &self,
         prompt: String,
         approver: UiSender,
-        sink: Arc<ChatEventSink>,
+        sink: ChatEventSink,
     ) -> Result<TurnOutcome> {
         let mut history = self
             .history
@@ -513,6 +537,7 @@ impl Session {
         self.cancel_requested.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
         let client = self.client();
+        let ctx = self.refreshed_ctx();
 
         let mut edited = Vec::new();
         let outcome = {
@@ -525,7 +550,7 @@ impl Session {
                 &self.grants,
                 Some(&approver),
                 &mut edited,
-                &self.ctx,
+                &ctx,
                 Some(&sink),
             );
             tokio::pin!(run);
@@ -560,7 +585,7 @@ impl Session {
         });
         // Detached like the TUI's: the title reaches the editor on the sink
         // whenever it lands, instead of holding the turn open until it does.
-        drop(chat::name_session(&client, &self.ctx, &history, Some(sink)));
+        drop(chat::name_session(&client, &ctx, &history, Some(sink)));
         if let Ok(mut stored) = self.history.lock() {
             *stored = history;
         }

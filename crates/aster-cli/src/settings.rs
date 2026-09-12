@@ -47,7 +47,7 @@ pub struct Ui {
 
 /// Limits on one agent turn. Each is also settable per run via
 /// `ASTER_MAX_TOOL_ROUNDS`, `ASTER_COMMAND_TIMEOUT`, `ASTER_COMPACT_BUDGET`,
-/// and `ASTER_MAX_TOKENS`.
+/// `ASTER_MAX_TOKENS`, and `ASTER_LANGUAGE`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agent {
@@ -55,6 +55,10 @@ pub struct Agent {
     pub command_timeout_secs: Option<u64>,
     pub compact_budget_chars: Option<usize>,
     pub max_output_tokens: Option<u32>,
+    /// Language every reply is written in. Unset follows the user's language.
+    pub language: Option<String>,
+    /// Score finished tasks and refine their skills afterwards. On by default.
+    pub learn: Option<bool>,
 }
 
 /// Swarm configuration for sub-agent fan-out.  Also settable per run via
@@ -147,6 +151,8 @@ impl Settings {
                     .agent
                     .max_output_tokens
                     .or(self.agent.max_output_tokens),
+                language: project.agent.language.or(self.agent.language),
+                learn: project.agent.learn.or(self.agent.learn),
             },
             agents: Agents {
                 collector_model: project

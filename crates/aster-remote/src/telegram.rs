@@ -2,19 +2,21 @@
 //! message, and relays approval prompts as inline keyboards. Tool calls stream
 //! into a live-edited activity message so the chat mirrors the CLI.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use aster_ai::AiClient;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
+use ulid::Ulid;
 
-use crate::bridge::{Answer, Turn, TurnEvent, TurnOutcome, WireMessage, run_turn};
+use crate::bridge::{Agent, Answer, Turn, TurnEvent, TurnOutcome, WireMessage};
 use crate::markdown;
 
 const CHUNK_LIMIT: usize = 4000;
@@ -23,7 +25,16 @@ const ACTIVITY_WINDOW: usize = 6;
 
 const ACTIVITY_EDIT_GAP: Duration = Duration::from_millis(1500);
 
-const MAX_QUEUED: usize = 10;
+/// Staged Telegram photos outlive their turn so a re-read stays possible,
+/// then go after a day.
+const PHOTO_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+const PHOTO_SWEEP: Duration = Duration::from_secs(60 * 60);
+
+const ASIDE_NOTE: &str = "The user sent this from the same chat while you are working, so it is \
+     part of the task in hand, not a new one. Take it in at this point in the work: if it changes \
+     what you should do, say so in a line and adjust; if it is only context, say you have it and \
+     carry on. Do not start over and do not answer it as a separate job.";
 
 const SKIP_LABEL: &str = "Skip";
 
@@ -48,11 +59,15 @@ Approval prompts and questions reach the user as tappable buttons; if one is \
 denied or skipped, take the hint and do not immediately re-request it. \
 When you want to send a gif (e.g. via the giphy tools), put its URL on a line \
 by itself and it will render as a playing animation. \
-The `telegram` MCP server gives you chat tools: react (emoji-react to the \
-user's message; use sparingly), send_gif, send_photo, send_document (share a \
-repo file), send_poll, and send_code_page (send long code or reports as a \
-private, deletable chat attachment instead of flooding the chat). Prefer them \
-over describing what you would send. \
+Each message you get starts with a tag like `[msg 42]`, or `[msg 42, replying \
+to msg 40 from you: \"...\"]` when the user quoted a message; that quote is the \
+thing they mean by \"this\" or \"that\". The `telegram` MCP server gives you chat \
+tools: react (an emoji on a message, the current one unless you pass a \
+message_id; use sparingly), reply (send text quoting a specific message, for \
+answering one thing out of several or a message from earlier), send_gif, \
+send_photo, send_document (share a repo file), send_poll, and send_code_page \
+(send long code or reports as a private, deletable chat attachment instead of \
+flooding the chat). Prefer them over describing what you would send. \
 Hard rule: any code, file contents, or report longer than 40 lines must go \
 through send_code_page and be sent as a private attachment in this chat, never \
 published to a public page and never pasted into the chat. \
@@ -68,11 +83,19 @@ enum Pending {
 
 #[derive(Default)]
 struct ChatState {
+    /// When this chat last spoke, so a wake-up knows where to land.
+    touched: Option<Instant>,
     history: Vec<WireMessage>,
     pending: Option<Pending>,
     running: Option<AbortHandle>,
-    queued: VecDeque<(i64, String)>,
-    queue_notice: Option<i64>,
+    agent: Option<Arc<Agent>>,
+    session: Option<String>,
+    stopped: bool,
+    /// Messages that arrived too late to join the running turn; they run as
+    /// one turn as soon as it ends.
+    queued: Vec<(i64, String)>,
+    /// A learn pass is running for this chat; one at a time is plenty.
+    learning: bool,
     mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
@@ -89,10 +112,11 @@ fn chat_state<T>(chats: &Chats, chat_id: i64, act: impl FnOnce(&mut ChatState) -
     let mut chats = chats.lock().expect("chats lock");
     let state = chats.entry(chat_id).or_default();
     if !state.loaded {
-        let (mode, model, effort) = load_settings(chat_id);
+        let (mode, model, effort, session) = load_settings(chat_id);
         state.mode = mode;
         state.model = model;
         state.effort = effort;
+        state.session = session;
         state.loaded = true;
     }
     act(state)
@@ -109,18 +133,32 @@ fn settings_path(chat_id: i64) -> Option<PathBuf> {
     )
 }
 
-fn load_settings(chat_id: i64) -> (Option<String>, Option<String>, Option<String>) {
+type Saved = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Mode, model, effort, and the agent session id, so a restarted bridge picks
+/// the conversation back up.
+fn load_settings(chat_id: i64) -> Saved {
     let Some(path) = settings_path(chat_id) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let Ok(raw) = std::fs::read_to_string(&path) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let Ok(saved) = serde_json::from_str::<Value>(&raw) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let field = |key: &str| saved.get(key).and_then(Value::as_str).map(str::to_string);
-    (field("mode"), field("model"), field("effort"))
+    (
+        field("mode"),
+        field("model"),
+        field("effort"),
+        field("session"),
+    )
 }
 
 fn save_settings(chats: &Chats, chat_id: i64) {
@@ -130,7 +168,7 @@ fn save_settings(chats: &Chats, chat_id: i64) {
     let saved = {
         let mut chats = chats.lock().expect("chats lock");
         let state = chats.entry(chat_id).or_default();
-        json!({ "mode": state.mode, "model": state.model, "effort": state.effort })
+        json!({ "mode": state.mode, "model": state.model, "effort": state.effort, "session": state.session })
     };
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -217,6 +255,12 @@ pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
 
     let cfg = Arc::new(cfg);
     let chats: Chats = Arc::new(Mutex::new(HashMap::new()));
+    tokio::spawn(watch_wakeups(
+        api.clone(),
+        Arc::clone(&cfg),
+        Arc::clone(&chats),
+    ));
+    tokio::spawn(sweep_staged_photos());
     let mut offset = 0i64;
     loop {
         let updates = match api.get_updates(offset).await {
@@ -235,6 +279,69 @@ pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
         }
     }
 }
+
+/// `<data home>/aster/wakeups/<id>.json` with a `text` field, written by the
+/// phone's alarm receiver; each file becomes one turn in the chat that last spoke.
+fn wake_dir() -> Option<PathBuf> {
+    let root = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".local/share"),
+    };
+    Some(root.join("aster").join("wakeups"))
+}
+
+async fn watch_wakeups(api: Api, cfg: Arc<TelegramConfig>, chats: Chats) {
+    let Some(dir) = wake_dir() else {
+        return;
+    };
+    loop {
+        tokio::time::sleep(WAKE_POLL).await;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .collect();
+        files.sort();
+        for path in files {
+            let text = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .and_then(|v| v["text"].as_str().map(str::to_string));
+            let _ = std::fs::remove_file(&path);
+            let Some(text) = text else {
+                continue;
+            };
+            // Before anyone has spoken since the bridge came up, the owner's
+            // private chat is the place: for Telegram its id is the user's.
+            let Some(chat_id) = latest_chat(&chats).or(cfg.allowed_users.first().copied()) else {
+                tracing::warn!("wake-up with no chat to land in: {text}");
+                continue;
+            };
+            let prompt = format!(
+                "⏰ The reminder you set has fired: {text}
+                 Pick this up now and report back when it is done."
+            );
+            let posted = api
+                .send_html(chat_id, &format!("⏰ <i>{}</i>", markdown::escape(&text)))
+                .await
+                .unwrap_or(0);
+            start_turn(&api, &cfg, &chats, chat_id, posted, &prompt);
+        }
+    }
+}
+
+fn latest_chat(chats: &Chats) -> Option<i64> {
+    let chats = chats.lock().ok()?;
+    chats
+        .iter()
+        .filter_map(|(id, state)| state.touched.map(|t| (t, *id)))
+        .max()
+        .map(|(_, id)| id)
+}
+
+const WAKE_POLL: Duration = Duration::from_secs(2);
 
 async fn handle_update(
     api: &Api,
@@ -276,10 +383,17 @@ async fn handle_message(
         api.send_text(chat_id, &text).await;
         return;
     }
-    let Some(text) = message.get("text").and_then(Value::as_str) else {
-        api.send_text(chat_id, "I can only read text for now.")
-            .await;
-        return;
+    chat_state(chats, chat_id, |state| state.touched = Some(Instant::now()));
+    let text = match message.get("text").and_then(Value::as_str) {
+        Some(text) => text.trim().to_string(),
+        None => match incoming_photo(api, message).await {
+            Some(path) => photo_prompt(&path, message),
+            None => {
+                api.send_text(chat_id, "I can only read text and photos for now.")
+                    .await;
+                return;
+            }
+        },
     };
     let trimmed = text.trim();
     let message_id = message
@@ -311,8 +425,109 @@ async fn handle_message(
         let _ = respond.send(answer);
         return;
     }
-    start_turn(api, cfg, chats, chat_id, message_id, trimmed);
+    let prompt = incoming_prompt(message, trimmed);
+    start_turn(api, cfg, chats, chat_id, message_id, &prompt);
 }
+
+/// A photo message as a staged file path, so the prompt can mention it and the
+/// agent's `@path` attachment picks it up. Telegram serves photos at several
+/// sizes; the widest is the one worth reading.
+async fn incoming_photo(api: &Api, message: &Value) -> Option<String> {
+    let file_id = photo_file_id(message)?;
+    let file = api.get_file(file_id).await.ok()?;
+    let bytes = api.download(&file).await.ok()?;
+    let path = std::env::temp_dir()
+        .join("aster-pasted")
+        .join(format!("telegram-{}.jpg", Ulid::new()));
+    tokio::fs::create_dir_all(path.parent()?).await.ok()?;
+    tokio::fs::write(&path, bytes).await.ok()?;
+    Some(path.display().to_string())
+}
+
+/// Deletes staged Telegram photos older than a day, so a photo that was never
+/// picked up by a turn does not sit in temp storage forever. Runs alongside the
+/// wakeup watcher for the life of the bridge.
+async fn sweep_staged_photos() {
+    let dir = std::env::temp_dir().join("aster-pasted");
+    loop {
+        tokio::time::sleep(PHOTO_SWEEP).await;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let cutoff = SystemTime::now() - PHOTO_TTL;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_ours = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("telegram-"));
+            let expired = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified < cutoff)
+                .unwrap_or(false);
+            if is_ours && expired {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+    }
+}
+
+/// The largest variant's file id, the one worth reading.
+fn photo_file_id(message: &Value) -> Option<&str> {
+    message
+        .get("photo")?
+        .as_array()?
+        .last()?
+        .get("file_id")?
+        .as_str()
+}
+
+/// The staged path as a prompt mention, with the caption as its text.
+fn photo_prompt(path: &str, message: &Value) -> String {
+    match message.get("caption").and_then(Value::as_str) {
+        Some(caption) => format!("@{path} {}", caption.trim()),
+        None => format!("@{path}"),
+    }
+}
+
+/// The user's text plus what the model cannot see: the message id, to react
+/// to or quote, and the quoted message, so "this one" has its "this".
+fn incoming_prompt(message: &Value, text: &str) -> String {
+    let id = message
+        .get("message_id")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let mut tag = format!("[msg {id}");
+    if let Some(quoted) = message.get("reply_to_message") {
+        let who = match quoted.get("from") {
+            Some(from) if from.get("is_bot").and_then(Value::as_bool) == Some(true) => {
+                "you".to_string()
+            }
+            Some(from) => from
+                .get("first_name")
+                .and_then(Value::as_str)
+                .unwrap_or("them")
+                .to_string(),
+            None => "them".to_string(),
+        };
+        let qid = quoted
+            .get("message_id")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let body = quoted
+            .get("text")
+            .or_else(|| quoted.get("caption"))
+            .and_then(Value::as_str)
+            .map(|t| truncate(t.trim(), QUOTE_CHARS))
+            .unwrap_or_else(|| "(no text)".to_string());
+        tag.push_str(&format!(", replying to msg {qid} from {who}: \"{body}\""));
+    }
+    tag.push(']');
+    format!("{tag}\n{text}")
+}
+
+const QUOTE_CHARS: usize = 600;
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_command(
@@ -332,27 +547,38 @@ async fn handle_command(
                 let mut chats = chats.lock().expect("chats lock");
                 let state = chats.entry(chat_id).or_default();
                 state.history.clear();
-                state.queued.clear();
+                state.session = None;
+                if let Some(agent) = &state.agent {
+                    agent.reset_session();
+                }
             }
-            clear_queue_card(api, chats, chat_id).await;
+            save_settings(chats, chat_id);
             api.send_text(chat_id, "Started a new conversation.").await;
         }
         "stop" => {
-            let (running, queued) = {
+            let (running, agent, queued) = {
                 let mut chats = chats.lock().expect("chats lock");
                 let state = chats.entry(chat_id).or_default();
+                // Set before aborting, so the driver reads it as a deliberate
+                // stop rather than reporting the abort as a failure.
+                state.stopped = state.running.is_some();
                 let queued = state.queued.len();
                 state.queued.clear();
-                (state.running.take(), queued)
+                (state.running.take(), state.agent.clone(), queued)
             };
             match running {
                 Some(handle) => {
                     handle.abort();
-                    clear_queue_card(api, chats, chat_id).await;
+                    // The agent process outlives the turn, so it has to be
+                    // told as well, or it keeps working on a message nobody
+                    // is reading.
+                    if let Some(agent) = agent {
+                        agent.cancel().await;
+                    }
                     let text = match queued {
                         0 => "Stopped.".to_string(),
-                        1 => "Stopped, and cleared 1 waiting message.".to_string(),
-                        n => format!("Stopped, and cleared {n} waiting messages."),
+                        1 => "Stopped, and dropped the message waiting behind it.".to_string(),
+                        n => format!("Stopped, and dropped the {n} messages waiting behind it."),
                     };
                     api.send_text(chat_id, &text).await;
                 }
@@ -411,38 +637,6 @@ async fn handle_command(
             );
             api.send_text(chat_id, &text).await;
         }
-        "queue" | "queued" => {
-            let (busy, items) = chat_state(chats, chat_id, |state| {
-                (state.running.is_some(), state.queued.clone())
-            });
-            if items.is_empty() {
-                api.send_text(
-                    chat_id,
-                    if busy {
-                        "Nothing is queued. A turn is running."
-                    } else {
-                        "Nothing is queued."
-                    },
-                )
-                .await;
-            } else {
-                let count = items.len();
-                let status = if busy {
-                    format!("<b>{count} queued</b> · a turn is running")
-                } else {
-                    format!("<b>{count} queued</b>, next up")
-                };
-                let mut lines = vec![status, String::new()];
-                for (n, (_, text)) in items.iter().enumerate() {
-                    lines.push(format!(
-                        "<b>{}.</b> <code>{}</code>",
-                        n + 1,
-                        markdown::escape(&console_text(text, 160))
-                    ));
-                }
-                api.send_html_or_plain(chat_id, &lines.join("\n")).await;
-            }
-        }
         "diff" => {
             let output = tokio::process::Command::new("git")
                 .args(["-C", &cfg.repo_root.display().to_string(), "diff", "--stat"])
@@ -459,6 +653,7 @@ async fn handle_command(
                 api.send_html_or_plain(chat_id, &html).await;
             }
         }
+        "mirror" => mirror_command(api, cfg, chat_id, arg).await,
         "skills" => send_skill_picker(api, skills, chat_id, arg, 0, None).await,
         "commit" => send_commit_proposal(api, cfg, chats, chat_id, arg).await,
         other => {
@@ -828,49 +1023,25 @@ fn start_turn(
         if state.running.is_some() {
             None
         } else {
+            state.stopped = false;
             state.history.push(WireMessage::user(prompt));
             Some((
-                state.history.clone(),
                 state.mode.clone(),
                 state.model.clone(),
                 state.effort.clone(),
+                state.agent.clone().filter(|agent| agent.is_alive()),
+                state.session.clone(),
             ))
         }
     });
-    let Some((history, mode, model, effort)) = prepared else {
-        // A turn is already going; queue rather than dropping the message. The
-        // queue drains in order at the end of each successful turn.
-        let (accepted, depth) = chat_state(chats, chat_id, |state| {
-            if state.queued.len() >= MAX_QUEUED {
-                (false, state.queued.len())
-            } else {
-                state.queued.push_back((message_id, prompt.to_string()));
-                (true, state.queued.len())
-            }
-        });
-        // Fire the notice from its own task so start_turn never awaits: the
-        // reaction and the queue card are both fire-and-forget.
-        let api = api.clone();
-        let chats = Arc::clone(chats);
-        tokio::spawn(async move {
-            if accepted {
-                // A reaction says "seen, in line" without adding a message.
-                let _ = api.react(chat_id, message_id, "👀").await;
-                set_queue_card(&api, &chats, chat_id, depth).await;
-            } else {
-                api.send_text(
-                    chat_id,
-                    &format!(
-                        "My queue is full ({MAX_QUEUED}). /stop the current turn to make room."
-                    ),
-                )
-                .await;
-            }
-        });
+    let Some((mode, model, effort, agent, session)) = prepared else {
+        // A turn is already going, so the message joins it instead of starting
+        // a second conversation about the same work.
+        steer_running_turn(api, cfg, chats, chat_id, message_id, prompt);
         return;
     };
 
-    // The chat context rides in as env so the `telegram` MCP server the child
+    // The chat context rides in as env so the `telegram` MCP server the agent
     // spawns can act on this conversation.
     let mcp_extra = json!({
         "telegram": {
@@ -891,42 +1062,262 @@ fn start_turn(
             ("ASTER_MCP_EXTRA".into(), mcp_extra.to_string()),
         ],
     };
-    // Prepended per turn rather than stored, so /new never loses it and the
-    // recorded session history stays pure conversation.
-    let mut wire = Vec::with_capacity(history.len() + 1);
-    wire.push(WireMessage {
-        role: "system".into(),
-        content: TELEGRAM_SYSTEM.into(),
-    });
-    wire.extend(history);
 
     let (events_tx, events_rx) = mpsc::channel::<TurnEvent>(8);
-    let turn_task = tokio::spawn(async move { run_turn(&turn, &wire, &events_tx).await });
+    eprintln!("[{chat_id}] user: {}", console_text(untagged(prompt), 200));
+    let prompt = prompt.to_string();
+    let turn_chats = Arc::clone(chats);
+    let turn_task = tokio::spawn(async move {
+        // One agent process per chat, kept across turns; a session that was
+        // saved before a restart is loaded back rather than started over.
+        let agent = match agent {
+            Some(agent) => agent,
+            None => {
+                let agent = Agent::spawn(&turn).await?;
+                chat_state(&turn_chats, chat_id, |state| {
+                    state.agent = Some(Arc::clone(&agent))
+                });
+                agent
+            }
+        };
+        let session_id = agent
+            .ensure_session(&turn.repo_root, session.as_deref())
+            .await?;
+        if session.as_deref() != Some(&session_id) {
+            chat_state(&turn_chats, chat_id, |state| {
+                state.session = Some(session_id.clone())
+            });
+            save_settings(&turn_chats, chat_id);
+        }
+        agent.configure(&session_id, &turn).await;
+        // The standing rules go in with the first message of a session rather
+        // than every one, so the recorded conversation stays conversation.
+        let text = if agent.primed() {
+            prompt
+        } else {
+            format!("{TELEGRAM_SYSTEM}\n\n{prompt}")
+        };
+        agent.prompt(&session_id, &text, &events_tx).await
+    });
     {
         let mut chats = chats.lock().expect("chats lock");
         chats.entry(chat_id).or_default().running = Some(turn_task.abort_handle());
     }
-    eprintln!("[{chat_id}] user: {}", console_text(prompt, 200));
 
     let api = api.clone();
     let chats = chats.clone();
     let repo_root = cfg.repo_root.clone();
     let cfg = cfg.clone();
     tokio::spawn(async move {
-        let result = drive_turn(&api, &chats, chat_id, message_id, events_rx, turn_task).await;
-        finish_turn(
-            &api,
-            &cfg,
-            &chats,
-            chat_id,
-            message_id,
-            Some(&repo_root),
-            result,
-        )
-        .await;
+        let (result, calls) =
+            drive_turn(&api, &chats, chat_id, message_id, events_rx, turn_task).await;
+        let ok = finish_turn(&api, &chats, chat_id, message_id, Some(&repo_root), result).await;
+        if ok && calls >= LEARN_MIN_CALLS && std::env::var("ASTER_LEARN").as_deref() != Ok("0") {
+            spawn_learn(&api, &cfg, &chats, chat_id);
+        }
+        run_queued(&api, &cfg, &chats, chat_id);
     });
 }
 
+/// A message sent mid-turn goes to the turn in flight, so the agent hears it
+/// while it works instead of picking it up as a second, contextless task. One
+/// that arrives as the turn is ending waits and runs next.
+fn steer_running_turn(
+    api: &Api,
+    cfg: &Arc<TelegramConfig>,
+    chats: &Chats,
+    chat_id: i64,
+    message_id: i64,
+    prompt: &str,
+) {
+    let agent = chat_state(chats, chat_id, |state| {
+        state.agent.clone().filter(|agent| agent.is_alive())
+    });
+    let aside = format!("{ASIDE_NOTE}\n\n{prompt}");
+    let prompt = prompt.to_string();
+    let api = api.clone();
+    let cfg = Arc::clone(cfg);
+    let chats = Arc::clone(chats);
+    tokio::spawn(async move {
+        let joined = match agent {
+            Some(agent) => agent.steer(&aside).await.unwrap_or(false),
+            None => false,
+        };
+        eprintln!(
+            "[{chat_id}] {} {}",
+            if joined { "↳ mid-turn" } else { "⏳ queued" },
+            console_text(untagged(&prompt), 200)
+        );
+        let orphaned = chat_state(&chats, chat_id, |state| {
+            if joined {
+                state.history.push(WireMessage::user(prompt));
+                return false;
+            }
+            state.queued.push((message_id, prompt));
+            state.running.is_none()
+        });
+        // Either way the message landed somewhere, and the turn that answers
+        // it may be a while off, so say so now.
+        let _ = api.react(chat_id, message_id, "👀").await;
+        // The turn ended while this was in flight, so its finish already ran
+        // whatever was waiting and nothing else will pick this up.
+        if orphaned {
+            run_queued(&api, &cfg, &chats, chat_id);
+        }
+    });
+}
+
+/// Whatever came in too late to join the last turn runs now, as one turn.
+fn run_queued(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
+    let Some((message_id, prompt)) = take_queued(chats, chat_id) else {
+        return;
+    };
+    start_turn(api, cfg, chats, chat_id, message_id, &prompt);
+}
+
+/// The waiting messages as one prompt, answered as a reply to the first of
+/// them. None when nothing is waiting.
+fn take_queued(chats: &Chats, chat_id: i64) -> Option<(i64, String)> {
+    let queued = chat_state(chats, chat_id, |state| std::mem::take(&mut state.queued));
+    let (message_id, _) = queued.first()?;
+    let prompt = queued
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some((*message_id, prompt))
+}
+
+#[cfg(test)]
+#[path = "tests/telegram_queue_test.rs"]
+mod queue_tests;
+
+/// After a task-sized turn, score it and refine its skill in a child process,
+/// so the chat sees what changed without waiting on it.
+fn spawn_learn(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
+    let session = chat_state(chats, chat_id, |state| {
+        if state.learning {
+            return None;
+        }
+        state.learning = true;
+        state.session.clone()
+    });
+    let Some(session) = session else {
+        return;
+    };
+    let api = api.clone();
+    let cfg = Arc::clone(cfg);
+    let chats = Arc::clone(chats);
+    tokio::spawn(async move {
+        let run = tokio::process::Command::new(&cfg.bin)
+            .current_dir(&cfg.repo_root)
+            .args(["learn", "--session", &session, "--json"])
+            .kill_on_drop(true)
+            .output();
+        let outcome = match tokio::time::timeout(LEARN_TIMEOUT, run).await {
+            Ok(Ok(output)) if output.status.success() => {
+                serde_json::from_slice::<LearnReport>(&output.stdout)
+                    .map_err(|e| format!("unreadable learn report: {e}"))
+            }
+            Ok(Ok(output)) => Err(learn_error(&output)),
+            Ok(Err(e)) => Err(format!("could not start aster learn: {e}")),
+            Err(_) => Err("aster learn timed out".to_string()),
+        };
+        chat_state(&chats, chat_id, |state| state.learning = false);
+        match outcome {
+            Ok(report) => {
+                eprintln!("[{chat_id}] learn: {}", report.summary());
+                if let Some(line) = render_learned(&report) {
+                    api.send_html(chat_id, &line).await;
+                }
+            }
+            Err(e) => eprintln!("[{chat_id}] learn failed: {e}"),
+        }
+    });
+}
+
+/// A failed `--json` run reports on stdout and leaves stderr empty, so
+/// reading only stderr logs a blank reason.
+fn learn_error(output: &std::process::Output) -> String {
+    #[derive(Deserialize)]
+    struct Failure {
+        error: String,
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Ok(failure) = serde_json::from_str::<Failure>(stdout.trim()) {
+        return failure.error;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        output.status.to_string()
+    } else {
+        stderr
+    }
+}
+
+/// What `aster learn --json` prints; mirrors the CLI's report.
+#[derive(Debug, Deserialize)]
+pub(crate) struct LearnReport {
+    pub task: Option<String>,
+    pub score: LearnScore,
+    pub best: Option<LearnScore>,
+    pub outcome: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(crate) struct LearnScore {
+    pub rounds: usize,
+    pub calls: usize,
+}
+
+impl LearnReport {
+    fn summary(&self) -> String {
+        format!(
+            "{} · {} rounds, {} calls · {}{}",
+            self.task.as_deref().unwrap_or("no task"),
+            self.score.rounds,
+            self.score.calls,
+            self.outcome,
+            self.reason
+                .as_deref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        )
+    }
+}
+
+/// One line for the chat when the skill moved; nothing when there was
+/// nothing to learn.
+pub(crate) fn render_learned(report: &LearnReport) -> Option<String> {
+    let task = markdown::escape(report.task.as_deref()?);
+    let score = report.score;
+    let best = report.best.map(|b| b.rounds);
+    let tail = match (report.outcome.as_str(), best) {
+        ("new", _) => format!("{} rounds, {} calls · new skill", score.rounds, score.calls),
+        ("improved", Some(best)) => format!(
+            "{} rounds, {} calls · beat {best} · procedure updated",
+            score.rounds, score.calls
+        ),
+        ("improved", None) => format!(
+            "{} rounds, {} calls · procedure updated",
+            score.rounds, score.calls
+        ),
+        ("updated", _) => format!("{} rounds · matched best · procedure refined", score.rounds),
+        ("regressed", Some(best)) => {
+            format!("{} rounds · best is {best} · lesson noted", score.rounds)
+        }
+        ("regressed", None) => format!("{} rounds · lesson noted", score.rounds),
+        _ => return None,
+    };
+    Some(format!("📚 <b>{task}</b> · {tail}"))
+}
+
+const LEARN_MIN_CALLS: usize = 6;
+const LEARN_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[allow(clippy::too_many_arguments)]
 async fn drive_turn(
     api: &Api,
     chats: &Chats,
@@ -934,7 +1325,7 @@ async fn drive_turn(
     reply_to: i64,
     mut events: mpsc::Receiver<TurnEvent>,
     turn_task: tokio::task::JoinHandle<Result<TurnOutcome>>,
-) -> Result<TurnOutcome> {
+) -> (Result<TurnOutcome>, usize) {
     // Telegram's typing status fades after ~5s, so keep it alive for the
     // whole turn instead of pinging it per tool call.
     let typing = tokio::spawn({
@@ -948,8 +1339,22 @@ async fn drive_turn(
     });
 
     let mut activity = Activity::new(api.clone(), chat_id, reply_to);
+    let mut calls = 0usize;
     let mut plan_id: Option<i64> = None;
-    while let Some(event) = events.recv().await {
+    loop {
+        // An edit held back by the rate gap goes out once the gap has passed,
+        // even when the agent is quiet: a long tool call is still a step.
+        let event = match activity.due() {
+            Some(at) => tokio::select! {
+                event = events.recv() => event,
+                () = tokio::time::sleep_until(at.into()) => {
+                    activity.flush(false).await;
+                    continue;
+                }
+            },
+            None => events.recv().await,
+        };
+        let Some(event) = event else { break };
         match event {
             TurnEvent::ToolCall {
                 id,
@@ -970,17 +1375,42 @@ async fn drive_turn(
                         None => api.send_html(chat_id, &plan).await,
                     };
                 }
+                calls += 1;
                 activity.push(id, tool_line(&name, &arguments));
                 activity.flush(false).await;
                 eprintln!("[{chat_id}] → {}", console_tool(&name, &arguments));
             }
-            TurnEvent::ToolResult { id, error } => {
-                activity.complete(&id, error);
+            TurnEvent::ToolResult { id, error, output } => {
+                // Every screenshot the agent takes reaches the chat, whether or
+                // not it decides to attach it: the person cannot see the phone.
+                let shots = shot_paths(&output);
+                if !shots.is_empty() {
+                    // The card so far stays above the photos; a fresh one
+                    // carries on below them, so the thread reads top to bottom.
+                    activity.flush(true).await;
+                    let caption = activity.caption_for(&id);
+                    for path in shots {
+                        api.send_chat_action(chat_id, "upload_photo").await;
+                        if let Err(err) = api.send_photo_file(chat_id, &path, &caption).await {
+                            tracing::warn!("could not send {path}: {err:#}");
+                        }
+                    }
+                    activity.rehome();
+                }
+                activity.complete(&id, error, output);
                 activity.flush(false).await;
                 eprintln!(
                     "[{chat_id}]   {}",
                     if error { "✗ tool failed" } else { "✓ ok" }
                 );
+            }
+            TurnEvent::Text { content } => {
+                activity.say(&content);
+                activity.flush(false).await;
+            }
+            TurnEvent::Thought { content } => {
+                activity.think(&content);
+                activity.flush(false).await;
             }
             TurnEvent::ApprovalRequest {
                 preview,
@@ -1046,7 +1476,14 @@ async fn drive_turn(
         .await
         .unwrap_or_else(|e| Err(anyhow!("turn cancelled: {e}")));
     typing.abort();
-    activity.finish(result.is_ok()).await;
+    let end = if result.is_ok() {
+        TurnEnd::Done
+    } else if chat_state(chats, chat_id, |state| state.stopped) {
+        TurnEnd::Stopped
+    } else {
+        TurnEnd::Failed
+    };
+    activity.finish(end).await;
     match &result {
         Ok(outcome) => eprintln!(
             "[{chat_id}] ✔ done: {}",
@@ -1054,38 +1491,35 @@ async fn drive_turn(
         ),
         Err(e) => eprintln!("[{chat_id}] ✗ turn failed: {e:#}"),
     }
-    result
+    (result, calls)
 }
 
 async fn finish_turn(
     api: &Api,
-    cfg: &Arc<TelegramConfig>,
     chats: &Chats,
     chat_id: i64,
     reply_to: i64,
     repo_root: Option<&std::path::Path>,
     result: Result<TurnOutcome>,
-) {
-    let result = {
+) -> bool {
+    let (result, stopped) = {
         let mut chats = chats.lock().expect("chats lock");
         let state = chats.entry(chat_id).or_default();
         state.running = None;
         state.pending = None;
+        let stopped = std::mem::take(&mut state.stopped);
         if let Ok(outcome) = &result {
             state
                 .history
                 .push(WireMessage::assistant(outcome.reply.clone()));
         }
-        result
+        (result, stopped)
     };
     let ok = result.is_ok();
     match result {
         Ok(outcome) => {
             let (text, gifs) = extract_gifs(&outcome.reply);
-            for chunk in markdown::to_html_chunks(&text, CHUNK_LIMIT) {
-                api.send_html_or_plain_reply(chat_id, &chunk, Some(reply_to))
-                    .await;
-            }
+            send_reply_chunks(api, chat_id, &text, Some(reply_to)).await;
             for gif in gifs {
                 api.send_animation(chat_id, &gif).await;
             }
@@ -1093,79 +1527,15 @@ async fn finish_turn(
                 send_edit_diff(api, chat_id, repo_root, &outcome.edits).await;
             }
         }
+        // /stop already confirmed; reporting the abort as a failure on top of
+        // it would be a second, noisier message.
+        Err(_) if stopped => {}
         Err(e) => {
             let text = format!("I couldn't finish that. Send it again to retry.\n\n{e:#}");
             api.send_text_reply(chat_id, &text, Some(reply_to)).await;
         }
     }
-    // This turn is done and running is cleared, so start the next queued
-    // message. Only successful turns drain: a failed turn leaves the queue
-    // sitting for /stop or /new to clear.
-    if ok {
-        drain_queued(api, cfg, chats, chat_id).await;
-    }
-}
-
-async fn drain_queued(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
-    loop {
-        let next = {
-            let mut chats = chats.lock().expect("chats lock");
-            let state = chats.entry(chat_id).or_default();
-            if state.running.is_some() {
-                None
-            } else {
-                state
-                    .queued
-                    .pop_front()
-                    .map(|item| (item, state.queued.len()))
-            }
-        };
-        match next {
-            Some(((message_id, prompt), remaining)) => {
-                // The queue card is the queue's only voice: keep it while more
-                // messages wait, drop it when this was the last one.
-                if remaining > 0 {
-                    set_queue_card(api, chats, chat_id, remaining).await;
-                } else {
-                    clear_queue_card(api, chats, chat_id).await;
-                }
-                api.clear_reaction(chat_id, message_id).await;
-                eprintln!("[{chat_id}] queued: {}", console_text(&prompt, 200));
-                start_turn(api, cfg, chats, chat_id, message_id, &prompt);
-            }
-            None => break,
-        }
-    }
-}
-
-/// One card per chat, edited as the queue grows or drains, so waiting never
-/// costs a message per message.
-async fn set_queue_card(api: &Api, chats: &Chats, chat_id: i64, depth: usize) {
-    let existing = get_override(chats, chat_id, |state| state.queue_notice);
-    let text = queue_card(depth);
-    match existing {
-        Some(id) => api.edit_html(chat_id, id, &text).await,
-        None => {
-            let id = api.send_html(chat_id, &text).await;
-            if id.is_some() {
-                chat_state(chats, chat_id, |state| state.queue_notice = id);
-            }
-        }
-    }
-}
-
-async fn clear_queue_card(api: &Api, chats: &Chats, chat_id: i64) {
-    if let Some(id) = chat_state(chats, chat_id, |state| state.queue_notice.take()) {
-        api.delete_message(chat_id, id).await;
-    }
-}
-
-fn queue_card(depth: usize) -> String {
-    if depth <= 1 {
-        "<b>In line</b>\nI'll start this the moment the current turn ends.".to_string()
-    } else {
-        format!("<b>In line</b> · {depth} waiting")
-    }
+    ok
 }
 
 fn set_pending(chats: &Chats, chat_id: i64, pending: Pending) {
@@ -1331,7 +1701,13 @@ struct Activity {
     reply_to: i64,
     message_id: Option<i64>,
     lines: Vec<Step>,
+    /// What the agent has said since its last tool call.
+    saying: String,
+    /// What the agent has thought since its last tool call.
+    thinking: String,
     last_flush: Instant,
+    /// A change the rate gap kept off the card, waiting for the gap to pass.
+    held: bool,
 }
 
 struct Step {
@@ -1339,6 +1715,8 @@ struct Step {
     emoji: String,
     label: String,
     status: Status,
+    /// The first line of what came back, once it has.
+    result: String,
 }
 
 impl Step {
@@ -1358,6 +1736,14 @@ enum Status {
     Failed,
 }
 
+/// How a turn ended, so the activity card says stopped only when the user
+/// asked it to.
+enum TurnEnd {
+    Done,
+    Stopped,
+    Failed,
+}
+
 impl Activity {
     fn new(api: Api, chat_id: i64, reply_to: i64) -> Self {
         Self {
@@ -1366,13 +1752,25 @@ impl Activity {
             reply_to,
             message_id: None,
             lines: Vec::new(),
+            saying: String::new(),
+            thinking: String::new(),
             last_flush: Instant::now()
                 .checked_sub(ACTIVITY_EDIT_GAP)
                 .unwrap_or_else(Instant::now),
+            held: false,
         }
     }
 
+    /// When a held change can go out, if there is one.
+    fn due(&self) -> Option<Instant> {
+        self.held.then(|| self.last_flush + ACTIVITY_EDIT_GAP)
+    }
+
     fn push(&mut self, id: String, line: String) {
+        let line = match line == LOOK_LINE {
+            true => self.look_line(),
+            false => line,
+        };
         let (emoji, label) = match line.split_once(' ') {
             Some((emoji, label)) => (emoji.to_string(), label.to_string()),
             None => (String::from("◦"), line),
@@ -1382,10 +1780,66 @@ impl Activity {
             emoji,
             label,
             status: Status::Running,
+            result: String::new(),
         });
+        // A new action ends the narration that led to it.
+        self.saying.clear();
+        self.thinking.clear();
     }
 
-    fn complete(&mut self, id: &str, error: bool) {
+    /// A look at a screenshot says what the screenshot was of, taken from
+    /// the step that shot it: "Screenshot the board" → "of the board".
+    fn look_line(&self) -> String {
+        let subject = self
+            .lines
+            .iter()
+            .rev()
+            .map(|step| plain_text(&step.label))
+            .find_map(|label| {
+                let rest = label.strip_prefix("Screenshot ")?;
+                let rest = rest.strip_prefix("of ").unwrap_or(rest);
+                (!rest.is_empty() && !rest.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                    .then(|| rest.to_string())
+            });
+        match subject {
+            Some(subject) => format!(
+                "👀 <b>Look at the screenshot of {}</b>",
+                markdown::escape(&subject)
+            ),
+            None => LOOK_LINE.to_string(),
+        }
+    }
+
+    fn say(&mut self, chunk: &str) {
+        self.saying.push_str(chunk);
+    }
+
+    fn think(&mut self, chunk: &str) {
+        self.thinking.push_str(chunk);
+    }
+
+    /// What a photo is captioned with: the step that took it, as plain text.
+    fn caption_for(&self, id: &str) -> String {
+        let label = self
+            .lines
+            .iter()
+            .rfind(|step| step.id == id)
+            .map(|step| plain_text(&step.label))
+            .unwrap_or_default();
+        if label.is_empty() {
+            "📸 Screenshot".to_string()
+        } else {
+            format!("📸 {label}")
+        }
+    }
+
+    /// Continue in a new message, so what follows lands below whatever was
+    /// just posted rather than editing a card that is now above it.
+    fn rehome(&mut self) {
+        self.message_id = None;
+    }
+
+    fn complete(&mut self, id: &str, error: bool, output: String) {
         // A tool that reports no id still completes the oldest running step.
         let index = self
             .lines
@@ -1398,6 +1852,7 @@ impl Activity {
             });
         if let Some(step) = index.and_then(|i| self.lines.get_mut(i)) {
             step.status = if error { Status::Failed } else { Status::Done };
+            step.result = summarize_result(&output);
         }
     }
 
@@ -1405,7 +1860,8 @@ impl Activity {
         let mut text = String::from(header);
         let hidden = self.lines.len().saturating_sub(ACTIVITY_WINDOW);
         if hidden > 0 {
-            text.push_str(&format!("\n…  {hidden} earlier steps"));
+            let noun = if hidden == 1 { "step" } else { "steps" };
+            text.push_str(&format!("\n<i>… {hidden} earlier {noun}</i>"));
         }
         // Identical consecutive steps collapse, but only while they share a
         // status, so a failure is never hidden inside a run.
@@ -1419,14 +1875,27 @@ impl Activity {
             {
                 run += 1;
             }
-            text.push('\n');
+            text.push_str("\n\n");
             text.push_str(visible[i].marker());
             text.push(' ');
             text.push_str(&visible[i].label);
             if run > 1 {
                 text.push_str(&format!(" ×{run}"));
             }
+            // The last outcome of a collapsed run is the one that matters.
+            let result = &visible[i + run - 1].result;
+            if !result.is_empty() {
+                text.push_str(&format!("\n<i>{}</i>", markdown::escape(result)));
+            }
             i += run;
+        }
+        let thinking = tail(&self.thinking, NARRATION_CHARS);
+        if !thinking.is_empty() {
+            text.push_str(&format!("\n\n💭 <i>{}</i>", markdown::escape(&thinking)));
+        }
+        let saying = tail(&self.saying, NARRATION_CHARS);
+        if !saying.is_empty() {
+            text.push_str(&format!("\n\n{}", markdown::escape(&saying)));
         }
         text
     }
@@ -1435,8 +1904,10 @@ impl Activity {
             return;
         }
         if !force && self.message_id.is_some() && self.last_flush.elapsed() < ACTIVITY_EDIT_GAP {
+            self.held = true;
             return;
         }
+        self.held = false;
         let text = self.render("<b>Working…</b>");
         match self.message_id {
             None => {
@@ -1450,16 +1921,22 @@ impl Activity {
         self.last_flush = Instant::now();
     }
 
-    async fn finish(&mut self, ok: bool) {
+    async fn finish(&mut self, end: TurnEnd) {
         if self.lines.is_empty() {
             return;
         }
-        let header = if ok {
-            format!("<b>Done</b> · {} steps", self.lines.len())
-        } else {
-            format!("<b>Stopped</b> · {} steps", self.lines.len())
+        let label = match end {
+            TurnEnd::Done => "Done",
+            TurnEnd::Stopped => "Stopped",
+            TurnEnd::Failed => "Failed",
         };
-        let text = self.render(&header);
+        let count = self.lines.len();
+        let steps = if count == 1 { "step" } else { "steps" };
+        // The answer follows as its own message; the finished card keeps the
+        // steps and drops the narration so nothing is said twice.
+        self.saying.clear();
+        self.thinking.clear();
+        let text = self.render(&format!("<b>{label}</b> · {count} {steps}"));
         match self.message_id {
             None => {
                 self.message_id = self
@@ -1473,6 +1950,213 @@ impl Activity {
 }
 
 const DIFF_INLINE_LIMIT: usize = 3_000;
+/// How much of a tool's output the activity card shows under its step.
+const RESULT_LINES: usize = 2;
+const RESULT_CHARS: usize = 160;
+/// How much of the agent's live narration or reasoning the card shows.
+const NARRATION_CHARS: usize = 400;
+
+/// Capitalised, without a trailing full stop, so it reads as a step.
+fn sentence(text: &str) -> String {
+    let text = text.trim().trim_end_matches('.');
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// A phone action as a person would say it: the verb, then what it acted on.
+fn phone_line(verb: &str, args: &[&str], step: &dyn Fn(&str, &str, &str) -> String) -> String {
+    let rest = args.join(" ");
+    match verb {
+        "map" => "📱 <b>Read the screen</b>".into(),
+        "ocr" => "📱 <b>Read the pixels</b>".into(),
+        "find" => step("📱", "Find", &rest),
+        "tap" => step("📱", "Tap", &rest),
+        "press" => step("📱", "Hold", &rest),
+        "type" => step("⌨️", "Type", &rest),
+        "key" => step("📱", "Press", &rest),
+        "swipe" => step(
+            "📱",
+            "Swipe",
+            &args.iter().take(2).copied().collect::<Vec<_>>().join(" → "),
+        ),
+        "scroll" => step("📱", "Scroll", &rest),
+        "shot" => step("📸", "Screenshot", &rest),
+        "open" => step("📱", "Open", &rest),
+        "restart" => step("📱", "Restart", &rest),
+        "later" => match args {
+            [when, rest @ ..] => step("⏰", "Later", &format!("{when}: {}", rest.join(" "))),
+            _ => step("⏰", "Later", &rest),
+        },
+        "wait" => match args {
+            [text, secs] => step("⏳", "Wait for", &format!("{text} ({secs}s)")),
+            _ => step("⏳", "Wait for", &rest),
+        },
+        "volume" => step("🔊", "Volume", &rest),
+        "media" => step("🎵", "Media", &rest),
+        "notes" => "🔔 <b>Read notifications</b>".into(),
+        other => step("📱", &markdown::escape(other), &rest),
+    }
+}
+
+/// What came back, as one short phrase. The raw lines are for the model; the
+/// person only needs to know whether the screen moved and where they are.
+fn summarize_result(output: &str) -> String {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !is_plumbing(l))
+        .collect();
+    let Some(first) = lines.first() else {
+        return String::new();
+    };
+    // A chat tool answering `{"ok":true}` has nothing to add to its check mark.
+    if first.starts_with('{') && first.contains("\"ok\":true") {
+        return String::new();
+    }
+    if let Some(rest) = first.strip_prefix("changed: ") {
+        return describe_change(rest);
+    }
+    if first.starts_with("shot ") {
+        return "picture sent".into();
+    }
+    if let Some(rest) = first.strip_prefix("ocr blocks=") {
+        return match rest {
+            "0" => "nothing readable on screen".into(),
+            _ => format!("read {rest} pieces of text"),
+        };
+    }
+    if let Some(rest) = first.strip_prefix("found after ") {
+        let app = lines
+            .get(1)
+            .and_then(|l| l.split_once("pkg="))
+            .map(|(_, r)| r);
+        let app = app.and_then(|r| r.split_whitespace().next()).map(app_name);
+        let secs = rest.trim_end_matches('s').parse::<f64>().unwrap_or(0.0);
+        let when = if secs < 1.0 {
+            "right away".to_string()
+        } else {
+            format!("after {secs:.0}s")
+        };
+        return match app {
+            Some(app) => format!("found {when} in {app}"),
+            None => format!("found {when}"),
+        };
+    }
+    if let Some(rest) = first.strip_prefix("pkg=") {
+        let mut words = rest.split_whitespace();
+        let app = words.next().map(app_name).unwrap_or_default();
+        if let Some(n) = words.find_map(|w| w.strip_prefix("matches=")) {
+            return match n {
+                "0" => format!("not on the {app} screen"),
+                _ => format!("found in {app}"),
+            };
+        }
+        if words.any(|w| w.starts_with("elements=")) {
+            return format!("{app} is on screen");
+        }
+        return format!("in {app}");
+    }
+    if let Some(rest) = first.strip_prefix("opening ") {
+        return format!("{} is open", rest.split(" (").next().unwrap_or(rest));
+    }
+    if let Some(rest) = first.strip_prefix("restarted ") {
+        return format!(
+            "{} is back",
+            app_name(rest.split(':').next().unwrap_or(rest))
+        );
+    }
+    if first.contains(" is an image; ") {
+        return String::new();
+    }
+    if let Some(rest) = first.strip_prefix("now ") {
+        return rest.to_string();
+    }
+    if let Some(rest) = first.strip_prefix("error: ") {
+        return format!("did not work: {}", truncate(rest, 90));
+    }
+    truncate(
+        &lines
+            .iter()
+            .take(RESULT_LINES)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" · "),
+        RESULT_CHARS,
+    )
+}
+
+/// `+14 -1 pkg=com.android.chrome after_ms=1377` as words.
+fn describe_change(rest: &str) -> String {
+    let mut added = "";
+    let mut removed = "";
+    let mut app = String::new();
+    for word in rest.split_whitespace() {
+        if let Some(a) = word.strip_prefix('+') {
+            added = a;
+        } else if let Some(r) = word.strip_prefix('-') {
+            removed = r;
+        } else if let Some(p) = word.strip_prefix("pkg=") {
+            app = app_name(p);
+        }
+    }
+    if added == "0" && removed == "0" {
+        return format!("nothing happened in {app}");
+    }
+    format!("{app} responded")
+}
+
+/// `com.android.chrome` as "chrome": the last segment, unless the package
+/// is one nobody would recognise that way.
+fn app_name(pkg: &str) -> String {
+    match pkg {
+        "app.lawnchair" | "com.android.launcher3" | "com.google.android.apps.nexuslauncher" => {
+            "the launcher".into()
+        }
+        "com.android.systemui" => "the system".into(),
+        "com.android.settings" => "Settings".into(),
+        "com.android.vending" => "the Play Store".into(),
+        other => {
+            let last = other.rsplit('.').next().unwrap_or(other);
+            let mut chars = last.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+const LOOK_LINE: &str = "👀 <b>Look at the screenshot</b>";
+
+fn is_image_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+}
+
+fn is_plumbing(line: &str) -> bool {
+    line == "stdout:"
+        || line == "stderr:"
+        || line.starts_with("exit code:")
+        || line.starts_with("receipt: posted")
+        || (line.starts_with('(') && line.ends_with("ms)"))
+}
+
+/// The end of a growing text, so a card shows the latest words rather than
+/// the first ones.
+fn tail(text: &str, chars: usize) -> String {
+    let text = text.trim();
+    let count = text.chars().count();
+    if count <= chars {
+        return text.to_string();
+    }
+    let skipped = text.chars().skip(count - chars).collect::<String>();
+    format!("…{skipped}")
+}
 
 async fn send_edit_diff(
     api: &Api,
@@ -1528,6 +2212,39 @@ async fn send_edit_diff(
     }
 }
 
+/// The PNGs an `asterctl shot` names in a tool's output, one per
+/// `shot <path> (WxH, N bytes)` line.
+fn shot_paths(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let at = words
+                .windows(2)
+                .position(|pair| pair[0] == "shot" && pair[1].ends_with(".png"))?;
+            Some(words[at + 1].to_string())
+        })
+        .collect()
+}
+
+/// A card label without its HTML, for places that take plain text.
+fn plain_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+}
+
 fn plan_message(arguments: &str) -> Option<String> {
     let args: Value = serde_json::from_str(arguments).ok()?;
     let steps = args.get("steps")?.as_array()?;
@@ -1580,7 +2297,10 @@ fn tool_line(name: &str, arguments: &str) -> String {
         }
     };
     match name {
-        "read_file" => step("📖", "Read", &short_path(&field(&["path"]))),
+        "read_file" => match field(&["path"]) {
+            path if is_image_path(&path) => LOOK_LINE.into(),
+            path => step("📖", "Read", &short_path(&path)),
+        },
         "list_files" => {
             let path = short_path(&field(&["path"]));
             let target = if path.is_empty() {
@@ -1601,18 +2321,34 @@ fn tool_line(name: &str, arguments: &str) -> String {
             &pretty_query(&field(&["pattern", "glob", "query"])),
         ),
         "run_command" => {
-            // The model's summary takes the verb's place: it already reads as one.
+            let mut cmd = field(&["command"]);
+            let extra: Vec<&str> = args
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            // A phone action reads best in the model's own words ("Tap the
+            // Umbrella song result"), else as its verb and target.
+            if cmd == "asterctl" && !extra.is_empty() {
+                let summary = field(&["description"]);
+                if !summary.is_empty() {
+                    return step(
+                        "📱",
+                        &markdown::escape(&sentence(&truncate(&summary, 70))),
+                        "",
+                    );
+                }
+                return phone_line(extra[0], &extra[1..], &step);
+            }
+            if !extra.is_empty() {
+                cmd.push(' ');
+                cmd.push_str(&extra.join(" "));
+            }
+            // The model's summary takes the verb's place, and the command
+            // itself follows, because the summary alone hides what ran.
             let summary = field(&["description"]);
             if !summary.is_empty() {
-                return format!("🖥 <b>{}</b>", markdown::escape(&truncate(&summary, 80)));
-            }
-            let mut cmd = field(&["command"]);
-            if let Some(args) = args.get("args").and_then(Value::as_array) {
-                let extra: Vec<&str> = args.iter().filter_map(Value::as_str).collect();
-                if !extra.is_empty() {
-                    cmd.push(' ');
-                    cmd.push_str(&extra.join(" "));
-                }
+                return step("🖥", &markdown::escape(&truncate(&summary, 80)), &cmd);
             }
             step("🖥", "Run", &cmd)
         }
@@ -1729,6 +2465,8 @@ pub(crate) const REACTIONS: &[&str] = &[
 ];
 
 const GIF_LIMIT: usize = 3;
+const LINK_BUTTON_LIMIT: usize = 3;
+const BUTTON_LABEL_LIMIT: usize = 40;
 
 fn extract_gifs(reply: &str) -> (String, Vec<String>) {
     let mut gifs: Vec<String> = Vec::new();
@@ -1755,6 +2493,88 @@ fn extract_gifs(reply: &str) -> (String, Vec<String>) {
         kept.push(line);
     }
     (kept.join("\n"), gifs)
+}
+
+/// A reply, split to fit, with its links as buttons under the last piece.
+async fn send_reply_chunks(api: &Api, chat_id: i64, text: &str, reply_to: Option<i64>) {
+    let buttons = link_buttons(text);
+    let chunks = markdown::to_html_chunks(text, CHUNK_LIMIT);
+    let last = chunks.len().saturating_sub(1);
+    for (i, chunk) in chunks.iter().enumerate() {
+        if i == last {
+            api.send_links_reply(chat_id, chunk, reply_to, &buttons)
+                .await;
+        } else {
+            api.send_html_or_plain_reply(chat_id, chunk, reply_to).await;
+        }
+    }
+}
+
+/// The links in a reply, as buttons to put under it. Telegram renders a URL
+/// inside code as plain text, so a link the model wrote that way cannot be
+/// tapped on a phone; a button is the only thing that opens it.
+fn link_buttons(reply: &str) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut push = |label: Option<&str>, url: &str| {
+        let url = url.trim();
+        if !is_web_url(url) || is_gif_url(url) || found.len() >= LINK_BUTTON_LIMIT {
+            return;
+        }
+        if found.iter().any(|(_, u)| u == url) {
+            return;
+        }
+        let label = label
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| clip(l, BUTTON_LABEL_LIMIT))
+            .unwrap_or_else(|| format!("Open {}", clip(&pretty_url(url), BUTTON_LABEL_LIMIT - 5)));
+        found.push((label, url.to_string()));
+    };
+
+    // A labelled link names itself; anything else is named after where it goes.
+    let mut rest = reply;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find("](") else {
+            rest = after;
+            continue;
+        };
+        let tail = &after[close + 2..];
+        let Some(end) = tail.find(')') else {
+            rest = tail;
+            continue;
+        };
+        push(Some(&after[..close]), &tail[..end]);
+        rest = &tail[end + 1..];
+    }
+    for token in reply.split_whitespace() {
+        let token = token.trim_matches(|c: char| "`\"'()[]<>,.;:!?".contains(c));
+        push(None, token);
+    }
+    found
+}
+
+fn is_web_url(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10
+}
+
+/// A URL as a button reads best as the place it goes, not the scheme and path
+/// that get it there.
+fn pretty_url(url: &str) -> String {
+    let bare = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    bare.to_string()
+}
+
+fn clip(text: &str, max: usize) -> String {
+    let flat = text.replace('\n', " ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+    format!("{cut}…")
 }
 
 fn is_gif_url(url: &str) -> bool {
@@ -1801,6 +2621,14 @@ fn truncate(text: &str, limit: usize) -> String {
         cut -= 1;
     }
     format!("{}…", &text[..cut])
+}
+
+/// The prompt without the `[msg N]` line the bridge put in front for the model.
+fn untagged(prompt: &str) -> &str {
+    match prompt.strip_prefix("[msg ") {
+        Some(rest) => rest.split_once('\n').map(|(_, text)| text).unwrap_or(""),
+        None => prompt,
+    }
 }
 
 fn console_text(text: &str, limit: usize) -> String {
@@ -1859,7 +2687,230 @@ fn add_reply(payload: &mut Value, reply_to: Option<i64>) {
     }
 }
 
+/// `/mirror` starts the phone's screen mirror and replies with a tappable URL;
+/// `/mirror off` stops it. asterdroid only: it shells out to the `asterctl`
+/// binary the app installs, which desktop bridges do not have.
+///
+/// The URL names the phone from outside (its LAN/Tailscale address), never
+/// `127.0.0.1`, which would only open on the phone itself.
+#[cfg(target_os = "android")]
+async fn mirror_command(api: &Api, cfg: &TelegramConfig, chat_id: i64, arg: &str) {
+    const PORT: u16 = 7070;
+    // Serve on the same address the reply links to. asterctl binds loopback
+    // unless told otherwise, which puts the mirror where only the phone can
+    // open it while the link says otherwise, so the tap times out.
+    let ip = mirror_ip();
+    let bind = ip.unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
+    let addr = std::net::SocketAddr::new(bind, PORT);
+    let url = mirror_url_for(ip, PORT);
+    let pid_file = cfg.repo_root.join(".mirror.pid");
+    if arg == "off" {
+        if !mirror_port_state(addr).is_ours() {
+            api.send_text(chat_id, "The mirror isn't running.").await;
+            return;
+        }
+        let pid = std::fs::read_to_string(&pid_file).ok();
+        if let Some(pid) = pid {
+            let _ = tokio::process::Command::new("kill")
+                .args([pid.trim()])
+                .output()
+                .await;
+        }
+        let _ = std::fs::remove_file(&pid_file);
+        api.send_text(chat_id, "Mirror stopped.").await;
+        return;
+    }
+    let state = mirror_port_state(addr);
+    if state.is_ours() {
+        api.send_links_reply(
+            chat_id,
+            &format!("Mirror is up. Open it here: <code>{url}</code>"),
+            None,
+            &[("Open mirror".into(), url.clone())],
+        )
+        .await;
+        return;
+    }
+    if state.is_listening() {
+        api.send_text(
+            chat_id,
+            &format!(
+                "Port {PORT} is held by another app, so the mirror can't start. Stop that \
+                 app (or change its port) and try /mirror again."
+            ),
+        )
+        .await;
+        return;
+    }
+    // A mirror from an older build is still holding the screen capture on an
+    // address this one is not about to use, so it goes first.
+    if let Ok(stale) = std::fs::read_to_string(&pid_file) {
+        let _ = tokio::process::Command::new("kill")
+            .args([stale.trim()])
+            .output()
+            .await;
+        let _ = std::fs::remove_file(&pid_file);
+    }
+    let bin = cfg.repo_root.join("bin").join("asterctl");
+    let log = std::fs::File::create(cfg.repo_root.join(".mirror.log"));
+    let spawned = tokio::process::Command::new(&bin)
+        .arg("serve")
+        .arg(PORT.to_string())
+        .args(["--bind", &bind.to_string()])
+        // Without this asterctl re-execs itself and exits, so the pid recorded
+        // below is a process that is already gone and /mirror off kills
+        // nothing. This spawn is already detached from the turn.
+        .arg("--foreground")
+        .stdout(std::process::Stdio::null())
+        .stderr(log.map(|f| f.into()).unwrap_or(std::process::Stdio::null()))
+        .spawn();
+    match spawned {
+        Ok(child) => {
+            if let Some(pid) = child.id() {
+                let _ = std::fs::write(&pid_file, pid.to_string());
+            }
+            for _ in 0..30 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if mirror_port_state(addr).is_ours() {
+                    let reach = match ip {
+                        Some(_) => String::new(),
+                        None => "\nThis phone has no address anyone else can reach right now, \
+                                 so the link only opens on the phone itself."
+                            .into(),
+                    };
+                    api.send_links_reply(
+                        chat_id,
+                        &format!(
+                            "Mirror is up. Open it here: <code>{url}</code>\n/mirror off \
+                             stops it.{reach}"
+                        ),
+                        None,
+                        &[("Open mirror".into(), url.clone())],
+                    )
+                    .await;
+                    return;
+                }
+            }
+            api.send_text(
+                chat_id,
+                "The mirror started but isn't answering yet. Try again in a moment.",
+            )
+            .await;
+        }
+        Err(e) => {
+            api.send_text(chat_id, &format!("Couldn't start the mirror: {e}"))
+                .await;
+        }
+    }
+}
+
+/// What is on the mirror port: nothing, the mirror, or a squatter. A bare
+/// connect cannot tell the last two apart, and the difference is the difference
+/// between "already up" and a port conflict the user has to resolve.
+#[cfg(target_os = "android")]
+enum MirrorPort {
+    Free,
+    Ours,
+    Squatted,
+}
+
+#[cfg(target_os = "android")]
+impl MirrorPort {
+    fn is_listening(&self) -> bool {
+        !matches!(self, MirrorPort::Free)
+    }
+
+    fn is_ours(&self) -> bool {
+        matches!(self, MirrorPort::Ours)
+    }
+}
+
+#[cfg(target_os = "android")]
+fn mirror_port_state(addr: std::net::SocketAddr) -> MirrorPort {
+    use std::io::{Read, Write};
+
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300))
+    else {
+        return MirrorPort::Free;
+    };
+    // The mirror answers any HTTP request with a page; a non-HTTP listener
+    // (or one that closes on a malformed request) does not.
+    let request = b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+    if stream.write_all(request).is_err() {
+        return MirrorPort::Squatted;
+    }
+    let mut buf = [0u8; 16];
+    let read = stream.read(&mut buf).unwrap_or(0);
+    match read {
+        0 => MirrorPort::Squatted,
+        _ if buf.starts_with(b"HTTP/") => MirrorPort::Ours,
+        _ => MirrorPort::Squatted,
+    }
+}
+
+/// The phone's address from outside itself, which is both where the mirror
+/// binds and what the reply links to. The Tailscale route is probed first so
+/// it opens from a laptop on any network; the LAN route is the fallback.
+#[cfg(target_os = "android")]
+fn mirror_ip() -> Option<std::net::IpAddr> {
+    let route = |to: &str| {
+        std::net::UdpSocket::bind("0.0.0.0:0")
+            .and_then(|socket| {
+                socket.connect(to)?;
+                socket.local_addr()
+            })
+            .map(|addr| addr.ip())
+            .ok()
+            .filter(|ip| !ip.is_loopback())
+    };
+    pick_mirror_ip(route("100.100.100.100:80"), route("8.8.8.8:80"))
+}
+
+/// Prefer the Tailscale address over the LAN one: the browser reading the
+/// mirror is usually not on the phone's wifi.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn pick_mirror_ip(
+    tailscale: Option<std::net::IpAddr>,
+    lan: Option<std::net::IpAddr>,
+) -> Option<std::net::IpAddr> {
+    match tailscale {
+        Some(std::net::IpAddr::V4(v4)) if is_tailscale_ip(v4) => tailscale,
+        _ => lan.or(tailscale),
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn is_tailscale_ip(ip: std::net::Ipv4Addr) -> bool {
+    let [first, second, _, _] = ip.octets();
+    first == 100 && (64..=127).contains(&second)
+}
+
+/// Build the reply URL from a discovered address, refusing loopback: a
+/// loopback or missing address falls back to the hostname. Shared with the
+/// tests, which run on every target; the android caller is the only runtime user.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mirror_url_for(ip: Option<std::net::IpAddr>, port: u16) -> String {
+    match ip {
+        Some(std::net::IpAddr::V4(ip)) if !ip.is_loopback() => format!("http://{ip}:{port}"),
+        _ => format!(
+            "http://{}:{port}",
+            std::env::var("HOSTNAME").unwrap_or_default()
+        ),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+async fn mirror_command(api: &Api, _cfg: &Arc<TelegramConfig>, chat_id: i64, _arg: &str) {
+    api.send_text(chat_id, "/mirror only works on asterdroid.")
+        .await;
+}
+
 fn help(cfg: &TelegramConfig) -> String {
+    let mirror_line = if cfg!(target_os = "android") {
+        "/mirror - share this phone's screen in a browser\n/mirror off - stop it\n"
+    } else {
+        ""
+    };
     format!(
         "<b>Aster</b>\n\
          Send a message to run the agent on <code>{}</code>.\n\
@@ -1871,9 +2922,9 @@ fn help(cfg: &TelegramConfig) -> String {
          /model - switch the model for this chat\n\
          /effort - how much it thinks before answering (off, low, medium, high)\n\
          /status - session, mode, model, and history\n\
-         /queued - what is waiting while I am busy\n\
          /diff - uncommitted changes in the repo\n\
          /commit - draft a commit message and commit\n\
+         {mirror_line}\
          /help - this message\n\n\
          Installed skills show up as /commands too.",
         markdown::escape(
@@ -1916,6 +2967,33 @@ impl Api {
         unwrap_result(method, response)
     }
 
+    /// A photo's temporary download URL, valid for one hour.
+    async fn get_file(&self, file_id: &str) -> Result<String> {
+        let response = self.call("getFile", json!({ "file_id": file_id })).await?;
+        Ok(response["file_path"]
+            .as_str()
+            .context("getFile returned no file_path")?
+            .to_string())
+    }
+
+    /// Fetch a file by its `getFile` path; the token stays inside `base`.
+    async fn download(&self, file_path: &str) -> Result<Vec<u8>> {
+        let url = format!(
+            "{}/file/{}",
+            self.base.replace("/bot", "/file/bot"),
+            file_path
+        );
+        let bytes = self
+            .http
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        Ok(bytes.to_vec())
+    }
+
     /// Upload a local file as a document; URLs go through `call` instead.
     pub(crate) async fn send_document_file(
         &self,
@@ -1952,6 +3030,39 @@ impl Api {
             .json()
             .await?;
         unwrap_result("sendDocument", response)
+    }
+
+    /// A PNG as an inline photo, so a screenshot shows in the chat rather
+    /// than arriving as a file to open.
+    pub(crate) async fn send_photo_file(
+        &self,
+        chat_id: i64,
+        path: &str,
+        caption: &str,
+    ) -> Result<Value> {
+        let bytes = tokio::fs::read(path)
+            .await
+            .with_context(|| format!("reading {path}"))?;
+        let filename = std::path::Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "shot.png".into());
+        let form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .text("caption", truncate(caption, 1000))
+            .part(
+                "photo",
+                reqwest::multipart::Part::bytes(bytes).file_name(filename),
+            );
+        let response: Value = self
+            .http
+            .post(format!("{}/sendPhoto", self.base))
+            .multipart(form)
+            .send()
+            .await?
+            .json()
+            .await?;
+        unwrap_result("sendPhoto", response)
     }
 
     async fn register_commands(&self, skills: &Skills) {
@@ -2005,7 +3116,7 @@ impl Api {
         self.send_text_reply(chat_id, text, None).await;
     }
 
-    async fn send_text_reply(&self, chat_id: i64, text: &str, reply_to: Option<i64>) {
+    pub(crate) async fn send_text_reply(&self, chat_id: i64, text: &str, reply_to: Option<i64>) {
         let mut payload = json!({ "chat_id": chat_id, "text": text });
         add_reply(&mut payload, reply_to);
         if let Err(e) = self.call("sendMessage", payload).await {
@@ -2063,25 +3174,6 @@ impl Api {
         self.call("setMessageReaction", payload).await
     }
 
-    async fn clear_reaction(&self, chat_id: i64, message_id: i64) {
-        if message_id <= 0 {
-            return;
-        }
-        let payload = json!({
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "reaction": [],
-        });
-        let _ = self.call("setMessageReaction", payload).await;
-    }
-
-    async fn delete_message(&self, chat_id: i64, message_id: i64) {
-        let payload = json!({ "chat_id": chat_id, "message_id": message_id });
-        if let Err(e) = self.call("deleteMessage", payload).await {
-            tracing::debug!("deleteMessage failed: {e:#}");
-        }
-    }
-
     async fn edit_html(&self, chat_id: i64, message_id: i64, html: &str) {
         let payload = json!({
             "chat_id": chat_id,
@@ -2091,6 +3183,36 @@ impl Api {
         });
         if let Err(e) = self.call("editMessageText", payload).await {
             tracing::debug!("editMessageText failed: {e:#}");
+        }
+    }
+
+    /// The reply with its links as buttons under it. A keyboard Telegram
+    /// refuses must not cost the message, so a failure resends it plain.
+    async fn send_links_reply(
+        &self,
+        chat_id: i64,
+        html: &str,
+        reply_to: Option<i64>,
+        buttons: &[(String, String)],
+    ) {
+        if buttons.is_empty() {
+            self.send_html_or_plain_reply(chat_id, html, reply_to).await;
+            return;
+        }
+        let keyboard: Vec<Value> = buttons
+            .iter()
+            .map(|(label, url)| json!([{ "text": label, "url": url }]))
+            .collect();
+        let mut payload = json!({
+            "chat_id": chat_id,
+            "text": html,
+            "parse_mode": "HTML",
+            "reply_markup": { "inline_keyboard": keyboard },
+        });
+        add_reply(&mut payload, reply_to);
+        if let Err(e) = self.call("sendMessage", payload).await {
+            tracing::warn!("sendMessage (links) failed: {e:#}");
+            self.send_html_or_plain_reply(chat_id, html, reply_to).await;
         }
     }
 

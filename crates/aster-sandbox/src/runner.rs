@@ -170,7 +170,7 @@ async fn run_with_backend(
     cmd.process_group(0);
 
     let mut child = cmd.spawn().context("spawning sandboxed command")?;
-    let pid = child.id();
+    let mut group = GroupKill(child.id());
     // Readers run as tasks so partial output survives a timeout; killing the
     // process group closes the pipes and lets them finish.
     let (out_buf, err_buf) = (captured(), captured());
@@ -178,10 +178,12 @@ async fn run_with_backend(
     let stderr_task = tokio::spawn(read_capped(child.stderr.take(), err_buf.clone()));
 
     let timed_out = tokio::time::timeout(timeout, child.wait()).await;
-    if timed_out.is_err() {
+    match timed_out {
         // Kill before joining the readers: a hung child holds the pipes open,
         // and the readers only finish once the pipes close.
-        kill_process_group(pid);
+        Err(_) => group.kill(),
+        // A grandchild left running on purpose (a dev server) outlives its shell.
+        Ok(_) => group.disarm(),
     }
     let readers = async { tokio::join!(stdout_task, stderr_task) };
     let _ = tokio::time::timeout(READER_GRACE, readers).await;
@@ -243,6 +245,26 @@ where
             }
             Err(_) => break,
         }
+    }
+}
+
+/// The child's process group, killed if the run is dropped mid-flight: a
+/// cancelled turn must not leave a grandchild spinning under init.
+struct GroupKill(Option<u32>);
+
+impl GroupKill {
+    fn kill(&mut self) {
+        kill_process_group(self.0.take());
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 

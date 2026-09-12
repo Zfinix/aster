@@ -297,3 +297,14 @@ fn images_past_the_per_turn_cap_are_dropped_and_named() {
         ContentPart::Text { text } if text.contains("e.png not attached")
     ));
 }
+
+#[test]
+fn reading_an_image_file_hands_back_the_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let shot = write_image(dir.path(), "screen.png", 4, 4);
+
+    let parts = read_image(&shot).unwrap();
+
+    assert_eq!(parts.images.len(), 1);
+    assert!(parts.text.contains("attached below"));
+}

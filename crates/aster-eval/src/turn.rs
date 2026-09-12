@@ -3,18 +3,21 @@
 
 use std::collections::HashMap;
 
-use aster_persist::{SessionTranscript, TranscriptEvent};
+use aster_persist::{SessionTranscript, TranscriptEvent, barren};
 use chrono::{DateTime, Utc};
-
-const BARREN: &[&str] = &["no matches", "no files matched", "no results"];
 
 const WAITS_ON_USER: &[&str] = &["ask_user", "exit_plan_mode"];
 
 pub struct Call {
     pub tool: String,
+    pub arguments: String,
     pub duration: Option<f64>,
     pub result_chars: usize,
     pub barren: bool,
+    /// The tool answered `error: …`, the harness's convention for a refusal.
+    pub error: bool,
+    /// A phone action that reported `changed: +0 -0`: posted, but nothing moved.
+    pub no_change: bool,
 }
 
 impl Call {
@@ -58,18 +61,6 @@ impl Turn {
     }
 }
 
-pub fn barren(result: &str) -> bool {
-    let result = result.trim();
-    if result.is_empty() {
-        return true;
-    }
-    if BARREN.iter().any(|m| result.eq_ignore_ascii_case(m)) {
-        return true;
-    }
-    // A wrong path guess: the note names nearby paths but answers nothing.
-    result.starts_with("note:") && result.contains("does not exist.")
-}
-
 /// Split one transcript into turns. Messages before the first user message
 /// (a seeded system prompt, an imported header) belong to no turn and are
 /// dropped rather than attributed to the first one.
@@ -77,7 +68,7 @@ pub fn turns(transcript: &SessionTranscript) -> Vec<Turn> {
     let model = transcript.meta.model.clone();
     let session = transcript.meta.id.clone();
     let mut turns: Vec<Turn> = Vec::new();
-    let mut pending: HashMap<String, (String, DateTime<Utc>)> = HashMap::new();
+    let mut pending: HashMap<String, (String, String, DateTime<Utc>)> = HashMap::new();
     let mut previous: Option<DateTime<Utc>> = None;
 
     for event in &transcript.events {
@@ -111,7 +102,14 @@ pub fn turns(transcript: &SessionTranscript) -> Vec<Turn> {
                     turn.batches.push(message.tool_calls.len());
                 }
                 for call in &message.tool_calls {
-                    pending.insert(call.id.clone(), (call.function.name.clone(), message.ts));
+                    pending.insert(
+                        call.id.clone(),
+                        (
+                            call.function.name.clone(),
+                            call.function.arguments.clone(),
+                            message.ts,
+                        ),
+                    );
                 }
                 if let Some(usage) = message.usage {
                     turn.prompt_tokens += usage.prompt_tokens;
@@ -129,15 +127,18 @@ pub fn turns(transcript: &SessionTranscript) -> Vec<Turn> {
                     .tool_call_id
                     .as_ref()
                     .and_then(|id| pending.remove(id));
-                let (tool, duration) = match started {
-                    Some((tool, at)) => (tool, Some(seconds(at, message.ts))),
-                    None => ("unknown".to_string(), None),
+                let (tool, arguments, duration) = match started {
+                    Some((tool, arguments, at)) => (tool, arguments, Some(seconds(at, message.ts))),
+                    None => ("unknown".to_string(), String::new(), None),
                 };
                 turn.calls.push(Call {
                     tool,
+                    arguments,
                     duration,
                     result_chars: result.len(),
                     barren: barren(result),
+                    error: result.trim_start().starts_with("error: "),
+                    no_change: result.contains("changed: +0 -0"),
                 });
                 previous = Some(message.ts);
             }

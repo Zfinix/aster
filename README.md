@@ -500,6 +500,7 @@ started. Every key, its default, and how the two files merge is in
 | `ASTER_VERIFY_MODEL` | A stronger model for review's verify pass | same as `ASTER_MODEL` |
 | `ASTER_HYPOTHESIS_MODEL` | A cheap model for review's first pass | same as `ASTER_MODEL` |
 | `ASTER_MAX_TOKENS` | Cap generated tokens (`off` disables) | `8000` |
+| `ASTER_LANGUAGE` | Language every reply is written in | the user's |
 | `ASTER_SEED` | Fixed sampling seed (`off` disables) | `0` |
 | `ASTER_COMPACT_BUDGET` | History size that triggers auto-compaction, in chars | `192000` |
 | `ASTER_WEB_SEARCH` | `1` turns review's web search back on | off |

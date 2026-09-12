@@ -12,8 +12,9 @@ use tokio::sync::mpsc;
 
 use crate::bridge::{Answer, Turn, TurnEvent, WireMessage};
 use crate::channel::{
-    Chats, MODES, Pending, Skills, chat_state, console_text, console_tool, discover_skill_commands,
-    get_override, set_override, skill_prompt, truncate,
+    Chats, MODES, Pending, Skills, WORKER_NOTE, abort_workers, chat_state, claim_worker_slot,
+    clear_worker_slot, console_text, console_tool, discover_skill_commands, get_override,
+    next_free_slot, set_override, skill_prompt, truncate,
 };
 
 const IMESSAGE_SYSTEM: &str = "You are Aster, running remotely over iMessage. \
@@ -21,7 +22,6 @@ const IMESSAGE_SYSTEM: &str = "You are Aster, running remotely over iMessage. \
  no markdown tables or long code blocks. Approvals arrive as plain questions; \
  the user answers yes/no/always in text.";
 
-const MAX_QUEUED: usize = 10;
 const CHUNK_LIMIT: usize = 3500;
 const POLL_SECS: u64 = 3;
 
@@ -123,19 +123,30 @@ async fn poll_loop(
 }
 
 async fn sqlite_json(db: &std::path::Path, sql: &str) -> Result<Value> {
-    let out = tokio::process::Command::new("sqlite3")
+    // The system copy: an SDK's sqlite3 earlier on PATH may be too old for -json.
+    let sqlite3 = ["/usr/bin/sqlite3", "sqlite3"]
+        .into_iter()
+        .find(|p| !p.starts_with('/') || std::path::Path::new(p).exists())
+        .unwrap_or("sqlite3");
+    let out = tokio::process::Command::new(sqlite3)
         .arg("-readonly")
         .arg("-json")
         .arg(db)
         .arg(sql)
         .output()
         .await
-        .context("running sqlite3 against chat.db (is Full Disk Access granted?)")?;
+        .context("running sqlite3 against chat.db")?;
     if !out.status.success() {
-        anyhow::bail!(
-            "sqlite3 failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr.contains("unable to open database") {
+            anyhow::bail!(
+                "macOS is blocking access to {}. Grant Full Disk Access to the app \
+                 running aster (System Settings > Privacy & Security > Full Disk \
+                 Access, then add your terminal) and run this again",
+                db.display()
+            );
+        }
+        anyhow::bail!("sqlite3 failed: {stderr}");
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     if stdout.trim().is_empty() {
@@ -228,16 +239,16 @@ async fn handle_command(
     match name {
         "start" | "help" => api.send_text(chat_id, &help(cfg)).await,
         "new" | "clear" => {
-            chat_state(chats, "imessage", 0, |state| {
-                state.history.clear();
-                state.queued.clear();
-            });
+            chat_state(chats, "imessage", 0, |state| state.history.clear());
             api.send_text(chat_id, "Started a fresh conversation.")
                 .await;
         }
         "stop" => {
+            let workers = abort_workers(chats, "imessage", 0);
             let stopped = chat_state(chats, "imessage", 0, |state| {
-                state.queued.clear();
+                // Set before aborting so the turn reports a deliberate stop,
+                // not a failure.
+                state.stopped = state.running.is_some() || workers > 0;
                 state.running.take().is_some()
             });
             api.send_text(
@@ -320,6 +331,7 @@ async fn start_turn(
         if state.running.is_some() {
             None
         } else {
+            state.stopped = false;
             state.history.push(WireMessage::user(prompt));
             Some((
                 state.history.clone(),
@@ -330,16 +342,16 @@ async fn start_turn(
         }
     });
     let Some((history, mode, model, effort)) = prepared else {
+        // Every mid-turn message runs right away on its own agent process.
+        if let Some(slot) = next_free_slot(&chats, "imessage", 0).filter(|slot| *slot > 0) {
+            start_worker_turn(api, cfg, chats, chat_id, prompt, slot - 1);
+            return;
+        }
         api.send_text(
             chat_id,
-            "Working on the previous message; this one is queued.",
+            "Too many tasks are running right now. /stop clears some.",
         )
         .await;
-        chat_state(&chats, "imessage", 0, |state| {
-            if state.queued.len() < MAX_QUEUED {
-                state.queued.push_back((0, prompt.to_string()));
-            }
-        });
         return;
     };
 
@@ -377,7 +389,9 @@ async fn start_turn(
                 } => {
                     eprintln!("[{chat_id}] -> {}", console_tool(&name, &arguments));
                 }
-                TurnEvent::ToolResult { .. } => {}
+                TurnEvent::ToolResult { .. }
+                | TurnEvent::Text { .. }
+                | TurnEvent::Thought { .. } => {}
                 TurnEvent::ApprovalRequest {
                     preview, respond, ..
                 } => {
@@ -410,14 +424,16 @@ async fn start_turn(
         let result = turn_task
             .await
             .unwrap_or_else(|e| Err(anyhow::anyhow!("turn cancelled: {e}")));
-        chat_state(&chats, "imessage", 0, |state| {
+        let stopped = chat_state(&chats, "imessage", 0, |state| {
             state.running = None;
             state.pending = None;
+            let stopped = std::mem::take(&mut state.stopped);
             if let Ok(outcome) = &result {
                 state
                     .history
                     .push(WireMessage::assistant(outcome.reply.clone()));
             }
+            stopped
         });
         match result {
             Ok(outcome) => {
@@ -425,9 +441,110 @@ async fn start_turn(
                     api.send_text(&chat_id, &chunk).await;
                 }
             }
+            // /stop already confirmed; a failure notice on top of it would be
+            // a second, noisier message.
+            Err(_) if stopped => {}
             Err(e) => {
-                api.send_text(&chat_id, &format!("Turn failed: {e:#}"))
-                    .await
+                api.send_text(
+                    &chat_id,
+                    &format!("I couldn't finish that. Send it again to retry.\n\n{e:#}"),
+                )
+                .await
+            }
+        }
+    });
+}
+
+/// A message that arrived mid-turn runs on its own agent process and session,
+/// so it works while the main turn keeps going.
+fn start_worker_turn(
+    api: Arc<IMessageApi>,
+    cfg: IMessageConfig,
+    chats: Chats,
+    chat_id: &str,
+    prompt: &str,
+    slot: usize,
+) {
+    let history = chat_state(&chats, "imessage", 0, |state| {
+        state.stopped = false;
+        state.history.push(WireMessage::user(prompt));
+        state.history.clone()
+    });
+    let turn = Turn {
+        bin: cfg.bin.clone(),
+        repo_root: cfg.repo_root.clone(),
+        session: format!("{chat_id}-w{slot}"),
+        mode: cfg.mode.clone(),
+        model: None,
+        effort: None,
+        extra_env: vec![],
+    };
+    let mut wire = Vec::with_capacity(history.len() + 1);
+    wire.push(WireMessage {
+        role: "system".into(),
+        content: format!("{IMESSAGE_SYSTEM} {WORKER_NOTE}"),
+    });
+    wire.extend(history);
+
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
+    let turn_task =
+        tokio::spawn(async move { crate::bridge::run_turn(&turn, &wire, &events_tx).await });
+    if !claim_worker_slot(&chats, "imessage", 0, slot, turn_task.abort_handle()) {
+        turn_task.abort();
+        return;
+    }
+    eprintln!("[{chat_id}] worker: {}", console_text(prompt, 200));
+
+    let chats = chats.clone();
+    let chat_id = chat_id.to_string();
+    tokio::spawn(async move {
+        while let Some(event) = events_rx.recv().await {
+            match event {
+                TurnEvent::ToolCall {
+                    name, arguments, ..
+                } => {
+                    eprintln!("[{chat_id}] -> {}", console_tool(&name, &arguments));
+                }
+                TurnEvent::ToolResult { .. }
+                | TurnEvent::Text { .. }
+                | TurnEvent::Thought { .. } => {}
+                // A side turn cannot own the chat's approval flow; the main
+                // turn would answer it. Deny and let the agent adapt.
+                TurnEvent::ApprovalRequest { respond, .. } => {
+                    let _ = respond.send(Answer::Deny);
+                }
+                TurnEvent::Question { respond, .. } => {
+                    let _ = respond.send(None);
+                }
+            }
+        }
+        let result = turn_task
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("turn cancelled: {e}")));
+        let stopped = chat_state(&chats, "imessage", 0, |state| {
+            if let Ok(outcome) = &result {
+                state
+                    .history
+                    .push(WireMessage::assistant(outcome.reply.clone()));
+            }
+            state.stopped
+        });
+        clear_worker_slot(&chats, "imessage", 0, slot);
+        match result {
+            Ok(outcome) => {
+                for chunk in markdown::to_plain_chunks(&outcome.reply, CHUNK_LIMIT) {
+                    api.send_text(&chat_id, &chunk).await;
+                }
+            }
+            // /stop already confirmed; a failure notice on top of it would be
+            // a second, noisier message.
+            Err(_) if stopped => {}
+            Err(e) => {
+                api.send_text(
+                    &chat_id,
+                    &format!("That side task didn't finish. Send it again to retry.\n\n{e:#}"),
+                )
+                .await
             }
         }
     });

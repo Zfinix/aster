@@ -50,6 +50,7 @@ import {
   setGoal,
   stopUnfinished,
   upsertAgentState,
+  applyAgentReports,
   type AssistantTurn,
   type InfoCardData,
   type ReviewData,
@@ -496,7 +497,12 @@ export function App() {
         break;
       case "tool_result":
         patchAssistant(id, (turn) => ({
-          ...patchCall(turn, event.id, { result: event.result, error: event.error }),
+          ...applyAgentReports(
+            patchCall(turn, event.id, { result: event.result, error: event.error }),
+            event.id,
+            event.result,
+            event.error
+          ),
           approval: undefined,
           question: undefined,
         }));

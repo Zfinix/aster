@@ -1,7 +1,7 @@
 //! Shared session core for remote channels: per-chat state, saved overrides,
 //! and skill commands. Channel-specific rendering stays in each provider.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +25,9 @@ pub struct ChatState {
     pub history: Vec<WireMessage>,
     pub pending: Option<Pending>,
     pub running: Option<AbortHandle>,
-    pub queued: VecDeque<(i64, String)>,
+    pub stopped: bool,
+    /// Side turns running next to the main turn, one slot per entry.
+    pub workers: Vec<Option<WorkerTurn>>,
     pub mode: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -33,6 +35,77 @@ pub struct ChatState {
 }
 
 pub type Chats = Arc<std::sync::Mutex<HashMap<i64, ChatState>>>;
+
+/// One side turn running next to the chat's main turn.
+pub struct WorkerTurn {
+    pub abort: AbortHandle,
+}
+
+/// Each mid-turn message runs on its own agent process and session, up to
+/// this many at once.
+pub const MAX_WORKERS: usize = 8;
+
+pub const WORKER_NOTE: &str = "Another task is running in this repo at the same time. Keep your \
+     changes scoped to exactly what was asked, and do not touch files the other task might be \
+     editing. If you need an approval or an answer, work around it rather than waiting.";
+
+/// First free slot: 0 is the main turn, 1.. are workers.
+pub fn next_free_slot(chats: &Chats, channel: &str, chat_id: i64) -> Option<usize> {
+    chat_state(chats, channel, chat_id, |state| {
+        if state.running.is_none() {
+            return Some(0);
+        }
+        while state.workers.len() < MAX_WORKERS {
+            state.workers.push(None);
+        }
+        state
+            .workers
+            .iter()
+            .position(Option::is_none)
+            .map(|slot| slot + 1)
+    })
+}
+
+/// Claim a worker slot; false if another turn took it first.
+pub fn claim_worker_slot(
+    chats: &Chats,
+    channel: &str,
+    chat_id: i64,
+    slot: usize,
+    abort: AbortHandle,
+) -> bool {
+    chat_state(chats, channel, chat_id, |state| {
+        while state.workers.len() < MAX_WORKERS {
+            state.workers.push(None);
+        }
+        if state.workers[slot].is_none() {
+            state.workers[slot] = Some(WorkerTurn { abort });
+            true
+        } else {
+            false
+        }
+    })
+}
+
+pub fn clear_worker_slot(chats: &Chats, channel: &str, chat_id: i64, slot: usize) {
+    chat_state(chats, channel, chat_id, |state| {
+        if slot < state.workers.len() {
+            state.workers[slot] = None;
+        }
+    });
+}
+
+/// Abort every worker slot; returns how many were running.
+pub fn abort_workers(chats: &Chats, channel: &str, chat_id: i64) -> usize {
+    chat_state(chats, channel, chat_id, |state| {
+        let running = state.workers.iter().flatten().count();
+        for worker in state.workers.iter_mut().flatten() {
+            worker.abort.abort();
+        }
+        state.workers.clear();
+        running
+    })
+}
 
 pub fn chat_state<T>(
     chats: &Chats,

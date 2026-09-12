@@ -36,6 +36,8 @@ export interface AgentTaskState {
   log?: string[];
   startedAt?: number;
   endedAt?: number;
+  /** A node drawn from the call's arguments, before its first status event. */
+  seeded?: boolean;
 }
 
 /** One chronological slice of a turn. Text and tool groups are kept in arrival
@@ -52,7 +54,7 @@ export type TurnBlock =
       durationMs?: number;
       done?: boolean;
     }
-  | { kind: "agents"; id: string; callId: string; tasks: AgentTaskState[] }
+  | { kind: "agents"; id: string; callIds: string[]; tasks: AgentTaskState[] }
   | { kind: "injected"; id: string; text: string }
   | {
       kind: "goal";
@@ -363,29 +365,50 @@ export function restoreTurn(
   }
   turn = appendText(turn, content);
   for (const call of calls) {
-    const reports = call.name === "agent" ? parseAgentReports(call.result) : null;
-    if (reports) {
-      turn = {
-        ...turn,
-        blocks: [
-          ...turn.blocks,
-          {
-            kind: "agents",
-            id: blockId(),
-            callId: call.id,
-            tasks: reports.map((r) => ({ ...r, callId: call.id })),
-          },
-        ],
-      };
-    } else {
-      turn = appendCall(turn, call);
+    turn = appendCall(turn, call);
+    if (call.name === "agent") {
+      turn = applyAgentReports(turn, call.id, call.result, call.error);
     }
   }
   return { ...turn, pending: false };
 }
 
+/** The nodes an `agent` call gets before a single status event arrives: the
+ *  batch it was called with, so the graph is on screen the moment the call is
+ *  and no sub-agent ever shows up as a bare tool row. */
+export function agentSeeds(call: ToolCall): AgentTaskState[] {
+  let args: { tasks?: unknown; agent?: unknown; task?: unknown } = {};
+  try {
+    args = JSON.parse(call.arguments || "{}") as typeof args;
+  } catch {
+    args = {};
+  }
+  const batch = Array.isArray(args.tasks)
+    ? (args.tasks as { agent?: unknown; task?: unknown }[])
+    : [args];
+  const seeds = batch.flatMap((entry) =>
+    typeof entry?.agent === "string"
+      ? [
+          {
+            callId: call.id,
+            agent: entry.agent,
+            task: typeof entry.task === "string" ? entry.task : undefined,
+            status: "running" as const,
+            done: 0,
+            total: batch.length,
+            seeded: true,
+          },
+        ]
+      : []
+  );
+  return seeds.length > 0
+    ? seeds
+    : [{ callId: call.id, agent: "agent", status: "running", done: 0, total: 1, seeded: true }];
+}
+
 /** Consecutive calls join one group; a call after text opens a new one. */
 export function appendCall(turn: AssistantTurn, call: ToolCall): AssistantTurn {
+  if (call.name === "agent") return appendAgentCall(turn, call);
   const last = turn.blocks[turn.blocks.length - 1];
   return {
     ...turn,
@@ -393,6 +416,89 @@ export function appendCall(turn: AssistantTurn, call: ToolCall): AssistantTurn {
       last?.kind === "tools"
         ? [...turn.blocks.slice(0, -1), { ...last, calls: [...last.calls, call] }]
         : [...turn.blocks, { kind: "tools", id: blockId(), calls: [call] }],
+  };
+}
+
+/** Sibling `agent` calls are one fan-out however the model spelled it, so they
+ *  share a card rather than each drawing a lone node. */
+function appendAgentCall(turn: AssistantTurn, call: ToolCall): AssistantTurn {
+  const last = turn.blocks[turn.blocks.length - 1];
+  const seeds = agentSeeds(call);
+  if (last?.kind === "agents") {
+    return {
+      ...turn,
+      blocks: [
+        ...turn.blocks.slice(0, -1),
+        { ...last, callIds: [...last.callIds, call.id], tasks: [...last.tasks, ...seeds] },
+      ],
+    };
+  }
+  return {
+    ...turn,
+    blocks: [...turn.blocks, { kind: "agents", id: blockId(), callIds: [call.id], tasks: seeds }],
+  };
+}
+
+/** The call's own result carries every report, so a swarm still fills in when
+ *  its status events never landed. Anything left running when the call returns
+ *  is settled here: a result that is not a report array is the failure. */
+export function applyAgentReports(
+  turn: AssistantTurn,
+  callId: string,
+  result: string | undefined,
+  error?: boolean
+): AssistantTurn {
+  if (result === undefined) return turn;
+  const i = turn.blocks.findIndex((b) => b.kind === "agents" && b.callIds.includes(callId));
+  if (i === -1) return turn;
+  const block = turn.blocks[i];
+  if (block.kind !== "agents") return turn;
+
+  const reports = parseAgentReports(result);
+  const mine = block.tasks.filter((t) => t.callId === callId);
+  const now = Date.now();
+  let tasks: AgentTaskState[];
+
+  if (reports) {
+    // The reports are the truth about what ran; the nodes already on screen
+    // only carry what the reports leave out, the live feed and the clock.
+    const merged = reports.map((r, n) => {
+      const prior =
+        mine.find((t) => t.agent === r.agent && t.task === r.task) ??
+        (reports.length === mine.length ? mine[n] : undefined);
+      return {
+        ...r,
+        callId,
+        task: r.task ?? prior?.task,
+        seeded: undefined,
+        log: prior?.log,
+        startedAt: prior?.startedAt,
+        endedAt: prior?.endedAt ?? now,
+      };
+    });
+    let spliced = false;
+    tasks = block.tasks.flatMap((t) => {
+      if (t.callId !== callId) return [t];
+      if (spliced) return [];
+      spliced = true;
+      return merged;
+    });
+  } else {
+    // Not a report array, so the call failed as a whole and its message is
+    // what every node it owns has to say.
+    const message = result.trim().replace(/^error:\s*/, "");
+    const failed = Boolean(error) || message.length > 0;
+    tasks = block.tasks.map((t) => {
+      if (t.callId !== callId || t.status !== "running") return t;
+      return failed
+        ? { ...t, status: "error" as const, error: message, endedAt: now }
+        : { ...t, status: "done" as const, endedAt: now };
+    });
+  }
+
+  return {
+    ...turn,
+    blocks: [...turn.blocks.slice(0, i), { ...block, tasks }, ...turn.blocks.slice(i + 1)],
   };
 }
 
@@ -417,23 +523,32 @@ export function patchCall(
 /** Upsert one sub-agent's state into the `agents` block for its call, creating
  *  the block on the first event so the swarm shows up as soon as it starts. */
 export function upsertAgentState(turn: AssistantTurn, st: AgentTaskState): AssistantTurn {
-  const i = turn.blocks.findIndex((b) => b.kind === "agents" && b.callId === st.callId);
+  const i = turn.blocks.findIndex((b) => b.kind === "agents" && b.callIds.includes(st.callId));
   if (i === -1) {
     return {
       ...turn,
-      blocks: [...turn.blocks, { kind: "agents", id: blockId(), callId: st.callId, tasks: [st] }],
+      blocks: [
+        ...turn.blocks,
+        { kind: "agents", id: blockId(), callIds: [st.callId], tasks: [st] },
+      ],
     };
   }
   const block = turn.blocks[i];
   if (block.kind !== "agents") return turn;
   // A batch can run the same agent several times with different tasks, so the
-  // task text is part of the identity.
-  const j = block.tasks.findIndex((t) => t.agent === st.agent && t.task === st.task);
+  // task text is part of the identity. Failing that, the event claims a node
+  // this call was seeded with, so arguments the UI could not read still fill in.
+  const same = (t: AgentTaskState) =>
+    t.callId === st.callId && t.agent === st.agent && t.task === st.task;
+  const j = block.tasks.findIndex(same);
+  const k = j === -1 ? block.tasks.findIndex((t) => t.callId === st.callId && t.seeded) : j;
   const tasks =
-    j === -1
+    k === -1
       ? [...block.tasks, st]
-      : block.tasks.map((t, k) =>
-          k === j ? { ...st, log: t.log, startedAt: t.startedAt ?? st.startedAt } : t
+      : block.tasks.map((t, n) =>
+          n === k
+            ? { ...st, seeded: undefined, log: t.log, startedAt: t.startedAt ?? st.startedAt }
+            : t
         );
   return {
     ...turn,
@@ -452,11 +567,11 @@ export function appendAgentActivity(
   return {
     ...turn,
     blocks: turn.blocks.map((block) =>
-      block.kind === "agents" && block.callId === callId
+      block.kind === "agents" && block.callIds.includes(callId)
         ? {
             ...block,
             tasks: block.tasks.map((t) =>
-              t.agent === agent && t.task === task
+              t.callId === callId && t.agent === agent && t.task === task
                 ? { ...t, log: [...(t.log ?? []), line].slice(-50) }
                 : t
             ),

@@ -136,7 +136,7 @@ These are the tools the model calls. Knowing them tells you what to ask for.
 | `security_scan` | Static security scan of the working tree |
 | MCP tools | Anything a configured server exposes, injected progressively; `web/search` and `web/extract` ship built in |
 
-Limits: `agent.max_tool_rounds` (60), `agent.command_timeout_secs` (300), `agent.compact_budget_chars` (192000), `agent.max_output_tokens` (8000), env `ASTER_MAX_TOOL_ROUNDS`, `ASTER_COMMAND_TIMEOUT`, `ASTER_COMPACT_BUDGET`, `ASTER_MAX_TOKENS`.
+Limits: `agent.max_tool_rounds` (60), `agent.command_timeout_secs` (300), `agent.compact_budget_chars` (192000), `agent.max_output_tokens` (8000), `agent.language` (the user's), env `ASTER_MAX_TOOL_ROUNDS`, `ASTER_COMMAND_TIMEOUT`, `ASTER_COMPACT_BUDGET`, `ASTER_MAX_TOKENS`, `ASTER_LANGUAGE`.
 
 ## Review
 
@@ -308,7 +308,7 @@ ASTER_TELEGRAM_TOKEN=… ASTER_REMOTE_USERS=123,456 aster remote telegram [--mod
 aster remote telegram --token T --user 123 --mode auto
 ```
 
-Long-polling, no public URL. Approval prompts arrive as buttons.
+Long-polling, no public URL. Approval prompts arrive as buttons. A message sent while it is working joins the turn in flight instead of starting a second one, so it hears you mid-task; one that lands as the turn ends runs next.
 
 ## Goals: loop until a judge agrees
 

@@ -13,7 +13,7 @@ use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest, AuthenticateResponse,
     AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentChunk, CurrentModeUpdate,
     Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
-    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
+    Meta, NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
     SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse, StopReason,
@@ -22,6 +22,7 @@ use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 use anyhow::Result;
 use aster_ai::ChatMessage;
 use clap::Args;
+use serde_json::{Value, json};
 
 use crate::chat::PermissionModeArg;
 use crate::config::provider::MissingCredentials;
@@ -210,8 +211,14 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                 // A prompt sent while a turn is running steers that turn and
                 // answers right away; the running loop picks it up at the next
                 // round boundary and streams the reply into the same turn.
-                if session.steer(&prompt) {
-                    return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                let steered = session.steer(&prompt);
+                // A steer-only client wants that and nothing else: when the
+                // turn it aimed at has already ended, the message is theirs to
+                // resend rather than ours to run as a turn of its own.
+                if steered || steer_only(&request) {
+                    let meta = Meta::from_iter([("steered".to_string(), json!(steered))]);
+                    return responder
+                        .respond(PromptResponse::new(StopReason::EndTurn).meta(Some(meta)));
                 }
                 let spawned = cx.clone();
                 cx.spawn(async move {
@@ -222,7 +229,7 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                         false,
                         Arc::new(aster_acp::Calls::default()),
                     );
-                    let sink = Arc::new(sink.into_chat_sink());
+                    let sink = sink.into_chat_sink();
                     let approver = prompts::spawn_approver(spawned, session.clone());
                     match session.turn(prompt, approver, sink).await {
                         Ok(outcome) => {
@@ -251,6 +258,20 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
         .connect_to(transport)
         .await
         .map_err(|err| anyhow::anyhow!("acp connection failed: {err}"))
+}
+
+#[cfg(test)]
+#[path = "tests/acp_test.rs"]
+mod tests;
+
+/// Whether the client asked for this prompt to join a running turn or nothing.
+fn steer_only(request: &PromptRequest) -> bool {
+    request
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("steerOnly"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn initialize_response() -> InitializeResponse {

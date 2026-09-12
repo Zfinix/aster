@@ -286,14 +286,16 @@ none, so anything that reaches `ask` is refused there; pre-approve it with an
 
 ## `agent`
 
-Limits on one agent turn.
+Limits on one agent turn. The Android build raises the round and timeout
+defaults, since tasks there run unattended over a chat channel and take longer.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `max_tool_rounds` | int | `60` | Tool rounds before the agent must answer with what it has. It says so when it hits the cap. Env `ASTER_MAX_TOOL_ROUNDS`. |
-| `command_timeout_secs` | int | `300` | Seconds one `run_command` may take. Builds and test suites live here. Env `ASTER_COMMAND_TIMEOUT`. |
+| `max_tool_rounds` | int | `60` (`200` on Android) | Tool rounds before the agent must answer with what it has. It says so when it hits the cap. Env `ASTER_MAX_TOOL_ROUNDS`. |
+| `command_timeout_secs` | int | `300` (`1800` on Android) | Seconds one `run_command` may take. Builds and test suites live here. Env `ASTER_COMMAND_TIMEOUT`. |
 | `compact_budget_chars` | int | `192000` | History size above which older turns fold into a summary. Roughly 48k tokens; lower it for small-context models. Env `ASTER_COMPACT_BUDGET`. |
 | `max_output_tokens` | int | `8000` | Tokens one reply may run to. Lower it when a provider turns the request down as too large; `0` sends no cap and leaves the limit to the provider. Env `ASTER_MAX_TOKENS`. |
+| `language` | string | the user's | Language every reply is written in, such as `English` or `Français`. Unset follows the language the user writes in. Either way the prompt tells the model to stay in one language for the whole turn, thinking included. Env `ASTER_LANGUAGE`. |
 
 ## `agents`
 
@@ -306,7 +308,7 @@ custom agent definitions.
 | `collector_model` | string | the session model | Cheap model for collector agents. Env `ASTER_COLLECTOR_MODEL`. |
 | `max_concurrent` | int | `8` | Sub-agents running at once. Env `ASTER_AGENT_MAX_CONCURRENT`. |
 | `max_per_turn` | int | `24` | `agent` tool tasks accepted in one turn. Env `ASTER_AGENT_MAX_PER_TURN`. |
-| `agent_timeout_secs` | int | `300` | Seconds a single sub-agent may run. Env `ASTER_AGENT_TIMEOUT`. |
+| `agent_timeout_secs` | int | `300` (`1800` on Android) | Seconds a single sub-agent may run. Env `ASTER_AGENT_TIMEOUT`. |
 
 ## `ui`
 

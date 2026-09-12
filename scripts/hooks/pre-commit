@@ -1,0 +1,14 @@
+#!/bin/sh
+# Mirrors the CI gate: fmt, clippy, test. Run before every commit.
+set -e
+
+echo "==> cargo fmt --check"
+cargo fmt --check
+
+echo "==> cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "==> cargo test --workspace"
+cargo test --workspace
+
+echo "pre-commit: all checks passed"

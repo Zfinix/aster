@@ -52,13 +52,16 @@ pub(crate) struct SessionCtx {
     pub swarm: SwarmLimits,
 }
 
-/// How long a turn may work before it has to answer, and how long one command
-/// may run. Defaults suit real builds; `aster.yaml` and the env can lower them.
-#[derive(Debug, Clone, Copy)]
+/// How long a turn may work before it has to answer, how long one command may
+/// run, and which language replies are written in. Defaults suit real builds;
+/// `aster.yaml` and the env can change them.
+#[derive(Debug, Clone)]
 pub(crate) struct Limits {
     pub max_tool_rounds: usize,
     pub command_timeout_secs: usize,
     pub compact_budget_chars: usize,
+    /// `None` follows the language the user writes in.
+    pub language: Option<String>,
 }
 
 impl Default for Limits {
@@ -67,6 +70,7 @@ impl Default for Limits {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
             compact_budget_chars: COMPACT_BUDGET_CHARS,
+            language: None,
         }
     }
 }
@@ -88,8 +92,27 @@ impl Limits {
                 .or(agent.compact_budget_chars)
                 .unwrap_or(COMPACT_BUDGET_CHARS)
                 .max(COMPACT_KEEP_TAIL * 1_000),
+            language: std::env::var("ASTER_LANGUAGE")
+                .ok()
+                .or_else(|| agent.language.clone())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
         }
     }
+}
+
+/// Where replies are written in. Sits at the end of the prompt, after the code
+/// and tool text that pulls models off the user's language mid-turn.
+pub(crate) fn language_note(language: Option<&str>) -> String {
+    let target = match language {
+        Some(lang) => format!("Reply in {lang}, whatever language the user writes in."),
+        None => "Reply in the language the user writes in.".to_string(),
+    };
+    format!(
+        "## Language\n{target} Keep the whole reply in that one language, \
+         including any reasoning before it. Never drift into another language \
+         mid-turn, even when the context is mostly code or tool output."
+    )
 }
 
 /// Caps on the sub-agent fan-out.  aster.yaml first, then the environment.
@@ -116,7 +139,7 @@ impl SwarmLimits {
                 .max(1),
             agent_timeout_secs: env_u64("ASTER_AGENT_TIMEOUT")
                 .or(agents.agent_timeout_secs)
-                .unwrap_or(300)
+                .unwrap_or(DEFAULT_AGENT_TIMEOUT_SECS)
                 .max(1),
             collector_model: std::env::var("ASTER_COLLECTOR_MODEL")
                 .ok()
@@ -130,7 +153,7 @@ impl Default for SwarmLimits {
         Self {
             max_concurrent: 8,
             max_per_turn: 24,
-            agent_timeout_secs: 300,
+            agent_timeout_secs: DEFAULT_AGENT_TIMEOUT_SECS,
             collector_model: None,
         }
     }
@@ -280,13 +303,9 @@ impl SessionCtx {
 /// Skills from `.aster/skills`, then `<config>/aster/skills`, then plugins, then
 /// built-ins: a skills root shadows a plugin and a plugin shadows a built-in.
 pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
-    let mut roots = vec![repo_root.join(".aster").join("skills")];
-    match crate::persist::home() {
-        Ok(home) => {
-            aster_skills::install_defaults(&home.join("skills"));
-            roots.push(home.join("skills"));
-        }
-        Err(e) => tracing::debug!("no global skills root: {e:#}"),
+    let roots = skills_roots(repo_root);
+    if let Some(global) = roots.get(1) {
+        aster_skills::install_defaults(global);
     }
     let (plugins, problems) = crate::plugins::installed(Some(repo_root));
     crate::plugins::report(&plugins, &problems);
@@ -295,6 +314,40 @@ pub(crate) fn discover_skills(repo_root: &Path) -> Arc<aster_skills::SkillSet> {
             .extend_dirs(&crate::plugins::skill_dirs(&plugins))
             .with_builtins(),
     )
+}
+
+/// The project root first, then the global one when a home exists.
+pub(crate) fn skills_roots(repo_root: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![repo_root.join(".aster").join("skills")];
+    match crate::persist::home() {
+        Ok(home) => roots.push(home.join("skills")),
+        Err(e) => tracing::debug!("no global skills root: {e:#}"),
+    }
+    roots
+}
+
+/// The newest change under the skills roots, so a long-lived session can tell
+/// when a skill was written or rewritten and read the index again.
+pub(crate) fn skills_stamp(repo_root: &Path) -> u64 {
+    let nanos = |path: &Path| {
+        fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    };
+    let mut stamp = 0;
+    for root in skills_roots(repo_root) {
+        stamp = stamp.max(nanos(&root));
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            stamp = stamp.max(nanos(&entry.path().join("SKILL.md")));
+        }
+    }
+    stamp
 }
 
 /// A message opening with `/skill-name` says which skill to apply. The model is
@@ -369,18 +422,29 @@ fn android_note() -> Option<String> {
     ) {
         note.push_str(&format!("- Android {release} (API {sdk})\n"));
     }
-    note.push_str(match which_asterctl() {
-        true => "- `asterctl` reads the screen and taps it: `map`, `find`, `tap`, `scroll`, `type`, `key`, `ocr`, `notes`\n",
+    note.push_str(match on_path("asterctl") {
+        true => "- `asterctl` reads the screen and taps it: `map`, `find`, `tap`, `scroll`, `type`, `key`, `volume`, `media`, `restart`, `ocr`, `notes`. Its full reference is the android-use skill in this prompt; `asterctl help` lists the verbs\n",
         false => "- No `asterctl` on PATH, so the screen cannot be seen or touched from here\n",
     });
+    note.push_str(
+        "- `aster python script.py` or `aster python -c \"...\"` runs Python 3 with the standard library built in; there is no other python, no bash (the shell is `sh`), and no `/tmp` (use `$TMPDIR`)\n",
+    );
     Some(note)
 }
 
-#[cfg(target_os = "android")]
-fn which_asterctl() -> bool {
+fn on_path(name: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("asterctl").exists()))
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).exists()))
         .unwrap_or(false)
+}
+
+/// Android ships `sh` and no bash, so a shell line has to go through whichever
+/// one is there.
+fn shell() -> (&'static str, &'static str) {
+    match on_path("bash") {
+        true => ("bash", "-lc"),
+        false => ("sh", "-c"),
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -541,6 +605,8 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
             prompt.push_str("\n\n");
             prompt.push_str(environment);
         }
+        prompt.push_str("\n\n");
+        prompt.push_str(&language_note(ctx.limits.language.as_deref()));
         return prompt;
     }
     let mut prompt = base_system_prompt();
@@ -554,6 +620,8 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
         prompt.push_str("\n\n");
         prompt.push_str(environment);
     }
+    prompt.push_str("\n\n");
+    prompt.push_str(&language_note(ctx.limits.language.as_deref()));
     if tools {
         prompt.push_str(TOOLS_PROMPT);
         if let Some(index) = ctx.skills.render_index() {
@@ -607,8 +675,9 @@ impl From<PermissionModeArg> for aster_policy::Mode {
     }
 }
 
-/// Emits one NDJSON event per line on the `--stream` path.
-pub(crate) type ChatEventSink = Box<dyn Fn(Value) + Send + Sync>;
+/// Emits one NDJSON event per line on the `--stream` path. Shared, so
+/// background work can keep emitting after the tool call that started it.
+pub(crate) type ChatEventSink = Arc<dyn Fn(Value) + Send + Sync>;
 
 /// A request the agent task sends to the UI loop: an edit needing approval, a
 /// plan whose approval promotes the session to edit mode, or a question.
@@ -708,6 +777,11 @@ fn base_system_prompt() -> String {
 }
 
 const CHAT_TEMPERATURE: f64 = 0.4;
+/// A phone runs tasks nobody is watching, over a chat channel, so a turn and
+/// its commands get room to finish instead of being cut off mid-task.
+#[cfg(target_os = "android")]
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 200;
+#[cfg(not(target_os = "android"))]
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
 const READ_WINDOW_LINES: usize = 600;
@@ -721,15 +795,25 @@ const MISSING_COMMAND: &str = "run_command needs a `command`: the binary to \
     run, with its arguments in `args`. To run a shell line, pass \
     command:`bash` with args [\"-lc\", \"<the line>\"]. Send the call again \
     with `command` set";
+#[cfg(target_os = "android")]
+const DEFAULT_COMMAND_TIMEOUT_SECS: usize = 1800;
+#[cfg(not(target_os = "android"))]
 const DEFAULT_COMMAND_TIMEOUT_SECS: usize = 300;
+#[cfg(target_os = "android")]
+const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 1800;
+#[cfg(not(target_os = "android"))]
+const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 300;
 const COMPACT_BUDGET_CHARS: usize = 192_000;
 const COMPACT_KEEP_TAIL: usize = 6;
 
 const TOOLS_PROMPT: &str = "\n\n## Tools\n\n\
 You can inspect the repository with `read_file`, `list_files`, `find_files`, \
 and `search_files`, and change it with `edit_file` when it is available. \
-`search_files` searches file contents, supports regex syntax, and respects \
-`.gitignore`. `find_files` locates files by name or glob; reach for it before \
+`search_files` searches file contents and supports regex syntax. Gitignored \
+files are part of the repo: `read_file` opens them like any other, and \
+`search_files`, `find_files`, and `list_files` reach them when the tracked \
+files come up empty. Never claim a file is unreadable because it is \
+gitignored. `find_files` locates files by name or glob; reach for it before \
 guessing a path, and whenever a tool reports that a path does not exist. \
 A path that does not exist is a wrong guess, not a failure: take the nearby \
 paths the tool offers and try again. \
@@ -1405,7 +1489,9 @@ async fn run_stream(
         }));
     }
 
-    let sink: ChatEventSink = Box::new(|event| emit_line(&event));
+    let sink: ChatEventSink = Arc::new(|event| emit_line(&event));
+    // Reports that landed between turns flush into this turn's injected queue.
+    crate::agents_queue::attach(ctx.injected.clone(), Some(Arc::clone(&sink)));
     let mut edited: Vec<String> = Vec::new();
     let mut turns = 0usize;
     let result = loop {
@@ -1489,7 +1575,7 @@ async fn run_stream(
 
     // Await before `done`: a title past `done` reads as a turn that never finished.
     let title = if let Some(naming) = match result.is_ok() {
-        true => name_session(&client, &ctx, &history, Some(Arc::new(sink))),
+        true => name_session(&client, &ctx, &history, Some(sink)),
         false => None,
     } {
         tokio::time::timeout(TITLE_TIMEOUT, naming)
@@ -1604,6 +1690,15 @@ fn read_history(args: &ChatArgs) -> Result<Vec<ChatMessage>> {
         .map(str::trim)
         .filter(|p| !p.is_empty())
     {
+        // `aster solve.py` reads as "run this", but it would start a second
+        // agent with the filename as its question and answer from nowhere.
+        if !prompt.contains(char::is_whitespace) && Path::new(prompt).is_file() {
+            bail!(
+                "{prompt} is a file, and a bare `aster <file>` would ask a new agent \
+                 about it instead of running it. Use `aster python {prompt}` for a script, \
+                 or `aster \"<question>\" @{prompt}` to ask about its contents"
+            );
+        }
         return Ok(vec![ChatMessage {
             role: "user".into(),
             content: prompt.into(),
@@ -1708,6 +1803,9 @@ pub(crate) async fn agent_turn_streaming(
     ctx: SessionCtx,
     events: ChatEventSink,
 ) -> Result<(String, Vec<String>, Option<Vec<ChatMessage>>)> {
+    // This turn hears background agent completions from here on; reports that
+    // landed while no turn was attached flush in now.
+    crate::agents_queue::attach(ctx.injected.clone(), Some(Arc::clone(&events)));
     let mut edited = Vec::new();
     let (reply, compacted) = agent_loop(
         &client,
@@ -1728,7 +1826,7 @@ pub(crate) async fn agent_turn_streaming(
         &client,
         &ctx,
         &history,
-        Some(Arc::new(events)),
+        Some(Arc::clone(&events)),
     ));
     Ok((reply, edited, compacted))
 }
@@ -1897,7 +1995,7 @@ fn round_found_something(round: &[(String, String, String)]) -> bool {
     round.iter().any(|(_, _, result)| {
         !result.starts_with("error: ")
             && !result.starts_with("[identical ")
-            && !aster_eval::barren(result)
+            && !aster_persist::barren(result)
     })
 }
 
@@ -2018,6 +2116,9 @@ pub(crate) async fn agent_loop(
         for content in pending {
             emit(json!({ "type": "injected", "content": content }));
             ctx.record(MessageEvent::user(content.clone()));
+            // A photo sent mid-turn arrives as an `@path` mention like any
+            // other, and only this pass turns it into something to look at.
+            let content = crate::images::attach(&content, repo_root);
             wire.push(json!({ "role": "user", "content": content }));
         }
         // Halfway through the allotment, and only once: the model cannot see
@@ -2361,10 +2462,8 @@ pub(crate) async fn agent_loop(
                 text: result,
                 images,
             } = result;
-            // The same rule aster-eval applies offline, so a live dashboard and
-            // a session report never disagree about what counted as barren.
             span.record("result_chars", result.len());
-            span.record("barren", aster_eval::barren(&result));
+            span.record("barren", aster_persist::barren(&result));
             span.record("error", result.starts_with("error: "));
             tracing::debug!(tool = %call.function.name, "tool call executed");
             let result = truncate(&crate::redact::redact(&result), MAX_TOOL_RESULT_CHARS);
@@ -2393,6 +2492,7 @@ pub(crate) async fn agent_loop(
                 "content": result,
             }));
             if !images.is_empty() {
+                retire_old_images(&mut wire, LIVE_IMAGES);
                 wire.push(image_turn(&call.function.name, &images));
             }
         }
@@ -2550,7 +2650,7 @@ pub(crate) fn name_session(
     client: &AiClient,
     ctx: &SessionCtx,
     history: &[ChatMessage],
-    sink: Option<Arc<ChatEventSink>>,
+    sink: Option<ChatEventSink>,
 ) -> Option<tokio::task::JoinHandle<Option<String>>> {
     if ctx.sub_agent.is_some() {
         return None;
@@ -2854,6 +2954,22 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                         "name": { "type": "string", "description": "The memory block name, as listed under Recallable memory" }
                     },
                     "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "chat_history",
+                "description": "Read this project's saved chats, this one included. With no arguments it lists them newest first, each with its id, title, turn count and start time. Pass `id` to read one back, and `id: \"current\"` for the chat you are in, which is how you answer what was said earlier in it or before a compaction folded it away. Pass `query` to list only the chats that mention something. You get the messages, not the tool output they produced.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "A chat id from the list, or \"current\" for this chat" },
+                        "query": { "type": "string", "description": "List only chats mentioning this (ignored when `id` is given)" },
+                        "limit": { "type": "integer", "description": "How many chats to list (default 20)" },
+                        "all": { "type": "boolean", "description": "List chats from every project, not just this repo" }
+                    }
                 }
             }
         }),
@@ -3219,6 +3335,16 @@ async fn exec_tool(
         "read_skill" => str_arg("name")
             .context("read_skill needs a `name`")
             .and_then(|name| read_skill(ctx, &name)),
+        "chat_history" => Ok(crate::chat_history::chat_history(
+            ctx,
+            repo_root,
+            crate::chat_history::HistoryArgs {
+                id: args["id"].as_str(),
+                query: args["query"].as_str(),
+                limit: args["limit"].as_u64().map(|v| v as usize),
+                all: args["all"].as_bool().unwrap_or(false),
+            },
+        )),
         "update_plan" => update_plan(
             ctx,
             args["steps"]
@@ -3259,6 +3385,17 @@ async fn exec_tool(
             }
             Ok(path) => {
                 match resolve_for_read(repo_root, policy, grants, approver, ctx, &path).await {
+                    Ok(target) if crate::images::has_image_extension(&path) => {
+                        match crate::images::read_image(&target) {
+                            Ok(parts) => {
+                                return ToolOutput {
+                                    text: parts.text,
+                                    images: parts.images,
+                                };
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
                     Ok(target) => cached_read(
                         ctx,
                         &target,
@@ -3472,10 +3609,42 @@ async fn exec_tool(
     ToolOutput::text(result.unwrap_or_else(|e| format!("error: {e:#}")))
 }
 
+/// Every image in history is re-sent and re-read each round, so only the
+/// current one stays a picture; older ones become a one-line stub.
+fn retire_old_images(wire: &mut [Value], keep: usize) {
+    let mut seen = 0;
+    for message in wire.iter_mut().rev() {
+        if message["role"] != "user" || !message["content"].is_array() {
+            continue;
+        }
+        let Some(parts) = message["content"].as_array() else {
+            continue;
+        };
+        let Some(lead) = parts.first().and_then(|p| p["text"].as_str()) else {
+            continue;
+        };
+        let Some(tool) = lead.strip_prefix(IMAGE_TURN_LEAD) else {
+            continue;
+        };
+        seen += 1;
+        if seen > keep {
+            let tool = tool.trim_end_matches(':').to_string();
+            *message = json!({
+                "role": "user",
+                "content": format!("[earlier image from the {tool} call above, replaced by a newer one]"),
+            });
+        }
+    }
+}
+
+const IMAGE_TURN_LEAD: &str = "Image(s) returned by the ";
+
+const LIVE_IMAGES: usize = 1;
+
 fn image_turn(tool: &str, images: &[String]) -> Value {
     let mut parts = vec![json!({
         "type": "text",
-        "text": format!("Image(s) returned by the {tool} call above:"),
+        "text": format!("{IMAGE_TURN_LEAD}{tool} call above:"),
     })];
     parts.extend(images.iter().map(|url| {
         json!({
@@ -3486,13 +3655,14 @@ fn image_turn(tool: &str, images: &[String]) -> Value {
     json!({ "role": "user", "content": parts })
 }
 
-const PARALLEL_READ_TOOLS: [&str; 6] = [
+const PARALLEL_READ_TOOLS: [&str; 7] = [
     "read_file",
     "list_files",
     "search_files",
     "find_files",
     "recall",
     "read_skill",
+    "chat_history",
 ];
 
 const DEDUPED_LOOKUPS: [&str; 4] = ["list_files", "search_files", "find_files", "explore"];
@@ -3667,6 +3837,9 @@ fn read_only_call(
             if !edits::exists_anywhere(repo_root, &path) {
                 return Some(missing_path(repo_root, &path));
             }
+            if crate::images::has_image_extension(&path) {
+                return None;
+            }
             match resolve_in_repo(repo_root, policy, ctx, &path)? {
                 Ok(target) => cached_read(
                     ctx,
@@ -3718,6 +3891,16 @@ fn read_only_call(
             Some(name) => read_skill(ctx, &name),
             None => return Some(missing("name")),
         },
+        "chat_history" => Ok(crate::chat_history::chat_history(
+            ctx,
+            repo_root,
+            crate::chat_history::HistoryArgs {
+                id: args["id"].as_str(),
+                query: args["query"].as_str(),
+                limit: args["limit"].as_u64().map(|v| v as usize),
+                all: args["all"].as_bool().unwrap_or(false),
+            },
+        )),
         _ => return None,
     };
     Some(result.unwrap_or_else(|e| format!("error: {e:#}")))
@@ -4035,6 +4218,19 @@ async fn mcp_bridge(
 }
 
 fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
+    let (binary, tail) = raw_argv(args)?;
+    // A machine with no python still has the one built into this binary; a
+    // call that forgot the `aster` in front should reach it, not a dead exec.
+    if matches!(binary.as_str(), "python" | "python3") && !on_path(&binary) {
+        let me = std::env::current_exe().ok()?;
+        let mut argv = vec!["python".to_string()];
+        argv.extend(tail);
+        return Some((me.to_string_lossy().into_owned(), argv));
+    }
+    Some((binary, tail))
+}
+
+fn raw_argv(args: &Value) -> Option<(String, Vec<String>)> {
     let tail = string_list(&args["args"]);
     match args["command"].as_str().filter(|s| !s.trim().is_empty()) {
         Some(binary) => {
@@ -4043,7 +4239,20 @@ fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
                     .chars()
                     .any(|c| c.is_whitespace() || matches!(c, '|' | ';' | '>' | '<' | '&' | '`'));
             match looks_like_shell_line {
-                true => Some(("bash".into(), vec!["-lc".into(), binary.to_string()])),
+                true => {
+                    let (sh, flag) = shell();
+                    Some((sh.into(), vec![flag.into(), binary.to_string()]))
+                }
+                // The tool text says `bash -lc`; where only `sh` exists the
+                // line still has to run rather than fail on the binary.
+                false if binary == "bash" && !on_path("bash") => {
+                    let (sh, flag) = shell();
+                    let line = tail.iter().skip_while(|a| a.starts_with('-')).cloned();
+                    Some((
+                        sh.into(),
+                        std::iter::once(flag.to_string()).chain(line).collect(),
+                    ))
+                }
                 false => Some((binary.to_string(), tail)),
             }
         }
@@ -4051,7 +4260,10 @@ fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
             let mut argv = string_list(&args["command"]).into_iter().chain(tail);
             let binary = argv.find(|a| !a.trim().is_empty())?;
             match binary.starts_with('-') {
-                true => Some(("bash".into(), std::iter::once(binary).chain(argv).collect())),
+                true => Some((
+                    shell().0.into(),
+                    std::iter::once(binary).chain(argv).collect(),
+                )),
                 false => Some((binary, argv.collect())),
             }
         }
@@ -4223,12 +4435,32 @@ fn sandbox_denial(output: &aster_sandbox::CommandOutput) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
-fn command_coaching(output: &aster_sandbox::CommandOutput, sandboxed: bool) -> Vec<String> {
+/// The sandbox reports a missing program as a permission error, which sends
+/// the model hunting for grants; name the real problem and the way round it.
+fn missing_binary(binary: &str) -> String {
+    let hint = match binary {
+        "python" | "python3" | "pip" | "pip3" => {
+            " Python here is `aster python <script>` or `aster python -c \"...\"`."
+        }
+        "bash" => " The shell is `sh -c \"...\"`.",
+        _ => "",
+    };
+    format!("there is no `{binary}` on this machine's PATH.{hint}")
+}
+
+fn command_coaching(
+    binary: &str,
+    output: &aster_sandbox::CommandOutput,
+    sandboxed: bool,
+) -> Vec<String> {
     let mut notes = Vec::new();
     let failed = output.exit_code != Some(0);
     let combined = format!("{}\n{}", output.stdout, output.stderr);
+    let shell_line = matches!(binary, "bash" | "sh" | "zsh" | "fish");
 
-    if let Some(line) = first_error_line(&combined) {
+    // A tool that prints `error:` and exits 0 (asterctl does) is reporting,
+    // not building, so the pipe note would only mislead.
+    if let Some(line) = first_error_line(&combined).filter(|_| shell_line || failed) {
         if output.exit_code == Some(0) {
             notes.push(format!(
                 "note: exit code 0 comes from the last command in the pipe; the \
@@ -4336,6 +4568,9 @@ async fn run_command_tool(
     args: &[String],
     opts: RunOpts,
 ) -> Result<String> {
+    if !binary.contains('/') && !on_path(binary) {
+        anyhow::bail!("{}", missing_binary(binary));
+    }
     authorize_exec(env, binary, args).await?;
     let output = run_raw(env, binary, args, opts).await?;
     if output.timed_out {
@@ -4356,7 +4591,7 @@ async fn run_command_tool(
         result.push_str(&truncate_head(&output.stderr, MAX_STREAM_CHARS));
     }
     result.push_str(&format!("\nexit code: {exit_code}"));
-    for note in command_coaching(&output, !opts.yolo) {
+    for note in command_coaching(binary, &output, !opts.yolo) {
         result.push('\n');
         result.push_str(&note);
     }
@@ -4858,6 +5093,14 @@ fn agent_tool_schema() -> Value {
                             "required": ["agent", "task"]
                         },
                         "minItems": 1
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Queue the tasks and return immediately instead of waiting. Reports arrive between rounds as each agent finishes; use `check: true` to see progress."
+                    },
+                    "check": {
+                        "type": "boolean",
+                        "description": "Return the status of background agent work instead of running tasks."
                     }
                 },
                 "required": ["tasks"]
@@ -4910,6 +5153,11 @@ async fn dispatch_agent_tool(
             .to_string();
     }
 
+    if args.get("check").and_then(Value::as_bool) == Some(true) {
+        return crate::agents_queue::status_text();
+    }
+    let background = args.get("background").and_then(Value::as_bool) == Some(true);
+
     let over_cap = tasks_val.len().saturating_sub(max_per_turn);
     let deps = crate::agents::AgentDeps {
         client: client.clone(),
@@ -4919,11 +5167,58 @@ async fn dispatch_agent_tool(
         credentials: ctx.credentials.clone(),
         probe: ctx.probe.clone(),
         environment: ctx.environment.clone(),
-        limits: ctx.limits,
+        limits: ctx.limits.clone(),
         swarm: ctx.swarm.clone(),
         session_registry: ctx.agents.clone(),
         yolo: ctx.yolo.load(Ordering::Relaxed),
     };
+
+    // Reports go to whichever turn is live when an agent finishes, so the
+    // submitting turn attaches first and later turns re-attach at their start.
+    crate::agents_queue::attach(ctx.injected.clone(), events.cloned());
+
+    if background {
+        let registry = ctx.agents.clone();
+        let deps = Arc::new(deps);
+        let runner: crate::agents_queue::SwarmRunner = Arc::new(move |tasks, callbacks| {
+            let registry = registry.clone();
+            let deps = deps.clone();
+            Box::pin(async move {
+                crate::agents::run_swarm(
+                    tasks,
+                    &registry,
+                    &deps,
+                    {
+                        let on_activity = callbacks.on_activity.clone();
+                        move |agent: &str, task: &str, line: String| {
+                            (on_activity)(agent, task, line)
+                        }
+                    },
+                    {
+                        let on_complete = callbacks.on_complete.clone();
+                        move |p: crate::agents::AgentProgress| {
+                            (on_complete)(crate::agents::TaskReport {
+                                agent: p.agent,
+                                task: p.task,
+                                report: p.report,
+                                error: p.error,
+                            })
+                        }
+                    },
+                )
+                .await
+            })
+        });
+        let count = tasks.len();
+        return match crate::agents_queue::submit(tasks, runner) {
+            Ok(id) => format!(
+                "Queued {count} task(s) as background batch {id}. They run while you keep working; \
+                 each agent's report arrives automatically between rounds. Use the agent tool with \
+                 `check: true` to see progress."
+            ),
+            Err(e) => format!("error: {e}"),
+        };
+    }
 
     // Seed the UI with the whole batch up front so it can show "2/3"-style
     // progress; run_swarm then reports each task's completion as it lands.

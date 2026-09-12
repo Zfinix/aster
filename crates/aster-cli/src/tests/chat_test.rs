@@ -530,7 +530,7 @@ fn command_coaching_flags_pipe_masked_build_failure() {
         "",
         0,
     );
-    let notes = command_coaching(&out, true);
+    let notes = command_coaching("bash", &out, true);
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert!(notes[0].contains("exit code 0 comes from"), "{}", notes[0]);
     assert!(notes[0].contains("error[E0308]"), "{}", notes[0]);
@@ -539,7 +539,7 @@ fn command_coaching_flags_pipe_masked_build_failure() {
 #[test]
 fn command_coaching_surfaces_first_error_on_failure() {
     let out = generate_test_command_output("", "warning: x\nerror: linker failed\n", 1);
-    let notes = command_coaching(&out, true);
+    let notes = command_coaching("bash", &out, true);
     assert!(notes[0].contains("first error"), "{notes:?}");
     assert!(notes[0].contains("linker failed"), "{notes:?}");
 }
@@ -547,7 +547,7 @@ fn command_coaching_surfaces_first_error_on_failure() {
 #[test]
 fn command_coaching_marks_auth_failures_as_non_retryable() {
     let out = generate_test_command_output("", "Unauthorized. Please run 'railway login'\n", 1);
-    let notes = command_coaching(&out, true);
+    let notes = command_coaching("bash", &out, true);
     assert!(
         notes.iter().any(|n| n.contains("auth failure")),
         "{notes:?}"
@@ -561,9 +561,9 @@ fn command_coaching_names_the_sandbox_on_denials() {
         "error: bun is unable to write files to tempdir: PermissionDenied\n",
         1,
     );
-    let notes = command_coaching(&out, true);
+    let notes = command_coaching("bash", &out, true);
     assert!(notes.iter().any(|n| n.contains("sandbox")), "{notes:?}");
-    let unsandboxed = command_coaching(&out, false);
+    let unsandboxed = command_coaching("bash", &out, false);
     assert!(
         !unsandboxed.iter().any(|n| n.contains("sandbox")),
         "{unsandboxed:?}"
@@ -573,14 +573,42 @@ fn command_coaching_names_the_sandbox_on_denials() {
 #[test]
 fn command_coaching_ignores_ssh_publickey_denials() {
     let out = generate_test_command_output("", "Permission denied (publickey).\n", 255);
-    let notes = command_coaching(&out, true);
+    let notes = command_coaching("bash", &out, true);
     assert!(!notes.iter().any(|n| n.contains("sandbox")), "{notes:?}");
+}
+
+#[test]
+fn only_the_newest_image_turn_keeps_its_picture() {
+    let mut wire = vec![
+        json!({ "role": "user", "content": "look" }),
+        image_turn("run_command", &["data:image/png;base64,AAAA".to_string()]),
+        json!({ "role": "tool", "tool_call_id": "1", "content": "ok" }),
+        image_turn("run_command", &["data:image/png;base64,BBBB".to_string()]),
+    ];
+
+    retire_old_images(&mut wire, 1);
+
+    assert_eq!(wire[0]["content"], "look");
+    assert!(wire[1]["content"].is_string(), "{:?}", wire[1]);
+    assert!(
+        wire[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("earlier image from the run_command call")
+    );
+    assert!(wire[3]["content"].is_array());
+}
+
+#[test]
+fn command_coaching_leaves_a_tools_own_error_report_alone() {
+    let out = generate_test_command_output("error: unknown verb 'help'\n", "", 0);
+    assert!(command_coaching("asterctl", &out, true).is_empty());
 }
 
 #[test]
 fn command_coaching_stays_quiet_on_clean_output() {
     let out = generate_test_command_output("all good\n", "", 0);
-    assert!(command_coaching(&out, true).is_empty());
+    assert!(command_coaching("bash", &out, true).is_empty());
 }
 
 #[test]
@@ -590,11 +618,58 @@ fn limits_come_from_the_agent_block() {
         command_timeout_secs: Some(11),
         compact_budget_chars: Some(64_000),
         max_output_tokens: None,
+        language: Some("  Français ".into()),
+        learn: None,
     };
     let limits = Limits::resolve(&agent);
     assert_eq!(limits.max_tool_rounds, 9);
     assert_eq!(limits.command_timeout_secs, 11);
     assert_eq!(limits.compact_budget_chars, 64_000);
+    assert_eq!(limits.language.as_deref(), Some("Français"));
+}
+
+#[test]
+fn language_note_follows_the_user_unless_a_language_is_set() {
+    let note = language_note(None);
+    assert!(note.starts_with("## Language"), "{note}");
+    assert!(note.contains("language the user writes in"), "{note}");
+
+    let note = language_note(Some("English"));
+    assert!(
+        note.contains("Reply in English, whatever language"),
+        "{note}"
+    );
+    assert!(
+        !note.contains("Reply in the language the user writes in"),
+        "{note}"
+    );
+}
+
+#[test]
+fn the_system_prompt_ends_every_path_with_the_language_note() {
+    let ctx = SessionCtx {
+        limits: Limits {
+            language: Some("English".into()),
+            ..Limits::default()
+        },
+        ..SessionCtx::default()
+    };
+    let prompt = system_prompt(&ctx, false);
+    assert!(prompt.contains("## Language\nReply in English"), "{prompt}");
+
+    let sub = SessionCtx {
+        sub_agent: Some(Arc::new(SubAgentOverrides {
+            prompt_body: "Gather facts.".into(),
+            tool_allowlist: Default::default(),
+        })),
+        ..SessionCtx::default()
+    };
+    let prompt = system_prompt(&sub, true);
+    assert!(prompt.starts_with("Gather facts."), "{prompt}");
+    assert!(
+        prompt.contains("## Language\nReply in the language the user writes in"),
+        "{prompt}"
+    );
 }
 
 #[test]
@@ -2046,7 +2121,7 @@ async fn turn_against(server: &wiremock::MockServer) -> Result<String> {
         std::sync::Arc::new(Grants::default()),
         None,
         SessionCtx::default(),
-        Box::new(|_| {}),
+        Arc::new(|_| {}),
     )
     .await
     .map(|(reply, _, _)| reply)
@@ -2111,7 +2186,7 @@ async fn a_model_that_never_stops_degenerating_still_fails_the_turn() {
         .await;
 
     let err = turn_against(&server).await.unwrap_err().to_string();
-    assert!(err.contains("degenerated"), "{err}");
+    assert!(err.contains("repeating itself"), "{err}");
 }
 
 #[test]

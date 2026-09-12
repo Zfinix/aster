@@ -135,7 +135,7 @@ fn command_line(args: &Value) -> Option<String> {
 
 fn activity_sink(tx: tokio::sync::mpsc::UnboundedSender<String>) -> crate::chat::ChatEventSink {
     let narration = std::sync::Mutex::new(String::new());
-    Box::new(move |ev| {
+    Arc::new(move |ev| {
         match ev.get("type").and_then(Value::as_str).unwrap_or("") {
             "token" | "text" => {
                 if let Some(content) = ev.get("content").and_then(Value::as_str) {
@@ -246,6 +246,7 @@ async fn run_agent(
             max_tool_rounds: max_rounds,
             command_timeout_secs: deps.limits.command_timeout_secs,
             compact_budget_chars: deps.limits.compact_budget_chars,
+            language: deps.limits.language.clone(),
         },
         environment: deps.environment.clone(),
         yolo: Arc::new(AtomicBool::new(deps.yolo)),

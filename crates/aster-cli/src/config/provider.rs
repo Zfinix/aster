@@ -246,18 +246,40 @@ const ASTER_TITLE: &str = "Aster";
 
 pub fn resolve_client(settings: &Settings, model_override: Option<&str>) -> Result<AiClient> {
     let llm = resolve(&settings.review, model_override)?;
+    Ok(build_client(settings, llm))
+}
+
+/// A client for the endpoint a session already ran on, with the key that
+/// endpoint takes, so a pass over that session never lands on another provider.
+pub fn client_for(settings: &Settings, base_url: &str, model: &str) -> Result<AiClient> {
+    let Some((api_key, _)) = resolve_key(base_url) else {
+        return Err(MissingCredentials(Setup::for_endpoint(base_url)).into());
+    };
+    Ok(build_client(
+        settings,
+        LlmConfig {
+            api_key,
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            effort: resolve_effort(&settings.review),
+            web_search: resolve_web_search(&settings.review),
+        },
+    ))
+}
+
+fn build_client(settings: &Settings, llm: LlmConfig) -> AiClient {
     let client = AiClient::new(llm.base_url, llm.api_key, llm.model)
         .with_effort(llm.effort)
         .with_web_search(llm.web_search)
         .with_max_tokens(resolve_max_tokens(&settings.agent));
     // Only attribute if endpoint is openrouter.
     if is_openrouter(client.base_url()) {
-        return Ok(client.with_attribution_headers([
+        return client.with_attribution_headers([
             ("HTTP-Referer".to_string(), ASTER_HTTP_REFERER.to_string()),
             ("X-OpenRouter-Title".to_string(), ASTER_TITLE.to_string()),
-        ]));
+        ]);
     }
-    Ok(client)
+    client
 }
 
 pub(crate) fn is_openrouter(base_url: &str) -> bool {

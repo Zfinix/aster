@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 pub const TRANSCRIPT_VERSION: u32 = 1;
 
+const BARREN: &[&str] = &["no matches", "no files matched", "no results"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TranscriptEvent {
@@ -390,6 +392,20 @@ impl SessionTranscript {
     pub fn display_title(&self) -> Option<&str> {
         self.title().or_else(|| self.first_user_text())
     }
+}
+
+/// A tool result that answered nothing. Shared by the live loop and the
+/// offline eval so a dashboard and a session report never disagree.
+pub fn barren(result: &str) -> bool {
+    let result = result.trim();
+    if result.is_empty() {
+        return true;
+    }
+    if BARREN.iter().any(|m| result.eq_ignore_ascii_case(m)) {
+        return true;
+    }
+    // A wrong path guess: the note names nearby paths but answers nothing.
+    result.starts_with("note:") && result.contains("does not exist.")
 }
 
 #[cfg(test)]

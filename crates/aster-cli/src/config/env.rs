@@ -90,6 +90,7 @@ const VARS: &[Var] = &[
     Var { var: "ASTER_MAX_TOOL_ROUNDS", group: "Turns and limits", kind: "number", secret: false, help: "Tool rounds the agent may spend on one try" },
     Var { var: "ASTER_COMMAND_TIMEOUT", group: "Turns and limits", kind: "number", secret: false, help: "Seconds before a running command is stopped" },
     Var { var: "ASTER_COMPACT_BUDGET", group: "Turns and limits", kind: "number", secret: false, help: "Transcript size in characters before it is folded into a summary" },
+    Var { var: "ASTER_LANGUAGE", group: "Turns and limits", kind: "text", secret: false, help: "Language every reply is written in; unset follows the user" },
     Var { var: "ASTER_GOAL_MAX_TURNS", group: "Turns and limits", kind: "number", secret: false, help: "Tries a goal check may run" },
     Var { var: "ASTER_AGENT_MAX_CONCURRENT", group: "Turns and limits", kind: "number", secret: false, help: "Sub-agents running at the same time" },
     Var { var: "ASTER_AGENT_MAX_PER_TURN", group: "Turns and limits", kind: "number", secret: false, help: "Sub-agent fan-out allowed per turn" },

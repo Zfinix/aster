@@ -48,6 +48,7 @@ const READ_ONLY: &[&str] = &[
     "find_files",
     "recall",
     "read_skill",
+    "chat_history",
 ];
 
 /// Side effects routed back from the bottom pane's views.
@@ -871,6 +872,10 @@ pub(crate) fn step_label(name: &str, args: &str) -> String {
         "recall" => format!("Recalled {}", s("name")),
         "forget" => format!("Forgot {}", s("name")),
         "read_skill" => format!("Read skill {}", s("name")),
+        "chat_history" => match parsed["id"].as_str() {
+            Some(id) => format!("Read chat {id}"),
+            None => "Listed saved chats".to_string(),
+        },
         "agent" => {
             let names: Vec<&str> = parsed["tasks"]
                 .as_array()
@@ -1681,7 +1686,7 @@ impl ChatApp {
             probe: std::sync::Arc::new(bash_tools::ToolProbe::detect()),
             plan: self.plan.clone(),
             mcp: self.mcp.clone(),
-            limits: self.limits,
+            limits: self.limits.clone(),
             environment: crate::chat::environment_note(&repo_root),
             yolo: sync::Arc::new(std::sync::atomic::AtomicBool::new(self.mode == Mode::Yolo)),
             reads: Default::default(),
@@ -1705,7 +1710,7 @@ impl ChatApp {
                 client.model = target.model_param.clone();
                 let _ = events_tx.try_send(TurnEvent::MomRouted(entry));
             }
-            let sink: crate::chat::ChatEventSink = Box::new(move |event| {
+            let sink: crate::chat::ChatEventSink = sync::Arc::new(move |event| {
                 let Some(ev) = decode_turn_event(&event) else {
                     return;
                 };

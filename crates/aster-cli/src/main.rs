@@ -2,11 +2,13 @@
 
 mod acp;
 mod agents;
+mod agents_queue;
 mod announce;
 mod auth;
 use auth::LoginArgs;
 mod budget;
 mod chat;
+mod chat_history;
 mod cloudflare_auth;
 mod config;
 mod credentials;
@@ -20,6 +22,7 @@ mod images;
 mod import;
 mod init;
 mod instructions;
+mod learn;
 mod lsp_tools;
 mod mcp;
 mod mcp_cache;
@@ -30,6 +33,8 @@ mod picker;
 mod plugins;
 mod preview;
 mod project;
+#[cfg(target_os = "android")]
+mod python;
 mod redact;
 mod remind;
 mod remote;
@@ -154,6 +159,11 @@ enum Command {
     Announce(announce::AnnounceArgs),
     /// Set a one-shot native notification: `aster remind "text" "in 10s"`.
     Remind(remind::RemindArgs),
+    /// Score the last turn of a session and refine the learned skill for that task.
+    Learn(learn::LearnArgs),
+    /// Run Python 3 with the standard library built in: `aster python script.py` or `-c "..."`.
+    #[cfg(target_os = "android")]
+    Python(python::PythonArgs),
     /// Serve Aster's own UI to a browser on this machine (http://localhost:4187).
     Serve(serve::ServeArgs),
     /// Serve the agent over the Agent Client Protocol on stdio, for editors like Zed.
@@ -206,7 +216,10 @@ async fn main() -> Result<()> {
     let sessions_tui = matches!(&command, Command::Sessions(a) if a.is_interactive());
     let tui_mode = matches!(&command, Command::Review(a) if a.tui) || chat_tui || sessions_tui;
     let stream_mode = matches!(&command, Command::Review(a) if a.stream)
-        || matches!(&command, Command::Fix(_) | Command::Acp(_))
+        || matches!(
+            &command,
+            Command::Fix(_) | Command::Acp(_) | Command::Learn(_)
+        )
         || matches!(&command, Command::Chat(a) if !a.is_interactive());
     let telemetry = init_tracing(tui_mode, stream_mode);
 
@@ -239,6 +252,9 @@ async fn main() -> Result<()> {
         Command::Cron(args) => cron::run(args),
         Command::Announce(args) => announce::run(args).await,
         Command::Remind(args) => remind::run(args),
+        Command::Learn(args) => learn::run(args).await,
+        #[cfg(target_os = "android")]
+        Command::Python(args) => python::run(args),
         Command::Serve(args) => serve::run(args).await,
         Command::Acp(args) => acp::run(args).await,
         Command::Upgrade(args) => upgrade::run(args).await,

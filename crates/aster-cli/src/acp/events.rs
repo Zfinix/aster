@@ -48,7 +48,7 @@ impl Sink {
     }
 
     pub fn into_chat_sink(self) -> ChatEventSink {
-        Box::new(move |event| {
+        Arc::new(move |event| {
             for update in self.translate(&event) {
                 self.send(update);
             }
@@ -404,7 +404,9 @@ fn plan_from_args(args: &Value) -> Option<Plan> {
 
 fn kind(name: &str, args: &Value) -> ToolKind {
     match name {
-        "read_file" | "list_files" | "find_files" | "recall" | "read_skill" => ToolKind::Read,
+        "read_file" | "list_files" | "find_files" | "recall" | "read_skill" | "chat_history" => {
+            ToolKind::Read
+        }
         "search_files" | "ast_grep" => ToolKind::Search,
         "explore" => {
             let searches =

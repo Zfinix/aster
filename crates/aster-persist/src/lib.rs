@@ -10,7 +10,7 @@ pub use memory::{
 };
 pub use transcript::{
     EventUsage, EvictionEvent, MessageEvent, ReasoningRecord, SessionMeta, SessionTranscript,
-    SessionWriter, SummaryEvent, TRANSCRIPT_VERSION, TitleEvent, TranscriptEvent,
+    SessionWriter, SummaryEvent, TRANSCRIPT_VERSION, TitleEvent, TranscriptEvent, barren,
 };
 
 use std::path::{Path, PathBuf};
@@ -92,7 +92,7 @@ impl Store {
         base_url: Option<String>,
         schedule: Option<&str>,
     ) -> Result<SessionWriter> {
-        let id = Ulid::new().to_string();
+        let id = slugify(&Ulid::new().to_string());
         let meta = SessionMeta {
             id: id.clone(),
             v: TRANSCRIPT_VERSION,
@@ -105,7 +105,7 @@ impl Store {
             title: None,
             schedule: schedule.map(str::to_string),
         };
-        let path = self.sessions_dir(repo_root).join(format!("{id}.jsonl"));
+        let path = self.session_path(repo_root, &id);
         SessionWriter::create(path, meta)
     }
 
@@ -123,7 +123,7 @@ impl Store {
         } else {
             id
         };
-        let path = self.sessions_dir(repo_root).join(format!("{id}.jsonl"));
+        let path = self.session_path(repo_root, &id);
         if path.exists() {
             let transcript = SessionTranscript::load(&path)?;
             return SessionWriter::reopen(path, transcript.meta);
@@ -143,13 +143,26 @@ impl Store {
         SessionWriter::create(path, meta)
     }
 
+    /// The one spelling of a session's file. Ids are slugified going in and
+    /// coming out, so a raw ULID and its stored form never name two files on a
+    /// case-sensitive filesystem. Sessions written before this was normalised
+    /// kept the raw id, so those are still found where they lie.
+    fn session_path(&self, repo_root: &Path, id: &str) -> PathBuf {
+        let dir = self.sessions_dir(repo_root);
+        let path = dir.join(format!("{}.jsonl", slugify(id)));
+        if path.exists() {
+            return path;
+        }
+        let legacy = dir.join(format!("{id}.jsonl"));
+        if legacy.exists() { legacy } else { path }
+    }
+
     pub fn resume(&self, repo_root: &Path, id: &str) -> Result<SessionTranscript> {
-        let path = self.sessions_dir(repo_root).join(format!("{id}.jsonl"));
-        SessionTranscript::load(&path)
+        SessionTranscript::load(&self.session_path(repo_root, id))
     }
 
     pub fn resume_writer(&self, repo_root: &Path, id: &str) -> Result<SessionWriter> {
-        let path = self.sessions_dir(repo_root).join(format!("{id}.jsonl"));
+        let path = self.session_path(repo_root, id);
         let transcript = SessionTranscript::load(&path)?;
         SessionWriter::reopen(path, transcript.meta)
     }
@@ -241,9 +254,7 @@ impl Store {
     /// Delete a saved session transcript. Returns whether it existed; the id
     /// is slugified so it can never escape the sessions directory.
     pub fn delete_session(&self, repo_root: &Path, id: &str) -> Result<bool> {
-        let path = self
-            .sessions_dir(repo_root)
-            .join(format!("{}.jsonl", slugify(id)));
+        let path = self.session_path(repo_root, id);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -290,3 +301,7 @@ pub fn slugify(input: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "tests/store_test.rs"]
+mod tests;

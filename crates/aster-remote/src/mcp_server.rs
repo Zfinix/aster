@@ -85,10 +85,19 @@ fn tool_catalog() -> Value {
     json!([
         {
             "name": "react",
-            "description": "React to the user's current message with one emoji. Use sparingly, when it genuinely fits (a win, a thanks, something funny), not on every reply.",
+            "description": "React to a message with one emoji: the user's current message, or the message_id you name. Use sparingly, when it genuinely fits (a win, a thanks, something funny), not on every reply.",
             "inputSchema": { "type": "object", "required": ["emoji"], "properties": {
                 "emoji": { "type": "string", "enum": REACTIONS,
                            "description": "The reaction emoji; only these are accepted by Telegram" },
+                "message_id": { "type": "integer", "description": "The message to react to; defaults to the message that started this turn" },
+            }},
+        },
+        {
+            "name": "reply",
+            "description": "Send a text message quoting a specific message, so the person sees which one you mean. Use it to answer one question out of several, or to come back to something from earlier. Your normal final answer already replies to the current message; do not duplicate it here.",
+            "inputSchema": { "type": "object", "required": ["text", "message_id"], "properties": {
+                "text": { "type": "string", "description": "What to say, plain text" },
+                "message_id": { "type": "integer", "description": "The message to quote, from its [msg N] tag" },
             }},
         },
         {
@@ -101,9 +110,10 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "send_photo",
-            "description": "Send an image that renders inline in the chat.",
-            "inputSchema": { "type": "object", "required": ["url"], "properties": {
+            "description": "Send an image that renders inline in the chat, from a URL or a file on disk.",
+            "inputSchema": { "type": "object", "properties": {
                 "url": url("Direct URL to a JPEG/PNG image"),
+                "path": { "type": "string", "description": "Path to a JPEG/PNG on disk, absolute or relative to the repository root" },
                 "caption": caption,
             }},
         },
@@ -166,12 +176,25 @@ async fn dispatch(
                 "unsupported emoji; allowed: {}",
                 REACTIONS.join(" ")
             );
-            let message_id = message_id.context("there is no user message to react to")?;
-            api.react(chat_id, message_id, &emoji).await?;
+            let target = args
+                .get("message_id")
+                .and_then(Value::as_i64)
+                .filter(|id| *id > 0)
+                .or(message_id)
+                .context("there is no user message to react to")?;
+            api.react(chat_id, target, &emoji).await?;
             json!({ "ok": true })
         }
+        "send_photo" if text("path").is_some() => {
+            let path = text("path").context("path is required")?;
+            api.send_chat_action(chat_id, "upload_photo").await;
+            let sent = api
+                .send_photo_file(chat_id, &path, text("caption").as_deref().unwrap_or(""))
+                .await?;
+            json!({ "ok": true, "message_id": sent.get("message_id") })
+        }
         "send_gif" | "send_photo" => {
-            let url = text("url").context("url is required")?;
+            let url = text("url").context("url or path is required")?;
             ensure!(
                 url.starts_with("https://") || url.starts_with("http://"),
                 "url must be http(s)"
@@ -188,6 +211,16 @@ async fn dispatch(
             }
             let sent = api.call(method, payload).await?;
             json!({ "ok": true, "message_id": sent.get("message_id") })
+        }
+        "reply" => {
+            let body = text("text").context("text is required")?;
+            let target = args
+                .get("message_id")
+                .and_then(Value::as_i64)
+                .filter(|id| *id > 0)
+                .context("message_id is required; take it from the [msg N] tag")?;
+            api.send_text_reply(chat_id, &body, Some(target)).await;
+            json!({ "ok": true })
         }
         "send_document" => {
             let path = text("path").context("path is required")?;
