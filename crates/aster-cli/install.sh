@@ -144,7 +144,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 info "Downloading ${ASSET}"
-curl -fsSL "$URL" -o "$TMP/$ASSET" || { err "download failed: $URL"; exit 1; }
+curl -fL --progress-bar --connect-timeout 10 --speed-limit 1024 --speed-time 30 --retry 3 "$URL" -o "$TMP/$ASSET" || { err "download failed: $URL"; exit 1; }
 
 if curl -fsSL "$SHA_URL" -o "$TMP/$ASSET.sha256" 2>/dev/null; then
   EXPECTED="$(cat "$TMP/$ASSET.sha256")"
