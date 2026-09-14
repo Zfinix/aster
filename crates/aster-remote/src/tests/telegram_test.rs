@@ -1,9 +1,15 @@
 use super::{
-    Activity, Api, LearnReport, LearnScore, extract_gifs, incoming_prompt, learn_error,
-    link_buttons, mirror_url_for, photo_file_id, photo_prompt, pick_mirror_ip, plain_text,
-    render_learned, shot_paths, tool_line, truncate,
+    Activity, Api, LearnReport, LearnScore, TurnEnd, extract_gifs, file_url, incoming_prompt,
+    is_stop_request, learn_error, link_buttons, mirror_url_for, photo_file_id, photo_prompt,
+    pick_mirror_ip, plain_text, render_learned, reports_no_change, shot_paths, stranger_reply,
+    streams_photos, tool_line, truncate, unwrap_result, wants_photos,
 };
 use serde_json::json;
+
+/// A card's photo flag, which these tests never exercise.
+fn asked() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+}
 
 #[test]
 fn extract_gifs_removes_bare_url_lines() {
@@ -183,7 +189,7 @@ fn sample_card() {
             "stdout:\nreceipt: posted (tap at 360,800)\nchanged: +0 -0 pkg=com.android.chrome after_ms=1500\nwarning: nothing on screen changed\n",
         ),
     ];
-    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, 1);
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
     for (i, (args, out)) in steps.iter().enumerate() {
         let tool = if i == 5 { "read_file" } else { "run_command" };
         activity.push(i.to_string(), tool_line(tool, args));
@@ -195,7 +201,7 @@ fn sample_card() {
 
 #[tokio::test]
 async fn a_flush_inside_the_rate_gap_is_held_until_the_gap_passes() {
-    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, 1);
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
     activity.push("1".into(), "🔎 <b>Look</b>".into());
     activity.message_id = Some(7);
     activity.last_flush = std::time::Instant::now();
@@ -355,6 +361,41 @@ fn a_message_without_a_photo_yields_nothing() {
 }
 
 #[test]
+fn stop_on_its_own_ends_the_turn_however_it_is_put() {
+    for said in [
+        "stop",
+        "STOP!",
+        "stop stop stop",
+        "just stop ffs",
+        "please stop it now",
+        "cancel",
+    ] {
+        assert!(is_stop_request(said), "{said} should stop the turn");
+    }
+}
+
+#[test]
+fn a_message_that_wants_something_else_is_for_the_agent() {
+    for said in [
+        "stop the server and restart it",
+        "can you stop using tailwind here",
+        "",
+        "what are you doing exactly",
+        "stop, then tell me what the last commit was",
+    ] {
+        assert!(!is_stop_request(said), "{said} should reach the agent");
+    }
+}
+
+#[test]
+fn a_file_url_puts_the_path_straight_after_the_token() {
+    assert_eq!(
+        file_url("https://api.telegram.org/bot123:test", "photos/file_4.jpg"),
+        "https://api.telegram.org/file/bot123:test/photos/file_4.jpg",
+    );
+}
+
+#[test]
 fn a_photo_prompt_carries_the_caption() {
     let message = json!({"caption": "what is wrong with this chart"});
     let prompt = photo_prompt("/tmp/x.jpg", &message);
@@ -400,4 +441,309 @@ fn the_mirror_url_falls_back_to_the_lan_without_tailscale() {
     let lan = Some("192.168.1.20".parse().expect("ip"));
     let url = mirror_url_for(pick_mirror_ip(None, lan), 7070);
     assert_eq!(url, "http://192.168.1.20:7070");
+}
+
+#[test]
+fn a_tap_that_moved_nothing_is_not_a_tick() {
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+    activity.push("1".into(), "📱 <b>Tap</b> 15".into());
+    activity.complete(
+        "1",
+        false,
+        "receipt: posted (CREATE)\nchanged: +0 -0\nwarning: nothing on screen changed; treat as not done\n".into(),
+    );
+    activity.push("2".into(), "📱 <b>Tap</b> 16".into());
+    activity.complete(
+        "2",
+        false,
+        "receipt: posted (\"SIMs\")\nchanged: +5 -17\n".into(),
+    );
+
+    let card = activity.render("<b>Working…</b>");
+    assert!(card.contains("⚠️"), "{card}");
+    assert!(card.contains("✅"), "{card}");
+}
+
+#[test]
+fn only_the_phrases_the_tools_print_count_as_no_change() {
+    assert!(reports_no_change(
+        "changed: +0 -0\nwarning: nothing on screen changed; treat as not done"
+    ));
+    assert!(reports_no_change(
+        "receipt: refused (already at the down limit)"
+    ));
+    assert!(!reports_no_change(
+        "receipt: posted (\"Open\")\nchanged: +4 -8"
+    ));
+    assert!(!reports_no_change("nothing to commit, working tree clean"));
+}
+
+/// The card used to call every screenshot "picture sent" because the tool
+/// printed a path. Only the send knows, and it runs before the step completes.
+#[test]
+fn a_screenshot_step_claims_a_picture_only_when_one_went_out() {
+    let shot = "shot /tmp/screen-1.png (1440x3040, 24210 bytes)".to_string();
+
+    let mut held = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+    held.push("1".into(), "📱 <b>Shot</b>".into());
+    held.complete("1", false, shot.clone());
+    assert_eq!(held.lines[0].result, "screenshot taken");
+
+    let mut sent = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+    sent.push("1".into(), "📱 <b>Shot</b>".into());
+    sent.mark_sent("1");
+    sent.complete("1", false, shot);
+    assert_eq!(sent.lines[0].result, "picture sent");
+}
+
+#[test]
+fn a_stranger_gets_no_answer_at_all() {
+    assert_eq!(stranger_reply(&[8504978708], 42), None);
+    assert_eq!(stranger_reply(&[1, 2, 3], 0), None);
+}
+
+/// Until somebody is allowed, the id is the one thing worth saying: it is how
+/// the owner allows themselves.
+#[test]
+fn an_unclaimed_bot_hands_back_the_id_that_would_claim_it() {
+    let reply = stranger_reply(&[], 8504978708).expect("an unclaimed bot answers");
+    assert!(reply.contains("8504978708"), "{reply}");
+}
+
+#[test]
+fn only_an_explicit_ask_puts_screenshots_in_the_chat() {
+    assert!(wants_photos("send me a screenshot of the board"));
+    assert!(wants_photos("show me what the app looks like"));
+    assert!(!wants_photos("turn off the screen and reduce brightness"));
+    assert!(!wants_photos("order me lunch"));
+}
+
+/// The ask usually lands mid-turn, once the person has been staring at a card
+/// for a while: a bare "Screenshot" counts as much as the one that opened the
+/// turn, and the flag it sets rides on the chat so the running turn sees it.
+#[test]
+fn a_bare_screenshot_mid_turn_is_an_ask_too() {
+    assert!(wants_photos("Screenshot rn"));
+    assert!(wants_photos("Screenshot"));
+    assert!(wants_photos("let me see"));
+}
+
+/// Without a policy the guess stands, which is what every chat gets until it
+/// says otherwise.
+#[test]
+fn no_photo_policy_leaves_the_guess_in_charge() {
+    assert!(streams_photos(None, "show me the board"));
+    assert!(!streams_photos(None, "play wordle and win"));
+    assert!(streams_photos(Some("auto"), "show me the board"));
+    assert!(!streams_photos(Some("auto"), "play wordle and win"));
+}
+
+/// The reason the setting exists: "play wordle and win" reads as no ask at
+/// all, and the person who wants to watch had no way to say so once.
+#[test]
+fn a_photo_policy_overrules_the_guess_both_ways() {
+    assert!(streams_photos(Some("on"), "play wordle and win"));
+    assert!(!streams_photos(
+        Some("off"),
+        "send me a screenshot of the board"
+    ));
+}
+
+/// The flood: a card whose id was never read posted a new message on every
+/// edit. One failed post must silence the card, not start it over.
+#[tokio::test]
+async fn a_card_that_cannot_be_posted_is_never_posted_twice() {
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+    activity.push("1".into(), "📱 <b>Tap</b>".into());
+
+    activity.flush(true).await;
+    assert!(
+        activity.message_id.is_none(),
+        "the send could not have worked"
+    );
+    assert!(activity.lost, "a card that cannot post gives up");
+
+    activity.push("2".into(), "📱 <b>Tap</b>".into());
+    activity.flush(true).await;
+    assert!(activity.lost);
+    // And it has nothing to finish, so the answer goes out on its own.
+    activity.finish(TurnEnd::Done).await;
+    assert!(activity.message_id.is_none(), "it stays quiet to the end");
+}
+
+/// `call` hands back the `result` object, not the envelope around it. Reading
+/// a level too deep is what cost the card its message id.
+#[test]
+fn a_call_returns_the_result_itself() {
+    let response = json!({ "ok": true, "result": { "message_id": 7, "text": "hi" } });
+    let result = unwrap_result("sendMessage", response).unwrap();
+    assert_eq!(result.get("message_id").and_then(|v| v.as_i64()), Some(7));
+    assert!(result.get("result").is_none());
+}
+
+#[test]
+fn a_session_button_marks_the_one_the_chat_is_in() {
+    let row = super::SessionRow {
+        id: "vsc-mu035c38".into(),
+        title: "Fix the thinking toggle".into(),
+        turns: 3,
+    };
+    let label = super::session_label(&row, Some("vsc-mu035c38"));
+    assert_eq!(label, "• Fix the thinking toggle · 3 turns");
+    let other = super::session_label(&row, Some("vsc-other"));
+    assert_eq!(other, "Fix the thinking toggle · 3 turns");
+}
+
+#[test]
+fn a_session_with_no_title_falls_back_to_its_id() {
+    let row = super::SessionRow {
+        id: "vsc-mu034gqq".into(),
+        title: String::new(),
+        turns: 1,
+    };
+    assert_eq!(
+        super::session_label(&row, None),
+        "vsc-mu034gqq · 1 turn",
+        "one turn is not turns"
+    );
+}
+
+#[test]
+fn every_command_telegram_is_told_about_is_one_it_accepts() {
+    for command in super::commands() {
+        assert!(
+            command.name.len() <= 32
+                && command
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "{} is not a name Telegram takes",
+            command.name
+        );
+        assert!(
+            command.about.len() <= 256 && !command.about.is_empty(),
+            "{} needs a description Telegram takes",
+            command.name
+        );
+    }
+    let mut names: Vec<&str> = super::commands().map(|c| c.name).collect();
+    let listed = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(listed, names.len(), "a command is in the table twice");
+}
+
+#[test]
+fn the_phone_build_keeps_the_phone_commands_and_drops_the_repo_ones() {
+    let named = |name: &str| super::commands().any(|command| command.name == name);
+    assert_eq!(named("mirror"), cfg!(target_os = "android"));
+    assert_eq!(named("diff"), !cfg!(target_os = "android"));
+    assert_eq!(named("repo"), !cfg!(target_os = "android"));
+    assert!(named("bots"), "bots belong on every build");
+    assert!(named("sessions") && named("memory") && named("learn"));
+}
+
+#[test]
+fn a_session_list_flattens_the_title_it_shows() {
+    let raw = r#"[{"id":"vsc-mu028ou0","created_at":"2026-09-13T17:00:54Z","model":"glm","turns":2,
+        "title":"FIX THIS:\n\n\nwhat causes the repeat"},{"id":"vsc-x","turns":1,"title":""}]"#;
+    let rows = super::parse_sessions(raw).expect("the CLI shape reads");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].title, "FIX THIS: what causes the repeat");
+    assert_eq!(rows[0].turns, 2);
+    assert!(rows[1].title.is_empty(), "an untitled session keeps its id");
+}
+
+#[test]
+fn a_session_list_that_is_not_json_is_a_reason_not_a_panic() {
+    let err = super::parse_sessions("error: no such repo")
+        .err()
+        .expect("that is not a list");
+    assert!(err.contains("unreadable session list"), "{err}");
+}
+
+#[test]
+fn memory_shows_the_project_facts_and_the_blocks_by_name() {
+    let stored = json!({
+        "project": { "text": "# Project memory\n\n- the deploy needs the VPN\n- keys live in .env" },
+        "blocks": [{ "name": "release", "description": "how a release goes out" }],
+    });
+    let text = super::memory_summary(&stored, "").expect("there is memory to show");
+    assert!(text.contains("• the deploy needs the VPN"), "{text}");
+    assert!(
+        !text.contains("# Project memory"),
+        "the heading is not a fact"
+    );
+    assert!(
+        text.contains("<b>release</b> how a release goes out"),
+        "{text}"
+    );
+}
+
+#[test]
+fn memory_filters_facts_and_blocks_by_what_was_asked_for() {
+    let stored = json!({
+        "project": { "text": "- the deploy needs the VPN\n- keys live in .env" },
+        "blocks": [{ "name": "release", "description": "how a release goes out" }],
+    });
+    let text = super::memory_summary(&stored, "vpn").expect("one fact matches");
+    assert!(text.contains("VPN"), "{text}");
+    assert!(!text.contains("keys live"), "the others are left out");
+    assert!(!text.contains("release"), "a block that misses is left out");
+    assert!(
+        super::memory_summary(&stored, "nothing here").is_none(),
+        "a filter that matches nothing says so"
+    );
+}
+
+#[test]
+fn memory_with_nothing_in_it_is_none() {
+    assert!(super::memory_summary(&json!({}), "").is_none());
+    assert!(super::memory_summary(&serde_json::Value::Null, "").is_none());
+}
+
+#[test]
+fn help_lists_every_command_this_build_offers() {
+    let cfg = super::TelegramConfig {
+        token: String::new(),
+        allowed_users: vec![],
+        bin: "aster".into(),
+        repo_root: "/Users/me/projects/aster".into(),
+        mode: "auto".into(),
+    };
+    let help = super::help(&cfg);
+    assert!(
+        help.contains("<code>/Users/me/projects/aster</code>"),
+        "{help}"
+    );
+    for command in super::commands() {
+        assert!(
+            help.contains(&format!("/{} - {}", command.name, command.about)),
+            "/{} is missing from help",
+            command.name
+        );
+    }
+    assert!(help.ends_with("Installed skills show up as /commands too."));
+    assert!(!help.contains("\n\n\n"), "no gaps between the lines");
+}
+
+#[test]
+fn a_trimmed_thought_starts_at_a_sentence() {
+    // What the card used to show: the tail of the reasoning, cut mid-word.
+    let cut = "…o, the sheet doesn't contain Summary. Conclusion: the sheet closed.";
+    assert_eq!(super::from_sentence(cut), "Conclusion: the sheet closed.");
+    // One whole sentence is left alone.
+    let whole = "Checking the payment row now.";
+    assert_eq!(super::from_sentence(whole), whole);
+}
+
+#[test]
+fn a_reminder_reaches_the_chat_as_one_line() {
+    let full = "Check the Glovo EatYum order (2x Yum Pasta Lite 2) for an assigned rider. \
+                When one is assigned: run sh bin/estate-code.sh with their name, take the \
+                gate code from the last line, and send it in the Glovo chat.";
+    let line = super::errand(full);
+    assert!(line.starts_with("Check the Glovo EatYum order"), "{line}");
+    assert!(!line.contains("estate-code.sh"), "{line}");
+    assert!(line.chars().count() <= 91, "{}", line.chars().count());
 }

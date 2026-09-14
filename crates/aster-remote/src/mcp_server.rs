@@ -187,6 +187,7 @@ async fn dispatch(
         }
         "send_photo" if text("path").is_some() => {
             let path = text("path").context("path is required")?;
+            let path = resolve_repo_path(&path)?;
             api.send_chat_action(chat_id, "upload_photo").await;
             let sent = api
                 .send_photo_file(chat_id, &path, text("caption").as_deref().unwrap_or(""))
@@ -219,11 +220,12 @@ async fn dispatch(
                 .and_then(Value::as_i64)
                 .filter(|id| *id > 0)
                 .context("message_id is required; take it from the [msg N] tag")?;
-            api.send_text_reply(chat_id, &body, Some(target)).await;
-            json!({ "ok": true })
+            let sent = api.send_text_reply(chat_id, &body, Some(target)).await?;
+            json!({ "ok": true, "message_id": sent.get("message_id") })
         }
         "send_document" => {
             let path = text("path").context("path is required")?;
+            let path = resolve_repo_path(&path)?;
             api.send_chat_action(chat_id, "upload_document").await;
             let sent = api
                 .send_document_file(chat_id, &path, text("caption").as_deref())
@@ -249,9 +251,12 @@ async fn dispatch(
                 .and_then(Value::as_array)
                 .context("options is required")?
                 .iter()
-                .filter_map(Value::as_str)
-                .map(|opt| json!({ "text": opt }))
-                .collect();
+                .map(|opt| {
+                    opt.as_str()
+                        .map(|opt| json!({ "text": opt }))
+                        .context("every poll option must be a string")
+                })
+                .collect::<Result<Vec<_>>>()?;
             ensure!(
                 (2..=10).contains(&options.len()),
                 "a poll needs 2 to 10 options"
@@ -267,6 +272,28 @@ async fn dispatch(
         other => anyhow::bail!("unknown tool {other}"),
     };
     Ok(result.to_string())
+}
+
+/// Resolve `path` against the repository root and reject anything outside both
+/// it and the temp directory, so a tool call cannot read arbitrary files off
+/// the machine. Temp counts because that is where the agent's own artefacts
+/// land: scratch documents everywhere, and on a phone every screenshot, which
+/// is otherwise a picture the agent can see and can never send.
+fn resolve_repo_path(path: &str) -> Result<String> {
+    let root = env::current_dir()
+        .context("cannot determine repository root")?
+        .canonicalize()
+        .context("cannot canonicalize repository root")?;
+    let resolved = root
+        .join(path)
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {path}"))?;
+    let temp = env::temp_dir().canonicalize().ok();
+    ensure!(
+        resolved.starts_with(&root) || temp.is_some_and(|temp| resolved.starts_with(&temp)),
+        "path must stay inside the repository or the temp directory"
+    );
+    Ok(resolved.display().to_string())
 }
 
 /// Write `code` to a throwaway `.txt` file in the system temp dir and return its
@@ -287,3 +314,7 @@ pub(crate) async fn write_scratch_document(title: &str, code: &str) -> Result<St
     tokio::fs::write(&path, code).await?;
     Ok(path.display().to_string())
 }
+
+#[cfg(test)]
+#[path = "tests/mcp_server_test.rs"]
+mod tests;

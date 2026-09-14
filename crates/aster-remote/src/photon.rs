@@ -383,10 +383,7 @@ fn help(cfg: &PhotonConfig) -> String {
          /mode — how the agent acts (plan, manual, auto, edit, yolo)\n\
          /status — mode and repo\n\
          /help — this message",
-        cfg.repo_root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| cfg.repo_root.display().to_string())
+        crate::channel::workspace_name(&cfg.repo_root)
     )
 }
 

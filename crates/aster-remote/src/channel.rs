@@ -13,6 +13,24 @@ use crate::bridge::WireMessage;
 
 pub const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 
+/// How a working directory is named to a remote user. A basename on its own is
+/// ambiguous between two repos called `api` and says nothing at all on Android,
+/// where every app's storage ends in `files`, so the path is shown whole and
+/// only the home prefix is folded to `~`.
+pub fn workspace_name(root: &std::path::Path) -> String {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| !h.as_os_str().is_empty());
+    match home
+        .as_deref()
+        .and_then(|home| root.strip_prefix(home).ok())
+    {
+        Some(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+        Some(rel) => format!("~/{}", rel.display()),
+        None => root.display().to_string(),
+    }
+}
+
 pub enum Pending {
     Approval {
         respond: tokio::sync::oneshot::Sender<crate::bridge::Answer>,
@@ -277,3 +295,7 @@ pub fn skill_prompt(skill: &SkillCommand, input: &str) -> String {
     }
     prompt
 }
+
+#[cfg(test)]
+#[path = "tests/channel_test.rs"]
+mod tests;

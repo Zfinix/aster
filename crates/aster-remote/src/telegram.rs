@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -21,7 +22,7 @@ use crate::markdown;
 
 const CHUNK_LIMIT: usize = 4000;
 
-const ACTIVITY_WINDOW: usize = 6;
+const ACTIVITY_WINDOW: usize = 4;
 
 const ACTIVITY_EDIT_GAP: Duration = Duration::from_millis(1500);
 
@@ -51,6 +52,11 @@ The user is talking to you through a Telegram chat on their phone (via aster \
 remote), not a terminal. Adjust how you answer: \
 Keep replies short and conversational; lead with the answer. Phone screens \
 are small, so prefer a few sentences over structure. \
+Everything you say while working is already on screen as it happens, and so is \
+the list of what you did. Your final reply must not say it again: give the \
+outcome and anything the person has to decide, in three short lines or fewer. \
+No recap of the steps, no bullet summary of work already shown, no restating \
+the request. If nothing changed since your last line, say so in one sentence. \
 Formatting support is limited to **bold**, `inline code`, fenced code blocks, \
 and simple bullet lists. Never use tables, nested lists, or deep header \
 hierarchies; they render as noise. Keep code snippets small and only when asked. \
@@ -96,11 +102,26 @@ struct ChatState {
     queued: Vec<(i64, String)>,
     /// A learn pass is running for this chat; one at a time is plenty.
     learning: bool,
+    /// Someone asked to see the screen. It rides on the chat rather than the
+    /// turn because the asking usually happens mid-turn, once the work is
+    /// already going and the person wants to see where it got to.
+    photos: Arc<AtomicBool>,
+    /// What the chat has standing orders to do with screenshots: `on` streams
+    /// every one, `off` holds them all back, `auto` (the default) reads the
+    /// message and decides. It outlives the turn because it is a preference,
+    /// not an ask.
+    photo_policy: Option<String>,
     mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
     loaded: bool,
     pending_commit: Option<PendingCommit>,
+    /// The person asked the check-ins to stop, so a reminder that fires is
+    /// dropped rather than starting a turn nobody wants.
+    checkins_off: bool,
+    /// The newest message this chat has seen, so a reply only quotes when the
+    /// conversation has moved past what it is answering.
+    last_seen: i64,
 }
 
 struct PendingCommit {
@@ -112,11 +133,12 @@ fn chat_state<T>(chats: &Chats, chat_id: i64, act: impl FnOnce(&mut ChatState) -
     let mut chats = chats.lock().expect("chats lock");
     let state = chats.entry(chat_id).or_default();
     if !state.loaded {
-        let (mode, model, effort, session) = load_settings(chat_id);
+        let (mode, model, effort, session, photo_policy) = load_settings(chat_id);
         state.mode = mode;
         state.model = model;
         state.effort = effort;
         state.session = session;
+        state.photo_policy = photo_policy;
         state.loaded = true;
     }
     act(state)
@@ -138,19 +160,22 @@ type Saved = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
-/// Mode, model, effort, and the agent session id, so a restarted bridge picks
-/// the conversation back up.
+/// Mode, model, effort, the agent session id, the photo policy, and what a
+/// finished card keeps, so a restarted bridge picks the conversation back up
+/// as it was.
 fn load_settings(chat_id: i64) -> Saved {
+    let blank = (None, None, None, None, None);
     let Some(path) = settings_path(chat_id) else {
-        return (None, None, None, None);
+        return blank;
     };
     let Ok(raw) = std::fs::read_to_string(&path) else {
-        return (None, None, None, None);
+        return blank;
     };
     let Ok(saved) = serde_json::from_str::<Value>(&raw) else {
-        return (None, None, None, None);
+        return blank;
     };
     let field = |key: &str| saved.get(key).and_then(Value::as_str).map(str::to_string);
     (
@@ -158,6 +183,7 @@ fn load_settings(chat_id: i64) -> Saved {
         field("model"),
         field("effort"),
         field("session"),
+        field("photos"),
     )
 }
 
@@ -168,7 +194,13 @@ fn save_settings(chats: &Chats, chat_id: i64) {
     let saved = {
         let mut chats = chats.lock().expect("chats lock");
         let state = chats.entry(chat_id).or_default();
-        json!({ "mode": state.mode, "model": state.model, "effort": state.effort, "session": state.session })
+        json!({
+            "mode": state.mode,
+            "model": state.model,
+            "effort": state.effort,
+            "session": state.session,
+            "photos": state.photo_policy,
+        })
     };
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -319,17 +351,47 @@ async fn watch_wakeups(api: Api, cfg: Arc<TelegramConfig>, chats: Chats) {
                 tracing::warn!("wake-up with no chat to land in: {text}");
                 continue;
             };
+            if chat_state(&chats, chat_id, |state| state.checkins_off) {
+                tracing::info!("check-ins are off; dropped a wake-up: {text}");
+                continue;
+            }
             let prompt = format!(
                 "⏰ The reminder you set has fired: {text}
                  Pick this up now and report back when it is done."
             );
+            // What lands in the chat is the errand in a line, never the whole
+            // instruction the scheduler wrote to itself.
             let posted = api
-                .send_html(chat_id, &format!("⏰ <i>{}</i>", markdown::escape(&text)))
+                .send_html(
+                    chat_id,
+                    &format!("⏰ <i>{}</i>", markdown::escape(&errand(&text))),
+                )
                 .await
                 .unwrap_or(0);
             start_turn(&api, &cfg, &chats, chat_id, posted, &prompt);
         }
     }
+}
+
+/// A reminder in a line: its first sentence, short enough to read at a glance.
+/// The rest is instruction the agent wrote for itself and nobody needs to see.
+fn errand(text: &str) -> String {
+    let first = text
+        .split_once(". ")
+        .map(|(head, _)| head)
+        .unwrap_or(text)
+        .trim();
+    truncate(first, ERRAND_CHARS)
+}
+
+const ERRAND_CHARS: usize = 90;
+
+/// Whether to quote the message being answered. In a two-person chat an answer
+/// to the last thing said needs no quote; one that arrives after the person has
+/// moved on does, or it reads as an answer to the wrong thing.
+fn quote(chats: &Chats, chat_id: i64, reply_to: i64) -> Option<i64> {
+    let latest = chat_state(chats, chat_id, |state| state.last_seen);
+    (reply_to > 0 && reply_to != latest).then_some(reply_to)
 }
 
 fn latest_chat(chats: &Chats) -> Option<i64> {
@@ -377,10 +439,10 @@ async fn handle_message(
         .and_then(Value::as_i64)
         .unwrap_or_default();
     if !cfg.allowed_users.contains(&sender) {
-        let text = format!(
-            "This bot isn't set up for you yet. Your user id is {sender}. Restart it with --user {sender} to allow it."
-        );
-        api.send_text(chat_id, &text).await;
+        match stranger_reply(&cfg.allowed_users, sender) {
+            Some(text) => api.send_text(chat_id, &text).await,
+            None => tracing::warn!("ignored a message from {sender} in chat {chat_id}"),
+        }
         return;
     }
     chat_state(chats, chat_id, |state| state.touched = Some(Instant::now()));
@@ -388,6 +450,11 @@ async fn handle_message(
         Some(text) => text.trim().to_string(),
         None => match incoming_photo(api, message).await {
             Some(path) => photo_prompt(&path, message),
+            None if photo_file_id(message).is_some() => {
+                api.send_text(chat_id, "That photo didn't reach me. Send it again?")
+                    .await;
+                return;
+            }
             None => {
                 api.send_text(chat_id, "I can only read text and photos for now.")
                     .await;
@@ -400,6 +467,9 @@ async fn handle_message(
         .get("message_id")
         .and_then(Value::as_i64)
         .unwrap_or_default();
+    chat_state(chats, chat_id, |state| {
+        state.last_seen = state.last_seen.max(message_id)
+    });
     if let Some(command) = trimmed.strip_prefix('/') {
         let (name, arg) = match command.split_once(char::is_whitespace) {
             Some((name, arg)) => (name, arg.trim()),
@@ -471,6 +541,13 @@ async fn sweep_staged_photos() {
             }
         }
     }
+}
+
+/// Where a `getFile` path is actually served: the same token on the file host,
+/// with the path straight after it. An extra segment here is a 404, and a 404
+/// here is a photo the model never sees.
+pub(crate) fn file_url(base: &str, file_path: &str) -> String {
+    format!("{}/{file_path}", base.replace("/bot", "/file/bot"))
 }
 
 /// The largest variant's file id, the one worth reading.
@@ -555,36 +632,7 @@ async fn handle_command(
             save_settings(chats, chat_id);
             api.send_text(chat_id, "Started a new conversation.").await;
         }
-        "stop" => {
-            let (running, agent, queued) = {
-                let mut chats = chats.lock().expect("chats lock");
-                let state = chats.entry(chat_id).or_default();
-                // Set before aborting, so the driver reads it as a deliberate
-                // stop rather than reporting the abort as a failure.
-                state.stopped = state.running.is_some();
-                let queued = state.queued.len();
-                state.queued.clear();
-                (state.running.take(), state.agent.clone(), queued)
-            };
-            match running {
-                Some(handle) => {
-                    handle.abort();
-                    // The agent process outlives the turn, so it has to be
-                    // told as well, or it keeps working on a message nobody
-                    // is reading.
-                    if let Some(agent) = agent {
-                        agent.cancel().await;
-                    }
-                    let text = match queued {
-                        0 => "Stopped.".to_string(),
-                        1 => "Stopped, and dropped the message waiting behind it.".to_string(),
-                        n => format!("Stopped, and dropped the {n} messages waiting behind it."),
-                    };
-                    api.send_text(chat_id, &text).await;
-                }
-                None => api.send_text(chat_id, "Nothing to stop.").await,
-            }
-        }
+        "stop" => stop_turn(api, chats, chat_id).await,
         "mode" => match set_override(chats, chat_id, arg, MODES, |state| &mut state.mode) {
             Some(reply) => api.send_text(chat_id, &reply).await,
             None => {
@@ -609,6 +657,22 @@ async fn handle_command(
                 .await;
             }
         },
+        "photos" => {
+            match set_override(chats, chat_id, arg, PHOTOS, |state| &mut state.photo_policy) {
+                Some(reply) => api.send_text(chat_id, &reply).await,
+                None => {
+                    let current = get_override(chats, chat_id, |state| state.photo_policy.clone())
+                        .unwrap_or_else(|| "auto".into());
+                    let keyboard = choice_keyboard("p", PHOTOS, &current);
+                    api.send_keyboard(
+                        chat_id,
+                        "<b>Photos</b>\nWhether screenshots arrive as they happen",
+                        keyboard,
+                    )
+                    .await;
+                }
+            }
+        }
         "model" => {
             if arg == "default" {
                 chat_state(chats, chat_id, |state| state.model = None);
@@ -621,18 +685,25 @@ async fn handle_command(
             }
         }
         "status" => {
-            let (mode, model, effort, turns, busy) = chat_state(chats, chat_id, |state| {
-                (
-                    state.mode.clone().unwrap_or_else(|| cfg.mode.clone()),
-                    state.model.clone().unwrap_or_else(|| "default".into()),
-                    state.effort.clone().unwrap_or_else(|| "default".into()),
-                    state.history.len(),
-                    state.running.is_some(),
-                )
-            });
+            let (session, mode, model, effort, photos, turns, busy) =
+                chat_state(chats, chat_id, |state| {
+                    (
+                        state.session.clone(),
+                        state.mode.clone().unwrap_or_else(|| cfg.mode.clone()),
+                        state.model.clone().unwrap_or_else(|| "default".into()),
+                        state.effort.clone().unwrap_or_else(|| "default".into()),
+                        state.photo_policy.clone().unwrap_or_else(|| "auto".into()),
+                        state.history.len(),
+                        state.running.is_some(),
+                    )
+                });
+            // The session id is what /resume takes, so it is the one to show.
             let text = format!(
-                "Repo: {}\nSession: telegram-{chat_id}\nMode: {mode}\nModel: {model}\nEffort: {effort}\nHistory: {turns} messages\nState: {}",
+                "Repo: {}\nSession: {}\nMode: {mode}\nModel: {model}\nEffort: {effort}\nPhotos: {photos}\nHistory: {turns} messages\nState: {}",
                 cfg.repo_root.display(),
+                session
+                    .as_deref()
+                    .unwrap_or("starts with your next message"),
                 if busy { "Working" } else { "Idle" },
             );
             api.send_text(chat_id, &text).await;
@@ -656,6 +727,18 @@ async fn handle_command(
         "mirror" => mirror_command(api, cfg, chat_id, arg).await,
         "skills" => send_skill_picker(api, skills, chat_id, arg, 0, None).await,
         "commit" => send_commit_proposal(api, cfg, chats, chat_id, arg).await,
+        "sessions" => send_session_picker(api, cfg, chats, chat_id, arg, 0, None).await,
+        "resume" => resume_command(api, cfg, chats, chat_id, arg).await,
+        "memory" => send_memory(api, cfg, chat_id, arg).await,
+        "remember" => remember_fact(api, cfg, chat_id, arg).await,
+        "retry" => retry_command(api, cfg, chats, chat_id, message_id).await,
+        "queue" => queue_command(api, chats, chat_id, arg).await,
+        "checkins" => checkins_command(api, chats, chat_id, arg).await,
+        "learn" => learn_command(api, cfg, chats, chat_id).await,
+        "repo" => repo_report(api, cfg, chat_id).await,
+        "mcp" => cli_report(api, cfg, chat_id, "MCP servers", &["mcp"]).await,
+        "bots" => cli_report(api, cfg, chat_id, "Bots", &["bots", "list"]).await,
+        "cron" => cli_report(api, cfg, chat_id, "Schedules", &["cron", "list"]).await,
         other => {
             // Installed skills are commands too: /rust_review -> that skill.
             if let Some(skill) = skills.get(other) {
@@ -671,12 +754,23 @@ async fn handle_command(
 
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
 const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
+const PHOTOS: &[&str] = &["auto", "on", "off"];
 
 const MODEL_PAGE: usize = 8;
 
 const SKILL_MENU_LIMIT: usize = 15;
 
 const SKILL_PAGE: usize = 8;
+
+const SESSION_PAGE: usize = 6;
+
+/// How many facts and blocks /memory shows before it stops counting; the rest
+/// are a line of their own.
+const MEMORY_LINES: usize = 12;
+
+/// A read-only CLI run has a person waiting on it in a chat, so it gets far
+/// less rope than a learn pass.
+const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn send_skill_picker(
     api: &Api,
@@ -872,6 +966,490 @@ async fn aster_remote_ask(cfg: &Arc<TelegramConfig>, prompt: &str) -> Result<Str
     crate::bridge::ask_once(&cfg.bin, &cfg.repo_root, prompt).await
 }
 
+/// One read-only `aster` run, so a chat can see what the CLI would print
+/// without anyone reaching a terminal.
+async fn aster_output(cfg: &TelegramConfig, args: &[&str]) -> Result<String, String> {
+    let run = tokio::process::Command::new(&cfg.bin)
+        .current_dir(&cfg.repo_root)
+        .args(args)
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(CLI_TIMEOUT, run).await {
+        Ok(Ok(out)) if out.status.success() => {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Err(if stderr.is_empty() { stdout } else { stderr })
+        }
+        Ok(Err(e)) => Err(format!("could not start aster: {e}")),
+        Err(_) => Err("aster took too long".to_string()),
+    }
+}
+
+async fn cli_report(api: &Api, cfg: &TelegramConfig, chat_id: i64, title: &str, args: &[&str]) {
+    match aster_output(cfg, args).await {
+        Ok(text) if text.is_empty() => {
+            api.send_text(chat_id, &format!("Nothing to show under {title}."))
+                .await
+        }
+        Ok(text) => {
+            let html = format!(
+                "<b>{title}</b>\n<pre>{}</pre>",
+                markdown::escape(&truncate(&text, 3500))
+            );
+            api.send_html_or_plain(chat_id, &html).await;
+        }
+        Err(e) => {
+            api.send_text(chat_id, &format!("Couldn't read that: {e}"))
+                .await
+        }
+    }
+}
+
+async fn repo_report(api: &Api, cfg: &TelegramConfig, chat_id: i64) {
+    let git = |args: &[&str]| {
+        let mut command = tokio::process::Command::new("git");
+        command.arg("-C").arg(&cfg.repo_root).args(args);
+        async move {
+            command
+                .output()
+                .await
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                .unwrap_or_default()
+        }
+    };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).await;
+    let head = git(&["log", "-1", "--pretty=%h %s"]).await;
+    let changed = git(&["status", "--porcelain"])
+        .await
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    let text = format!(
+        "<b>Repo</b>\n<code>{}</code>\nBranch: {}\nHead: {}\nChanges: {}",
+        markdown::escape(&cfg.repo_root.display().to_string()),
+        markdown::escape(if branch.is_empty() {
+            "unknown"
+        } else {
+            &branch
+        }),
+        markdown::escape(&truncate(&head, 150)),
+        match changed {
+            0 => "none".to_string(),
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        }
+    );
+    api.send_html_or_plain(chat_id, &text).await;
+}
+
+struct SessionRow {
+    id: String,
+    title: String,
+    turns: u64,
+}
+
+/// The saved sessions for this repo, newest first, as the CLI lists them.
+async fn session_rows(cfg: &TelegramConfig) -> Result<Vec<SessionRow>, String> {
+    parse_sessions(&aster_output(cfg, &["sessions", "list", "--json"]).await?)
+}
+
+/// A title is whatever the first message was, newlines and all, so it is
+/// flattened before it ever reaches a button.
+fn parse_sessions(raw: &str) -> Result<Vec<SessionRow>, String> {
+    let listed: Vec<Value> =
+        serde_json::from_str(raw).map_err(|e| format!("unreadable session list: {e}"))?;
+    Ok(listed
+        .iter()
+        .filter_map(|row| {
+            Some(SessionRow {
+                id: row.get("id")?.as_str()?.to_string(),
+                title: console_text(row.get("title").and_then(Value::as_str).unwrap_or(""), 60),
+                turns: row.get("turns").and_then(Value::as_u64).unwrap_or_default(),
+            })
+        })
+        .collect())
+}
+
+fn session_label(row: &SessionRow, current: Option<&str>) -> String {
+    let title = if row.title.is_empty() {
+        row.id.clone()
+    } else {
+        truncate(&row.title, 40)
+    };
+    let mark = if current == Some(row.id.as_str()) {
+        "• "
+    } else {
+        ""
+    };
+    let turns = if row.turns == 1 { "turn" } else { "turns" };
+    format!("{mark}{title} · {} {turns}", row.turns)
+}
+
+async fn send_session_picker(
+    api: &Api,
+    cfg: &TelegramConfig,
+    chats: &Chats,
+    chat_id: i64,
+    filter: &str,
+    page: usize,
+    edit: Option<i64>,
+) {
+    let rows = match session_rows(cfg).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            api.send_text(chat_id, &format!("Couldn't read the sessions: {e}"))
+                .await;
+            return;
+        }
+    };
+    let term = filter.to_lowercase();
+    // Callback data caps at 64 bytes, so an id that would not fit is dropped.
+    let matches: Vec<&SessionRow> = rows
+        .iter()
+        .filter(|row| {
+            term.is_empty() || row.id.contains(&term) || row.title.to_lowercase().contains(&term)
+        })
+        .filter(|row| row.id.len() <= 60)
+        .collect();
+    if matches.is_empty() {
+        let text = match filter.is_empty() {
+            true => "No saved sessions for this repo yet.".to_string(),
+            false => format!("No sessions match \"{filter}\"."),
+        };
+        api.send_text(chat_id, &text).await;
+        return;
+    }
+
+    let pages = matches.len().div_ceil(SESSION_PAGE);
+    let page = page.min(pages - 1);
+    let start = page * SESSION_PAGE;
+    let current = get_override(chats, chat_id, |state| state.session.clone());
+    let mut keyboard: Vec<Value> = matches[start..(start + SESSION_PAGE).min(matches.len())]
+        .iter()
+        .map(|row| {
+            json!([{
+                "text": session_label(row, current.as_deref()),
+                "callback_data": format!("R:{}", row.id),
+            }])
+        })
+        .collect();
+    if pages > 1 {
+        let mut nav = Vec::new();
+        if page > 0 {
+            nav.push(json!({
+                "text": "‹ Prev",
+                "callback_data": format!("Rp:{}:{filter}", page - 1),
+            }));
+        }
+        nav.push(json!({ "text": format!("{}/{pages}", page + 1), "callback_data": "Mp:noop" }));
+        if page + 1 < pages {
+            nav.push(json!({
+                "text": "Next ›",
+                "callback_data": format!("Rp:{}:{filter}", page + 1),
+            }));
+        }
+        keyboard.push(Value::Array(nav));
+    }
+
+    let text = format!(
+        "<b>Sessions</b>\n{} saved{}\nTap one to pick it back up.",
+        matches.len(),
+        if filter.is_empty() {
+            String::new()
+        } else {
+            format!(" matching “{}”", markdown::escape(filter))
+        }
+    );
+    match edit {
+        Some(message_id) => {
+            api.edit_html_keyboard(chat_id, message_id, &text, Value::Array(keyboard))
+                .await
+        }
+        None => {
+            api.send_keyboard(chat_id, &text, Value::Array(keyboard))
+                .await
+        }
+    }
+}
+
+/// Point the chat at a saved session. The agent loads it on the next message,
+/// so the history in hand goes with the conversation it belonged to.
+fn pick_session(chats: &Chats, chat_id: i64, id: &str) -> bool {
+    let switched = chat_state(chats, chat_id, |state| {
+        if state.running.is_some() {
+            return false;
+        }
+        state.history.clear();
+        state.session = Some(id.to_string());
+        if let Some(agent) = &state.agent {
+            agent.reset_session();
+        }
+        true
+    });
+    if switched {
+        save_settings(chats, chat_id);
+    }
+    switched
+}
+
+async fn resume_command(api: &Api, cfg: &TelegramConfig, chats: &Chats, chat_id: i64, id: &str) {
+    if id.is_empty() {
+        send_session_picker(api, cfg, chats, chat_id, "", 0, None).await;
+        return;
+    }
+    // An id that is not there would quietly start a fresh session instead.
+    if let Ok(rows) = session_rows(cfg).await
+        && !rows.iter().any(|row| row.id == id)
+    {
+        api.send_text(chat_id, "I don't know that session. /sessions lists them.")
+            .await;
+        return;
+    }
+    let text = match pick_session(chats, chat_id, id) {
+        true => format!("Back in {id}. Your next message carries on there."),
+        false => "A turn is still running. /stop it first.".to_string(),
+    };
+    api.send_text(chat_id, &text).await;
+}
+
+async fn send_memory(api: &Api, cfg: &TelegramConfig, chat_id: i64, filter: &str) {
+    let raw = match aster_output(cfg, &["memory", "list", "--json"]).await {
+        Ok(raw) => raw,
+        Err(e) => {
+            api.send_text(chat_id, &format!("Couldn't read memory: {e}"))
+                .await;
+            return;
+        }
+    };
+    let stored: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    match memory_summary(&stored, filter) {
+        Some(text) => api.send_html_or_plain(chat_id, &text).await,
+        None => {
+            let text = match filter.is_empty() {
+                true => "Nothing in memory yet. /remember keeps a fact.".to_string(),
+                false => format!("Nothing in memory matches \"{filter}\"."),
+            };
+            api.send_text(chat_id, &text).await
+        }
+    }
+}
+
+/// Project memory reads as a bulleted file and the blocks as a list, so both
+/// go out as lines rather than the raw Markdown behind them.
+fn memory_summary(stored: &Value, filter: &str) -> Option<String> {
+    let term = filter.to_lowercase();
+    let facts: Vec<&str> = stored
+        .get("project")
+        .and_then(|project| project.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('-'))
+        .map(|line| line.trim_start_matches('-').trim())
+        .filter(|line| term.is_empty() || line.to_lowercase().contains(&term))
+        .collect();
+    let blocks: Vec<String> = stored
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    let name = block.get("name")?.as_str()?;
+                    let about = block
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let hit = term.is_empty()
+                        || name.to_lowercase().contains(&term)
+                        || about.to_lowercase().contains(&term);
+                    hit.then(|| {
+                        format!(
+                            "<b>{}</b> {}",
+                            markdown::escape(name),
+                            markdown::escape(&console_text(about, 90))
+                        )
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if facts.is_empty() && blocks.is_empty() {
+        return None;
+    }
+
+    let mut text = String::from("<b>Memory</b>");
+    for fact in facts.iter().take(MEMORY_LINES) {
+        text.push_str(&format!(
+            "\n• {}",
+            markdown::escape(&console_text(fact, 140))
+        ));
+    }
+    if facts.len() > MEMORY_LINES {
+        text.push_str(&format!("\n…and {} more", facts.len() - MEMORY_LINES));
+    }
+    if !blocks.is_empty() {
+        text.push_str("\n\n<b>Blocks</b>");
+        for block in blocks.iter().take(MEMORY_LINES) {
+            text.push_str(&format!("\n• {block}"));
+        }
+        if blocks.len() > MEMORY_LINES {
+            text.push_str(&format!("\n…and {} more", blocks.len() - MEMORY_LINES));
+        }
+    }
+    Some(text)
+}
+
+async fn remember_fact(api: &Api, cfg: &TelegramConfig, chat_id: i64, fact: &str) {
+    if fact.is_empty() {
+        api.send_text(
+            chat_id,
+            "Send the fact with it: /remember the staging deploy needs the VPN.",
+        )
+        .await;
+        return;
+    }
+    let text = match aster_output(cfg, &["remember", fact, "--json"]).await {
+        Ok(_) => "Kept. Every session in this repo reads it.".to_string(),
+        Err(e) => format!("Couldn't keep that: {e}"),
+    };
+    api.send_text(chat_id, &text).await;
+}
+
+/// Run the last thing that was asked again, under whatever mode and model the
+/// chat is on now.
+async fn retry_command(
+    api: &Api,
+    cfg: &Arc<TelegramConfig>,
+    chats: &Chats,
+    chat_id: i64,
+    message_id: i64,
+) {
+    let (running, last) = chat_state(chats, chat_id, |state| {
+        let last = state
+            .history
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.clone());
+        (state.running.is_some(), last)
+    });
+    if running {
+        api.send_text(chat_id, "A turn is still running. /stop it first.")
+            .await;
+        return;
+    }
+    let Some(last) = last else {
+        api.send_text(chat_id, "Nothing to run again yet.").await;
+        return;
+    };
+    // The stored prompt carries the tag of the message it came in on, and the
+    // agent should be told about this one instead.
+    let prompt = format!("[msg {message_id}]\n{}", untagged(&last));
+    start_turn(api, cfg, chats, chat_id, message_id, &prompt);
+}
+
+async fn queue_command(api: &Api, chats: &Chats, chat_id: i64, arg: &str) {
+    if arg == "clear" {
+        let dropped = chat_state(chats, chat_id, |state| {
+            std::mem::take(&mut state.queued).len()
+        });
+        let text = match dropped {
+            0 => "Nothing was waiting.".to_string(),
+            1 => "Dropped the message that was waiting.".to_string(),
+            n => format!("Dropped the {n} messages that were waiting."),
+        };
+        api.send_text(chat_id, &text).await;
+        return;
+    }
+    let (running, waiting) = chat_state(chats, chat_id, |state| {
+        let waiting: Vec<String> = state
+            .queued
+            .iter()
+            .map(|(_, prompt)| console_text(untagged(prompt), 90))
+            .collect();
+        (state.running.is_some(), waiting)
+    });
+    if waiting.is_empty() {
+        let text = match running {
+            true => "A turn is running, with nothing waiting behind it.",
+            false => "Nothing running, nothing waiting.",
+        };
+        api.send_text(chat_id, text).await;
+        return;
+    }
+    let lines = waiting
+        .iter()
+        .map(|prompt| format!("• {}", markdown::escape(prompt)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = format!(
+        "<b>Waiting</b>\n{lines}\n\nThey go in as one message when this turn ends. \
+         /queue clear drops them."
+    );
+    api.send_html_or_plain(chat_id, &text).await;
+}
+
+async fn checkins_command(api: &Api, chats: &Chats, chat_id: i64, arg: &str) {
+    let wanted = match arg {
+        "" => None,
+        "on" => Some(false),
+        "off" => Some(true),
+        _ => {
+            api.send_text(chat_id, "Say /checkins on or /checkins off.")
+                .await;
+            return;
+        }
+    };
+    let off = chat_state(chats, chat_id, |state| {
+        if let Some(off) = wanted {
+            state.checkins_off = off;
+        }
+        state.checkins_off
+    });
+    if wanted.is_some() {
+        let text = match off {
+            true => "Check-ins off. A reminder that fires will be dropped.",
+            false => "Check-ins back on.",
+        };
+        api.send_text(chat_id, text).await;
+        return;
+    }
+    let text = format!(
+        "<b>Check-ins</b>\nReminders the agent sets itself are {}.",
+        if off { "dropped" } else { "delivered" }
+    );
+    let label = if off { "Turn on" } else { "Turn off" };
+    let keyboard = json!([[{ "text": label, "callback_data": "K:m" }]]);
+    api.send_keyboard(chat_id, &text, keyboard).await;
+}
+
+async fn learn_command(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
+    let (running, learning, session) = chat_state(chats, chat_id, |state| {
+        (
+            state.running.is_some(),
+            state.learning,
+            state.session.clone(),
+        )
+    });
+    let refuse = match (running, learning, session.is_some()) {
+        (true, _, _) => Some("A turn is still running. Let it finish first."),
+        (_, true, _) => Some("A learn pass is already running."),
+        (_, _, false) => Some("Nothing to learn from yet. Send a task first."),
+        _ => None,
+    };
+    if let Some(reason) = refuse {
+        api.send_text(chat_id, reason).await;
+        return;
+    }
+    api.send_text(chat_id, "Scoring the last turn…").await;
+    spawn_learn(api, cfg, chats, chat_id, true);
+}
+
 fn skill_prompt(skill: &SkillCommand, input: &str) -> String {
     let mut prompt = format!(
         "Load the skill `{}` with the read_skill tool and follow its instructions.",
@@ -1035,8 +1613,19 @@ fn start_turn(
         }
     });
     let Some((mode, model, effort, agent, session)) = prepared else {
-        // A turn is already going, so the message joins it instead of starting
-        // a second conversation about the same work.
+        // "Stop" is an order to the bridge, not a note for the agent to weigh
+        // against the job it is in the middle of. Everything else joins the
+        // turn rather than starting a second conversation about the same work.
+        chat_state(chats, chat_id, |state| {
+            if streams_photos(state.photo_policy.as_deref(), prompt) {
+                state.photos.store(true, Ordering::Relaxed);
+            }
+        });
+        if is_stop_request(prompt) {
+            let (api, chats) = (api.clone(), Arc::clone(chats));
+            tokio::spawn(async move { stop_turn(&api, &chats, chat_id).await });
+            return;
+        }
         steer_running_turn(api, cfg, chats, chat_id, message_id, prompt);
         return;
     };
@@ -1065,6 +1654,9 @@ fn start_turn(
 
     let (events_tx, events_rx) = mpsc::channel::<TurnEvent>(8);
     eprintln!("[{chat_id}] user: {}", console_text(untagged(prompt), 200));
+    // The card is headed with what was asked, so the request is kept in the
+    // person's own words before the turn takes ownership of the prompt.
+    let task = untagged(prompt).to_string();
     let prompt = prompt.to_string();
     let turn_chats = Arc::clone(chats);
     let turn_task = tokio::spawn(async move {
@@ -1109,14 +1701,58 @@ fn start_turn(
     let repo_root = cfg.repo_root.clone();
     let cfg = cfg.clone();
     tokio::spawn(async move {
-        let (result, calls) =
-            drive_turn(&api, &chats, chat_id, message_id, events_rx, turn_task).await;
+        let (result, calls) = drive_turn(
+            &api, &chats, chat_id, message_id, &task, events_rx, turn_task,
+        )
+        .await;
         let ok = finish_turn(&api, &chats, chat_id, message_id, Some(&repo_root), result).await;
         if ok && calls >= LEARN_MIN_CALLS && std::env::var("ASTER_LEARN").as_deref() != Ok("0") {
-            spawn_learn(&api, &cfg, &chats, chat_id);
+            spawn_learn(&api, &cfg, &chats, chat_id, false);
         }
         run_queued(&api, &cfg, &chats, chat_id);
     });
+}
+
+/// Told to stop, in as many words and nothing else. A message that only asks
+/// for the work to end is answered by ending it; one that asks for anything
+/// besides is a message for the agent, however impatiently it is put.
+pub(crate) fn is_stop_request(text: &str) -> bool {
+    /// The verbs that end a turn.
+    const ORDERS: [&str; 5] = ["stop", "halt", "cancel", "abort", "quit"];
+    /// What people put around them when they are out of patience.
+    const AROUND: [&str; 17] = [
+        "it",
+        "now",
+        "everything",
+        "all",
+        "please",
+        "pls",
+        "just",
+        "ffs",
+        "the",
+        "turn",
+        "task",
+        "work",
+        "working",
+        "already",
+        "immediately",
+        "right",
+        "there",
+    ];
+    let plain: String = text
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    if words.is_empty() || words.len() > 6 {
+        return false;
+    }
+    words.iter().any(|w| ORDERS.contains(w))
+        && words
+            .iter()
+            .all(|w| ORDERS.contains(w) || AROUND.contains(w))
 }
 
 /// A message sent mid-turn goes to the turn in flight, so the agent hears it
@@ -1194,7 +1830,7 @@ mod queue_tests;
 
 /// After a task-sized turn, score it and refine its skill in a child process,
 /// so the chat sees what changed without waiting on it.
-fn spawn_learn(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64) {
+fn spawn_learn(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64, announce: bool) {
     let session = chat_state(chats, chat_id, |state| {
         if state.learning {
             return None;
@@ -1227,11 +1863,24 @@ fn spawn_learn(api: &Api, cfg: &Arc<TelegramConfig>, chats: &Chats, chat_id: i64
         match outcome {
             Ok(report) => {
                 eprintln!("[{chat_id}] learn: {}", report.summary());
-                if let Some(line) = render_learned(&report) {
-                    api.send_html(chat_id, &line).await;
+                match render_learned(&report) {
+                    Some(line) => {
+                        api.send_html(chat_id, &line).await;
+                    }
+                    None if announce => {
+                        api.send_text(chat_id, "Nothing worth keeping from that one.")
+                            .await
+                    }
+                    None => {}
                 }
             }
-            Err(e) => eprintln!("[{chat_id}] learn failed: {e}"),
+            Err(e) => {
+                eprintln!("[{chat_id}] learn failed: {e}");
+                if announce {
+                    api.send_text(chat_id, &format!("The learn pass didn't finish: {e}"))
+                        .await;
+                }
+            }
         }
     });
 }
@@ -1323,6 +1972,7 @@ async fn drive_turn(
     chats: &Chats,
     chat_id: i64,
     reply_to: i64,
+    task: &str,
     mut events: mpsc::Receiver<TurnEvent>,
     turn_task: tokio::task::JoinHandle<Result<TurnOutcome>>,
 ) -> (Result<TurnOutcome>, usize) {
@@ -1338,7 +1988,17 @@ async fn drive_turn(
         }
     });
 
-    let mut activity = Activity::new(api.clone(), chat_id, reply_to);
+    // The turn's own ask sets the flag; a later one mid-turn can still raise it.
+    let (photos, policy) = chat_state(chats, chat_id, |state| {
+        (Arc::clone(&state.photos), state.photo_policy.clone())
+    });
+    photos.store(streams_photos(policy.as_deref(), task), Ordering::Relaxed);
+    let mut activity = Activity::new(
+        api.clone(),
+        chat_id,
+        quote(chats, chat_id, reply_to),
+        photos,
+    );
     let mut calls = 0usize;
     let mut plan_id: Option<i64> = None;
     loop {
@@ -1381,21 +2041,30 @@ async fn drive_turn(
                 eprintln!("[{chat_id}] → {}", console_tool(&name, &arguments));
             }
             TurnEvent::ToolResult { id, error, output } => {
-                // Every screenshot the agent takes reaches the chat, whether or
-                // not it decides to attach it: the person cannot see the phone.
+                // A screenshot is how the agent reads the screen. Posting every
+                // one of them turns the conversation into a contact sheet, so
+                // only the ones that were asked for go out as they happen; the
+                // rest are held, and the last is posted at the end if the turn
+                // ends somewhere the person needs to look at.
                 let shots = shot_paths(&output);
                 if !shots.is_empty() {
-                    // The card so far stays above the photos; a fresh one
-                    // carries on below them, so the thread reads top to bottom.
-                    activity.flush(true).await;
                     let caption = activity.caption_for(&id);
-                    for path in shots {
-                        api.send_chat_action(chat_id, "upload_photo").await;
-                        if let Err(err) = api.send_photo_file(chat_id, &path, &caption).await {
-                            tracing::warn!("could not send {path}: {err:#}");
+                    if activity.photos.load(Ordering::Relaxed) {
+                        activity.flush(true).await;
+                        for path in shots {
+                            api.send_chat_action(chat_id, "upload_photo").await;
+                            match api.send_photo_file(chat_id, &path, &caption).await {
+                                Ok(_) => activity.mark_sent(&id),
+                                Err(err) => tracing::warn!("could not send {path}: {err:#}"),
+                            }
                         }
+                        // The card so far stays above the photos; a fresh one
+                        // carries on below them, so the thread reads top to
+                        // bottom.
+                        activity.rehome();
+                    } else if let Some(path) = shots.into_iter().next_back() {
+                        activity.hold_shot(path, caption);
                     }
-                    activity.rehome();
                 }
                 activity.complete(&id, error, output);
                 activity.flush(false).await;
@@ -1483,7 +2152,17 @@ async fn drive_turn(
     } else {
         TurnEnd::Failed
     };
+    // The standing instructions tell the agent to finish a task on a picture of
+    // what it changed, and a picture held back is a task that reads as done
+    // with nothing to show for it. One per turn, the last one, however the turn
+    // ended: asked for or not, it is the evidence the report leans on.
     activity.finish(end).await;
+    if let Some((path, caption)) = activity.held_shot.take() {
+        api.send_chat_action(chat_id, "upload_photo").await;
+        if let Err(err) = api.send_photo_file(chat_id, &path, &caption).await {
+            tracing::warn!("could not send {path}: {err:#}");
+        }
+    }
     match &result {
         Ok(outcome) => eprintln!(
             "[{chat_id}] ✔ done: {}",
@@ -1492,6 +2171,38 @@ async fn drive_turn(
         Err(e) => eprintln!("[{chat_id}] ✗ turn failed: {e:#}"),
     }
     (result, calls)
+}
+
+/// Stop the running turn, whether that came from /stop or the card's own
+/// Cancel button.
+async fn stop_turn(api: &Api, chats: &Chats, chat_id: i64) {
+    let (running, agent, queued) = {
+        let mut chats = chats.lock().expect("chats lock");
+        let state = chats.entry(chat_id).or_default();
+        // Set before aborting, so the driver reads it as a deliberate stop
+        // rather than reporting the abort as a failure.
+        state.stopped = state.running.is_some();
+        let queued = state.queued.len();
+        state.queued.clear();
+        (state.running.take(), state.agent.clone(), queued)
+    };
+    match running {
+        Some(handle) => {
+            handle.abort();
+            // The agent process outlives the turn, so it has to be told as
+            // well, or it keeps working on a message nobody is reading.
+            if let Some(agent) = agent {
+                agent.cancel().await;
+            }
+            let text = match queued {
+                0 => "Stopped.".to_string(),
+                1 => "Stopped, and dropped the message waiting behind it.".to_string(),
+                n => format!("Stopped, and dropped the {n} messages waiting behind it."),
+            };
+            api.send_text(chat_id, &text).await;
+        }
+        None => api.send_text(chat_id, "Nothing to stop.").await,
+    }
 }
 
 async fn finish_turn(
@@ -1519,7 +2230,7 @@ async fn finish_turn(
     match result {
         Ok(outcome) => {
             let (text, gifs) = extract_gifs(&outcome.reply);
-            send_reply_chunks(api, chat_id, &text, Some(reply_to)).await;
+            send_reply_chunks(api, chat_id, &text, quote(chats, chat_id, reply_to)).await;
             for gif in gifs {
                 api.send_animation(chat_id, &gif).await;
             }
@@ -1532,7 +2243,10 @@ async fn finish_turn(
         Err(_) if stopped => {}
         Err(e) => {
             let text = format!("I couldn't finish that. Send it again to retry.\n\n{e:#}");
-            api.send_text_reply(chat_id, &text, Some(reply_to)).await;
+            let quoted = quote(chats, chat_id, reply_to);
+            if let Err(e) = api.send_text_reply(chat_id, &text, quoted).await {
+                tracing::warn!("sendMessage failed: {e:#}");
+            }
         }
     }
     ok
@@ -1560,7 +2274,10 @@ async fn handle_callback(
         .and_then(Value::as_i64)
         .unwrap_or_default();
     if !cfg.allowed_users.contains(&sender) {
-        api.answer_callback(callback_id, "🚫 Not authorized.").await;
+        // The spinner has to be answered or it turns forever, but the answer
+        // says nothing: a refusal is still a reply from a live bot.
+        api.answer_callback(callback_id, "").await;
+        tracing::warn!("ignored a button press from {sender}");
         return;
     }
     let Some(chat_id) = callback
@@ -1588,6 +2305,20 @@ async fn handle_callback(
         api.settle_callback_message(callback, &note).await;
         return;
     }
+    if let Some(choice) = data.strip_prefix("p:").filter(|c| PHOTOS.contains(c)) {
+        chat_state(chats, chat_id, |state| {
+            state.photo_policy = Some(choice.to_string())
+        });
+        save_settings(chats, chat_id);
+        let note = match choice {
+            "on" => "Screenshots now arrive as they happen.".to_string(),
+            "off" => "Screenshots are held back; you still get the last one.".to_string(),
+            _ => "Screenshots arrive when you ask for them.".to_string(),
+        };
+        api.answer_callback(callback_id, &note).await;
+        api.settle_callback_message(callback, &note).await;
+        return;
+    }
     if let Some(choice) = data.strip_prefix("e:").filter(|c| EFFORTS.contains(c)) {
         chat_state(chats, chat_id, |state| {
             state.effort = Some(choice.to_string())
@@ -1596,6 +2327,22 @@ async fn handle_callback(
         let note = format!("Effort is now {choice}.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
+        return;
+    }
+    // The card's own buttons: fold its layers, or stop the turn that is
+    // still writing it.
+    // The one card control left: a reminder that should stop coming back.
+    if data == "K:m" {
+        let off = chat_state(chats, chat_id, |state| {
+            state.checkins_off = !state.checkins_off;
+            state.checkins_off
+        });
+        let note = match off {
+            true => "Check-ins stopped. A reminder that fires will be dropped.",
+            false => "Check-ins back on.",
+        };
+        api.answer_callback(callback_id, note).await;
+        api.send_text(chat_id, note).await;
         return;
     }
     if data == "Mp:noop" {
@@ -1613,6 +2360,25 @@ async fn handle_callback(
         api.answer_callback(callback_id, "Committing…").await;
         let outcome = run_commit(&cfg.repo_root, &commit).await;
         api.settle_callback_message(callback, &outcome).await;
+        return;
+    }
+    if let Some(rest) = data.strip_prefix("Rp:") {
+        let (page, filter) = match rest.split_once(':') {
+            Some((page, filter)) => (page.parse().unwrap_or(0), filter),
+            None => (rest.parse().unwrap_or(0), ""),
+        };
+        api.answer_callback(callback_id, "").await;
+        let message_id = callback_message_ids(callback).map(|(_, id)| id);
+        send_session_picker(api, cfg, chats, chat_id, filter, page, message_id).await;
+        return;
+    }
+    if let Some(id) = data.strip_prefix("R:") {
+        let note = match pick_session(chats, chat_id, id) {
+            true => format!("↩️ {id} · your next message carries on there"),
+            false => "A turn is still running. /stop it first.".to_string(),
+        };
+        api.answer_callback(callback_id, &note).await;
+        api.settle_callback_message(callback, &note).await;
         return;
     }
     if let Some(rest) = data.strip_prefix("Sp:") {
@@ -1698,7 +2464,7 @@ async fn handle_callback(
 struct Activity {
     api: Api,
     chat_id: i64,
-    reply_to: i64,
+    reply_to: Option<i64>,
     message_id: Option<i64>,
     lines: Vec<Step>,
     /// What the agent has said since its last tool call.
@@ -1708,6 +2474,16 @@ struct Activity {
     last_flush: Instant,
     /// A change the rate gap kept off the card, waiting for the gap to pass.
     held: bool,
+    /// The person asked to see the screen, so screenshots go out as they are
+    /// taken rather than being held back. Shared with the chat: the ask often
+    /// arrives after the turn has started.
+    photos: Arc<AtomicBool>,
+    /// The last screenshot nobody asked for, kept in case the turn ends
+    /// somewhere that needs looking at.
+    held_shot: Option<(String, String)>,
+    /// The card could not be posted. Nothing is retried after that: a card
+    /// that cannot find its own message must never post a second one.
+    lost: bool,
 }
 
 struct Step {
@@ -1717,6 +2493,9 @@ struct Step {
     status: Status,
     /// The first line of what came back, once it has.
     result: String,
+    /// A picture from this step reached the chat, so its own account of itself
+    /// is not overwritten by the summary of the file it wrote.
+    sent: bool,
 }
 
 impl Step {
@@ -1724,6 +2503,7 @@ impl Step {
         match self.status {
             Status::Running => &self.emoji,
             Status::Done => "✅",
+            Status::NoChange => "⚠️",
             Status::Failed => "❌",
         }
     }
@@ -1733,11 +2513,29 @@ impl Step {
 enum Status {
     Running,
     Done,
+    /// The call succeeded and nothing happened: a tap that moved nothing, a
+    /// read that was refused. A tick here is the lie the card used to tell.
+    NoChange,
     Failed,
+}
+
+/// A result that reports the call went through and achieved nothing. Only the
+/// phrases the tools actually print, so an ordinary result is never demoted.
+fn reports_no_change(output: &str) -> bool {
+    const EMPTY: [&str; 5] = [
+        "nothing on screen changed",
+        "nothing came to the front",
+        "receipt: refused",
+        "warning: the screen did not lock",
+        "treat as not done",
+    ];
+    let lower = output.to_lowercase();
+    EMPTY.iter().any(|phrase| lower.contains(phrase))
 }
 
 /// How a turn ended, so the activity card says stopped only when the user
 /// asked it to.
+#[derive(Clone, Copy, PartialEq)]
 enum TurnEnd {
     Done,
     Stopped,
@@ -1745,7 +2543,7 @@ enum TurnEnd {
 }
 
 impl Activity {
-    fn new(api: Api, chat_id: i64, reply_to: i64) -> Self {
+    fn new(api: Api, chat_id: i64, reply_to: Option<i64>, photos: Arc<AtomicBool>) -> Self {
         Self {
             api,
             chat_id,
@@ -1758,7 +2556,14 @@ impl Activity {
                 .checked_sub(ACTIVITY_EDIT_GAP)
                 .unwrap_or_else(Instant::now),
             held: false,
+            photos,
+            held_shot: None,
+            lost: false,
         }
+    }
+
+    fn hold_shot(&mut self, path: String, caption: String) {
+        self.held_shot = Some((path, caption));
     }
 
     /// When a held change can go out, if there is one.
@@ -1781,6 +2586,7 @@ impl Activity {
             label,
             status: Status::Running,
             result: String::new(),
+            sent: false,
         });
         // A new action ends the narration that led to it.
         self.saying.clear();
@@ -1839,6 +2645,20 @@ impl Activity {
         self.message_id = None;
     }
 
+    /// A picture that actually went out, so its step can say so. Nothing else
+    /// knows: the tool only ever reports the file it wrote.
+    fn mark_sent(&mut self, id: &str) {
+        if let Some(step) = self
+            .lines
+            .iter_mut()
+            .rposition(|step| step.id == id)
+            .and_then(|i| self.lines.get_mut(i))
+        {
+            step.result = "picture sent".into();
+            step.sent = true;
+        }
+    }
+
     fn complete(&mut self, id: &str, error: bool, output: String) {
         // A tool that reports no id still completes the oldest running step.
         let index = self
@@ -1851,8 +2671,14 @@ impl Activity {
                     .position(|step| matches!(step.status, Status::Running))
             });
         if let Some(step) = index.and_then(|i| self.lines.get_mut(i)) {
-            step.status = if error { Status::Failed } else { Status::Done };
-            step.result = summarize_result(&output);
+            step.status = match (error, reports_no_change(&output)) {
+                (true, _) => Status::Failed,
+                (false, true) => Status::NoChange,
+                (false, false) => Status::Done,
+            };
+            if !step.sent {
+                step.result = summarize_result(&output);
+            }
         }
     }
 
@@ -1889,7 +2715,7 @@ impl Activity {
             }
             i += run;
         }
-        let thinking = tail(&self.thinking, NARRATION_CHARS);
+        let thinking = from_sentence(&tail(&self.thinking, NARRATION_CHARS));
         if !thinking.is_empty() {
             text.push_str(&format!("\n\n💭 <i>{}</i>", markdown::escape(&thinking)));
         }
@@ -1900,7 +2726,7 @@ impl Activity {
         text
     }
     async fn flush(&mut self, force: bool) {
-        if self.lines.is_empty() {
+        if self.lines.is_empty() || self.lost {
             return;
         }
         if !force && self.message_id.is_some() && self.last_flush.elapsed() < ACTIVITY_EDIT_GAP {
@@ -1913,8 +2739,14 @@ impl Activity {
             None => {
                 self.message_id = self
                     .api
-                    .send_html_reply(self.chat_id, &text, Some(self.reply_to))
+                    .send_html_reply(self.chat_id, &text, self.reply_to)
                     .await;
+                // A card that cannot find its own message must never post a
+                // second one: that is how one turn became fifty messages.
+                if self.message_id.is_none() {
+                    tracing::warn!("the activity card could not be posted; going quiet");
+                    self.lost = true;
+                }
             }
             Some(id) => self.api.edit_html(self.chat_id, id, &text).await,
         }
@@ -1922,7 +2754,7 @@ impl Activity {
     }
 
     async fn finish(&mut self, end: TurnEnd) {
-        if self.lines.is_empty() {
+        if self.lines.is_empty() || self.lost {
             return;
         }
         let label = match end {
@@ -1941,12 +2773,86 @@ impl Activity {
             None => {
                 self.message_id = self
                     .api
-                    .send_html_reply(self.chat_id, &text, Some(self.reply_to))
+                    .send_html_reply(self.chat_id, &text, self.reply_to)
                     .await;
             }
             Some(id) => self.api.edit_html(self.chat_id, id, &text).await,
         }
     }
+}
+
+/// Start at a sentence, so a trimmed thought reads as a thought rather than
+/// beginning mid-word. Nothing whole to start from means nothing to show.
+fn from_sentence(text: &str) -> String {
+    let text = text.trim_start_matches(['…', ' ']);
+    match text
+        .char_indices()
+        .find(|(_, c)| matches!(c, '.' | '!' | '?' | '\n'))
+    {
+        Some((at, _)) => {
+            let rest = text[at + 1..].trim_start();
+            match rest.is_empty() {
+                true => text.to_string(),
+                false => rest.to_string(),
+            }
+        }
+        None => text.to_string(),
+    }
+}
+
+/// The end of a growing text, so a card shows the latest words rather than the
+/// first ones.
+fn tail(text: &str, chars: usize) -> String {
+    let text = text.trim();
+    let total = text.chars().count();
+    if total <= chars {
+        return text.to_string();
+    }
+    let skipped: String = text.chars().skip(total - chars).collect();
+    format!("…{}", skipped.trim_start())
+}
+
+/// Whether the person asked to see the screen. Only an explicit ask counts: the
+/// agent screenshots constantly to read the phone, and none of that is
+/// something anyone asked to look at.
+/// What a message from outside the allowlist earns: silence. The bot's handle
+/// is public, so anyone can message it, and every answer confirms a live bot
+/// and hands over the recipe for getting in. The exception is a bot nobody is
+/// allowed on yet, which has to tell whoever asks their own id, or its owner
+/// can never allow themselves.
+fn stranger_reply(allowed: &[i64], sender: i64) -> Option<String> {
+    if !allowed.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "This bot isn't set up yet. Your user id is {sender}. Restart it with --user {sender} to allow it."
+    ))
+}
+
+/// Whether this turn streams its screenshots. `auto` is the standing default
+/// and asks the message; the other two are the person overruling the guess,
+/// which is the whole point of setting one.
+fn streams_photos(policy: Option<&str>, task: &str) -> bool {
+    match policy {
+        Some("on") => true,
+        Some("off") => false,
+        _ => wants_photos(task),
+    }
+}
+
+fn wants_photos(task: &str) -> bool {
+    const ASKS: [&str; 8] = [
+        "screenshot",
+        "screen shot",
+        "photo",
+        "picture",
+        "show me",
+        "send me a shot",
+        "what does it look like",
+        "let me see",
+    ];
+    let task = task.to_lowercase();
+    ASKS.iter().any(|ask| task.contains(ask))
 }
 
 const DIFF_INLINE_LIMIT: usize = 3_000;
@@ -2020,7 +2926,7 @@ fn summarize_result(output: &str) -> String {
         return describe_change(rest);
     }
     if first.starts_with("shot ") {
-        return "picture sent".into();
+        return "screenshot taken".into();
     }
     if let Some(rest) = first.strip_prefix("ocr blocks=") {
         return match rest {
@@ -2103,9 +3009,15 @@ fn describe_change(rest: &str) -> String {
         }
     }
     if added == "0" && removed == "0" {
-        return format!("nothing happened in {app}");
+        return match app.is_empty() {
+            true => "nothing changed".into(),
+            false => format!("nothing happened in {app}"),
+        };
     }
-    format!("{app} responded")
+    match app.is_empty() {
+        true => "the screen changed".into(),
+        false => format!("{app} responded"),
+    }
 }
 
 /// `com.android.chrome` as "chrome": the last segment, unless the package
@@ -2144,18 +3056,6 @@ fn is_plumbing(line: &str) -> bool {
         || line.starts_with("exit code:")
         || line.starts_with("receipt: posted")
         || (line.starts_with('(') && line.ends_with("ms)"))
-}
-
-/// The end of a growing text, so a card shows the latest words rather than
-/// the first ones.
-fn tail(text: &str, chars: usize) -> String {
-    let text = text.trim();
-    let count = text.chars().count();
-    if count <= chars {
-        return text.to_string();
-    }
-    let skipped = text.chars().skip(count - chars).collect::<String>();
-    format!("…{skipped}")
 }
 
 async fn send_edit_diff(
@@ -2905,34 +3805,221 @@ async fn mirror_command(api: &Api, _cfg: &Arc<TelegramConfig>, chat_id: i64, _ar
         .await;
 }
 
+/// Where a command is worth having. The phone build is a phone: it mirrors its
+/// own screen and leaves the repo commands to the machine with the keyboard.
+#[derive(Clone, Copy)]
+enum Scope {
+    Everywhere,
+    Phone,
+    Desk,
+}
+
+/// Every command the bot answers, in the order /help and Telegram's own menu
+/// list them. One table, so the two cannot drift apart.
+struct BotCommand {
+    name: &'static str,
+    about: &'static str,
+    /// Whether it earns one of Telegram's menu slots, which are a shortlist.
+    menu: bool,
+    scope: Scope,
+}
+
+const COMMANDS: &[BotCommand] = &[
+    BotCommand {
+        name: "new",
+        about: "start fresh",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "clear",
+        about: "same as /new",
+        menu: false,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "stop",
+        about: "cancel the running turn",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "retry",
+        about: "run the last message again",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "queue",
+        about: "what is waiting behind the running turn",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "mode",
+        about: "how the agent acts (plan, manual, auto, edit, yolo)",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "model",
+        about: "switch the model for this chat",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "effort",
+        about: "how much it thinks before answering",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "photos",
+        about: "screenshots as they happen (on, off, auto)",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "show",
+        about: "keep the steps and the thinking on finished cards",
+        menu: false,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "status",
+        about: "session, mode, model, and history",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "sessions",
+        about: "pick up a past conversation",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "resume",
+        about: "jump straight to one by id",
+        menu: false,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "memory",
+        about: "facts the agent keeps",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "remember",
+        about: "keep one: /remember <fact>",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "learn",
+        about: "score the last turn and refine its skill",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "checkins",
+        about: "reminders the agent sets itself",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "skills",
+        about: "browse and run installed skills",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "bots",
+        about: "installed bots and what each brings",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "mcp",
+        about: "the MCP servers wired up here",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "cron",
+        about: "scheduled runs",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+    BotCommand {
+        name: "mirror",
+        about: "share this phone's screen in a browser (/mirror off stops it)",
+        menu: true,
+        scope: Scope::Phone,
+    },
+    BotCommand {
+        name: "diff",
+        about: "uncommitted changes in the repo",
+        menu: true,
+        scope: Scope::Desk,
+    },
+    BotCommand {
+        name: "commit",
+        about: "draft a commit message and commit",
+        menu: true,
+        scope: Scope::Desk,
+    },
+    BotCommand {
+        name: "repo",
+        about: "the folder the agent works in",
+        menu: true,
+        scope: Scope::Desk,
+    },
+    BotCommand {
+        name: "help",
+        about: "this message",
+        menu: true,
+        scope: Scope::Everywhere,
+    },
+];
+
+/// The commands this build offers. A phone that is told to commit still
+/// commits; the ones left out here are the ones not worth a menu slot.
+fn commands() -> impl Iterator<Item = &'static BotCommand> {
+    COMMANDS.iter().filter(|command| match command.scope {
+        Scope::Everywhere => true,
+        Scope::Phone => cfg!(target_os = "android"),
+        Scope::Desk => !cfg!(target_os = "android"),
+    })
+}
+
 fn help(cfg: &TelegramConfig) -> String {
-    let mirror_line = if cfg!(target_os = "android") {
-        "/mirror - share this phone's screen in a browser\n/mirror off - stop it\n"
-    } else {
-        ""
-    };
+    let lines = commands()
+        .map(|command| format!("/{} - {}\n", command.name, command.about))
+        .collect::<String>();
     format!(
         "<b>Aster</b>\n\
-         Send a message to run the agent on <code>{}</code>.\n\
+         {}\n\
          Approvals arrive as buttons; the work streams live.\n\n\
-         /new - start fresh\n\
-         /clear - same as /new\n\
-         /stop - cancel the running turn\n\
-         /mode - how the agent acts (plan, manual, auto, edit, yolo)\n\
-         /model - switch the model for this chat\n\
-         /effort - how much it thinks before answering (off, low, medium, high)\n\
-         /status - session, mode, model, and history\n\
-         /diff - uncommitted changes in the repo\n\
-         /commit - draft a commit message and commit\n\
-         {mirror_line}\
-         /help - this message\n\n\
+         {lines}\n\
          Installed skills show up as /commands too.",
-        markdown::escape(
-            &cfg.repo_root
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| cfg.repo_root.display().to_string())
-        )
+        workspace_line(cfg)
+    )
+}
+
+/// A phone has no workspace worth naming. The agent runs on the phone itself,
+/// and the data directory it happens to live in means nothing to the person
+/// holding it.
+#[cfg(target_os = "android")]
+fn workspace_line(_cfg: &TelegramConfig) -> String {
+    "Send a message and the agent works the phone itself.".to_string()
+}
+
+#[cfg(not(target_os = "android"))]
+fn workspace_line(cfg: &TelegramConfig) -> String {
+    format!(
+        "Send a message to run the agent on <code>{}</code>.",
+        markdown::escape(&crate::channel::workspace_name(&cfg.repo_root))
     )
 }
 
@@ -2978,14 +4065,9 @@ impl Api {
 
     /// Fetch a file by its `getFile` path; the token stays inside `base`.
     async fn download(&self, file_path: &str) -> Result<Vec<u8>> {
-        let url = format!(
-            "{}/file/{}",
-            self.base.replace("/bot", "/file/bot"),
-            file_path
-        );
         let bytes = self
             .http
-            .get(url)
+            .get(file_url(&self.base, file_path))
             .send()
             .await?
             .error_for_status()?
@@ -3001,13 +4083,17 @@ impl Api {
         path: &str,
         caption: Option<&str>,
     ) -> Result<Value> {
+        let size = tokio::fs::metadata(path)
+            .await
+            .with_context(|| format!("reading {path}"))?
+            .len();
+        anyhow::ensure!(
+            size <= 50 * 1024 * 1024,
+            "{path} is over Telegram's 50 MB bot upload limit"
+        );
         let bytes = tokio::fs::read(path)
             .await
             .with_context(|| format!("reading {path}"))?;
-        anyhow::ensure!(
-            bytes.len() <= 50 * 1024 * 1024,
-            "{path} is over Telegram's 50 MB bot upload limit"
-        );
         let filename = std::path::Path::new(path)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -3019,7 +4105,7 @@ impl Api {
                 reqwest::multipart::Part::bytes(bytes).file_name(filename),
             );
         if let Some(caption) = caption {
-            form = form.text("caption", caption.to_string());
+            form = form.text("caption", truncate(caption, 1000));
         }
         let response: Value = self
             .http
@@ -3066,20 +4152,10 @@ impl Api {
     }
 
     async fn register_commands(&self, skills: &Skills) {
-        let mut commands = vec![
-            json!({"command": "new", "description": "Start fresh"}),
-            json!({"command": "stop", "description": "Cancel the running turn"}),
-            json!({"command": "mode", "description": "How the agent acts (plan/manual/auto/edit/yolo)"}),
-            json!({"command": "model", "description": "Switch the model for this chat"}),
-            json!({"command": "effort", "description": "How much it thinks before answering"}),
-            json!({"command": "status", "description": "Session, mode, model, and history"}),
-            json!({"command": "diff", "description": "Uncommitted changes in the repo"}),
-            json!({"command": "help", "description": "How this bot works"}),
-        ];
-        commands
-            .push(json!({"command": "skills", "description": "Browse and run installed skills"}));
-        commands
-            .push(json!({"command": "commit", "description": "Draft a commit message and commit"}));
+        let mut commands: Vec<Value> = commands()
+            .filter(|command| command.menu)
+            .map(|command| json!({"command": command.name, "description": command.about}))
+            .collect();
         // The menu is a shortlist, not a catalog: /skills browses the rest.
         let mut names: Vec<&String> = skills.keys().collect();
         names.sort();
@@ -3113,15 +4189,20 @@ impl Api {
     }
 
     async fn send_text(&self, chat_id: i64, text: &str) {
-        self.send_text_reply(chat_id, text, None).await;
-    }
-
-    pub(crate) async fn send_text_reply(&self, chat_id: i64, text: &str, reply_to: Option<i64>) {
-        let mut payload = json!({ "chat_id": chat_id, "text": text });
-        add_reply(&mut payload, reply_to);
-        if let Err(e) = self.call("sendMessage", payload).await {
+        if let Err(e) = self.send_text_reply(chat_id, text, None).await {
             tracing::warn!("sendMessage failed: {e:#}");
         }
+    }
+
+    pub(crate) async fn send_text_reply(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_to: Option<i64>,
+    ) -> Result<Value> {
+        let mut payload = json!({ "chat_id": chat_id, "text": text });
+        add_reply(&mut payload, reply_to);
+        self.call("sendMessage", payload).await
     }
 
     async fn send_html(&self, chat_id: i64, html: &str) -> Option<i64> {
@@ -3160,7 +4241,7 @@ impl Api {
             .await
             .is_none()
         {
-            self.send_text_reply(chat_id, html, reply_to).await;
+            let _ = self.send_text_reply(chat_id, html, reply_to).await;
         }
     }
 

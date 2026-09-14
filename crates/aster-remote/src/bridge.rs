@@ -329,6 +329,8 @@ pub struct Agent {
     session: Mutex<Option<String>>,
     primed: AtomicBool,
     applied: Mutex<Applied>,
+    reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    child: Mutex<Option<tokio::process::Child>>,
 }
 
 impl Agent {
@@ -367,25 +369,32 @@ impl Agent {
             session: Mutex::new(None),
             primed: AtomicBool::new(false),
             applied: Mutex::new(Applied::default()),
+            reader: Mutex::new(None),
+            child: Mutex::new(Some(child)),
         });
 
-        let reader = Arc::clone(&agent);
-        tokio::spawn(async move {
+        let reader = Arc::downgrade(&agent);
+        let handle = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
+                let Some(reader) = reader.upgrade() else {
+                    break;
+                };
                 reader.route(message).await;
             }
-            // The child is held only by kill_on_drop; once its stdout closes
-            // the process is gone or going, and every waiter should know.
-            reader.alive.store(false, Ordering::Relaxed);
-            for (_, waiter) in reader.pending.lock().expect("pending lock").drain() {
-                let _ = waiter.send(Err("the agent went away".into()));
+            if let Some(reader) = reader.upgrade() {
+                // stdout closed, so the process is gone or going; every waiter
+                // should know rather than hang on a reply that will not come.
+                reader.alive.store(false, Ordering::Relaxed);
+                for (_, waiter) in reader.pending.lock().expect("pending lock").drain() {
+                    let _ = waiter.send(Err("the agent went away".into()));
+                }
             }
-            let _ = child.wait().await;
         });
+        *agent.reader.lock().expect("reader lock") = Some(handle);
 
         agent
             .call(
@@ -844,6 +853,17 @@ impl Agent {
                 .write(&json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": session } }))
                 .await;
         }
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        if let Some(handle) = self.reader.lock().expect("reader lock").take() {
+            handle.abort();
+        }
+        // Dropping the child is what kill_on_drop acts on; the reader task no
+        // longer holds it, so the process goes with the Agent.
+        let _ = self.child.lock().expect("child lock").take();
     }
 }
 
