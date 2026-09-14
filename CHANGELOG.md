@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-14
+
+### Added
+
+- **Grok bot import.** `aster bots` reads a marketplace bot's share JSON and
+  lands it as an Aster agent: its prompt, its skills, its routines, and the
+  connectors it assumes. The import writes down which of those assumptions hold
+  on this machine and which do not, so a bot that arrives cleanly does not then
+  sit there doing nothing. A publisher's "memories" are never written into your
+  memory.
+- **Python 3 inside the binary.** `aster python` runs a script, `-c`, or `-m`
+  without a system python, which is what the phone needs.
+- **Background agent batches.** `agent` calls with `background: true` queue and
+  drain on one driver thread while the turn keeps working, and completions are
+  pushed into the live turn rather than polled for.
+- **Richer remote cards.** Telegram cards carry the steps, the thinking, and
+  the diff; side turns run next to the main one; `/bots` lists what is
+  installed. The workspace line, saved overrides, and skill commands now live in
+  a channel core shared by Telegram, iMessage, and Photon.
+- **Memory suggests related blocks** when a new one is written.
+
+### Fixed
+
+- Cron, agents, and skills carry their own fixes from the same pass.
+
 ## [0.5.2] - 2026-09-09
 
 ### Fixed
@@ -999,4 +1024,5 @@ taught workflows without touching its prompt.
 [0.5.0]: https://github.com/Zfinix/aster/compare/cli-v0.4.1...cli-v0.5.0
 [0.5.1]: https://github.com/Zfinix/aster/compare/cli-v0.5.0...cli-v0.5.1
 [0.5.2]: https://github.com/Zfinix/aster/compare/cli-v0.5.1...cli-v0.5.2
-[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.5.2...HEAD
+[0.6.0]: https://github.com/Zfinix/aster/compare/cli-v0.5.2...cli-v0.6.0
+[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.6.0...HEAD
