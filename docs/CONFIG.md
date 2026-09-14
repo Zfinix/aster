@@ -317,6 +317,7 @@ What chat prints on its own.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `welcome` | bool | `true` | Print the session header (model, provider, skills) when chat starts. `/welcome` in a chat toggles it and saves the choice. |
+| `theme` | string | `dark` | Chat color theme: `dark`, `light`, `midnight`, or `forest`. `/theme` in a chat picks one and saves the choice. |
 
 ## `mcp`
 

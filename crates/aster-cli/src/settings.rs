@@ -43,6 +43,7 @@ pub struct Mom {
 #[serde(default, deny_unknown_fields)]
 pub struct Ui {
     pub welcome: Option<bool>,
+    pub theme: Option<String>,
 }
 
 /// Limits on one agent turn. Each is also settable per run via
@@ -168,6 +169,7 @@ impl Settings {
             },
             ui: Ui {
                 welcome: project.ui.welcome.or(self.ui.welcome),
+                theme: project.ui.theme.or(self.ui.theme),
             },
             mom: Mom {
                 enabled: project.mom.enabled.or(self.mom.enabled),

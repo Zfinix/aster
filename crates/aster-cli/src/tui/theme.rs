@@ -109,6 +109,42 @@ pub fn is_transitioning() -> bool {
         .unwrap_or(false)
 }
 
+/// One selectable theme: its name in `/theme`, a line for the picker, and the
+/// palette itself.
+pub struct ThemeEntry {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub theme: &'static Theme,
+}
+
+/// The themes `/theme` offers, in picker order.
+pub const ALL: &[ThemeEntry] = &[
+    ThemeEntry {
+        name: "dark",
+        description: "the default warm dark palette",
+        theme: &Theme::DEFAULT,
+    },
+    ThemeEntry {
+        name: "light",
+        description: "for bright terminals",
+        theme: &Theme::LIGHT,
+    },
+    ThemeEntry {
+        name: "midnight",
+        description: "deep blue dark palette",
+        theme: &Theme::MIDNIGHT,
+    },
+    ThemeEntry {
+        name: "forest",
+        description: "muted green dark palette",
+        theme: &Theme::FOREST,
+    },
+];
+
+pub fn named(name: &str) -> Option<&'static ThemeEntry> {
+    ALL.iter().find(|t| t.name == name)
+}
+
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)] // palette fields are read selectively across TUI views
 pub struct Theme {
@@ -233,6 +269,99 @@ impl Theme {
             Color::Rgb(0xb8, 0x82, 0x42),
             Color::Rgb(0xb4, 0x88, 0x48),
             Color::Rgb(0xb4, 0x88, 0x48),
+        ],
+    };
+
+    /// Deep blue dark palette, in the family of terminal themes like midnight
+    /// in Tokyo. Same text ramp as DEFAULT so contrast stays equal.
+    pub const MIDNIGHT: Theme = Theme {
+        text: Color::Rgb(0xff, 0xff, 0xff),
+        dim: Color::Rgb(0x82, 0x8f, 0xa8),
+        dimmer: Color::Rgb(0x54, 0x5f, 0x78),
+        faint: Color::Rgb(0x3a, 0x44, 0x5c),
+        accent: Color::Rgb(0x7d, 0xc4, 0xff),
+        error: Color::Rgb(0xef, 0x5a, 0x6f),
+        rail_bg: Color::Rgb(0x0f, 0x14, 0x22),
+        pane_bg: Color::Rgb(0x0f, 0x14, 0x22),
+        sel_bg: Color::Rgb(0x1a, 0x2a, 0x4a),
+        amber: Color::Rgb(0xf8, 0xcb, 0x66),
+        blue: Color::Rgb(0x7d, 0xc4, 0xff),
+        purple: Color::Rgb(0xb4, 0x8c, 0xe3),
+        add_bg: Color::Rgb(0x12, 0x24, 0x0f),
+        add_fg: Color::Rgb(0x9e, 0xcb, 0x84),
+        add_mark: Color::Rgb(0x5f, 0x8f, 0x4a),
+        del_bg: Color::Rgb(0x2a, 0x15, 0x18),
+        del_fg: Color::Rgb(0xe0, 0x8b, 0x8b),
+        del_mark: Color::Rgb(0xa3, 0x4f, 0x4f),
+        inline_code_bg: Color::Rgb(0x1a, 0x22, 0x36),
+        inline_code_fg: Color::Rgb(0xdd, 0xdd, 0xd8),
+        heading_fg: Color::Rgb(0xdd, 0xdd, 0xd8),
+        link_fg: Color::Rgb(0x7d, 0xc4, 0xff),
+        placeholder: Color::Rgb(0x4d, 0x58, 0x70),
+        success: Color::Rgb(0x7e, 0xab, 0x6a),
+        warning: Color::Rgb(0xf8, 0xcb, 0x66),
+        severity_critical: Color::Rgb(0xef, 0x5a, 0x6f),
+        severity_high: Color::Rgb(0xe0, 0x6a, 0x6a),
+        severity_medium: Color::Rgb(0xf8, 0xcb, 0x66),
+        severity_low: Color::Rgb(0x7d, 0xc4, 0xff),
+        severity_info: Color::Rgb(0x82, 0x8f, 0xa8),
+        mark: [
+            Color::Rgb(0x7d, 0xc4, 0xff),
+            Color::Rgb(0x7d, 0xc4, 0xff),
+            Color::Rgb(0x7a, 0xc8, 0xff),
+            Color::Rgb(0x77, 0xcb, 0xff),
+            Color::Rgb(0x74, 0xcf, 0xff),
+            Color::Rgb(0x71, 0xd3, 0xff),
+            Color::Rgb(0x6e, 0xd7, 0xff),
+            Color::Rgb(0x6b, 0xdb, 0xff),
+            Color::Rgb(0x68, 0xdf, 0xff),
+            Color::Rgb(0x68, 0xdf, 0xff),
+        ],
+    };
+
+    /// Muted green dark palette, in the family of gruvbox / everforest.
+    pub const FOREST: Theme = Theme {
+        text: Color::Rgb(0xff, 0xff, 0xff),
+        dim: Color::Rgb(0x9a, 0xa0, 0x8a),
+        dimmer: Color::Rgb(0x66, 0x6e, 0x5c),
+        faint: Color::Rgb(0x44, 0x4a, 0x3c),
+        accent: Color::Rgb(0xa7, 0xc0, 0x80),
+        error: Color::Rgb(0xef, 0x5a, 0x6f),
+        rail_bg: Color::Rgb(0x17, 0x1c, 0x16),
+        pane_bg: Color::Rgb(0x17, 0x1c, 0x16),
+        sel_bg: Color::Rgb(0x2a, 0x33, 0x22),
+        amber: Color::Rgb(0xdb, 0xbc, 0x6f),
+        blue: Color::Rgb(0x7f, 0xbb, 0xb3),
+        purple: Color::Rgb(0xd6, 0x99, 0xb6),
+        add_bg: Color::Rgb(0x12, 0x24, 0x0f),
+        add_fg: Color::Rgb(0x9e, 0xcb, 0x84),
+        add_mark: Color::Rgb(0x5f, 0x8f, 0x4a),
+        del_bg: Color::Rgb(0x2a, 0x15, 0x18),
+        del_fg: Color::Rgb(0xe0, 0x8b, 0x8b),
+        del_mark: Color::Rgb(0xa3, 0x4f, 0x4f),
+        inline_code_bg: Color::Rgb(0x22, 0x28, 0x1e),
+        inline_code_fg: Color::Rgb(0xdd, 0xdd, 0xd8),
+        heading_fg: Color::Rgb(0xdd, 0xdd, 0xd8),
+        link_fg: Color::Rgb(0x7f, 0xbb, 0xb3),
+        placeholder: Color::Rgb(0x55, 0x5d, 0x4d),
+        success: Color::Rgb(0xa7, 0xc0, 0x80),
+        warning: Color::Rgb(0xdb, 0xbc, 0x6f),
+        severity_critical: Color::Rgb(0xef, 0x5a, 0x6f),
+        severity_high: Color::Rgb(0xe0, 0x6a, 0x6a),
+        severity_medium: Color::Rgb(0xdb, 0xbc, 0x6f),
+        severity_low: Color::Rgb(0x7f, 0xbb, 0xb3),
+        severity_info: Color::Rgb(0x9a, 0xa0, 0x8a),
+        mark: [
+            Color::Rgb(0xa7, 0xc0, 0x80),
+            Color::Rgb(0xa7, 0xc0, 0x80),
+            Color::Rgb(0xab, 0xc4, 0x86),
+            Color::Rgb(0xaf, 0xc8, 0x8c),
+            Color::Rgb(0xb3, 0xcc, 0x92),
+            Color::Rgb(0xb7, 0xd0, 0x98),
+            Color::Rgb(0xbb, 0xd4, 0x9e),
+            Color::Rgb(0xbf, 0xd8, 0xa4),
+            Color::Rgb(0xc3, 0xdc, 0xaa),
+            Color::Rgb(0xc3, 0xdc, 0xaa),
         ],
     };
 

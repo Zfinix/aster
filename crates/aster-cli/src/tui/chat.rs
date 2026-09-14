@@ -69,6 +69,7 @@ pub(super) enum AppEvent {
         disabled: bool,
     },
     ModelChanged(String),
+    ThemeChanged(&'static str),
     ToggleThinking,
     BrowseModels,
     UpdateAvailable(crate::update::UpdateInfo),
@@ -231,6 +232,10 @@ pub async fn run_chat(
 
     if let Ok(settings) = crate::settings::Settings::load(Some(&repo_root)) {
         app.show_welcome = settings.ui.welcome.unwrap_or(true);
+        if let Some(t) = settings.ui.theme.as_deref().and_then(theme::named) {
+            app.theme_name = t.name;
+            theme::set(*t.theme);
+        }
     }
 
     let welcome = app.welcome_block();
@@ -1133,8 +1138,8 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     },
     CommandDesc {
         name: "theme",
-        takes_arg: false,
-        desc: "Switch between the dark and light color themes",
+        takes_arg: true,
+        desc: "Pick a color theme: dark, light, midnight, or forest",
     },
     CommandDesc {
         name: "welcome",
@@ -1251,7 +1256,7 @@ struct ChatApp {
     mom_looping: bool,
     mom_model_down: bool,
     mom_turns: u64,
-    theme_light: bool,
+    theme_name: &'static str,
     show_welcome: bool,
 }
 
@@ -1321,7 +1326,7 @@ impl ChatApp {
             mom_looping: false,
             mom_model_down: false,
             mom_turns: 0,
-            theme_light: false,
+            theme_name: "dark",
             show_welcome: true,
         }
     }
@@ -1979,6 +1984,7 @@ impl ChatApp {
             | AppEvent::SkillDeleteConfirmed(_) => {}
             AppEvent::SkillView(name) => self.show_skill(&name),
             AppEvent::ModelsLoaded(_) => {}
+            AppEvent::ThemeChanged(name) => self.set_theme(name),
             AppEvent::ToggleThinking => self.toggle_thinking(),
             AppEvent::BrowseModels => {}
             AppEvent::MentionQueried(_) | AppEvent::MentionResults { .. } => {}
@@ -2089,10 +2095,9 @@ impl ChatApp {
     }
 
     fn base_theme(&self) -> theme::Theme {
-        match self.theme_light {
-            true => theme::Theme::LIGHT,
-            false => theme::Theme::DEFAULT,
-        }
+        theme::named(self.theme_name)
+            .map(|t| *t.theme)
+            .unwrap_or(theme::Theme::DEFAULT)
     }
 
     fn toggle_welcome(&mut self) {
@@ -2113,12 +2118,30 @@ impl ChatApp {
         });
     }
 
-    fn toggle_theme(&mut self) {
-        self.theme_light = !self.theme_light;
+    fn open_theme_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
+        let items = theme::ALL
+            .iter()
+            .map(|t| SelectionItem {
+                name: t.name.to_string(),
+                description: t.description.to_string(),
+                is_current: t.name == self.theme_name,
+                event: AppEvent::ThemeChanged(t.name),
+            })
+            .collect();
+        pane.push_picker("Switch theme", items, None);
+    }
+
+    fn set_theme(&mut self, name: &'static str) {
+        self.theme_name = name;
         theme::set(self.base_theme());
-        self.flash = Some(match self.theme_light {
-            true => "light theme".into(),
-            false => "dark theme".into(),
+        let saved = crate::settings::writable_config(Some(&self.repo_root)).and_then(|path| {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let updated = crate::settings::with_key(&text, "ui", "theme", name);
+            crate::settings::save(&path, updated).map(|()| path)
+        });
+        self.flash = Some(match saved {
+            Ok(path) => format!("{name} theme ({})", short_path(&path)),
+            Err(e) => format!("{name} theme, saved for this session only: {e:#}"),
         });
     }
 
@@ -2701,7 +2724,16 @@ impl ChatApp {
                 }
             },
             "thinking" => self.toggle_thinking(),
-            "theme" => self.toggle_theme(),
+            "theme" => match arg {
+                Some(name) => match theme::named(name) {
+                    Some(t) => self.set_theme(t.name),
+                    None => {
+                        let names = theme::ALL.iter().map(|t| t.name).collect::<Vec<_>>();
+                        self.flash = Some(format!("unknown theme (expected {})", names.join(", ")));
+                    }
+                },
+                None => self.open_theme_picker(pane),
+            },
             "welcome" => self.toggle_welcome(),
             "yolo" => match self.mode {
                 Mode::Yolo => self.select_mode(Mode::Edit),

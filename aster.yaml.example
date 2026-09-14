@@ -120,6 +120,9 @@ agents:
 ui:
   # Print the session header (model, provider, skills) when chat starts.
   welcome: true
+  # Chat color theme: dark, light, midnight, or forest. `/theme` in a chat
+  # picks one and saves.
+  theme: dark
 
 # MCP servers that give the agent extra tools. `aster mcp list` shows what they
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.

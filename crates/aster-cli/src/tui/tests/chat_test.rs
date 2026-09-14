@@ -565,6 +565,30 @@ fn yolo_asks_before_it_switches() {
 }
 
 #[test]
+fn theme_command_picks_and_persists() {
+    let mut app = chat_app("m1".into());
+    let mut client = AiClient::new("http://localhost", "k", "m1");
+    let (mut p, _rx) = pane();
+
+    app.handle_command("theme", &mut client, &mut p);
+    assert!(p.has_active_view(), "no argument opens the picker");
+
+    app.handle_command("theme forest", &mut client, &mut p);
+    assert_eq!(app.theme_name, "forest");
+    assert_eq!(theme::get().accent, theme::Theme::FOREST.accent);
+    assert!(app.flash.is_some(), "{:?}", app.flash);
+
+    app.handle_command("theme nope", &mut client, &mut p);
+    assert_eq!(app.theme_name, "forest", "an unknown name changes nothing");
+
+    app.on_app_event(AppEvent::ThemeChanged("midnight"), &mut client, &mut p);
+    assert_eq!(app.theme_name, "midnight");
+    assert_eq!(theme::get().accent, theme::Theme::MIDNIGHT.accent);
+
+    theme::set(theme::Theme::DEFAULT);
+}
+
+#[test]
 fn declining_yolo_leaves_the_mode_alone() {
     let mut app = chat_app("m1".into());
     app.mode = Mode::Edit;
