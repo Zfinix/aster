@@ -297,6 +297,9 @@ pub(crate) async fn first_run() -> Result<bool> {
             )?,
             true,
         )?;
+        // The env loaded at startup predates this write, so the key check
+        // below would report a stored key as missing without a reload.
+        let _ = dotenvy::from_path_override(yaml_path.with_file_name(".env"));
     }
     if key_status(&chosen.base_url).is_none()
         && crate::config::provider::resolve_key(&chosen.base_url).is_none()
@@ -383,6 +386,11 @@ pub async fn run(args: InitArgs) -> Result<()> {
             continue;
         }
         emit(store_key(&env_path, var, key.trim(), gitignore)?, true)?;
+    }
+    if stored_key {
+        // The env loaded at startup predates this write, so the outro below
+        // would report a stored key as missing without a reload.
+        let _ = dotenvy::from_path_override(&env_path);
     }
 
     let next = if !configured_provider {
