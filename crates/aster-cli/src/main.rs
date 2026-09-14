@@ -5,6 +5,7 @@ mod agents;
 mod agents_queue;
 mod announce;
 mod auth;
+mod bots;
 use auth::LoginArgs;
 mod budget;
 mod chat;
@@ -134,6 +135,8 @@ enum Command {
     Key(config::key::KeyArgs),
     /// Install, list, and remove agent skills.
     Skills(skills::SkillsArgs),
+    /// Install, list, and remove bots: published specialists with their own skills.
+    Bots(bots::BotsArgs),
     /// Install, list, and validate Agent Plugins packages.
     Plugins(plugins::PluginsArgs),
     /// Crawl or extract web pages as Markdown.
@@ -240,6 +243,7 @@ async fn main() -> Result<()> {
         Command::Config(args) => config::run(args).await,
         Command::Key(args) => config::key::run(args),
         Command::Skills(args) => skills::run(args).await,
+        Command::Bots(args) => bots::run(args, std::env::current_dir().ok().as_deref()),
         Command::Plugins(args) => plugins::run(args, std::env::current_dir().ok().as_deref()),
         Command::Web(args) => web::run(args).await,
         Command::Mcp(args) => mcp::run(args, std::env::current_dir().ok().as_deref()).await,
