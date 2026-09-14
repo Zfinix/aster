@@ -101,7 +101,7 @@ impl MemoryStore {
             .collect();
         if total > shown {
             index.push(format!(
-                "- ... and {} more blocks; run `aster memory list` to see them all.",
+                "- ... and {} more blocks; call `recall()` with no name to list them all.",
                 total - shown
             ));
         }
@@ -145,7 +145,47 @@ impl MemoryStore {
         let text = text.trim().to_string();
         (!text.is_empty()).then_some(text)
     }
+}
 
+/// The words worth matching on: short and common ones say nothing about what a
+/// block is, and every memory here is about aster on some machine.
+fn keywords(text: &str) -> std::collections::BTreeSet<String> {
+    const NOISE: [&str; 12] = [
+        "aster", "the", "and", "for", "this", "that", "with", "from", "phone", "device", "when",
+        "use",
+    ];
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 3 && !NOISE.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+impl MemoryStore {
+    pub fn near_duplicates(&self, name: &str, description: &str) -> Vec<String> {
+        let slug = slugify(name);
+        let wanted = keywords(&format!("{name} {description}"));
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<(usize, String)> = self
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.name != slug)
+            .filter_map(|m| {
+                let have = keywords(&format!("{} {}", m.name, m.description));
+                let shared = wanted.iter().filter(|w| have.contains(*w)).count();
+                let smaller = wanted.len().min(have.len());
+                (smaller > 0 && shared * 2 >= smaller).then_some((shared, m.name))
+            })
+            .collect();
+        hits.sort_by_key(|(shared, _)| std::cmp::Reverse(*shared));
+        hits.into_iter().take(3).map(|(_, name)| name).collect()
+    }
+}
+
+impl MemoryStore {
     pub fn remember(&self, name: &str, description: &str, body: &str) -> Result<PathBuf> {
         self.write_block(name, description, body, None)
     }

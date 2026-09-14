@@ -598,9 +598,14 @@ fn package_manager_note(repo_root: &Path) -> Option<String> {
 
 fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     // Sub-agents get only their prompt body and an environment note; the
-    // persona, instructions, memory, skills, and agent index are skipped.
+    // persona, instructions, memory, and agent index are skipped. The skill
+    // index rides along only for a bot, whose skills are scoped to itself.
     if let Some(sub) = &ctx.sub_agent {
         let mut prompt = sub.prompt_body.clone();
+        if let Some(index) = ctx.skills.render_index() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&index);
+        }
         if let Some(environment) = &ctx.environment {
             prompt.push_str("\n\n");
             prompt.push_str(environment);
@@ -2947,13 +2952,13 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "recall",
-                "description": "Read a memory block's full contents by name. The system prompt lists recallable memory as name and description only; call this to load the full body of a block before relying on it.",
+                "description": "Read a memory block's full contents by name. The system prompt lists recallable memory as name and description only; call this to load the full body of a block before relying on it. With no `name` it lists every block as it stands now, which the system prompt's list does not: that was taken when the session started and misses anything written since, by you or by another session. Pass `query` to list only the blocks mentioning something. List before writing a memory that might already exist.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string", "description": "The memory block name, as listed under Recallable memory" }
-                    },
-                    "required": ["name"]
+                        "name": { "type": "string", "description": "The memory block name, as listed under Recallable memory" },
+                        "query": { "type": "string", "description": "List only blocks whose name or description mentions this (ignored when `name` is given)" }
+                    }
                 }
             }
         }),
@@ -3326,9 +3331,10 @@ async fn exec_tool(
         "remember" => str_arg("note")
             .context("remember needs a `note`")
             .and_then(|note| remember(ctx, str_arg("title").as_deref(), &note)),
-        "recall" => str_arg("name")
-            .context("recall needs a `name`")
-            .and_then(|name| recall(ctx, &name)),
+        "recall" => match str_arg("name") {
+            Some(name) => recall(ctx, &name),
+            None => recall_list(ctx, str_arg("query").as_deref()),
+        },
         "forget" => str_arg("name")
             .context("forget needs a `name`")
             .and_then(|name| forget(ctx, &name)),
@@ -3885,7 +3891,7 @@ fn read_only_call(
         }
         "recall" => match str_arg("name") {
             Some(name) => recall(ctx, &name),
-            None => return Some(missing("name")),
+            None => recall_list(ctx, str_arg("query").as_deref()),
         },
         "read_skill" => match str_arg("name") {
             Some(name) => read_skill(ctx, &name),
@@ -4636,7 +4642,15 @@ fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String>
                 None => memory.remember(title, note, note)?,
             };
             let _ = path;
-            Ok(format!("remembered under \"{title}\""))
+            let same = memory.near_duplicates(title, note);
+            if same.is_empty() {
+                return Ok(format!("remembered under \"{title}\""));
+            }
+            Ok(format!(
+                "remembered under \"{title}\". {} already says something similar; \
+                 read it and, if it is the same fact, fold this into it and forget the other.",
+                same.join(" and ")
+            ))
         }
         None => {
             let fact = note.trim().chars().take(500).collect::<String>();
@@ -4655,6 +4669,45 @@ fn recall(ctx: &SessionCtx, name: &str) -> Result<String> {
         .as_ref()
         .context("memory is unavailable; no store is open")?;
     store.memory().read_block(name)
+}
+
+/// Memory as it stands now. The index in the system prompt was taken when the
+/// session started, so anything written since, here or in another session, is
+/// missing from it, which is how the same fact ends up stored twice.
+fn recall_list(ctx: &SessionCtx, query: Option<&str>) -> Result<String> {
+    let store = ctx
+        .store
+        .as_ref()
+        .context("memory is unavailable; no store is open")?;
+    let needle = query.map(str::to_lowercase);
+    let blocks: Vec<String> = store
+        .memory()
+        .list_recent()?
+        .into_iter()
+        .filter(|b| {
+            needle.as_ref().is_none_or(|q| {
+                b.name.to_lowercase().contains(q) || b.description.to_lowercase().contains(q)
+            })
+        })
+        .map(|b| {
+            if b.description.is_empty() {
+                format!("- {}", b.name)
+            } else {
+                format!("- {} — {}", b.name, b.description)
+            }
+        })
+        .collect();
+    if blocks.is_empty() {
+        return Ok(match query {
+            Some(q) => format!("no memory block mentions \"{q}\""),
+            None => "no memory blocks yet".to_string(),
+        });
+    }
+    Ok(format!(
+        "{} memory blocks; recall(name) reads one in full:\n{}",
+        blocks.len(),
+        blocks.join("\n")
+    ))
 }
 
 fn forget(ctx: &SessionCtx, name: &str) -> Result<String> {

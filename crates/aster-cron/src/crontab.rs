@@ -44,6 +44,21 @@ pub fn remove(name: &str) -> Result<()> {
     write_crontab(&lines.join("\n"))
 }
 
+/// Android and the smaller container images ship no cron at all, and the bare
+/// spawn error reads as a bug in aster rather than a fact about the machine.
+pub(crate) fn missing_cron(err: std::io::Error) -> anyhow::Error {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
+    if matches!(err.kind(), NotFound | PermissionDenied) {
+        anyhow::anyhow!(
+            "this machine has no cron: `crontab` could not be run, so a schedule \
+             cannot be installed here. Run it from a machine that has cron, or keep \
+             the agent awake and let it schedule its own follow-up."
+        )
+    } else {
+        anyhow::Error::new(err).context("running crontab")
+    }
+}
+
 fn current_crontab() -> Option<String> {
     let out = std::process::Command::new("crontab")
         .arg("-l")
@@ -62,7 +77,7 @@ fn write_crontab(content: &str) -> Result<()> {
         .arg("-")
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .context("running crontab")?;
+        .map_err(missing_cron)?;
     child
         .stdin
         .take()

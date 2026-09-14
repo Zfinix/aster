@@ -23,7 +23,8 @@ pub(crate) fn discover_agents(repo_root: &std::path::Path) -> Arc<AgentRegistry>
         Ok(home) => roots.push(home.join("agents")),
         Err(e) => tracing::debug!("no global agents root: {e:#}"),
     }
-    Arc::new(AgentRegistry::discover(&roots))
+    let bots = crate::bots::roots(Some(repo_root));
+    Arc::new(AgentRegistry::discover_all(&roots, &bots))
 }
 
 #[derive(Debug, Clone)]
@@ -237,7 +238,10 @@ async fn run_agent(
         recorder: None,
         store: None,
         credentials: deps.credentials.clone(),
-        skills: Arc::new(aster_skills::SkillSet::default()),
+        skills: Arc::new(match &def.skills_root {
+            Some(root) => aster_skills::SkillSet::discover(std::slice::from_ref(root)),
+            None => aster_skills::SkillSet::default(),
+        }),
         instructions: Arc::new(crate::instructions::Instructions::default()),
         probe: deps.probe.clone(),
         plan: Default::default(),

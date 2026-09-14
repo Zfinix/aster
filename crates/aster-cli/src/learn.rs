@@ -335,7 +335,7 @@ pub(crate) fn turn_digest(transcript: &SessionTranscript, index: usize) -> Strin
 /// The request as the person wrote it: without the chat's steering prefix and
 /// the `[msg N]` tag the bridge adds.
 fn request_text(content: &str) -> String {
-    let text = match content.rfind("[msg ") {
+    let text = match content.find("[msg ") {
         Some(at) => &content[at..],
         None => content,
     };
@@ -656,7 +656,6 @@ pub(crate) fn apply(
         &now,
     );
     fs::create_dir_all(path.parent().context("skill path has no parent")?)?;
-    fs::write(&path, composed).with_context(|| format!("writing {}", path.display()))?;
     ledger.append(&RunRecord {
         session: session.to_string(),
         turn,
@@ -664,6 +663,7 @@ pub(crate) fn apply(
         score,
         best: is_best,
     })?;
+    fs::write(&path, composed).with_context(|| format!("writing {}", path.display()))?;
     for fact in reflection.facts.iter().take(FACTS_KEPT) {
         let name = slugify(&fact.name);
         if name.is_empty() {
@@ -709,13 +709,14 @@ pub(crate) fn compose_skill(
     }
     let mut out = format!(
         "---\nname: {slug}\ndescription: {}\n---\n",
-        description.replace('\n', " ").trim()
+        description.replace('\n', " ").replace("---", "").trim()
     );
-    out.push_str(lines[0]);
+    out.push_str(lines.first().copied().unwrap_or(heading.as_str()));
     out.push_str("\n\n");
     out.push_str(&record);
     out.push_str("\n\n");
-    out.push_str(lines[1..].join("\n").trim_start_matches('\n'));
+    let rest = lines.get(1..).map(|r| r.join("\n")).unwrap_or_default();
+    out.push_str(rest.trim_start_matches('\n'));
     out.push('\n');
     out
 }

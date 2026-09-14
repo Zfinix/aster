@@ -129,6 +129,11 @@ impl BackgroundAgents {
         }
         let parked: Vec<String> = inner.parked.drain(..).collect();
         inner.attached = Some(attached);
+        for line in parked {
+            if !push_capped(&inner.attached.as_ref().expect("just set").injected, &line) {
+                inner.dropped += 1;
+            }
+        }
         if inner.dropped > 0 {
             let dropped = inner.dropped;
             inner.dropped = 0;
@@ -138,9 +143,6 @@ impl BackgroundAgents {
                     "({dropped} earlier background report(s) were dropped to keep the context small)"
                 ),
             );
-        }
-        for line in parked {
-            push_capped(&inner.attached.as_ref().expect("just set").injected, &line);
         }
     }
 
@@ -187,31 +189,53 @@ impl BackgroundAgents {
         let Some(rx) = rx else { return };
         let queue = Arc::clone(self);
         // One worker thread for the whole process: batches run one at a time,
-        // each bounded internally by the swarm's max_concurrent.
+        // each bounded internally by the swarm's max_concurrent. If the thread
+        // ever dies, the receiver goes back and a later submit starts a fresh
+        // one rather than failing forever.
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("background driver runtime");
-            while let Ok(job) = rx.recv() {
-                {
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("background driver runtime");
+                while let Ok(job) = rx.recv() {
+                    {
+                        let mut inner = queue.lock();
+                        inner.pending.retain(|(id, _)| *id != job.id);
+                        inner.running = Some(RunningBatch {
+                            id: job.id,
+                            total: job.tasks.len(),
+                            done: 0,
+                        });
+                    }
+                    let total = job.tasks.len();
+                    let callbacks = queue.callbacks(job.id, total);
+                    let runner = job.runner;
+                    let tasks = job.tasks;
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        rt.block_on(runner(tasks, callbacks))
+                    }));
+                    if ran.is_err() {
+                        queue.deliver(format!(
+                            "Background batch {} stopped unexpectedly; its tasks did not finish.",
+                            job.id
+                        ));
+                    }
                     let mut inner = queue.lock();
-                    inner.running = Some(RunningBatch {
-                        id: job.id,
-                        total: job.tasks.len(),
-                        done: 0,
-                    });
+                    if let Some(running) = &inner.running
+                        && running.id == job.id
+                    {
+                        inner.running = None;
+                    }
                 }
-                let total = job.tasks.len();
-                let callbacks = queue.callbacks(job.id, total);
-                let _reports = rt.block_on((job.runner)(job.tasks, callbacks));
-                let mut inner = queue.lock();
-                if let Some(running) = &inner.running
-                    && running.id == job.id
-                {
-                    inner.running = None;
-                }
+            }));
+            if ran.is_err() {
+                tracing::error!("the background driver stopped unexpectedly");
             }
+            let mut inner = queue.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.driver_started = false;
+            inner.running = None;
+            *queue.jobs.lock().expect("jobs lock") = Some(rx);
         });
     }
 

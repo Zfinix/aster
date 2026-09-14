@@ -35,6 +35,9 @@ pub struct AgentDef {
     pub max_rounds: Option<usize>,
     pub verify: bool,
     pub source: AgentSource,
+    /// A bot's own skills directory. Its agent runs with only these skills, so
+    /// an installed package never adds to the user's skill index.
+    pub skills_root: Option<PathBuf>,
 }
 
 impl AgentDef {
@@ -104,6 +107,7 @@ pub(crate) fn parse_agent_md(raw: &str, dir_name: &str, source: AgentSource) -> 
         max_rounds: front.max_rounds,
         verify: front.verify,
         source,
+        skills_root: None,
     })
 }
 

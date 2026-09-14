@@ -25,9 +25,21 @@ pub struct AgentRegistry {
 impl AgentRegistry {
     // Search each root for agents, merging built-ins last. Malformed or unreadable agents are skipped.
     pub fn discover(roots: &[PathBuf]) -> Self {
+        Self::discover_all(roots, &[])
+    }
+
+    /// Agent roots first, then installed bots, then built-ins. An agent you
+    /// wrote therefore always shadows a bot's agent of the same name, so
+    /// installing a bot can never replace something you authored.
+    pub fn discover_all(agent_roots: &[PathBuf], bot_roots: &[PathBuf]) -> Self {
         let mut agents: Vec<AgentDef> = Vec::new();
-        for root in roots {
-            for agent in scan_root(root) {
+        for root in agent_roots {
+            for agent in scan_root(root, false) {
+                push_unless_shadowed(&mut agents, agent);
+            }
+        }
+        for root in bot_roots {
+            for agent in scan_root(root, true) {
                 push_unless_shadowed(&mut agents, agent);
             }
         }
@@ -107,8 +119,9 @@ fn push_unless_shadowed(agents: &mut Vec<AgentDef>, agent: AgentDef) {
     agents.push(agent);
 }
 
-// Load agents from a root's subdirectories. Returns empty if root is missing or unreadable.
-fn scan_root(root: &Path) -> Vec<AgentDef> {
+// Load agents from a root's subdirectories. Returns empty if root is missing or
+// unreadable. A bot root also binds each agent to its package's `skills/`.
+fn scan_root(root: &Path, bot: bool) -> Vec<AgentDef> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
@@ -134,7 +147,13 @@ fn scan_root(root: &Path) -> Vec<AgentDef> {
             }
         };
         match parse_agent_md(&raw, &dir_name, AgentSource::File(manifest.clone())) {
-            Ok(agent) => agents.push(agent),
+            Ok(mut agent) => {
+                let skills = dir.join("skills");
+                if bot && skills.is_dir() {
+                    agent.skills_root = Some(skills);
+                }
+                agents.push(agent);
+            }
             Err(e) => tracing::warn!(path = %manifest.display(), "skipping agent: {e:#}"),
         }
     }

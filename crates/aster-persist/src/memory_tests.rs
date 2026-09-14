@@ -194,3 +194,38 @@ fn project_text_is_none_until_a_fact_is_appended() {
             .contains("Deploys go out from main")
     );
 }
+
+#[test]
+fn near_duplicates_finds_the_same_fact_under_another_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = store(&dir);
+
+    memory
+        .remember(
+            "tmpdir-path",
+            "TMPDIR is the app cache directory, use it for images",
+            "body",
+        )
+        .unwrap();
+    memory
+        .remember("owner-chizi", "who the agent works for", "body")
+        .unwrap();
+
+    let same = memory.near_duplicates(
+        "aster-tmpdir",
+        "TMPDIR resolves to the cache directory; images belong there",
+    );
+    assert_eq!(same, vec!["tmpdir-path".to_string()]);
+
+    assert!(
+        memory
+            .near_duplicates("wifi-network", "the wifi network this phone joins")
+            .is_empty()
+    );
+    assert!(
+        memory
+            .near_duplicates("tmpdir-path", "TMPDIR is the app cache directory")
+            .is_empty(),
+        "a rewrite of the same block is not a duplicate of itself"
+    );
+}

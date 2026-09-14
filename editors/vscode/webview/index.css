@@ -2459,15 +2459,14 @@ code {
 }
 
 /* Indented under the header's label, so the icon column stays a clean gutter.
-   Carries the same fill as a markdown code block: both are the transcript's
-   verbatim material and should read as one surface. */
+   Its own blue wash, set apart from the neutral fill under quoted code. */
 .tool-card {
   display: flex;
   flex-direction: column;
   margin: var(--s1) 0 var(--s2) calc(var(--s1) + var(--step-text));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--code-bg);
+  background: var(--tool-bg);
   overflow: hidden;
 }
 
@@ -2496,7 +2495,7 @@ code {
 
 /* Only the output cell opens anywhere, so only it lights up under the cursor. */
 .tool-cell-out:hover {
-  background: var(--list-hover);
+  background: var(--tool-bg-strong);
 }
 
 /* Revealed on hover like the code block's, so the card stays quiet at rest. */

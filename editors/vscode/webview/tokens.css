@@ -31,6 +31,10 @@
   --code-bg: rgba(127, 127, 127, 0.08);
   --code-bg-soft: rgba(127, 127, 127, 0.04);
   --code-bg-strong: rgba(127, 127, 127, 0.14);
+  /* The tool block's wash: the same idea as --code-bg but carrying a blue hue,
+     so a step reads as the agent's machinery rather than quoted material. */
+  --tool-bg: rgba(112, 144, 190, 0.22);
+  --tool-bg-strong: rgba(112, 144, 190, 0.34);
   --surface: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   --mono: var(--vscode-editor-font-family, monospace);
   --mono-size: var(--vscode-editor-font-size, 12px);

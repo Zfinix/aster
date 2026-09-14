@@ -1232,6 +1232,9 @@ enum Source {
         _guard: tempfile::TempDir,
         root: PathBuf,
         subpath: Option<String>,
+        /// A sparse clone holds only the manifests until `materialize` widens
+        /// it. A tarball already holds everything, and has no git to widen.
+        sparse: bool,
     },
 }
 
@@ -1275,7 +1278,10 @@ impl Source {
     }
 
     fn materialize(&self, chosen: &[Skill]) -> Result<()> {
-        let Source::Git { root, .. } = self else {
+        let Source::Git {
+            root, sparse: true, ..
+        } = self
+        else {
             return Ok(());
         };
         let mut patterns = vec![MANIFEST_PATTERN.to_string()];
@@ -1309,11 +1315,17 @@ fn resolve_source(source: &str) -> Result<Source> {
     };
 
     let tmp = tempfile::tempdir().context("creating a temp dir for the checkout")?;
-    partial_clone(&url, tmp.path())?;
-    sparse_set(tmp.path(), &[MANIFEST_PATTERN.to_string()])?;
+    let sparse = have_git();
+    if sparse {
+        partial_clone(&url, tmp.path())?;
+        sparse_set(tmp.path(), &[MANIFEST_PATTERN.to_string()])?;
+    } else {
+        fetch_tarball(&url, tmp.path())?;
+    }
     Ok(Source::Git {
         root: tmp.path().to_path_buf(),
         subpath,
+        sparse,
         _guard: tmp,
     })
 }
@@ -1349,13 +1361,17 @@ pub(crate) fn checkout(source: &str) -> Result<Checkout> {
         bail!("could not resolve {source:?} as a local path or a git source");
     };
     let tmp = tempfile::tempdir().context("creating a temp dir for the checkout")?;
-    let dest = tmp
-        .path()
-        .to_str()
-        .context("clone path is not valid UTF-8")?
-        .to_string();
-    git(&["clone", "--quiet", "--depth", "1", &url, &dest])
-        .with_context(|| format!("git clone failed for {url}"))?;
+    if have_git() {
+        let dest = tmp
+            .path()
+            .to_str()
+            .context("clone path is not valid UTF-8")?
+            .to_string();
+        git(&["clone", "--quiet", "--depth", "1", &url, &dest])
+            .with_context(|| format!("git clone failed for {url}"))?;
+    } else {
+        fetch_tarball(&url, tmp.path())?;
+    }
     let root = match subpath {
         Some(sub) => tmp.path().join(sub),
         None => tmp.path().to_path_buf(),
@@ -1383,6 +1399,74 @@ fn is_ghslug(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Whether a git binary can actually run. It is absent on a phone, where the
+/// exec is refused outright, so every git route has to have another way round.
+fn have_git() -> bool {
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| {
+        Command::new("git")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    })
+}
+
+/// GitHub serves any repository as a tarball over plain HTTPS, which is the
+/// whole of the fallback: no git, no partial fetch, everything at once.
+fn fetch_tarball(url: &str, into: &Path) -> Result<()> {
+    let slug = url
+        .trim_end_matches('/')
+        .strip_suffix(".git")
+        .unwrap_or(url.trim_end_matches('/'))
+        .strip_prefix("https://github.com/")
+        .with_context(|| {
+            format!("git is not available here, and {url} is not a github.com source")
+        })?
+        .to_string();
+    let archive = format!("https://codeload.github.com/{slug}/tar.gz/HEAD");
+    // Every entry sits under one `<repo>-<ref>/` directory that a clone would
+    // not have, so the checkout is one level down from where it is unpacked.
+    let staging = into.join(".archive");
+    // A blocking client panics when it is dropped inside a runtime, and this
+    // runs under one; its own thread has no runtime to be inside.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let resp = reqwest::blocking::Client::new()
+                    .get(&archive)
+                    .header("User-Agent", "aster")
+                    .send()
+                    .with_context(|| format!("fetching {archive}"))?
+                    .error_for_status()
+                    .with_context(|| {
+                        format!("{slug} has no downloadable archive (is it private?)")
+                    })?;
+                let gz = flate2::read::GzDecoder::new(resp);
+                tar::Archive::new(gz)
+                    .unpack(&staging)
+                    .with_context(|| format!("unpacking {archive}"))
+            })
+            .join()
+            .map_err(|_| anyhow::anyhow!("the download thread panicked"))?
+    })?;
+    let top = std::fs::read_dir(&staging)
+        .context("reading the unpacked archive")?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .context("the archive held no directory")?;
+    for entry in std::fs::read_dir(&top).context("reading the unpacked archive")? {
+        let entry = entry.context("reading the unpacked archive")?;
+        std::fs::rename(entry.path(), into.join(entry.file_name()))
+            .context("moving the archive into place")?;
+    }
+    std::fs::remove_dir_all(&staging).ok();
+    Ok(())
 }
 
 fn partial_clone(url: &str, into: &Path) -> Result<()> {

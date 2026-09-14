@@ -125,10 +125,9 @@ fn matches(transcript: &SessionTranscript, needle: &str) -> Option<String> {
         let Some(content) = message.content.as_deref() else {
             continue;
         };
-        let at = content.to_lowercase().find(needle)?;
-        let start = content[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let line = content[start..].lines().next().unwrap_or("").trim();
-        return Some(clip(line, 90));
+        if let Some(line) = content.lines().find(|l| l.to_lowercase().contains(needle)) {
+            return Some(clip(line.trim(), 90));
+        }
     }
     None
 }
