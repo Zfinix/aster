@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-14
+
+### Fixed
+
+- **The VS Code packages carry the CLI they say they do.** 0.6.0 was published
+  with the 0.5.2 binaries inside it, because the extension's release ran before
+  the CLI release it takes them from had finished. The workflow now refuses to
+  package when the matching `cli-v*` release is not published yet, rather than
+  falling back to the previous one.
+- **The Android build links again.** `rustpython-vm` links libffi with its
+  `system` feature on Android and the NDK ships none, so `aarch64-linux-android`
+  died on `unable to find library -lffi`. The release now builds a static libffi
+  against the NDK clang and links the clang builtins archive for `__clear_cache`.
+
 ## [0.6.0] - 2026-09-14
 
 ### Added
@@ -1025,4 +1039,5 @@ taught workflows without touching its prompt.
 [0.5.1]: https://github.com/Zfinix/aster/compare/cli-v0.5.0...cli-v0.5.1
 [0.5.2]: https://github.com/Zfinix/aster/compare/cli-v0.5.1...cli-v0.5.2
 [0.6.0]: https://github.com/Zfinix/aster/compare/cli-v0.5.2...cli-v0.6.0
-[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.6.0...HEAD
+[0.6.1]: https://github.com/Zfinix/aster/compare/cli-v0.6.0...cli-v0.6.1
+[Unreleased]: https://github.com/Zfinix/aster/compare/cli-v0.6.1...HEAD

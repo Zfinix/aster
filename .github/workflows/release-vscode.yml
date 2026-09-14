@@ -57,6 +57,13 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match package.json $VERSION" >&2
             exit 1
           fi
+          # Each package carries the CLI for its platform. A run that starts
+          # before the matching CLI release exists would quietly bundle the
+          # previous one, so refuse rather than ship a stale binary.
+          if [ "$CLI_TAG" != "cli-v$VERSION" ]; then
+            echo "cli-v$VERSION is not published yet (resolved $CLI_TAG); publish the CLI first" >&2
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
           echo "Packaging $VERSION with the CLI from $CLI_TAG"

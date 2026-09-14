@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "aster-acp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "agent-client-protocol",
  "aster-policy",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "aster-agents"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "aster-ai"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "aster-analyzers"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "ast-grep-config",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "aster-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "agent-client-protocol",
  "anydoc",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "aster-cron"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "aster-eval"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-persist",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "aster-harness"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-ai",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "aster-index"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "grep",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "aster-lsp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "aster-mcp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "aster-memory"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-ai",
@@ -498,14 +498,14 @@ dependencies = [
 
 [[package]]
 name = "aster-models"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "aster-mom"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "aster-persist"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-ai",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "aster-plugins"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "aster-policy"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "globset",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "aster-remote"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-ai",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "aster-sandbox"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "aster-serve"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "aster-shortcuts"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-mcp",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "aster-skills"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-models",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "aster-telemetry"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "aster-tools"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-models",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "aster-web"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anydoc",
  "anyhow",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "aster-webmcp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aster-mcp",
@@ -6051,7 +6051,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "symbol-extractor"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aster-models",
  "tree-sitter",
