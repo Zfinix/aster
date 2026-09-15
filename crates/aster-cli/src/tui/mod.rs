@@ -7,6 +7,7 @@ mod guard;
 mod helpers;
 mod history;
 mod markdown;
+mod palettes;
 mod render;
 mod review;
 mod summary;

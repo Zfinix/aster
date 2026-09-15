@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
 
+use super::palettes;
 use aster_policy::Mode;
 
 #[derive(Debug, Clone)]
@@ -138,6 +139,36 @@ pub const ALL: &[ThemeEntry] = &[
         name: "forest",
         description: "muted green dark palette",
         theme: &Theme::FOREST,
+    },
+    ThemeEntry {
+        name: "dracula",
+        description: "purple and pink on dark slate",
+        theme: &palettes::DRACULA,
+    },
+    ThemeEntry {
+        name: "catppuccin",
+        description: "warm pastels on mauve",
+        theme: &palettes::CATPPUCCIN,
+    },
+    ThemeEntry {
+        name: "nord",
+        description: "cool blues on slate",
+        theme: &palettes::NORD,
+    },
+    ThemeEntry {
+        name: "gruvbox",
+        description: "earthy amber and orange",
+        theme: &palettes::GRUVBOX,
+    },
+    ThemeEntry {
+        name: "solarized",
+        description: "muted teal and blue",
+        theme: &palettes::SOLARIZED,
+    },
+    ThemeEntry {
+        name: "synthwave",
+        description: "neon pink to cyan",
+        theme: &palettes::SYNTHWAVE,
     },
 ];
 
