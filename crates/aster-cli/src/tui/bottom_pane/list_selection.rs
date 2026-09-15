@@ -20,6 +20,10 @@ pub(crate) struct SelectionItem<E> {
     pub event: E,
 }
 
+/// Live-preview hook: fired with the hovered item's event on every arrow
+/// move. The theme picker uses this to repaint as the user navigates.
+pub(crate) type HoverHook<E> = Box<dyn Fn(&SelectionItem<E>)>;
+
 pub(crate) struct ListSelectionView<E> {
     title: String,
     items: Vec<SelectionItem<E>>,
@@ -28,6 +32,7 @@ pub(crate) struct ListSelectionView<E> {
     complete: bool,
     tx: mpsc::UnboundedSender<E>,
     on_dismiss: Option<E>,
+    on_hover: Option<HoverHook<E>>,
 }
 
 impl<E: Clone> ListSelectionView<E> {
@@ -46,7 +51,15 @@ impl<E: Clone> ListSelectionView<E> {
             complete: false,
             tx,
             on_dismiss,
+            on_hover: None,
         }
+    }
+
+    /// Attach a hover hook after `new`; used by the theme picker for live
+    /// preview.
+    pub(crate) fn with_on_hover(mut self, hook: HoverHook<E>) -> Self {
+        self.on_hover = Some(hook);
+        self
     }
 
     fn filtered(&self) -> Vec<&SelectionItem<E>> {
@@ -69,6 +82,11 @@ impl<E: Clone> ListSelectionView<E> {
         if len > 0 {
             let cur = (self.selected.min(len - 1)) as isize;
             self.selected = (cur + delta).rem_euclid(len as isize) as usize;
+            if let Some(hook) = &self.on_hover
+                && let Some(item) = self.filtered().get(self.selected)
+            {
+                hook(item);
+            }
         }
     }
 

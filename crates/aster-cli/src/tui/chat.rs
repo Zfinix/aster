@@ -69,7 +69,7 @@ pub(super) enum AppEvent {
         disabled: bool,
     },
     ModelChanged(String),
-    ThemeChanged(&'static str),
+    ThemeChanged(String),
     ToggleThinking,
     BrowseModels,
     UpdateAvailable(crate::update::UpdateInfo),
@@ -233,8 +233,8 @@ pub async fn run_chat(
     if let Ok(settings) = crate::settings::Settings::load(Some(&repo_root)) {
         app.show_welcome = settings.ui.welcome.unwrap_or(true);
         if let Some(t) = settings.ui.theme.as_deref().and_then(theme::named) {
-            app.theme_name = t.name;
-            theme::set(*t.theme);
+            app.theme_name = t.name.clone();
+            theme::set(t.theme);
         }
     }
 
@@ -1256,7 +1256,7 @@ struct ChatApp {
     mom_looping: bool,
     mom_model_down: bool,
     mom_turns: u64,
-    theme_name: &'static str,
+    theme_name: String,
     show_welcome: bool,
 }
 
@@ -1326,7 +1326,7 @@ impl ChatApp {
             mom_looping: false,
             mom_model_down: false,
             mom_turns: 0,
-            theme_name: "dark",
+            theme_name: "dark".to_string(),
             show_welcome: true,
         }
     }
@@ -1984,7 +1984,7 @@ impl ChatApp {
             | AppEvent::SkillDeleteConfirmed(_) => {}
             AppEvent::SkillView(name) => self.show_skill(&name),
             AppEvent::ModelsLoaded(_) => {}
-            AppEvent::ThemeChanged(name) => self.set_theme(name),
+            AppEvent::ThemeChanged(name) => self.set_theme(&name),
             AppEvent::ToggleThinking => self.toggle_thinking(),
             AppEvent::BrowseModels => {}
             AppEvent::MentionQueried(_) | AppEvent::MentionResults { .. } => {}
@@ -2095,8 +2095,8 @@ impl ChatApp {
     }
 
     fn base_theme(&self) -> theme::Theme {
-        theme::named(self.theme_name)
-            .map(|t| *t.theme)
+        theme::named(&self.theme_name)
+            .map(|t| t.theme)
             .unwrap_or(theme::Theme::DEFAULT)
     }
 
@@ -2119,20 +2119,34 @@ impl ChatApp {
     }
 
     fn open_theme_picker(&mut self, pane: &mut BottomPane<AppEvent>) {
-        let items = theme::ALL
+        let items = theme::all()
             .iter()
             .map(|t| SelectionItem {
-                name: t.name.to_string(),
-                description: t.description.to_string(),
+                name: t.name.clone(),
+                description: t.description.clone(),
                 is_current: t.name == self.theme_name,
-                event: AppEvent::ThemeChanged(t.name),
+                event: AppEvent::ThemeChanged(t.name.clone()),
             })
             .collect();
-        pane.push_picker("Switch theme", items, None);
+        let restore = self.theme_name.clone();
+        pane.push_live_picker(
+            "Switch theme",
+            items,
+            Some(AppEvent::ThemeChanged(restore)),
+            Box::new(|item| {
+                if let AppEvent::ThemeChanged(name) = &item.event {
+                    theme::set(
+                        theme::named(name)
+                            .map(|t| t.theme)
+                            .unwrap_or(theme::Theme::DEFAULT),
+                    );
+                }
+            }),
+        );
     }
 
-    fn set_theme(&mut self, name: &'static str) {
-        self.theme_name = name;
+    fn set_theme(&mut self, name: &str) {
+        self.theme_name = name.to_string();
         theme::set(self.base_theme());
         let saved = crate::settings::writable_config(Some(&self.repo_root)).and_then(|path| {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -2726,9 +2740,12 @@ impl ChatApp {
             "thinking" => self.toggle_thinking(),
             "theme" => match arg {
                 Some(name) => match theme::named(name) {
-                    Some(t) => self.set_theme(t.name),
+                    Some(t) => self.set_theme(&t.name),
                     None => {
-                        let names = theme::ALL.iter().map(|t| t.name).collect::<Vec<_>>();
+                        let names = theme::all()
+                            .iter()
+                            .map(|t| t.name.clone())
+                            .collect::<Vec<_>>();
                         self.flash = Some(format!("unknown theme (expected {})", names.join(", ")));
                     }
                 },
@@ -2854,10 +2871,6 @@ impl ChatApp {
     fn start_compact(&mut self, client: &AiClient, tx: mpsc::UnboundedSender<AppEvent>) {
         if self.thinking {
             self.note("wait for the current turn to finish before compacting");
-            return;
-        }
-        if !crate::chat::can_compact(&self.history) {
-            self.note("nothing to compact yet");
             return;
         }
         self.flash = Some("compacting…".into());

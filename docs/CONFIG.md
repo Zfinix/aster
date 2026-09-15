@@ -317,7 +317,7 @@ What chat prints on its own.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `welcome` | bool | `true` | Print the session header (model, provider, skills) when chat starts. `/welcome` in a chat toggles it and saves the choice. |
-| `theme` | string | `dark` | Chat color theme: `dark`, `light`, `midnight`, or `forest`. `/theme` in a chat picks one and saves the choice. |
+| `theme` | string | `dark` | Chat color theme. `/theme` in a chat opens a picker that previews live as you arrow through; Enter saves the choice here. Built-ins: `dark`, `light`, `midnight`, `forest`, `dracula`, `catppuccin`, `nord`, `gruvbox`, `solarized`, `synthwave`, `github-dark`, `monokai`, `one-dark`, `aster-ocean`, `aster-ember`, `aster-orchid`. Custom themes are YAML files dropped into `~/.aster/themes/` or `.aster/themes/` and appear in the picker on the next launch. See [THEMES.md](./THEMES.md). |
 
 ## `mcp`
 

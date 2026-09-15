@@ -10,7 +10,7 @@ mod unified_selector;
 mod view;
 
 pub(super) use approval::ApprovalView;
-pub(super) use list_selection::{ListSelectionView, SelectionItem};
+pub(super) use list_selection::{HoverHook, ListSelectionView, SelectionItem};
 pub(super) use model_picker::ModelPickerView;
 pub(super) use status::StatusWidget;
 pub(super) use unified_selector::{UnifiedItem, UnifiedSection, UnifiedSelector};
@@ -296,6 +296,21 @@ impl<E: Clone + 'static> BottomPane<E> {
         on_dismiss: Option<E>,
     ) {
         let view = ListSelectionView::new(title, items, self.tx.clone(), on_dismiss);
+        self.push_view(Box::new(view));
+    }
+
+    /// A picker whose hovered row applies immediately: the theme picker
+    /// repaints as the user arrows through palettes. Esc restores via
+    /// `on_dismiss`.
+    pub(super) fn push_live_picker(
+        &mut self,
+        title: &str,
+        items: Vec<SelectionItem<E>>,
+        on_dismiss: Option<E>,
+        on_hover: HoverHook<E>,
+    ) {
+        let view = ListSelectionView::new(title, items, self.tx.clone(), on_dismiss)
+            .with_on_hover(on_hover);
         self.push_view(Box::new(view));
     }
 

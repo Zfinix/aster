@@ -2,7 +2,7 @@
 //! Theme transitions interpolate colours over 450 ms so the shift is visible
 //! but not jarring.
 
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
@@ -112,68 +112,87 @@ pub fn is_transitioning() -> bool {
 
 /// One selectable theme: its name in `/theme`, a line for the picker, and the
 /// palette itself.
+#[derive(Clone)]
 pub struct ThemeEntry {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub theme: &'static Theme,
+    pub name: String,
+    pub description: String,
+    pub theme: Theme,
 }
 
-/// The themes `/theme` offers, in picker order.
-pub const ALL: &[ThemeEntry] = &[
-    ThemeEntry {
-        name: "dark",
-        description: "the default warm dark palette",
-        theme: &Theme::DEFAULT,
-    },
-    ThemeEntry {
-        name: "light",
-        description: "for bright terminals",
-        theme: &Theme::LIGHT,
-    },
-    ThemeEntry {
-        name: "midnight",
-        description: "deep blue dark palette",
-        theme: &Theme::MIDNIGHT,
-    },
-    ThemeEntry {
-        name: "forest",
-        description: "muted green dark palette",
-        theme: &Theme::FOREST,
-    },
-    ThemeEntry {
-        name: "dracula",
-        description: "purple and pink on dark slate",
-        theme: &palettes::DRACULA,
-    },
-    ThemeEntry {
-        name: "catppuccin",
-        description: "warm pastels on mauve",
-        theme: &palettes::CATPPUCCIN,
-    },
-    ThemeEntry {
-        name: "nord",
-        description: "cool blues on slate",
-        theme: &palettes::NORD,
-    },
-    ThemeEntry {
-        name: "gruvbox",
-        description: "earthy amber and orange",
-        theme: &palettes::GRUVBOX,
-    },
-    ThemeEntry {
-        name: "solarized",
-        description: "muted teal and blue",
-        theme: &palettes::SOLARIZED,
-    },
-    ThemeEntry {
-        name: "synthwave",
-        description: "neon pink to cyan",
-        theme: &palettes::SYNTHWAVE,
-    },
-];
+impl ThemeEntry {
+    fn builtin(name: &str, description: &str, theme: &Theme) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            theme: *theme,
+        }
+    }
+}
+
+/// The themes `/theme` offers, in picker order: the built-ins, then user
+/// themes from `~/.aster/themes/*.yaml` and `.aster/themes/*.yaml`, a project
+/// file shadowing a global one of the same name.
+pub fn all() -> &'static [ThemeEntry] {
+    static REGISTRY: OnceLock<Vec<ThemeEntry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut all = vec![
+            ThemeEntry::builtin("dark", "the default warm dark palette", &Theme::DEFAULT),
+            ThemeEntry::builtin("light", "for bright terminals", &Theme::LIGHT),
+            ThemeEntry::builtin("midnight", "deep blue dark palette", &Theme::MIDNIGHT),
+            ThemeEntry::builtin("forest", "muted green dark palette", &Theme::FOREST),
+            ThemeEntry::builtin(
+                "dracula",
+                "purple and pink on dark slate",
+                &palettes::DRACULA,
+            ),
+            ThemeEntry::builtin("catppuccin", "warm pastels on mauve", &palettes::CATPPUCCIN),
+            ThemeEntry::builtin("nord", "cool blues on slate", &palettes::NORD),
+            ThemeEntry::builtin("gruvbox", "earthy amber and orange", &palettes::GRUVBOX),
+            ThemeEntry::builtin("solarized", "muted teal and blue", &palettes::SOLARIZED),
+            ThemeEntry::builtin("synthwave", "neon pink to cyan", &palettes::SYNTHWAVE),
+            ThemeEntry::builtin(
+                "github-dark",
+                "GitHub's calm blue dark palette",
+                &palettes::GITHUB_DARK,
+            ),
+            ThemeEntry::builtin(
+                "monokai",
+                "classic Sublime/Monokai Pro palette",
+                &palettes::MONOKAI_PRO,
+            ),
+            ThemeEntry::builtin(
+                "one-dark",
+                "Atom One Dark blues and mint",
+                &palettes::ONE_DARK,
+            ),
+            ThemeEntry::builtin(
+                "aster-ocean",
+                "the signature aster deep-teal dark",
+                &palettes::ASTER_OCEAN,
+            ),
+            ThemeEntry::builtin(
+                "aster-ember",
+                "warm charcoal, burning orange",
+                &palettes::ASTER_EMBER,
+            ),
+            ThemeEntry::builtin(
+                "aster-orchid",
+                "violet dark, magenta accent",
+                &palettes::ASTER_ORCHID,
+            ),
+        ];
+        for entry in super::user_themes::discover() {
+            match all.iter().position(|t| t.name == entry.name) {
+                Some(i) => all[i] = entry,
+                None => all.push(entry),
+            }
+        }
+        all
+    })
+}
 
 pub fn named(name: &str) -> Option<&'static ThemeEntry> {
-    ALL.iter().find(|t| t.name == name)
+    all().iter().find(|t| t.name == name)
 }
 
 #[derive(Debug, Clone, Copy)]
