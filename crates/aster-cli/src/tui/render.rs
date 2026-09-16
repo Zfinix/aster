@@ -17,7 +17,7 @@ pub(super) trait Renderable {
 
 impl Renderable for Line<'static> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        WidgetRef::render_ref(self, area, buf);
+        Widget::render(self, area, buf);
     }
     fn desired_height(&self, _width: u16) -> u16 {
         1

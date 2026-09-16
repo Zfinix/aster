@@ -581,7 +581,11 @@ fn theme_command_picks_and_persists() {
     app.handle_command("theme nope", &mut client, &mut p);
     assert_eq!(app.theme_name, "forest", "an unknown name changes nothing");
 
-    app.on_app_event(AppEvent::ThemeChanged("midnight"), &mut client, &mut p);
+    app.on_app_event(
+        AppEvent::ThemeChanged("midnight".to_string()),
+        &mut client,
+        &mut p,
+    );
     assert_eq!(app.theme_name, "midnight");
     assert_eq!(theme::get().accent, theme::Theme::MIDNIGHT.accent);
 

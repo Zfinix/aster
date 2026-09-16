@@ -15,6 +15,7 @@ mod syntax;
 mod term;
 mod terminal;
 pub(crate) mod theme;
+mod user_themes;
 mod wrap;
 
 pub use chat::run_chat;

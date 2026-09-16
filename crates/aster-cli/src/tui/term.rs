@@ -1,8 +1,15 @@
 //! Minimal inline-viewport terminal, derived from ratatui's `Terminal` (MIT, ©
 //! Ratatui Developers). The cursor is queried once at startup and never
 //! re-anchored, and finished lines go into the terminal's own scrollback.
+//!
+//! One law holds after every operation: the viewport sits flush under the
+//! transcript, so its top row is the transcript's height capped by the room the
+//! screen has left. `term_test` drives this against a simulated terminal.
+//! Layout guessed from where the terminal might have put things is what used to
+//! leave blank bands in transcripts.
 
-use std::io::{self, Stdout};
+use std::collections::VecDeque;
+use std::io::{self, Stdout, Write};
 
 use anyhow::Result;
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -10,7 +17,16 @@ use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
 use unicode_width::UnicodeWidthStr;
 
-type CBackend = CrosstermBackend<Stdout>;
+/// Wrapping the transcript wider than this is unreadable, so the viewport and
+/// the history blocks both stop here however wide the terminal is.
+const MAX_WIDTH: u16 = 240;
+
+/// The one width every layer measures with: the pane's `desired_height`, the
+/// viewport it renders into, and the history blocks above it. Two of them
+/// disagreeing is a blank row or a clipped one.
+fn content_width(screen: Size) -> u16 {
+    screen.width.clamp(1, MAX_WIDTH)
+}
 
 /// What one draw call renders into; the caller sets the caret through it.
 pub(super) struct Frame<'a> {
@@ -33,43 +49,189 @@ impl Frame<'_> {
     }
 }
 
-pub(super) struct InlineTerm {
-    backend: CBackend,
+pub(super) struct InlineTerm<W: Write = Stdout> {
+    backend: CrosstermBackend<W>,
     buffers: [Buffer; 2],
     current: usize,
     viewport: Rect,
     screen: Size,
-    blank_top: u16,
+    transcript: Transcript,
+    /// The row the caret was last parked on. A shrinking terminal scrolls
+    /// exactly far enough to keep it on screen, which is how much of the
+    /// transcript moved out from under us.
+    cursor_row: u16,
 }
 
-impl InlineTerm {
+/// Every row written above the viewport, by the width it printed at, split
+/// into the part that has scrolled into scrollback and the part still on
+/// screen. The transcript is the only thing between the top of the screen and
+/// the pane, so counting its rows is what says where the pane goes: no layer
+/// has to guess where the terminal put anything.
+#[derive(Default)]
+struct Transcript {
+    rows: VecDeque<u16>,
+    /// Leading entries of `rows` that are in scrollback rather than on screen.
+    banked: usize,
+    /// Columns of entry `banked` that went with them. A terminal rewraps a row
+    /// whole and can land the top of the screen part-way down it, so the
+    /// boundary has to be held in columns; rounding it to whole rows is a row
+    /// of drift every time the window narrows.
+    consumed: u16,
+}
+
+/// Rows kept. Only the on-screen tail decides layout and only the rows just
+/// past it can ever come back, so older ones are dropped; no terminal is
+/// anywhere near this tall.
+const MAX_TRACKED: usize = 4096;
+
+/// Screen rows a transcript row of `used` columns covers when printed at
+/// `width`. An empty row still takes one.
+fn height(used: u16, width: u16) -> u16 {
+    used.div_ceil(width.max(1)).max(1)
+}
+
+impl Transcript {
+    fn push(&mut self, used: u16) {
+        self.rows.push_back(used);
+        while self.rows.len() > MAX_TRACKED {
+            self.rows.pop_front();
+            match self.banked.checked_sub(1) {
+                Some(left) => self.banked = left,
+                None => self.consumed = 0,
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.banked = 0;
+        self.consumed = 0;
+    }
+
+    /// Screen rows the on-screen part covers when printed at `width`.
+    fn on_screen(&self, width: u16) -> u16 {
+        self.rows
+            .iter()
+            .enumerate()
+            .skip(self.banked)
+            .map(|(i, used)| {
+                let rows = height(*used, width);
+                match i == self.banked {
+                    true => rows - self.off_screen(rows, width),
+                    false => rows,
+                }
+            })
+            .fold(0u16, u16::saturating_add)
+    }
+
+    /// Rows of the first on-screen entry that are above the top of the screen.
+    fn off_screen(&self, rows: u16, width: u16) -> u16 {
+        (self.consumed / width.max(1)).min(rows)
+    }
+
+    /// Account for `rows` screen rows having scrolled off the top.
+    fn bank(&mut self, rows: u16, width: u16) {
+        let mut left = rows;
+        while left > 0 && self.banked < self.rows.len() {
+            let total = height(self.rows[self.banked], width);
+            let showing = total - self.off_screen(total, width);
+            if left < showing {
+                self.consumed += left * width.max(1);
+                return;
+            }
+            left -= showing;
+            self.banked += 1;
+            self.consumed = 0;
+        }
+    }
+
+    /// Account for `rows` screen rows having come back out of scrollback.
+    fn unbank(&mut self, rows: u16, width: u16) {
+        let mut left = rows;
+        while left > 0 {
+            let hidden = self.consumed / width.max(1);
+            if hidden > 0 {
+                let back = left.min(hidden);
+                self.consumed -= back * width.max(1);
+                left -= back;
+                continue;
+            }
+            let Some(prev) = self.banked.checked_sub(1) else {
+                return;
+            };
+            self.banked = prev;
+            let total = height(self.rows[prev], width);
+            if left >= total {
+                left -= total;
+                self.consumed = 0;
+            } else {
+                self.consumed = (total - left) * width.max(1);
+                return;
+            }
+        }
+    }
+}
+
+impl InlineTerm<Stdout> {
     /// Queries the cursor exactly once to anchor the viewport; must run before
     /// a crossterm `EventStream` exists or the reply is swallowed.
     pub(super) fn new(height: u16) -> Result<Self> {
         let mut backend = CrosstermBackend::new(io::stdout());
         let screen = backend.size()?;
-        let height = clamp_height(height, screen);
-        let pos = backend.get_cursor_position()?;
+        let anchor = backend.get_cursor_position()?.y;
+        Self::anchored(backend, screen, anchor, height)
+    }
 
+    /// Called on `TuiEvent::Resize` so the viewport tracks the terminal.
+    pub(super) fn resized(&mut self) -> Result<()> {
+        let screen = self.backend.size()?;
+        self.resized_to(screen)
+    }
+}
+
+impl<W: Write> InlineTerm<W> {
+    /// Opens a viewport of `height` rows at the cursor, pushing the screen up
+    /// when the cursor sits too low for it to fit.
+    fn anchored(
+        mut backend: CrosstermBackend<W>,
+        screen: Size,
+        anchor: u16,
+        height: u16,
+    ) -> Result<Self> {
+        let height = clamp_height(height, screen);
         // Open room below the cursor so the viewport fits on screen.
         let below = height.saturating_sub(1);
         backend.append_lines(below)?;
-        let overflow = (pos.y + height).saturating_sub(screen.height);
-        let top = pos.y - overflow.min(pos.y);
+        let overflow = (anchor + height).saturating_sub(screen.height);
+        let top = anchor - overflow.min(anchor);
 
-        let viewport = Rect::new(0, top, screen.width, height);
+        let viewport = Rect::new(0, top, content_width(screen), height);
         Ok(Self {
             backend,
             buffers: [Buffer::empty(viewport), Buffer::empty(viewport)],
             current: 0,
             viewport,
             screen,
-            blank_top: 0,
+            transcript: Transcript::default(),
+            cursor_row: top,
         })
     }
 
     pub(super) fn width(&self) -> u16 {
-        self.screen.width.clamp(20, 240)
+        content_width(self.screen)
+    }
+
+    #[cfg(test)]
+    pub(super) fn viewport(&self) -> Rect {
+        self.viewport
+    }
+
+    /// Build one over an arbitrary writer with the screen size and cursor row
+    /// supplied, so a test can drive it without a terminal attached.
+    #[cfg(test)]
+    pub(super) fn for_test(writer: W, screen: Size, anchor: u16, height: u16) -> Self {
+        Self::anchored(CrosstermBackend::new(writer), screen, anchor, height)
+            .expect("writing to a buffer cannot fail")
     }
 
     pub(super) fn viewport_top(&self) -> u16 {
@@ -91,19 +253,24 @@ impl InlineTerm {
         self.backend.draw(updates.into_iter())?;
         match cursor {
             Some(pos) => {
+                self.cursor_row = pos.y;
                 self.backend.set_cursor_position(pos)?;
                 self.backend.show_cursor()?;
             }
-            None => self.backend.hide_cursor()?,
+            None => {
+                self.backend.hide_cursor()?;
+                self.park(self.viewport.y)?;
+            }
         }
-        self.backend.flush()?;
+        Backend::flush(&mut self.backend)?;
         self.current = 1 - self.current;
         Ok(())
     }
 
-    /// Move the viewport boundary without touching scrollback or the cursor.
-    /// The transcript above moves with the boundary in both directions, so a
-    /// pane that grows and shrinks again leaves the screen as it found it.
+    /// Move the viewport boundary without touching the cursor. Growing takes
+    /// rows from the transcript, which scroll into scrollback for real;
+    /// shrinking gives them back to the screen, never to the transcript, whose
+    /// rows are gone for good and cannot be faked with blanks.
     pub(super) fn set_height(&mut self, height: u16) -> Result<()> {
         let height = clamp_height(height, self.screen);
         let old = self.viewport;
@@ -111,29 +278,25 @@ impl InlineTerm {
             return Ok(());
         }
 
-        let (top, shift) = reflow(old, height, self.screen);
-        match shift {
-            Shift::None => {}
-            Shift::Up(rows) => self.scroll_into_scrollback(old.y, rows)?,
-            Shift::Down(rows) => self.reclaim_above(top, rows)?,
-        }
-        // Rows the viewport gave up below it, which only exists while it still
-        // floats above the screen bottom.
+        let top = old.y.saturating_sub(borrowed(old, height, self.screen));
+        self.scroll_into_scrollback(old.y, old.y - top)?;
+        // Rows the viewport gave up below it.
         if top + height < old.bottom() {
             self.clear_rows(top + height..old.bottom())?;
         }
 
-        self.viewport = Rect::new(0, top, self.screen.width, height);
+        self.viewport = Rect::new(0, top, content_width(self.screen), height);
         self.buffers = [Buffer::empty(self.viewport), Buffer::empty(self.viewport)];
         // The screen under the new viewport is stale; clear it so the next
         // draw's diff-from-empty repaints everything.
         self.clear_rows(self.viewport.y..self.viewport.bottom())?;
-        Ok(())
+        self.park(self.viewport.y)
     }
 
     /// Insert finished lines above the viewport, into scrollback. Ratatui's
     /// scrolling-regions algorithm, on our own tracked state.
     pub(super) fn insert_history(&mut self, cells: &Buffer) -> Result<()> {
+        self.track(cells);
         let mut remaining: &[Cell] = &cells.content;
         let stride = cells.area.width;
         let mut height = cells.area.height;
@@ -160,40 +323,23 @@ impl InlineTerm {
             remaining = self.draw_cleared(top - to_draw, to_draw, stride, remaining)?;
             height -= to_draw;
         }
-        self.backend.flush()?;
+        Backend::flush(&mut self.backend)?;
         Ok(())
     }
 
     fn scroll_into_scrollback(&mut self, region_bottom: u16, rows: u16) -> Result<()> {
-        use std::io::Write;
         if region_bottom == 0 || rows == 0 {
             return Ok(());
         }
         // Region and cursor address are 1-based, so `region_bottom` names the
         // region's last row, which is the row above the viewport.
         write!(self.backend, "\x1b[1;{region_bottom}r")?;
-        // Padding a shrinking pane left behind is not history. `DL` removes it
-        // in place; terminals like tmux and xterm.js would file an `SU` row
-        // into scrollback, which is how blank runs used to litter transcripts.
-        let discarded = rows.min(self.blank_top);
-        if discarded > 0 {
-            write!(self.backend, "\x1b[1;1H\x1b[{discarded}M")?;
-            self.blank_top -= discarded;
-        }
         write!(self.backend, "\x1b[{region_bottom};1H")?;
-        for _ in 0..rows - discarded {
+        for _ in 0..rows {
             write!(self.backend, "\r\n")?;
         }
         write!(self.backend, "\x1b[r")?;
-        Ok(())
-    }
-
-    fn reclaim_above(&mut self, region_bottom: u16, rows: u16) -> Result<()> {
-        if region_bottom == 0 || rows == 0 {
-            return Ok(());
-        }
-        self.backend.scroll_region_down(0..region_bottom, rows)?;
-        self.blank_top = (self.blank_top + rows).min(region_bottom);
+        self.transcript.bank(rows, self.width());
         Ok(())
     }
 
@@ -204,34 +350,98 @@ impl InlineTerm {
         use ratatui::crossterm::execute;
         use ratatui::crossterm::terminal::{Clear, ClearType};
         execute!(
-            io::stdout(),
+            self.backend,
             Clear(ClearType::All),
             Clear(ClearType::Purge),
             MoveTo(0, 0),
         )?;
-        self.viewport = Rect::new(0, 0, self.screen.width, self.viewport.height);
+        self.viewport = Rect::new(0, 0, content_width(self.screen), self.viewport.height);
         self.buffers = [Buffer::empty(self.viewport), Buffer::empty(self.viewport)];
-        self.blank_top = 0;
+        self.transcript.clear();
+        self.cursor_row = 0;
         Ok(())
     }
 
-    /// The terminal was resized and the screen rewrapped under us. Repaint the
-    /// pane where it belongs and clear every row its old image can occupy, or
-    /// fragments of it litter the transcript.
-    pub(super) fn resized(&mut self) -> Result<()> {
-        let old = self.viewport;
+    /// The terminal resized and reflowed the screen under us. Work out where it
+    /// left the end of the transcript, then put the pane back against it.
+    pub(super) fn resized_to(&mut self, screen: Size) -> Result<()> {
         let old_screen = self.screen;
-        self.screen = self.backend.size()?;
-        let (top, clear_from) = reflow_on_resize(old, old_screen, self.screen);
-        let height = clamp_height(old.height, self.screen);
+        let height = clamp_height(self.viewport.height, screen);
+        let width = content_width(screen);
+        // Rows of the pane above the caret, once rewrapped: how far to step back
+        // up to reach the top of the frame, and how far the caret now sits below
+        // the end of the transcript.
+        let above = self.frame_rows_above_caret(width);
+        self.erase_last_frame(above)?;
+        self.screen = screen;
 
-        self.viewport = Rect::new(0, top, self.screen.width, height);
+        // The terminal rewraps first and only then takes the window to its new
+        // height, scrolling the top away by however far the caret would
+        // otherwise fall off and giving rows back when there is room again.
+        let caret = self.transcript.on_screen(width).saturating_add(above);
+        self.transcript
+            .bank(caret.saturating_sub(screen.height - 1), width);
+        self.transcript
+            .unbank(screen.height.saturating_sub(old_screen.height), width);
+        let end = self.transcript.on_screen(width).min(screen.height);
+        let top = end.min(screen.height.saturating_sub(height));
+
+        // Transcript that no longer fits belongs in scrollback. Painting the
+        // pane over it instead is how a resize used to eat the conversation.
+        if end > top {
+            self.viewport.y = end;
+            self.scroll_into_scrollback(end, end - top)?;
+        }
+
+        self.viewport = Rect::new(0, top, width, height);
         self.buffers = [Buffer::empty(self.viewport), Buffer::empty(self.viewport)];
-        // Where the padding ended up after the rewrap is a guess. Forget it
-        // rather than discard a row of real transcript.
-        self.blank_top = 0;
-        self.clear_rows(clear_from..self.screen.height)?;
+        // Only rows from the viewport down: everything above it is transcript.
+        self.clear_rows(top..screen.height)?;
+        self.park(top)
+    }
+
+    /// Rub out the frame last drawn, wherever the resize moved it to. The caret
+    /// is inside that frame and the terminal carried it along, so stepping up
+    /// from the caret finds the frame without knowing a row number, whatever
+    /// the terminal did to the rows.
+    fn erase_last_frame(&mut self, above: u16) -> Result<()> {
+        write!(self.backend, "\r")?;
+        if above > 0 {
+            write!(self.backend, "\x1b[{above}A")?;
+        }
+        write!(self.backend, "\x1b[0J")?;
         Ok(())
+    }
+
+    /// How tall the part of the last frame above the caret stands once printed
+    /// at `width`. Its rows rewrap like any others, and the shaded band makes
+    /// even the blank ones full-width content, so they are measured, not counted.
+    fn frame_rows_above_caret(&self, width: u16) -> u16 {
+        let frame = &self.buffers[1 - self.current];
+        frame
+            .content
+            .chunks(frame.area.width.max(1) as usize)
+            .take(self.cursor_row.saturating_sub(self.viewport.y) as usize)
+            .map(|row| (used(row) as u16).div_ceil(width).max(1))
+            .fold(0u16, u16::saturating_add)
+    }
+
+    /// Leave the caret on a row we can name. `erase_last_frame` steps up from
+    /// wherever the caret is, so every write that moves it has to say where it
+    /// left it, or the next resize erases from the wrong place.
+    fn park(&mut self, row: u16) -> Result<()> {
+        self.backend.set_cursor_position(Position::new(0, row))?;
+        self.cursor_row = row;
+        Ok(())
+    }
+
+    /// Remember how wide each row prints, so a later rewrap can be counted
+    /// rather than guessed at.
+    fn track(&mut self, cells: &Buffer) {
+        let width = cells.area.width as usize;
+        for row in cells.content.chunks(width.max(1)) {
+            self.transcript.push(used(row) as u16);
+        }
     }
 
     fn draw_cleared<'a>(
@@ -244,25 +454,37 @@ impl InlineTerm {
         let width = stride as usize;
         let take = (width * rows as usize).min(cells.len());
         let (to_draw, rest) = cells.split_at(take);
+        // Only up to the last cell that carries something. Padding a row out to
+        // the full width would make it real content to the terminal, and a
+        // terminal that reflows would then break that padding onto rows of its
+        // own, filling a narrowed window with blanks.
         let iter = to_draw
             .iter()
             .enumerate()
+            .filter(move |(i, _)| i % width < used(&to_draw[i - i % width..][..width]))
             .filter(keeps_cell(width))
             .map(|(i, c)| ((i % width) as u16, y + (i / width) as u16, c));
         self.backend.draw(iter)?;
         Ok(rest)
     }
 
+    /// `EL` rather than a row of spaces: spaces are content, and a terminal that
+    /// reflows would wrap them onto rows of their own later on.
     fn clear_rows(&mut self, rows: std::ops::Range<u16>) -> Result<()> {
-        if rows.is_empty() {
-            return Ok(());
+        for y in rows {
+            write!(self.backend, "\x1b[{};1H\x1b[2K", y + 1)?;
         }
-        let area = Rect::new(0, rows.start, self.screen.width, rows.end - rows.start);
-        let blank = Buffer::empty(area);
-        let stale = Buffer::filled(area, Cell::new("?"));
-        self.backend.draw(stale.diff(&blank).into_iter())?;
         Ok(())
     }
+}
+
+/// Columns of `row` worth writing: everything up to the last cell that would
+/// leave a mark. A cell is blank only if nothing was styled onto it either,
+/// since a shaded space still paints.
+fn used(row: &[Cell]) -> usize {
+    row.iter()
+        .rposition(|c| c != &Cell::EMPTY)
+        .map_or(0, |i| i + 1)
 }
 
 fn keeps_cell(width: usize) -> impl FnMut(&(usize, &Cell)) -> bool {
@@ -281,46 +503,14 @@ fn keeps_cell(width: usize) -> impl FnMut(&(usize, &Cell)) -> bool {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Shift {
-    None,
-    Up(u16),
-    Down(u16),
-}
-
-fn reflow(old: Rect, height: u16, screen: Size) -> (u16, Shift) {
-    if height == old.height {
-        return (old.y, Shift::None);
-    }
-    if height < old.height {
-        // Only a bottom-anchored pane took rows from the transcript to grow,
-        // so only a bottom-anchored pane has any to give back.
-        if old.bottom() >= screen.height {
-            let top = old.bottom() - height;
-            return (top, Shift::Down(top - old.y));
-        }
-        return (old.y, Shift::None);
-    }
-    let delta = height - old.height;
+/// Rows a pane of `height` has to take from the transcript above it, once the
+/// blank screen below it has been used up.
+fn borrowed(old: Rect, height: u16, screen: Size) -> u16 {
     let room_below = screen.height.saturating_sub(old.bottom());
-    let need_above = delta.saturating_sub(room_below).min(old.y);
-    (old.y - need_above, Shift::Up(need_above))
-}
-
-fn reflow_on_resize(old: Rect, old_screen: Size, screen: Size) -> (u16, u16) {
-    let height = clamp_height(old.height, screen);
-    let (old_w, new_w) = (old_screen.width.max(1), screen.width.max(1));
-
-    let top = if old.bottom() >= old_screen.height {
-        screen.height.saturating_sub(height)
-    } else {
-        old.y.min(screen.height.saturating_sub(height))
-    };
-
-    let rewrapped = (old.height as u32 * old_w.div_ceil(new_w) as u32).min(screen.height as u32);
-    let sunk = screen.height.saturating_sub((rewrapped as u16).max(height));
-    let risen = ((old.y as u32 * old_w as u32) / new_w as u32).min(screen.height as u32) as u16;
-    (top, top.min(sunk).min(risen))
+    height
+        .saturating_sub(old.height)
+        .saturating_sub(room_below)
+        .min(old.y)
 }
 
 const MAX_VIEWPORT_NUM: u16 = 3;
@@ -331,6 +521,14 @@ fn clamp_height(height: u16, screen: Size) -> u16 {
     let ceiling = share.min(screen.height.saturating_sub(1).max(1));
     height.clamp(1, ceiling)
 }
+
+#[cfg(test)]
+#[path = "tests/vt.rs"]
+mod vt;
+
+#[cfg(test)]
+#[path = "tests/term_test.rs"]
+mod term_test;
 
 #[cfg(test)]
 mod tests {
@@ -369,87 +567,18 @@ mod tests {
     }
 
     #[test]
-    fn growing_an_anchored_pane_scrolls_the_transcript_up() {
+    fn a_pane_takes_only_the_rows_the_screen_below_it_cannot_cover() {
         let s = screen(40);
-        assert_eq!(reflow(anchored(3, s), 20, s), (20, Shift::Up(17)));
+        assert_eq!(borrowed(anchored(3, s), 20, s), 17);
+        assert_eq!(borrowed(Rect::new(0, 30, s.width, 4), 14, s), 4);
     }
 
     #[test]
-    fn shrinking_an_anchored_pane_scrolls_the_transcript_back_down() {
-        let s = screen(40);
-        assert_eq!(reflow(anchored(20, s), 3, s), (37, Shift::Down(17)));
-    }
-
-    #[test]
-    fn a_grow_and_shrink_round_trip_puts_the_transcript_back() {
-        let s = screen(40);
-        let start = anchored(3, s);
-        let (grown_top, up) = reflow(start, 20, s);
-        let grown = Rect::new(0, grown_top, s.width, 20);
-        let (back_top, down) = reflow(grown, start.height, s);
-        assert_eq!(back_top, start.y);
-        assert_eq!((up, down), (Shift::Up(17), Shift::Down(17)));
-    }
-
-    #[test]
-    fn a_floating_pane_grows_downward_without_touching_the_transcript() {
+    fn a_pane_with_room_below_it_borrows_nothing() {
         let s = screen(40);
         let floating = Rect::new(0, 5, s.width, 3);
-        assert_eq!(reflow(floating, 10, s), (5, Shift::Up(0)));
-        assert_eq!(reflow(floating, 2, s), (5, Shift::None));
-    }
-
-    #[test]
-    fn narrowing_clears_the_whole_rewrapped_pane_image() {
-        let old_screen = Size {
-            width: 100,
-            height: 30,
-        };
-        let new_screen = Size {
-            width: 60,
-            height: 30,
-        };
-        let (top, clear_from) = reflow_on_resize(anchored(6, old_screen), old_screen, new_screen);
-        assert_eq!(top, 24);
-        assert_eq!(clear_from, 18);
-    }
-
-    #[test]
-    fn widening_clears_down_from_where_the_old_image_may_have_risen() {
-        let old_screen = Size {
-            width: 60,
-            height: 30,
-        };
-        let new_screen = Size {
-            width: 100,
-            height: 30,
-        };
-        let (top, clear_from) = reflow_on_resize(anchored(6, old_screen), old_screen, new_screen);
-        assert_eq!(top, 24);
-        assert_eq!(clear_from, 24 * 60 / 100);
-    }
-
-    #[test]
-    fn a_height_only_resize_clears_only_the_bottom_band() {
-        let old_screen = Size {
-            width: 80,
-            height: 30,
-        };
-        let new_screen = Size {
-            width: 80,
-            height: 15,
-        };
-        let (top, clear_from) = reflow_on_resize(anchored(6, old_screen), old_screen, new_screen);
-        assert_eq!(top, 9);
-        assert_eq!(clear_from, 9);
-    }
-
-    #[test]
-    fn a_partial_grow_takes_only_what_the_rows_below_cannot_cover() {
-        let s = screen(40);
-        let floating = Rect::new(0, 30, s.width, 4);
-        // Six rows free below, so a ten-row growth borrows four from above.
-        assert_eq!(reflow(floating, 14, s), (26, Shift::Up(4)));
+        assert_eq!(borrowed(floating, 10, s), 0);
+        assert_eq!(borrowed(floating, 2, s), 0);
     }
 
     #[test]
