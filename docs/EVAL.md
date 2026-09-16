@@ -295,7 +295,6 @@ Findings from a grading pass land in
 a fix. When a fix ships, it moves to the changelog and, where a live eval can
 hold the line, becomes a case in `default_cases()`.
 
-[ROADMAP.md](ROADMAP.md#2-aster-eval-measurement-as-infrastructure) describes a
-further axis this crate does not cover yet: scoring recall and precision against
+One axis this crate still does not cover: scoring recall and precision against
 planted defects for review and fix runs, storing results keyed by config hash,
 and sweeping one configuration axis at a time.

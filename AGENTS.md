@@ -223,9 +223,10 @@ Do not re-run tests after `make fmt`.
 ## Documentation
 
 `docs/` holds architecture and design notes: `ARCHITECTURE.md`, `ALGORITHM.md`,
-`ANALYZERS.md`, `MCP.md`, `MEMORY.md`, `ROADMAP.md`. Update the relevant one
-when you change the thing it describes. User-facing product documentation lives
-on the site, not in `docs/`.
+`ANALYZERS.md`, `MCP.md`, `MEMORY.md`, `HARNESS.md`, `HARNESS-FINDINGS.md`,
+`LIVING-HARNESS.md`, and `COMPUTER-USE.md`. Update the relevant one when you
+change the thing it describes. User-facing product documentation lives on the
+site, not in `docs/`.
 
 Prompts are content, not code. They live in `crates/aster-cli/prompts/` and are
 pulled in with `include_str!`. Do not inline prompt text into Rust source.

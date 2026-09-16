@@ -31,23 +31,35 @@ own work; Aster's review capability refutes candidates before emitting findings.
 crates/
   aster-models/      domain types: findings, symbols, PR shapes, Candidate/Verdict
   aster-ai/          provider-agnostic OpenAI-compatible chat client (BYO model)
+  aster-mom/         MoM engine: parse `mom.yaml`, resolve entries against the
+                     catalog, run the per-turn model switch
   aster-index/       zero-dep code index: SQLite + FTS5 + embedded ripgrep
   aster-analyzers/   runtime-selectable static backends: semgrep (CLI), ast-grep (in-process)
   symbol-extractor/  tree-sitter-tags symbol extraction (14 languages)
   aster-harness/     verification-first review capability
   aster-persist/     filesystem-first chat transcripts + memory (see MEMORY.md)
+  aster-memory/      cross-session learning: distils a finished session into
+                     durable memory blocks on the episodic/semantic split
   aster-skills/      filesystem-based agent skills: SKILL.md discovery + on-demand load
   aster-mcp/         progressive MCP tool injection: one bridge + scoped catalogue
+  aster-webmcp/      WebMCP bridge: tools a page registers through
+                     `document.modelContext`, reached over CDP in the user's tab
   aster-plugins/     Agent Plugins packages: plugin.json, skills/, mcp.json
   aster-policy/      policy engine: permissions, approvals, grants, modes
   aster-agents/      agent definitions: AGENT.md parsing, discovery, registry
   aster-tools/       tiered search/list/find/suggest (rg/fd native, hand-rolled fallback)
+  aster-lsp/         minimal LSP client over stdio: diagnostics, references,
+                     definitions
   aster-sandbox/     OS-native command sandbox (macOS Seatbelt, Linux bubblewrap)
   aster-web/         the model-visible web tools: search/extract/crawl over
                      pluggable providers, keyless by default (DuckDuckGo, Jina)
   aster-serve/       `aster serve`: the browser UI, embedded and hosted
+  aster-acp/         Agent Client Protocol server, so ACP editors (Zed) drive
+                     the agent natively
   aster-shortcuts/   Apple Shortcuts tools (list and run, via /usr/bin/shortcuts)
   aster-remote/      driving the agent from a messaging app (Telegram)
+  aster-cron/        schedules from `aster.yaml` installed into the OS scheduler
+                     (launchd, cron) plus native reminders; no daemon
   aster-telemetry/   optional OpenTelemetry export
   aster-cli/         CLI and TUI entry points, chat loop, tool dispatch, the
                      context budget, previews, and the serve host
@@ -86,6 +98,12 @@ graph TD
     CLI --> SC[aster-shortcuts]
     CLI --> RM[aster-remote]
     CLI --> TE[aster-telemetry]
+    CLI --> MEM[aster-memory]
+    CLI --> CR[aster-cron]
+    CLI --> ACP[aster-acp]
+    CLI --> MOM[aster-mom]
+    CLI --> LSP[aster-lsp]
+    MC --> WMC[aster-webmcp]
     CLI --> EV[aster-eval]
     H --> AI[aster-ai]
     H --> IDX[aster-index]

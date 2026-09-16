@@ -2,10 +2,9 @@
 
 This document says how Aster fixes its harness semantics: sessions, memory,
 approvals, structured interaction, delegation, scheduling, and background runs.
-It sits next to [ROADMAP.md](ROADMAP.md). The roadmap owns the tool registry,
-sandbox, dispatch, trace, and eval workstreams. This document owns the UX and
-semantics that the roadmap does not cover, and it says where each phase fits
-into the roadmap sequence.
+It owns the UX and semantics around the execution machinery: the tool
+registry, sandbox, dispatch, trace, and eval workstreams are described where
+they live, in [ARCHITECTURE.md](ARCHITECTURE.md) and [EVAL.md](EVAL.md).
 
 The philosophy is simple: we do not re-invent the wheel. Every mechanism below
 comes from something proven. Some come from modern harnesses (Claude Code,
@@ -194,8 +193,7 @@ leaves files untouched.
 
 ## Phase 5: Tool registry
 
-This is [ROADMAP.md](ROADMAP.md) workstream 6, phase 1, built as specced
-there. This document adds one property that later phases depend on: the
+This document adds one property that later phases depend on: the
 allowlist is enforced at dispatch, not only by omitting schemas.
 
 ```rust
@@ -641,10 +639,10 @@ rates on seeded conditions, and how often the no-progress guard fires.
 | 10 | Background agents | 8, 1 | needs roadmap 4 worktrees to write |
 | 11 | Loops and goals | 9 (headless form), none (TUI forms) | none |
 
-Phases 1 to 4 ship independently and in parallel with the roadmap sandbox
-work. Phase 5 is the shared hinge. The evidence rule from
-[ROADMAP.md](ROADMAP.md) applies: every phase above names its verification,
-and a phase that cannot is not worth starting.
+Phases 1 to 4 ship independently and in parallel with the sandbox work.
+Phase 5 is the shared hinge. The evidence rule applies throughout: every
+phase above names its verification, and a phase that cannot is not worth
+starting.
 
 ## Sources
 
@@ -685,3 +683,13 @@ Phase 11 mechanisms adapted from: Claude Code
 Cursor Automations, GitHub Copilot cloud-agent schedules, and the
 [Ralph loop](https://ghuntley.com/ralph/) (fresh-context iteration until a
 verifiable done state).
+
+## Hypothesis fan-out
+
+The hypothesis stage splits diffs larger than `hypothesis_chunk_bytes`
+(default 40000) into file-scoped chunks and runs up to
+`hypothesis_concurrency` (default 4) model calls at once. Chunks never split
+a file's hunks, so a boundary never hides a defect. A failed chunk logs a
+warning and drops out; the review only fails when every chunk fails. Set
+`hypothesis_chunk_bytes: 0` to restore the single whole-diff call. Env
+overrides: `ASTER_HYPOTHESIS_CONCURRENCY`, `ASTER_HYPOTHESIS_CHUNK_BYTES`.

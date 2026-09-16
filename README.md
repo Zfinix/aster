@@ -525,7 +525,9 @@ diagrams and the reasoning behind each decision, lives in the docs:
 | [PLUGINS.md](./docs/PLUGINS.md) | The Agent Plugins package format, and what Aster supports. |
 | [ANALYZERS.md](./docs/ANALYZERS.md) | Wiring semgrep and ast-grep into review. |
 | [EVAL.md](./docs/EVAL.md) | How Aster measures itself, and what those numbers cannot claim. |
-| [ROADMAP.md](./docs/ROADMAP.md) | What is next. |
+| [HARNESS-FINDINGS.md](./docs/HARNESS-FINDINGS.md) | Open harness defects found by grading recorded sessions. |
+| [LIVING-HARNESS.md](./docs/LIVING-HARNESS.md) | What happens inside a turn when things fail, finish, or drift. |
+| [COMPUTER-USE.md](./docs/COMPUTER-USE.md) | Driving a real screen: the verbs, the policy, and the invariants. |
 
 ## Repository layout
 
@@ -533,30 +535,36 @@ diagrams and the reasoning behind each decision, lives in the docs:
 crates/
   aster-cli/         the `aster` command-line interface
   aster-ai/          provider-agnostic OpenAI-compatible chat client
+  aster-mom/         the model manifest engine behind per-turn model switching
   aster-harness/     the verification-first review pipeline
   aster-index/       code index: SQLite + FTS5 + ripgrep
   aster-analyzers/   static analysis (semgrep / ast-grep)
   symbol-extractor/  tree-sitter symbol extraction (14 languages)
   aster-persist/     sessions and project memory
+  aster-memory/      distils a finished session into durable memory blocks
   aster-skills/      on-demand instructions
   aster-agents/      specialized agent definitions
   aster-tools/       the tools a turn can call
+  aster-lsp/         a minimal LSP client: diagnostics, references, definitions
   aster-sandbox/     where commands are allowed to run
   aster-policy/      read, write, and command permissions
   aster-mcp/         progressive MCP tool injection
+  aster-webmcp/      tools a web page registers, reached over CDP in your browser
   aster-plugins/     Agent Plugins packages: manifest, skills, MCP config
   aster-web/         web search, fetch, and crawl
   aster-serve/       `aster serve`: the browser UI and its host
+  aster-acp/         the Agent Client Protocol server ACP editors talk to
   aster-remote/      driving the agent from a messaging app
+  aster-cron/        schedules installed into launchd or cron, plus reminders
   aster-eval/        the evaluation harness
   aster-telemetry/   optional OpenTelemetry export
-  aster-shortcuts/   shared keybinding definitions
+  aster-shortcuts/   Apple Shortcuts tools, listed and run without opening the app
   aster-models/      shared domain types
 desktop/             the desktop app (Tauri)
 editors/vscode/      the VS Code extension, and the panel `aster serve` hands a browser
 editors/zed/         the Zed extension; `aster acp` is the Zed agent itself
 web/                 withaster.dev, including the install script
-docs/                config, architecture, algorithm, memory, MCP, plugins, roadmap
+docs/                config, architecture, algorithm, memory, MCP, plugins, harness
 ```
 
 ## Contributing
