@@ -2,6 +2,17 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
+/// Accept a missing field *and* an explicit `null`, which providers send for an
+/// empty array when they cut a reply at the output budget. `#[serde(default)]`
+/// alone only covers the missing case and fails the whole response otherwise.
+fn null_default<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Serialize)]
 pub struct ChatRequest {
     pub model: String,
@@ -54,6 +65,10 @@ pub struct Reasoning {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    /// A thinking model that spends its whole output budget reasoning sends
+    /// `content: null` with `finish_reason: "length"`. Read it as empty so the
+    /// continuation loop can retry instead of failing the reply outright.
+    #[serde(default, deserialize_with = "null_default")]
     pub content: MessageContent,
 }
 
@@ -69,6 +84,12 @@ pub const IMAGE_MARK: &str = "[image]";
 pub enum MessageContent {
     Text(String),
     Parts(Vec<ContentPart>),
+}
+
+impl Default for MessageContent {
+    fn default() -> Self {
+        MessageContent::Text(String::new())
+    }
 }
 
 /// One part of a multimodal turn, in the OpenAI shape OpenRouter normalizes
@@ -239,11 +260,23 @@ pub struct AssistantMessage {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub tool_calls: Vec<ToolCall>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub annotations: Vec<Annotation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub reasoning_details: Vec<ReasoningDetail>,
 }
 
@@ -338,7 +371,7 @@ pub struct Usage {
 
 #[derive(Deserialize)]
 pub struct ChatStreamChunk {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub choices: Vec<ChatStreamChoice>,
     #[serde(default)]
     pub usage: Option<Usage>,
@@ -357,11 +390,11 @@ pub struct ChatDelta {
     /// whole reply is dropped, since `content` stays empty until it finishes.
     #[serde(default)]
     pub reasoning_content: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub tool_calls: Vec<ToolCallDelta>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub annotations: Vec<Annotation>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub reasoning_details: Vec<ReasoningDetail>,
 }
 
@@ -381,4 +414,85 @@ pub struct ToolCallFunctionDelta {
     pub name: Option<String>,
     #[serde(default)]
     pub arguments: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_nulls_in_an_assistant_message_parse_as_empty() {
+        let parsed: ToolChatResponse = serde_json::from_str(
+            r#"{"choices":[{"index":0,"message":{"role":"assistant","content":null,
+            "refusal":null,"annotations":null,"audio":null,"function_call":null,
+            "tool_calls":null,"reasoning_content":null,"reasoning_details":null},
+            "finish_reason":"length"}]}"#,
+        )
+        .expect("null array fields must not fail the response");
+
+        let message = parsed.choices.into_iter().next().unwrap().message;
+        assert_eq!(message.content, None);
+        assert!(message.tool_calls.is_empty());
+        assert!(message.annotations.is_empty());
+        assert!(message.reasoning_details.is_empty());
+    }
+
+    #[test]
+    fn a_stream_chunk_tolerates_null_choices_and_arrays() {
+        let parsed: ChatStreamChunk = serde_json::from_str(r#"{"choices":null,"usage":null}"#)
+            .expect("null choices must not fail a stream chunk");
+
+        assert!(parsed.choices.is_empty());
+        assert!(parsed.usage.is_none());
+    }
+
+    #[test]
+    fn a_delta_with_null_arrays_still_carries_its_text() {
+        let parsed: ChatStreamChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":"hi","tool_calls":null,
+            "annotations":null,"reasoning_details":null}}]}"#,
+        )
+        .expect("null delta arrays must not fail a chunk");
+
+        assert_eq!(parsed.choices[0].delta.content, Some("hi".into()));
+    }
+
+    #[test]
+    fn a_truncated_reply_still_parses_and_reports_length() {
+        // The shape that ends a turn at the output budget: no content, null
+        // everywhere a value was expected, and `finish_reason: "length"`.
+        let parsed: ToolChatResponse = serde_json::from_str(
+            r#"{"choices":[{"index":0,"message":{"role":"assistant","content":null,
+            "annotations":null,"tool_calls":null,"reasoning_details":null},
+            "finish_reason":"length"}],
+            "usage":{"prompt_tokens":36173,"completion_tokens":8000,
+            "total_tokens":44173}}"#,
+        )
+        .expect("a truncated reply must parse");
+
+        let choice = parsed.choices.into_iter().next().unwrap();
+        assert_eq!(choice.finish_reason.as_deref(), Some("length"));
+        assert_eq!(choice.message.content, None);
+        assert_eq!(parsed.usage.expect("usage present").completion_tokens, 8000);
+    }
+
+    #[test]
+    fn a_reply_emptied_by_reasoning_parses_as_blank_text() {
+        // A thinking model that burns its whole output budget on
+        // `reasoning_content` sends every content field as an explicit null.
+        // The plain chat path reads that as empty text so the reply can be
+        // retried instead of failing the turn.
+        let parsed: ChatResponse = serde_json::from_str(
+            r#"{"choices":[{"index":0,"message":{"role":"assistant","content":null,
+            "refusal":null,"annotations":null,"audio":null,"function_call":null,
+            "tool_calls":null,"reasoning_content":"Now I have the full picture."},
+            "finish_reason":"length","stop_reason":null,"token_ids":null}],
+            "usage":{"prompt_tokens":36173,"completion_tokens":8000,
+            "total_tokens":44173}}"#,
+        )
+        .expect("null content must not fail a plain chat reply");
+
+        let message = parsed.choices.into_iter().next().unwrap().message;
+        assert_eq!(message.content, MessageContent::Text(String::new()));
+    }
 }
