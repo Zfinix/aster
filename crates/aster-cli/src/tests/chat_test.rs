@@ -1781,11 +1781,7 @@ fn promise_shaped_replies_are_flagged() {
     assert!(announces_pending_work(
         "What I did not get to\n- reading auth.rs"
     ));
-    assert!(announces_pending_work("Say go and I will do exactly that."));
     assert!(announces_pending_work("Doing that next unless you object."));
-    assert!(announces_pending_work(
-        "Say the word and I'll apply all three, then run make check."
-    ));
     assert!(announces_pending_work(
         "Next message I'll read the flag-resolution sites and apply the edits."
     ));
@@ -1794,6 +1790,33 @@ fn promise_shaped_replies_are_flagged() {
     ));
     assert!(announces_pending_work(
         "Next session: write both files from the gathered facts."
+    ));
+}
+
+/// The nudge told an agent holding a filled Glovo cart to stop asking and act,
+/// and it paid. Asking to go ahead is a legitimate end to a turn: the mode
+/// decides how much the agent may do unattended, never a hidden correction.
+#[test]
+fn asking_to_go_ahead_is_not_a_promise() {
+    assert!(!announces_pending_work(
+        "Say go and I will do exactly that."
+    ));
+    assert!(!announces_pending_work(
+        "Say the word and I'll apply all three, then run make check."
+    ));
+    assert!(!announces_pending_work(
+        "Chicken Republic jollof, ₦10,530. Say the word and I'll place it."
+    ));
+}
+
+/// A question is the agent waiting, whatever phrasing leads up to it.
+#[test]
+fn a_reply_that_ends_on_a_question_is_waiting() {
+    assert!(!announces_pending_work(
+        "I'll now apply the three fixes. Want me to go ahead?"
+    ));
+    assert!(!announces_pending_work(
+        "Barilla Penne is in the cart at ₦3,521.\n\nCheckout now?"
     ));
 }
 
@@ -2057,8 +2080,41 @@ fn msgs(n: usize) -> Vec<ChatMessage> {
 }
 
 #[test]
-fn a_history_no_longer_than_the_kept_tail_has_nothing_to_fold() {
-    assert!(!can_compact(&msgs(COMPACT_KEEP_TAIL)));
+fn a_history_no_longer_than_the_kept_tail_still_folds_on_an_explicit_compact() {
+    assert!(can_compact(&msgs(COMPACT_KEEP_TAIL)));
+}
+
+#[tokio::test]
+async fn an_explicit_compact_folds_a_history_no_longer_than_the_kept_tail() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body("the whole story"))
+        .mount(&server)
+        .await;
+    let client = AiClient::new(server.uri(), "k", "mock-model");
+    let (compacted, summary, split) = crate::chat::compact_now(&client, &msgs(COMPACT_KEEP_TAIL))
+        .await
+        .unwrap();
+    assert_eq!(summary, "the whole story");
+    assert_eq!(split, 0);
+    assert_eq!(
+        compacted[0].content.text(),
+        "Summary of earlier conversation:\nthe whole story"
+    );
+    let tail = msgs(COMPACT_KEEP_TAIL);
+    for (got, want) in compacted[1..].iter().zip(tail.iter()) {
+        assert_eq!(
+            (got.role.as_str(), got.content.text()),
+            (want.role.as_str(), want.content.text())
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_empty_history_has_nothing_to_compact() {
+    let client = AiClient::new("http://127.0.0.1:9", "k", "mock-model");
+    let err = crate::chat::compact_now(&client, &[]).await.unwrap_err();
+    assert!(err.to_string().contains("nothing to compact"));
 }
 
 #[test]
@@ -2069,6 +2125,7 @@ fn a_history_past_the_kept_tail_can_be_folded() {
 #[test]
 fn an_empty_history_cannot_be_folded() {
     assert!(!can_compact(&[]));
+    assert!(!can_compact(&msgs(0)));
 }
 
 #[test]

@@ -1900,6 +1900,18 @@ const PROMISED_WORK_KICK: &str = "Your previous reply promised work that was \
     first tool call for that work; do not restate the plan and do not mention \
     tool availability.";
 
+/// A reply that ends on a question is waiting for an answer, not stalling.
+fn awaits_an_answer(reply: &str) -> bool {
+    reply
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim_end().ends_with('?'))
+}
+
+/// Narrating intent without acting, which the nudge exists to catch. Asking to
+/// go ahead is not that: on a phone "say the word and I'll order it" is the
+/// permission request, and nudging past it once bought food nobody asked for.
 fn announces_pending_work(reply: &str) -> bool {
     const PROMISES: &[&str] = &[
         "fixing it now",
@@ -1914,10 +1926,6 @@ fn announces_pending_work(reply: &str) -> bool {
         "let me now",
         "making the edit now",
         "making the change now",
-        "say go and i",
-        "say \"go\"",
-        "say 'go'",
-        "say the word and i",
         "next message i'll",
         "next message i will",
         "next session:",
@@ -1930,6 +1938,9 @@ fn announces_pending_work(reply: &str) -> bool {
         "what i have not done",
         "what i haven't done",
     ];
+    if awaits_an_answer(reply) {
+        return false;
+    }
     let reply = reply.to_lowercase();
     PROMISES.iter().any(|p| reply.contains(p))
 }
@@ -2750,23 +2761,31 @@ async fn compact_if_needed(
     Ok((compacted.clone(), Some(compacted)))
 }
 
-/// True once there is a head to fold: the tail is kept verbatim, so a history
-/// no longer than it has nothing to summarize.
+/// True once there is anything to fold: an explicit compact folds the whole
+/// conversation, so only an empty history is refused.
 pub(crate) fn can_compact(history: &[ChatMessage]) -> bool {
-    history.len() > COMPACT_KEEP_TAIL && history.iter().any(|m| !m.content.is_empty())
+    !history.is_empty()
 }
 
 /// Fold everything but the last few turns into a summary, unconditionally.
 /// Returns the folded history plus the summary and split for the transcript.
+/// An explicit compact always folds, so a history no longer than the tail
+/// comes back as the summary plus the tail; only an empty conversation is
+/// refused.
 pub(crate) async fn compact_now(
     client: &AiClient,
     history: &[ChatMessage],
 ) -> Result<(Vec<ChatMessage>, String, usize)> {
-    if !can_compact(history) {
+    if history.is_empty() {
         bail!("nothing to compact yet");
     }
     let split = history.len().saturating_sub(COMPACT_KEEP_TAIL);
-    let summary = summarize(client, &history[..split]).await?;
+    let head = if split == 0 {
+        history
+    } else {
+        &history[..split]
+    };
+    let summary = summarize(client, head).await?;
     let mut compacted = Vec::with_capacity(COMPACT_KEEP_TAIL + 1);
     compacted.push(ChatMessage {
         role: "assistant".into(),
@@ -3012,7 +3031,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "update_plan",
-                "description": "Update the execution plan state. Accepts a list of step objects with `label` and `status` fields. Status must be one of: pending, in_progress, done, skipped, blocked. The plan is rendered as a progress strip in the UI.",
+                "description": "Update the execution plan state. Accepts a list of step objects with `label` and `status` fields. Status must be one of: pending, in_progress, done, skipped, blocked. The plan is rendered as a progress strip in the UI. Use it for work with several distinct steps: lay the steps out before starting, mark each in_progress as you begin it and done as it lands, and keep the list current through the end of the work.",
                 "parameters": {
                     "type": "object",
                     "properties": {

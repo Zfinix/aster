@@ -71,6 +71,11 @@ that reported \"changed: +0 -0\", empty results, calls repeated with identical \
 arguments, screenshots that added nothing, scripts that took more than a few \
 seconds. State each as \"do X, never Y\".
 3. The check that proves the task is done, so the agent stops right after it.
+4. Every point where the run stopped and asked the user before doing something \
+that spends money or reaches another person, written as its own rule: what to \
+put in front of them and to wait for an answer. You are making the next run \
+faster, never more autonomous. A confirmation is not a round to save, and if \
+the run you are reading skipped one, the skill you write adds it back.
 Under 1500 words. No essays, no restating the request, no \"Best so far\" line (the \
 harness adds it). Never include secrets, tokens, phone numbers, or chat contents.
 

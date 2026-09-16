@@ -32,7 +32,9 @@ description: Writing a plan the user can actually judge, and presenting it for a
 7. **`update_plan` is the progress strip, not the plan.** Its steps track what
    is done while you work. Never present that list as your plan: it is short
    labels by design, and standing it in for the document is what makes an
-   approval unreadable.
+   approval unreadable. The tools are a pair: `exit_plan_mode` wins the
+   approval, then the approved work becomes `update_plan` steps, kept current
+   through completion.
 8. **Present once, then stop.** Call `exit_plan_mode` and wait. No edits, no
    state-changing commands, no "starting on this while you read". The user's
    answer is the point of asking.
