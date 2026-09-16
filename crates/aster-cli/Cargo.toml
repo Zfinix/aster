@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent-client-protocol = { version = "2.1", features = ["unstable_tool_call_name"] }
+ansi-to-tui = "8"
 anydoc = { workspace = true }
 anyhow = { workspace = true }
 aster-agents = { path = "../aster-agents" }
@@ -41,7 +42,7 @@ clap = { features = ["derive", "env"], version = "4.5" }
 cliclack = "0.5.5"
 chrono = { workspace = true }
 console = "0.16"
-crossterm = { features = ["event-stream"], version = "0.28.1" }
+crossterm = { features = ["event-stream"], version = "0.29" }
 dirs = "6.0"
 dotenvy = "0.15"
 flate2 = "1"
@@ -63,7 +64,7 @@ ratatui = { features = [
     "scrolling-regions",
     "unstable-widget-ref",
     "unstable-rendered-line-info",
-], version = "0.29" }
+], version = "0.30" }
 reqwest = { features = ["stream", "blocking"], workspace = true }
 reqwest-middleware = { features = ["json"], version = "0.4" }
 self-replace = "1"
@@ -77,6 +78,7 @@ tokio = { workspace = true }
 toml = "0.8"
 tracing = { workspace = true }
 tracing-subscriber = { features = ["env-filter"], version = "0.3" }
+tui-markdown = { default-features = false, version = "0.3.9" }
 unicode-width = "0.2"
 ulid = "1"
 
@@ -84,4 +86,5 @@ ulid = "1"
 rustpython = { version = "0.5.0", default-features = false, features = ["freeze-stdlib", "importlib", "stdio", "host_env"] }
 
 [dev-dependencies]
+insta = "1.48.0"
 wiremock = "0.6"

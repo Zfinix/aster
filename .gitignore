@@ -18,6 +18,7 @@ Cargo.lock.orig
 paper/
 web/
 .githooks/
+.hermes/
 
 # Local
 _archive/

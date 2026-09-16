@@ -19,8 +19,6 @@ pub struct UpgradeArgs {
 }
 
 pub async fn run(args: UpgradeArgs) -> Result<()> {
-    kill_other_instances();
-
     // The cliclack steps below only read well on a terminal; piped output
     // stays plain `[aster]` lines.
     let fancy = crate::picker::is_tty() && !crate::json_mode();
@@ -413,63 +411,6 @@ fn target_triple() -> &'static str {
     }
 }
 
-fn kill_other_instances() {
-    let our_pid = std::process::id();
-    let pids = match running_aster_pids() {
-        Ok(pids) => pids,
-        Err(e) => {
-            eprintln!("[aster] Could not list running instances: {e}");
-            return;
-        }
-    };
-    for pid in pids {
-        if pid == our_pid {
-            continue;
-        }
-        eprintln!("[aster] Stopping aster (pid {pid})...");
-        #[cfg(unix)]
-        {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-    }
-}
-
-#[cfg(unix)]
-fn running_aster_pids() -> Result<Vec<u32>> {
-    let out = std::process::Command::new("pgrep")
-        .args(["-x", "aster"])
-        .output()
-        .context("pgrep aster")?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text.lines().filter_map(|l| l.trim().parse().ok()).collect())
-}
-
-#[cfg(windows)]
-fn running_aster_pids() -> Result<Vec<u32>> {
-    let out = std::process::Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq aster.exe", "/FO", "CSV", "/NH"])
-        .output()
-        .context("tasklist aster.exe")?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text
-        .lines()
-        .filter_map(|l| l.split(',').nth(1))
-        .filter_map(|s| s.trim_matches('"').parse().ok())
-        .collect())
-}
-
 fn normalize_tag(version: &str) -> String {
     match version {
         v if v.starts_with("cli-v") => v.to_string(),
@@ -478,17 +419,25 @@ fn normalize_tag(version: &str) -> String {
     }
 }
 
+/// `releases/latest` points at whatever release was published last, which is
+/// often a `vscode-v*` one, so read the release feed (static, so still no API
+/// rate limit) and take the newest CLI tag from it.
 fn latest_cli_tag() -> Result<String> {
-    let latest = format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/latest");
-    let final_url = reqwest::blocking::get(latest)?.url().clone();
-    let tag = final_url
-        .path_segments()
-        .and_then(|mut s| s.next_back())
-        .context("releases/latest redirect carried no tag")?;
-    if !tag.starts_with("cli-v") {
-        anyhow::bail!("unexpected latest release tag: {tag}");
-    }
+    let feed = format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases.atom");
+    let body = reqwest::blocking::get(feed)?.error_for_status()?.text()?;
+    let tag = first_cli_tag(&body).context(
+        "no aster release found in GitHub's release feed; \
+         pass --version to install a specific release",
+    )?;
     Ok(tag.to_string())
+}
+
+fn first_cli_tag(feed: &str) -> Option<&str> {
+    feed.split("Repository/")
+        .skip(1)
+        .filter_map(|entry| entry.split_once("</id>"))
+        .filter_map(|(id, _)| id.trim().rsplit('/').next())
+        .find(|tag| tag.starts_with("cli-v"))
 }
 
 #[cfg(test)]

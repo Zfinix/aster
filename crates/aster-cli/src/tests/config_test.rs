@@ -319,3 +319,25 @@ fn missing_credentials_message_points_at_the_fix() {
     assert!(text.contains("DEEPSEEK_API_KEY"), "{text}");
     assert!(!text.contains("aster login deepseek"), "{text}");
 }
+
+#[test]
+fn the_endpoint_picker_starts_on_the_catalog_row_in_use() {
+    let choices = crate::init::provider_choices();
+    let fireworks = super::catalog_row(&choices, "https://api.fireworks.ai/inference/v1");
+    assert!(fireworks.is_some(), "Fireworks is in the catalog");
+    assert_eq!(
+        fireworks,
+        super::catalog_row(&choices, "https://api.fireworks.ai/inference/v1/"),
+        "a trailing slash is the same endpoint"
+    );
+}
+
+#[test]
+fn an_endpoint_outside_the_catalog_lands_on_the_custom_row() {
+    let choices = crate::init::provider_choices();
+    assert_eq!(
+        super::catalog_row(&choices, "https://api.atria-asi.ai/v1"),
+        None
+    );
+    assert_eq!(super::catalog_row(&choices, ""), None);
+}

@@ -274,26 +274,7 @@ async fn list_capabilities(client: &aster_ai::AiClient) -> Result<()> {
 }
 
 fn list_providers(current: &str) -> Result<()> {
-    let current = current.trim_end_matches('/');
-    let providers: Vec<_> = crate::init::provider_choices()
-        .into_iter()
-        .map(|(name, base_url, example_model)| {
-            let is_current = base_url.trim_end_matches('/') == current;
-            serde_json::json!({
-                "name": name,
-                // The vars a front-end should look in before falling back to
-                // the shared key, so the mapping lives in one place.
-                "key_env": crate::init::provider_key_vars(&base_url),
-                "base_url": base_url,
-                "example_model": example_model,
-                // The shortlist a picker can show before this endpoint has been
-                // asked what it serves, so no front-end has to hardcode one.
-                "recommended": crate::init::provider_recommended(&base_url),
-                "current": is_current,
-            })
-        })
-        .collect();
-
+    let providers = provider_rows(current);
     if crate::json_mode() {
         println!(
             "{}",
@@ -311,3 +292,47 @@ fn list_providers(current: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// One row per catalog endpoint, plus the endpoint in use when the catalog
+/// does not carry it, so exactly one row is ever marked current.
+fn provider_rows(current: &str) -> Vec<serde_json::Value> {
+    let current = current.trim_end_matches('/');
+    let mut providers: Vec<_> = crate::init::provider_choices()
+        .into_iter()
+        .map(|(name, base_url, example_model)| {
+            let is_current = base_url.trim_end_matches('/') == current;
+            serde_json::json!({
+                "name": name,
+                // The vars a front-end should look in before falling back to
+                // the shared key, so the mapping lives in one place.
+                "key_env": crate::init::provider_key_vars(&base_url),
+                "base_url": base_url,
+                "example_model": example_model,
+                // The shortlist a picker can show before this endpoint has been
+                // asked what it serves, so no front-end has to hardcode one.
+                "recommended": crate::init::provider_recommended(&base_url),
+                "current": is_current,
+            })
+        })
+        .collect();
+    // An endpoint the catalog does not carry is still the one in use. Without
+    // a row of its own nothing is marked current, and a front-end that reads
+    // the name off the current row has none to read.
+    if !current.is_empty() && !providers.iter().any(|p| p["current"] == true) {
+        providers.push(serde_json::json!({
+            "name": crate::init::provider_label(current),
+            "key_env": crate::init::provider_key_vars(current),
+            "base_url": current,
+            // Nothing vouches for a model here, and an empty one leaves the
+            // model alone when a picker switches back to this endpoint.
+            "example_model": "",
+            "recommended": crate::init::provider_recommended(current),
+            "current": true,
+        }));
+    }
+    providers
+}
+
+#[cfg(test)]
+#[path = "../tests/models_test.rs"]
+mod tests;

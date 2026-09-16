@@ -1251,12 +1251,23 @@ enum Answer {
 
 const CLEAR: &str = "-";
 
+/// The one key whose value is an endpoint, so the form offers the catalog.
+const ENDPOINT: &str = "review.base_url";
+
 fn change(key: &'static Key, settings: &Settings, path: &Path, repo_root: &Path) -> Result<bool> {
     // Prefilled from the file rather than from a shell variable that outranks it.
     let current = configured(settings, key.name);
+    // A catalog pick carries the model that endpoint serves, so the two are
+    // written together the way `aster provider use` writes them.
+    let mut picked_model = None;
     let answer = match key.kind {
         Kind::Choice(options) => pick(key, options, &current)?,
         Kind::Bool => pick(key, &["true", "false"], &current)?,
+        _ if key.name == ENDPOINT => {
+            let (answer, model) = endpoint(key, &current, path)?;
+            picked_model = model;
+            answer
+        }
         _ => typed(key, &current, path)?,
     };
 
@@ -1279,6 +1290,15 @@ fn change(key: &'static Key, settings: &Settings, path: &Path, repo_root: &Path)
         check(&updated).with_context(|| format!("{} cannot be set to {value:?}", key.name))?;
     }
     crate::settings::save(path, updated)?;
+    // The model that was set belongs to the endpoint being left, so a catalog
+    // pick replaces it rather than leaving an id the new one cannot serve.
+    let moved_model = picked_model.filter(|_| matches!(answer, Answer::Set(_)));
+    if let Some(model) = &moved_model {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        let updated = crate::settings::with_key(&text, "review", "model", &scalar(model));
+        check(&updated).with_context(|| format!("review.model cannot be set to {model:?}"))?;
+        crate::settings::save(path, updated)?;
+    }
 
     let settings = Settings::load(Some(repo_root))?;
     let resolved = resolve(key, &settings, &layers(repo_root));
@@ -1288,10 +1308,59 @@ fn change(key: &'static Key, settings: &Settings, path: &Path, repo_root: &Path)
         display(&resolved.value, key),
         label(path, repo_root)
     ))?;
+    if let Some(model) = &moved_model {
+        log::success(format!("Default model is now {model}"))?;
+    }
     if let Some(var) = resolved.shadowed {
         log::warning(format!("{var} is set in this shell and outranks it"))?;
     }
     Ok(true)
+}
+
+/// The endpoint picker: the catalog `aster init` offers, so switching
+/// provider here is a choice rather than a URL typed from memory. A custom
+/// endpoint still falls through to the text field.
+fn endpoint(key: &'static Key, current: &Value, path: &Path) -> Result<(Answer, Option<String>)> {
+    let choices = crate::init::provider_choices();
+    let now = current.as_str().unwrap_or_default();
+    let custom = choices.len();
+    let at = catalog_row(&choices, now);
+    // The catalog runs past thirty rows; every other long picker here scrolls.
+    let mut menu = select::<usize>(key.help)
+        .initial_value(at.unwrap_or(custom))
+        .max_rows(12);
+    for (i, (name, url, _)) in choices.iter().enumerate() {
+        menu = menu.item(i, name, url);
+    }
+    menu = menu.item(custom, "Custom endpoint", "any OpenAI-compatible base URL");
+    menu = menu.item(custom + 1, "default", format!("clear it · {}", key.default));
+
+    let Some(choice) = or_cancel(menu.interact())? else {
+        return Ok((Answer::Keep, None));
+    };
+    if choice == custom + 1 {
+        return Ok((Answer::Clear, None));
+    }
+    if choice == custom {
+        return Ok((typed(key, current, path)?, None));
+    }
+    let (_, url, model) = &choices[choice];
+    // Enter on the endpoint already in use is a look, not a change.
+    if at == Some(choice) {
+        return Ok((Answer::Keep, None));
+    }
+    let model = Some(model.clone()).filter(|model| !model.is_empty());
+    Ok((Answer::Set(url.clone()), model))
+}
+
+/// Where `base_url` sits among the catalog rows, give or take a trailing
+/// slash. `None` is an endpoint the catalog does not carry, which the picker
+/// shows as the custom row.
+fn catalog_row(choices: &[(String, String, String)], base_url: &str) -> Option<usize> {
+    let want = base_url.trim_end_matches('/');
+    choices
+        .iter()
+        .position(|(_, url, _)| url.trim_end_matches('/') == want)
 }
 
 fn pick(key: &Key, options: &'static [&'static str], current: &Value) -> Result<Answer> {
