@@ -152,6 +152,14 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_else(|| HarnessConfig::default().verify_concurrency),
+            hypothesis_concurrency: env::var("ASTER_HYPOTHESIS_CONCURRENCY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| HarnessConfig::default().hypothesis_concurrency),
+            hypothesis_chunk_bytes: env::var("ASTER_HYPOTHESIS_CHUNK_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| HarnessConfig::default().hypothesis_chunk_bytes),
             ..HarnessConfig::default()
         },
         input,
@@ -383,6 +391,7 @@ async fn run_streaming(job: Job, min_confidence: f32) -> Result<ReviewReport> {
     // Concurrent verify streams interleave into noise, so stream raw tokens
     // only when verification runs sequentially.
     let stream_verify = job.config.verify_concurrency <= 1;
+    let stream_hypothesis = job.config.hypothesis_concurrency <= 1;
     let (tx, rx) = mpsc::channel::<Progress>();
     let task = tokio::spawn(async move { execute(job, &Some(tx)).await });
 
@@ -402,7 +411,7 @@ async fn run_streaming(job: Job, min_confidence: f32) -> Result<ReviewReport> {
             }
             Progress::Token { stage: s, delta } => {
                 // Only verify is gated; hypothesis is always a single stream.
-                if s == "verify" && !stream_verify {
+                if (s == "verify" && !stream_verify) || (s == "hypothesize" && !stream_hypothesis) {
                     return;
                 }
                 if stage.as_deref() != Some(&s) {

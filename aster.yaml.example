@@ -54,6 +54,12 @@ review:
     - correctness
     - security
 
+  # Hypothesis fan-out: the diff is split into file-scoped chunks of at most
+  # hypothesis_chunk_bytes bytes and each chunk gets its own model call, up to
+  # hypothesis_concurrency at a time. 0 bytes disables chunking (one whole-diff call).
+  hypothesis_concurrency: 4
+  hypothesis_chunk_bytes: 40000
+
   # Which files to review. `include` empty = everything except `exclude`.
   include: []              # e.g. ["src/**/*.rs", "**/*.ts"]
   exclude:

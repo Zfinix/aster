@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod hypothesis;
 pub mod indexing;
 pub mod models;
 pub mod progress;
@@ -35,7 +36,7 @@ pub async fn review_with_progress(
     let diff = truncate(&input.diff, deps.config.max_diff_bytes);
 
     progress::emit(sink, Progress::Phase("Hypothesizing".into()));
-    let mut candidates = hypothesize(deps, &input.repo_name, &diff, sink).await?;
+    let mut candidates = hypothesis::hypothesize(deps, &input.repo_name, &diff, sink).await?;
     tracing::info!(
         count = candidates.len(),
         "hypothesis pass produced candidates"
@@ -190,64 +191,6 @@ fn finding_to_candidate(f: aster_analyzers::Finding) -> Candidate {
         code_snippet: None,
         source: CandidateSource::Static,
     }
-}
-
-async fn hypothesize(
-    deps: &ReviewDeps,
-    repo: &str,
-    diff: &str,
-    sink: &ProgressSink,
-) -> Result<Vec<Candidate>> {
-    let content = complete(
-        deps,
-        deps.config.hypothesis_model.as_deref(),
-        prompts::HYPOTHESIS_SYSTEM_PROMPT,
-        &prompts::hypothesis_user_prompt(repo, &deps.config.focus_areas, diff),
-        sink,
-        "hypothesize",
-    )
-    .await?;
-    let json = extract_json(&content);
-    let list: CandidateList = match serde_json::from_str(&json) {
-        Ok(list) => list,
-        // A dropped stream leaves the array unterminated; salvage whole objects
-        // rather than failing the whole review.
-        Err(e) => match salvage_candidates(&json) {
-            Some(list) => {
-                tracing::warn!(
-                    salvaged = list.candidates.len(),
-                    "candidate JSON was truncated; recovered complete entries"
-                );
-                list
-            }
-            None => {
-                return Err(anyhow::anyhow!(
-                    "failed to parse candidates: {e}; raw: {json}"
-                ));
-            }
-        },
-    };
-    let raw = list.candidates.len();
-    let kept: Vec<Candidate> = list
-        .candidates
-        .into_iter()
-        .filter(|c| !c.failure_scenario.trim().is_empty())
-        .collect();
-    if raw > kept.len() {
-        tracing::debug!(
-            dropped = raw - kept.len(),
-            "candidates dropped by scenario gate"
-        );
-    }
-    // An empty `candidates` array is silent (unlike a parse error), so surface
-    // it: clean diff or the model returned an empty set.
-    if raw == 0 {
-        tracing::warn!(
-            raw_len = content.len(),
-            "hypothesis pass produced zero candidates; diff may be clean or the model returned an empty set"
-        );
-    }
-    Ok(kept)
 }
 
 const EVIDENCE_WINDOW: i32 = 25;
