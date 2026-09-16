@@ -70,7 +70,8 @@ pub async fn review(
 
     // Nothing answers a review, so its stdin is closed at once.
     drop(child.stdin.take());
-    log(child.stderr.take());
+    let last_stderr = Arc::new(std::sync::Mutex::new(String::new()));
+    log(child.stderr.take(), last_stderr.clone());
     stream(instance, child.stdout.take(), {
         let id = id.clone();
         move |event| {
@@ -97,11 +98,22 @@ pub async fn review(
             // Cancelled: the browser asked, so it is not news.
             None => {}
             Some(0) => instance.post(json!({ "type": "reviewDone", "id": id })),
-            Some(code) => instance.post(json!({
-                "type": "reviewError",
-                "id": id,
-                "message": format!("aster exited with code {code}. See the terminal running aster serve."),
-            })),
+            Some(code) => {
+                let said = last_stderr
+                    .lock()
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default();
+                let message = if said.is_empty() {
+                    format!("aster exited with code {code}. See the terminal running aster serve.")
+                } else {
+                    format!("aster exited with code {code}: {said}")
+                };
+                instance.post(json!({
+                    "type": "reviewError",
+                    "id": id,
+                    "message": message,
+                }))
+            }
         }
         instance.post_run_state().await;
     });
@@ -382,14 +394,19 @@ where
     terminal
 }
 
-fn log(stderr: Option<ChildStderr>) {
+fn log(stderr: Option<ChildStderr>, last: Arc<std::sync::Mutex<String>>) {
     let Some(stderr) = stderr else { return };
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if !line.trim().is_empty() {
-                eprintln!("{line}");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
             }
+            if let Ok(mut slot) = last.lock() {
+                *slot = line.to_string();
+            }
+            eprintln!("{line}");
         }
     });
 }

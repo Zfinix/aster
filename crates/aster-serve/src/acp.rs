@@ -12,7 +12,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
-use tokio::sync::{Mutex as AsyncMutex, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 
 use crate::state::{AppState, Instance};
 
@@ -79,8 +79,13 @@ pub struct Agent {
     instance: std::sync::Mutex<Weak<Instance>>,
     registry: Weak<Registry>,
     root: std::path::PathBuf,
-    /// Kept so a discarded agent's child can be killed instead of leaking.
+    /// Handed to the reaper, which owns the child from then on. Holding
+    /// this across the reaper's `wait` would block every other caller for as
+    /// long as the child lives.
     child: AsyncMutex<Option<tokio::process::Child>>,
+    /// Raised by `discard`, so the reaper kills the child it owns instead of
+    /// a second caller reaching for a lock the reaper cannot give back.
+    kill: Notify,
     stdin: AsyncMutex<ChildStdin>,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
@@ -121,6 +126,7 @@ impl Agent {
             pending: Mutex::new(HashMap::new()),
             inner: Mutex::new(Inner::default()),
             queue: Mutex::new(Vec::new()),
+            kill: Notify::new(),
             dead: AtomicBool::new(false),
         });
         if let Some(stderr) = stderr {
@@ -190,12 +196,19 @@ impl Agent {
             }
             return initialized.map(|_| agent);
         }
-        // Reap the child when it eventually exits; nobody else waits on it.
+        // Reap the child when it eventually exits, or kill it when `discard`
+        // asks; nobody else waits on it. It leaves the slot so the wait never
+        // holds a lock somebody else needs.
         let reaper = agent.clone();
         tokio::spawn(async move {
-            let mut child = reaper.child.lock().await;
-            if let Some(child) = child.as_mut() {
-                let _ = child.wait().await;
+            let Some(mut child) = reaper.child.lock().await.take() else {
+                return;
+            };
+            tokio::select! {
+                _ = child.wait() => {}
+                _ = reaper.kill.notified() => {
+                    let _ = child.kill().await;
+                }
             }
         });
         initialized.map(|_| agent)
@@ -256,12 +269,10 @@ impl Agent {
         if let Some(previous) = self.loaded() {
             self.release(&previous).await;
         }
-        // Closing stdin ends the child, which lets the reaper's wait return
-        // and free the child lock the kill below needs.
-        {
-            let mut stdin = self.stdin.lock().await;
-            let _ = stdin.shutdown().await;
-        }
+        // The reaper owns the child by now, so the kill goes through it. A
+        // permit is stored if it has not reached its wait yet, and an agent
+        // that failed before the reaper started still has its child here.
+        self.kill.notify_one();
         let mut child = self.child.lock().await;
         if let Some(child) = child.as_mut() {
             let _ = child.kill().await;
@@ -931,19 +942,22 @@ impl Agent {
             let event = match kind {
                 "agent_message_chunk" => {
                     let text = content_text(&update["content"]);
-                    let done = {
-                        let turn = inner.turn.as_mut().expect("chunk outside a turn");
-                        turn.reply.push_str(&text);
-                        turn.reasoning_started.take().map(|start| {
-                            json!({
-                                "type": "reasoning_done",
-                                "tokens": turn.reasoning_chars / 4,
-                                "duration_ms": start.elapsed().as_millis() as u64,
-                            })
-                        })
+                    // A chunk can outlive its turn: a cancel takes the turn
+                    // state while the child is still flushing.
+                    let Some(turn) = inner.turn.as_mut() else {
+                        return;
                     };
+                    turn.reply.push_str(&text);
+                    let event_id = turn.event_id.clone();
+                    let done = turn.reasoning_started.take().map(|start| {
+                        json!({
+                            "type": "reasoning_done",
+                            "tokens": turn.reasoning_chars / 4,
+                            "duration_ms": start.elapsed().as_millis() as u64,
+                        })
+                    });
                     if let Some(done) = done {
-                        self.post(&inner.turn.as_ref().unwrap().event_id, &done);
+                        self.post(&event_id, &done);
                     }
                     json!({ "type": "token", "content": text })
                 }

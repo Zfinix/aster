@@ -1,8 +1,8 @@
 use super::{
-    Activity, Api, LearnReport, LearnScore, TurnEnd, extract_gifs, file_url, incoming_prompt,
-    is_stop_request, learn_error, link_buttons, mirror_url_for, photo_file_id, photo_prompt,
-    pick_mirror_ip, plain_text, render_learned, reports_no_change, shot_paths, stranger_reply,
-    streams_photos, tool_line, truncate, unwrap_result, wants_photos,
+    Activity, Api, LearnReport, LearnScore, TurnEnd, Wakeup, extract_gifs, file_url,
+    incoming_prompt, is_stop_request, learn_error, link_buttons, mirror_url_for, parse_wakeup,
+    photo_file_id, photo_prompt, pick_mirror_ip, plain_text, render_learned, reports_no_change,
+    shot_paths, stranger_reply, streams_photos, tool_line, truncate, unwrap_result,
 };
 use serde_json::json;
 
@@ -510,43 +510,38 @@ fn an_unclaimed_bot_hands_back_the_id_that_would_claim_it() {
     assert!(reply.contains("8504978708"), "{reply}");
 }
 
+/// The guess that used to gate this held every shot of "I want Barilla pasta"
+/// and posted one at the end. Nobody is holding the phone: the pictures are
+/// the only view of the work, so they go out unless the chat says otherwise.
 #[test]
-fn only_an_explicit_ask_puts_screenshots_in_the_chat() {
-    assert!(wants_photos("send me a screenshot of the board"));
-    assert!(wants_photos("show me what the app looks like"));
-    assert!(!wants_photos("turn off the screen and reduce brightness"));
-    assert!(!wants_photos("order me lunch"));
+fn screenshots_go_out_as_they_are_taken() {
+    assert!(streams_photos(None));
+    assert!(streams_photos(Some("auto")));
+    assert!(streams_photos(Some("on")));
 }
 
-/// The ask usually lands mid-turn, once the person has been staring at a card
-/// for a while: a bare "Screenshot" counts as much as the one that opened the
-/// turn, and the flag it sets rides on the chat so the running turn sees it.
 #[test]
-fn a_bare_screenshot_mid_turn_is_an_ask_too() {
-    assert!(wants_photos("Screenshot rn"));
-    assert!(wants_photos("Screenshot"));
-    assert!(wants_photos("let me see"));
+fn only_photos_off_holds_them_back() {
+    assert!(!streams_photos(Some("off")));
 }
 
-/// Without a policy the guess stands, which is what every chat gets until it
-/// says otherwise.
+/// A photo moves the card below it. The card left above must be remembered
+/// so it can go, or every photo leaves another copy of the whole step list.
 #[test]
-fn no_photo_policy_leaves_the_guess_in_charge() {
-    assert!(streams_photos(None, "show me the board"));
-    assert!(!streams_photos(None, "play wordle and win"));
-    assert!(streams_photos(Some("auto"), "show me the board"));
-    assert!(!streams_photos(Some("auto"), "play wordle and win"));
-}
+fn a_card_moved_below_a_photo_remembers_the_one_it_replaces() {
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+    activity.message_id = Some(7);
 
-/// The reason the setting exists: "play wordle and win" reads as no ask at
-/// all, and the person who wants to watch had no way to say so once.
-#[test]
-fn a_photo_policy_overrules_the_guess_both_ways() {
-    assert!(streams_photos(Some("on"), "play wordle and win"));
-    assert!(!streams_photos(
-        Some("off"),
-        "send me a screenshot of the board"
-    ));
+    activity.rehome();
+    assert_eq!(activity.message_id, None);
+    assert_eq!(activity.stale, Some(7));
+
+    activity.rehome();
+    assert_eq!(
+        activity.stale,
+        Some(7),
+        "a second move keeps the old card to delete"
+    );
 }
 
 /// The flood: a card whose id was never read posted a new message on every
@@ -573,6 +568,56 @@ async fn a_card_that_cannot_be_posted_is_never_posted_twice() {
 
 /// `call` hands back the `result` object, not the envelope around it. Reading
 /// a level too deep is what cost the card its message id.
+/// Every chunk the agent says lands in one accumulated reply, so a turn that
+/// narrated four times used to end by repeating all four as a single block.
+/// What already went out is counted off; only the tail is still owed.
+#[tokio::test]
+async fn narration_already_sent_is_not_repeated_at_the_end() {
+    let reply = "Let me check what is registered.Search works.Both work, no key needed.";
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+
+    activity.say("Let me check what is registered.");
+    activity.say_out().await;
+    activity.say("Search works.");
+    activity.say_out().await;
+    activity.say("Both work, no key needed.");
+
+    assert_eq!(&reply[activity.said..], "Both work, no key needed.");
+}
+
+/// Narration between steps used to be a message of its own, so one task was
+/// ten notifications on a phone. It is counted off and left on the card, and
+/// only the tail is still owed to the final reply.
+#[tokio::test]
+async fn narration_between_steps_stays_on_the_card() {
+    let reply = "Store's open, adding two.Cart's right, checking out.Order's in, ETA 17:40.";
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+
+    activity.say("Store's open, adding two.");
+    activity.close_narration();
+    activity.push("1".into(), "📱 <b>Tap</b>".into());
+    activity.say("Cart's right, checking out.");
+    activity.close_narration();
+    assert!(activity.saying.is_empty(), "a closed block leaves the card");
+
+    activity.say("Order's in, ETA 17:40.");
+    assert_eq!(&reply[activity.said..], "Order's in, ETA 17:40.");
+}
+
+/// A model that emits only whitespace between tool calls posted blank lines
+/// into the chat. Nothing goes out, but the offset still has to move or the
+/// final reply resumes mid-sentence.
+#[tokio::test]
+async fn blank_narration_posts_nothing_and_still_counts() {
+    let mut activity = Activity::new(Api::new("123:test").unwrap(), 1, None, asked());
+
+    activity.say("\n\n");
+    activity.say_out().await;
+
+    assert_eq!(activity.said, 2);
+    assert!(activity.saying.is_empty());
+}
+
 #[test]
 fn a_call_returns_the_result_itself() {
     let response = json!({ "ok": true, "result": { "message_id": 7, "text": "hi" } });
@@ -746,4 +791,69 @@ fn a_reminder_reaches_the_chat_as_one_line() {
     assert!(line.starts_with("Check the Glovo EatYum order"), "{line}");
     assert!(!line.contains("estate-code.sh"), "{line}");
     assert!(line.chars().count() <= 91, "{}", line.chars().count());
+}
+
+/// A notice from the phone is told, not acted on; a file without a kind is a
+/// reminder, which is what every file the phone wrote before notices was.
+#[test]
+fn a_wake_file_is_a_reminder_unless_it_says_notice() {
+    assert_eq!(
+        parse_wakeup(r#"{"text":"check the install","at":1}"#),
+        Some(Wakeup::Reminder("check the install".into()))
+    );
+    assert_eq!(
+        parse_wakeup(r#"{"kind":"notice","text":"🔋 Battery at 20%","at":1}"#),
+        Some(Wakeup::Notice("🔋 Battery at 20%".into()))
+    );
+    assert_eq!(parse_wakeup(r#"{"kind":"notice"}"#), None);
+    assert_eq!(parse_wakeup("not json"), None);
+}
+
+#[test]
+fn alerts_reads_the_phone_settings() {
+    let raw = "battery=on levels=20,10\napps=2\n  Google Messages  (com.google.android.apps.messaging)\n  WhatsApp  (com.whatsapp)\n";
+    let settings = super::alerts::parse_alerts(raw).unwrap();
+    assert!(settings.battery);
+    assert_eq!(settings.levels, vec![20, 10]);
+    assert_eq!(
+        settings.apps,
+        vec![
+            (
+                "Google Messages".to_string(),
+                "com.google.android.apps.messaging".to_string()
+            ),
+            ("WhatsApp".to_string(), "com.whatsapp".to_string()),
+        ]
+    );
+    assert_eq!(
+        super::alerts::parse_alerts("error: no app matching \"foo\"; try `apps` to list them\n"),
+        Err("no app matching \"foo\"; try `apps` to list them".to_string())
+    );
+}
+
+/// Every forwarded app gets its own stop button, and the battery button offers
+/// the opposite of what is set.
+#[test]
+fn alerts_card_offers_the_opposite_toggle_and_a_stop_per_app() {
+    let settings = super::alerts::AlertSettings {
+        battery: false,
+        levels: vec![30, 15],
+        apps: vec![("WhatsApp".into(), "com.whatsapp".into())],
+    };
+    let (text, keyboard) = super::alerts::render_alerts(&settings);
+    assert!(text.contains("Battery warnings: off"));
+    assert!(text.contains("Notifications sent here: WhatsApp"));
+    assert_eq!(keyboard[0][0]["callback_data"], "L:b:on");
+    assert_eq!(keyboard[1][0]["callback_data"], "L:r:com.whatsapp");
+    assert_eq!(keyboard[1][0]["text"], "Stop WhatsApp");
+
+    let on = super::alerts::AlertSettings {
+        battery: true,
+        ..settings
+    };
+    assert!(
+        super::alerts::render_alerts(&on)
+            .0
+            .contains("on, at 30% and 15%")
+    );
 }

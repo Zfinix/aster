@@ -20,6 +20,8 @@ use ulid::Ulid;
 use crate::bridge::{Agent, Answer, Turn, TurnEvent, TurnOutcome, WireMessage};
 use crate::markdown;
 
+mod alerts;
+
 const CHUNK_LIMIT: usize = 4000;
 
 const ACTIVITY_WINDOW: usize = 4;
@@ -52,11 +54,14 @@ The user is talking to you through a Telegram chat on their phone (via aster \
 remote), not a terminal. Adjust how you answer: \
 Keep replies short and conversational; lead with the answer. Phone screens \
 are small, so prefer a few sentences over structure. \
-Everything you say while working is already on screen as it happens, and so is \
-the list of what you did. Your final reply must not say it again: give the \
-outcome and anything the person has to decide, in three short lines or fewer. \
-No recap of the steps, no bullet summary of work already shown, no restating \
-the request. If nothing changed since your last line, say so in one sentence. \
+The steps you take appear as one compact list the person can glance at. \
+Anything you say between steps shows on that list only while you are writing \
+it and is not kept, so do not narrate your way through a task: the step list \
+already shows what you did. Your last message is the only one that stays. Make \
+it the summary of the whole turn: the outcome, anything still pending, and \
+anything the person has to decide, in three short lines or fewer. Do not recap \
+the steps one by one and do not restate the request. If nothing changed since \
+your last line, say so in one sentence. \
 Formatting support is limited to **bold**, `inline code`, fenced code blocks, \
 and simple bullet lists. Never use tables, nested lists, or deep header \
 hierarchies; they render as noise. Keep code snippets small and only when asked. \
@@ -313,7 +318,7 @@ pub async fn run_telegram(cfg: TelegramConfig) -> Result<()> {
 }
 
 /// `<data home>/aster/wakeups/<id>.json` with a `text` field, written by the
-/// phone's alarm receiver; each file becomes one turn in the chat that last spoke.
+/// phone; a reminder becomes one turn in the chat that last spoke.
 fn wake_dir() -> Option<PathBuf> {
     let root = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir),
@@ -337,19 +342,25 @@ async fn watch_wakeups(api: Api, cfg: Arc<TelegramConfig>, chats: Chats) {
             .collect();
         files.sort();
         for path in files {
-            let text = std::fs::read_to_string(&path)
+            let wakeup = std::fs::read_to_string(&path)
                 .ok()
-                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                .and_then(|v| v["text"].as_str().map(str::to_string));
+                .and_then(|raw| parse_wakeup(&raw));
             let _ = std::fs::remove_file(&path);
-            let Some(text) = text else {
+            let Some(wakeup) = wakeup else {
                 continue;
             };
             // Before anyone has spoken since the bridge came up, the owner's
             // private chat is the place: for Telegram its id is the user's.
             let Some(chat_id) = latest_chat(&chats).or(cfg.allowed_users.first().copied()) else {
-                tracing::warn!("wake-up with no chat to land in: {text}");
+                tracing::warn!("wake-up with no chat to land in: {wakeup:?}");
                 continue;
+            };
+            let text = match wakeup {
+                Wakeup::Notice(text) => {
+                    api.send_text(chat_id, &text).await;
+                    continue;
+                }
+                Wakeup::Reminder(text) => text,
             };
             if chat_state(&chats, chat_id, |state| state.checkins_off) {
                 tracing::info!("check-ins are off; dropped a wake-up: {text}");
@@ -370,6 +381,23 @@ async fn watch_wakeups(api: Api, cfg: Arc<TelegramConfig>, chats: Chats) {
                 .unwrap_or(0);
             start_turn(&api, &cfg, &chats, chat_id, posted, &prompt);
         }
+    }
+}
+
+/// What a wake file asks for. A notice (a battery warning, a forwarded
+/// notification) is only told to the person, so it costs no model call.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Wakeup {
+    Reminder(String),
+    Notice(String),
+}
+
+pub(crate) fn parse_wakeup(raw: &str) -> Option<Wakeup> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let text = value["text"].as_str()?.to_string();
+    match value["kind"].as_str() {
+        Some("notice") => Some(Wakeup::Notice(text)),
+        _ => Some(Wakeup::Reminder(text)),
     }
 }
 
@@ -725,6 +753,7 @@ async fn handle_command(
             }
         }
         "mirror" => mirror_command(api, cfg, chat_id, arg).await,
+        "alerts" => alerts::alerts_command(api, cfg, chat_id, arg).await,
         "skills" => send_skill_picker(api, skills, chat_id, arg, 0, None).await,
         "commit" => send_commit_proposal(api, cfg, chats, chat_id, arg).await,
         "sessions" => send_session_picker(api, cfg, chats, chat_id, arg, 0, None).await,
@@ -1617,7 +1646,7 @@ fn start_turn(
         // against the job it is in the middle of. Everything else joins the
         // turn rather than starting a second conversation about the same work.
         chat_state(chats, chat_id, |state| {
-            if streams_photos(state.photo_policy.as_deref(), prompt) {
+            if streams_photos(state.photo_policy.as_deref()) {
                 state.photos.store(true, Ordering::Relaxed);
             }
         });
@@ -1654,9 +1683,6 @@ fn start_turn(
 
     let (events_tx, events_rx) = mpsc::channel::<TurnEvent>(8);
     eprintln!("[{chat_id}] user: {}", console_text(untagged(prompt), 200));
-    // The card is headed with what was asked, so the request is kept in the
-    // person's own words before the turn takes ownership of the prompt.
-    let task = untagged(prompt).to_string();
     let prompt = prompt.to_string();
     let turn_chats = Arc::clone(chats);
     let turn_task = tokio::spawn(async move {
@@ -1701,11 +1727,18 @@ fn start_turn(
     let repo_root = cfg.repo_root.clone();
     let cfg = cfg.clone();
     tokio::spawn(async move {
-        let (result, calls) = drive_turn(
-            &api, &chats, chat_id, message_id, &task, events_rx, turn_task,
+        let (result, calls, said) =
+            drive_turn(&api, &chats, chat_id, message_id, events_rx, turn_task).await;
+        let ok = finish_turn(
+            &api,
+            &chats,
+            chat_id,
+            message_id,
+            Some(&repo_root),
+            result,
+            said,
         )
         .await;
-        let ok = finish_turn(&api, &chats, chat_id, message_id, Some(&repo_root), result).await;
         if ok && calls >= LEARN_MIN_CALLS && std::env::var("ASTER_LEARN").as_deref() != Ok("0") {
             spawn_learn(&api, &cfg, &chats, chat_id, false);
         }
@@ -1972,10 +2005,9 @@ async fn drive_turn(
     chats: &Chats,
     chat_id: i64,
     reply_to: i64,
-    task: &str,
     mut events: mpsc::Receiver<TurnEvent>,
     turn_task: tokio::task::JoinHandle<Result<TurnOutcome>>,
-) -> (Result<TurnOutcome>, usize) {
+) -> (Result<TurnOutcome>, usize, usize) {
     // Telegram's typing status fades after ~5s, so keep it alive for the
     // whole turn instead of pinging it per tool call.
     let typing = tokio::spawn({
@@ -1992,7 +2024,7 @@ async fn drive_turn(
     let (photos, policy) = chat_state(chats, chat_id, |state| {
         (Arc::clone(&state.photos), state.photo_policy.clone())
     });
-    photos.store(streams_photos(policy.as_deref(), task), Ordering::Relaxed);
+    photos.store(streams_photos(policy.as_deref()), Ordering::Relaxed);
     let mut activity = Activity::new(
         api.clone(),
         chat_id,
@@ -2023,6 +2055,7 @@ async fn drive_turn(
             } => {
                 // The plan is the one thing worth its own message: it is the
                 // agent's intent, and it must not scroll away with the steps.
+                activity.close_narration();
                 if name == "update_plan"
                     && let Some(plan) = plan_message(&arguments)
                 {
@@ -2086,6 +2119,7 @@ async fn drive_turn(
                 scope,
                 respond,
             } => {
+                activity.say_out().await;
                 activity.flush(true).await;
                 let subject = approval_subject(&preview);
                 let mut text = format!(
@@ -2114,6 +2148,7 @@ async fn drive_turn(
                 options,
                 respond,
             } => {
+                activity.say_out().await;
                 activity.flush(true).await;
                 eprintln!("[{chat_id}] ? {}", console_text(&question, 120));
                 let text = format!(
@@ -2170,7 +2205,7 @@ async fn drive_turn(
         ),
         Err(e) => eprintln!("[{chat_id}] ✗ turn failed: {e:#}"),
     }
-    (result, calls)
+    (result, calls, activity.said)
 }
 
 /// Stop the running turn, whether that came from /stop or the card's own
@@ -2212,6 +2247,7 @@ async fn finish_turn(
     reply_to: i64,
     repo_root: Option<&std::path::Path>,
     result: Result<TurnOutcome>,
+    said: usize,
 ) -> bool {
     let (result, stopped) = {
         let mut chats = chats.lock().expect("chats lock");
@@ -2229,7 +2265,11 @@ async fn finish_turn(
     let ok = result.is_ok();
     match result {
         Ok(outcome) => {
-            let (text, gifs) = extract_gifs(&outcome.reply);
+            // The narration before this point was shown on the card as it was
+            // written; sending the whole reply would repeat the running
+            // commentary as one block at the end of the turn.
+            let rest = outcome.reply.get(said..).unwrap_or(&outcome.reply);
+            let (text, gifs) = extract_gifs(rest);
             send_reply_chunks(api, chat_id, &text, quote(chats, chat_id, reply_to)).await;
             for gif in gifs {
                 api.send_animation(chat_id, &gif).await;
@@ -2327,6 +2367,10 @@ async fn handle_callback(
         let note = format!("Effort is now {choice}.");
         api.answer_callback(callback_id, &note).await;
         api.settle_callback_message(callback, &note).await;
+        return;
+    }
+    if let Some(rest) = data.strip_prefix("L:") {
+        alerts::alerts_callback(api, cfg, callback, callback_id, rest).await;
         return;
     }
     // The card's own buttons: fold its layers, or stop the turn that is
@@ -2466,9 +2510,16 @@ struct Activity {
     chat_id: i64,
     reply_to: Option<i64>,
     message_id: Option<i64>,
+    /// The card left above a photo or a message. It goes once the card is
+    /// posted again below, so the turn only ever shows one card.
+    stale: Option<i64>,
     lines: Vec<Step>,
     /// What the agent has said since its last tool call.
     saying: String,
+    /// Bytes of the turn's narration already accounted for, so the final reply
+    /// sends only what is left. Every chunk the agent says lands in one
+    /// accumulated reply, which the end of the turn would otherwise repeat.
+    said: usize,
     /// What the agent has thought since its last tool call.
     thinking: String,
     last_flush: Instant,
@@ -2549,8 +2600,10 @@ impl Activity {
             chat_id,
             reply_to,
             message_id: None,
+            stale: None,
             lines: Vec::new(),
             saying: String::new(),
+            said: 0,
             thinking: String::new(),
             last_flush: Instant::now()
                 .checked_sub(ACTIVITY_EDIT_GAP)
@@ -2620,6 +2673,32 @@ impl Activity {
         self.saying.push_str(chunk);
     }
 
+    /// The narration block is finished. It stays on the card and goes no
+    /// further: posting each block is another phone notification, and counting
+    /// it off keeps the final reply from repeating the commentary.
+    fn close_narration(&mut self) {
+        self.said += std::mem::take(&mut self.saying).len();
+    }
+
+    /// Post what the agent has said as its own message and carry the card on
+    /// below it. Only for the narration leading into an approval or a
+    /// question: that is the context for a decision, so it has to outlast the
+    /// card. Blank narration posts nothing but still counts, so the final
+    /// reply picks up from the right place.
+    async fn say_out(&mut self) {
+        let said = std::mem::take(&mut self.saying);
+        self.said += said.len();
+        if said.trim().is_empty() {
+            return;
+        }
+        self.flush(true).await;
+        // The same path the final reply takes, so a line the agent writes
+        // mid-turn renders its markdown and splits the same way as one it
+        // writes at the end.
+        send_reply_chunks(&self.api, self.chat_id, &said, self.reply_to).await;
+        self.rehome();
+    }
+
     fn think(&mut self, chunk: &str) {
         self.thinking.push_str(chunk);
     }
@@ -2642,7 +2721,19 @@ impl Activity {
     /// Continue in a new message, so what follows lands below whatever was
     /// just posted rather than editing a card that is now above it.
     fn rehome(&mut self) {
-        self.message_id = None;
+        if let Some(id) = self.message_id.take() {
+            self.stale = Some(id);
+        }
+    }
+
+    /// Delete the card that was left behind, now that its replacement is up.
+    async fn drop_stale(&mut self) {
+        if self.message_id.is_none() {
+            return;
+        }
+        if let Some(id) = self.stale.take() {
+            self.api.delete_message(self.chat_id, id).await;
+        }
     }
 
     /// A picture that actually went out, so its step can say so. Nothing else
@@ -2747,6 +2838,7 @@ impl Activity {
                     tracing::warn!("the activity card could not be posted; going quiet");
                     self.lost = true;
                 }
+                self.drop_stale().await;
             }
             Some(id) => self.api.edit_html(self.chat_id, id, &text).await,
         }
@@ -2775,6 +2867,7 @@ impl Activity {
                     .api
                     .send_html_reply(self.chat_id, &text, self.reply_to)
                     .await;
+                self.drop_stale().await;
             }
             Some(id) => self.api.edit_html(self.chat_id, id, &text).await,
         }
@@ -2832,27 +2925,12 @@ fn stranger_reply(allowed: &[i64], sender: i64) -> Option<String> {
 /// Whether this turn streams its screenshots. `auto` is the standing default
 /// and asks the message; the other two are the person overruling the guess,
 /// which is the whole point of setting one.
-fn streams_photos(policy: Option<&str>, task: &str) -> bool {
-    match policy {
-        Some("on") => true,
-        Some("off") => false,
-        _ => wants_photos(task),
-    }
-}
-
-fn wants_photos(task: &str) -> bool {
-    const ASKS: [&str; 8] = [
-        "screenshot",
-        "screen shot",
-        "photo",
-        "picture",
-        "show me",
-        "send me a shot",
-        "what does it look like",
-        "let me see",
-    ];
-    let task = task.to_lowercase();
-    ASKS.iter().any(|ask| task.contains(ask))
+/// Screenshots go out as they are taken unless the chat asked for quiet. The
+/// guess that used to sit here read "I want Barilla pasta" as no ask at all and
+/// held all nine shots of the turn: the person driving a phone they cannot see
+/// needs the pictures while the work happens, not one at the end.
+fn streams_photos(policy: Option<&str>) -> bool {
+    policy != Some("off")
 }
 
 const DIFF_INLINE_LIMIT: usize = 3_000;
@@ -3958,6 +4036,12 @@ const COMMANDS: &[BotCommand] = &[
         scope: Scope::Phone,
     },
     BotCommand {
+        name: "alerts",
+        about: "battery warnings and which apps' notifications come here",
+        menu: true,
+        scope: Scope::Phone,
+    },
+    BotCommand {
         name: "diff",
         about: "uncommitted changes in the repo",
         menu: true,
@@ -4342,6 +4426,13 @@ impl Api {
         let payload = json!({ "callback_query_id": callback_id, "text": text });
         if let Err(e) = self.call("answerCallbackQuery", payload).await {
             tracing::warn!("answerCallbackQuery failed: {e:#}");
+        }
+    }
+
+    async fn delete_message(&self, chat_id: i64, message_id: i64) {
+        let payload = json!({ "chat_id": chat_id, "message_id": message_id });
+        if let Err(e) = self.call("deleteMessage", payload).await {
+            tracing::debug!("deleteMessage failed: {e:#}");
         }
     }
 
