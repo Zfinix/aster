@@ -763,11 +763,17 @@ fn help_lists_every_command_this_build_offers() {
     );
     for command in super::commands() {
         assert!(
-            help.contains(&format!("/{} - {}", command.name, command.about)),
+            help.contains(&format!(
+                "/{} - {}",
+                command.name,
+                crate::markdown::escape(command.about)
+            )),
             "/{} is missing from help",
             command.name
         );
     }
+    // Telegram rejects the whole message over one unknown tag like `<fact>`.
+    assert!(help.contains("/remember &lt;fact&gt;"), "{help}");
     assert!(help.ends_with("Installed skills show up as /commands too."));
     assert!(!help.contains("\n\n\n"), "no gaps between the lines");
 }

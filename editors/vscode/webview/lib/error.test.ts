@@ -28,6 +28,13 @@ describe("parseError", () => {
     expect(detail).toBe("aster exited with an error");
   });
 
+  it("tells the user when there is no history to fold yet", () => {
+    const { label, hint, detail } = parseError("nothing to compact yet");
+    expect(label).toBe("Nothing to compact");
+    expect(hint).toContain("still short");
+    expect(detail).toBe("");
+  });
+
   it("explains a mid-stream drop in plain words", () => {
     const { label, hint, detail } = parseError(
       "reading stream chunk: error decoding response body: request or response body error: operation timed out"

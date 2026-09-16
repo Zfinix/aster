@@ -28,6 +28,8 @@ import { Thread } from "./components/Thread";
 import { Toolbar } from "./components/Toolbar";
 import { inEditor, nativeFind, onHostMessage, persist, post, restore } from "./lib/host";
 import { playCompletion, setCompletionSound, setSoundsEnabled, soundsEnabled } from "./lib/sounds";
+import { groupingEnabled, setGroupingEnabled } from "./lib/grouping";
+import { applyAccent } from "./lib/accent";
 import { type LoginState, loginLine } from "./lib/login";
 import { modelShort, recentsFor } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
@@ -97,6 +99,7 @@ export function App() {
   );
   const [busy, setBusy] = useState(false);
   const [sounds, setSounds] = useState(soundsEnabled);
+  const [grouping, setGrouping] = useState(groupingEnabled);
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [pendingMention, setPendingMention] = useState<{
     text: string;
@@ -202,7 +205,10 @@ export function App() {
           setSoundsEnabled(message.sounds);
           setCompletionSound(message.completionSound);
           setSounds(message.sounds);
+          setGroupingEnabled(message.groupToolCalls);
+          setGrouping(message.groupToolCalls);
         }
+        applyAccent(message.accent);
         modelRef.current = message.model;
         break;
 
@@ -951,6 +957,7 @@ export function App() {
           login={login}
           providers={providers}
           busy={busy}
+          grouping={grouping}
           onApproval={answerApproval}
           onRedirect={redirectApproval}
           onAnswer={(choice) => {
@@ -1011,6 +1018,12 @@ export function App() {
             setSoundsEnabled(on);
             setSounds(on);
             if (inEditor) post({ type: "setSounds", enabled: on });
+          }}
+          groupingOn={grouping}
+          onToggleGrouping={(on) => {
+            setGroupingEnabled(on);
+            setGrouping(on);
+            if (inEditor) post({ type: "setGroupToolCalls", enabled: on });
           }}
           queued={queued}
           onSteerQueued={steerQueued}

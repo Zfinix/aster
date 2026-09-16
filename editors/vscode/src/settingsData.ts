@@ -17,6 +17,7 @@ export function editorSettings(): EditorSettings {
     completionSound: vscode.workspace
       .getConfiguration("aster")
       .get<string>("completionSound", "sparkle"),
+    accent: vscode.workspace.getConfiguration("aster").get<string>("accent", "steel"),
   };
 }
 

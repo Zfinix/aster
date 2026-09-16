@@ -4079,7 +4079,7 @@ fn commands() -> impl Iterator<Item = &'static BotCommand> {
 
 fn help(cfg: &TelegramConfig) -> String {
     let lines = commands()
-        .map(|command| format!("/{} - {}\n", command.name, command.about))
+        .map(|command| format!("/{} - {}\n", command.name, markdown::escape(command.about)))
         .collect::<String>();
     format!(
         "<b>Aster</b>\n\

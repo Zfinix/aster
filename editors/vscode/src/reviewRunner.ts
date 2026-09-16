@@ -26,6 +26,10 @@ function sourceArgs(source: ReviewSource): string[] {
 export class ReviewRunner {
   private child: ChildProcess | undefined;
 
+  /** The CLI's last words. A failure reports its reason through a dead pipe,
+   *  so the text only exists on stderr. */
+  private lastStderr: string[] = [];
+
   get running(): boolean {
     return this.child !== undefined;
   }
@@ -71,6 +75,7 @@ export class ReviewRunner {
     child.stderr.on("data", (chunk: string) => {
       for (const line of chunk.split("\n")) {
         if (line.trim()) {
+          this.rememberStderr(line);
           options.onStderr(line);
         }
       }
@@ -94,6 +99,23 @@ export class ReviewRunner {
         resolve(code ?? 0);
       });
     });
+  }
+
+  private rememberStderr(line: string): void {
+    this.lastStderr.push(line);
+    if (this.lastStderr.length > 8) {
+      this.lastStderr.shift();
+    }
+  }
+
+  /** Quotes what the CLI printed before it died, so the panel explains the
+   *  failure instead of pointing at the output channel. */
+  crashMessage(code: number | null): string {
+    const said = this.lastStderr.join("\n").trim();
+    this.lastStderr = [];
+    return said
+      ? `aster exited with code ${code ?? 1}: ${said}`
+      : `aster exited with code ${code ?? 1}. See the Aster output channel.`;
   }
 
   cancel(): void {

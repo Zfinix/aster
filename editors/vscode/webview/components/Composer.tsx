@@ -40,6 +40,7 @@ import {
   GitCommitIcon,
   GitPullRequestIcon,
   HistoryIcon,
+  LayersIcon,
   MinimizeIcon,
   MomIcon,
   NewChatIcon,
@@ -130,6 +131,8 @@ export function Composer({
   onToggleMcp,
   soundsOn,
   onToggleSounds,
+  groupingOn,
+  onToggleGrouping,
   queued,
   onSteerQueued,
   onEditQueued,
@@ -171,6 +174,8 @@ export function Composer({
   onToggleMcp: (name: string, disabled: boolean) => void;
   soundsOn: boolean;
   onToggleSounds: (on: boolean) => void;
+  groupingOn: boolean;
+  onToggleGrouping: (on: boolean) => void;
   queued: { id: string; text: string }[];
   onSteerQueued: (id: string) => void;
   onEditQueued: (id: string, text: string) => void;
@@ -509,6 +514,14 @@ export function Composer({
             onToggle: onToggleSounds,
           },
           {
+            kind: "toggle" as const,
+            id: "grouping",
+            label: "Group tool calls",
+            icon: <LayersIcon />,
+            on: groupingOn,
+            onToggle: onToggleGrouping,
+          },
+          {
             kind: "action" as const,
             id: "settings",
             label: "Settings",
@@ -606,9 +619,11 @@ export function Composer({
     mcpServers,
     skills,
     soundsOn,
+    groupingOn,
     onCommand,
     onEffort,
     onToggleSounds,
+    onToggleGrouping,
   ]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

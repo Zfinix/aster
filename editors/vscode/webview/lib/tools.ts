@@ -396,34 +396,123 @@ export function resultHint(call: ToolCall): string | undefined {
   }
 }
 
-/** A run of consecutive calls to the same tool, folded behind one header. */
+/** Consecutive calls folded behind one header: one tool repeated, or a mix of lookups. */
 export interface ToolRun {
   id: string;
   name: string;
   calls: ToolCall[];
+  label?: string;
 }
 
-const RUN_MIN = 3;
+const RUN_MIN = 2;
+
+const COMMAND_RUN_MIN = 3;
+
+const COMMANDS = new Set(["run_command", "run_tests"]);
+
+/** Binaries that delete, escalate, or stop things. The destructive half of
+ *  aster-policy's ASK_BASH; the network ones are too routine to flag. */
+const SERIOUS_BINARIES = new Set([
+  "sudo",
+  "doas",
+  "su",
+  "rm",
+  "rmdir",
+  "dd",
+  "mkfs",
+  "shred",
+  "chmod",
+  "chown",
+  "chgrp",
+  "kill",
+  "killall",
+  "pkill",
+  "shutdown",
+  "reboot",
+  "halt",
+  "systemctl",
+  "launchctl",
+]);
+
+const SERIOUS_GIT: RegExp[] = [
+  /^push\b.*(\s--force\b|\s--force-with-lease\b|\s-f\b|\s\+\S)/,
+  /^reset\b.*\s--hard\b/,
+  /^clean\b.*\s-\w*f/,
+  /^branch\b.*\s(-D|--delete\s+--force)\b/,
+  /^checkout\b.*\s--\s/,
+  /^stash\s+(drop|clear)\b/,
+];
+
+function seriousSegment(segment: string): boolean {
+  const words = segment.trim().split(/\s+/).filter((word) => !/^\w+=/.test(word));
+  const binary = words[0]?.split("/").pop();
+  if (!binary) return false;
+  if (SERIOUS_BINARIES.has(binary) || binary.startsWith("mkfs.")) return true;
+  const rest = `${words.slice(1).join(" ")} `;
+  if (binary === "git") return SERIOUS_GIT.some((pattern) => pattern.test(rest));
+  if (binary === "find") return words.includes("-delete");
+  return ["npm", "pnpm", "cargo"].includes(binary) && rest.startsWith("publish ");
+}
+
+/** A command that deletes, force-pushes, escalates or kills: it never folds out
+ *  of sight and its row carries the warning colour. */
+export function isSerious(call: ToolCall): boolean {
+  if (call.name !== "run_command") return false;
+  const line = commandLine(call);
+  return line !== undefined && line.split(/&&|\|\||[;|\n]/).some(seriousSegment);
+}
 
 export function isRun(item: ToolCall | ToolRun): item is ToolRun {
   return "calls" in item;
 }
 
-/** Folds consecutive calls to the same tool into runs, so eighteen reads read as
- *  one line. Mixed sequences are left alone: the interleaving is the story. */
+/** Lookups the reader wants as one exploration, whatever the mix. */
+const READ_ONLY = new Set([
+  "read_file",
+  "search_files",
+  "find_files",
+  "list_files",
+  "explore",
+  "read_skill",
+  "recall",
+  "chat_history",
+]);
+
+/** Folds consecutive calls into runs: a repeated tool, or any mix of read-only
+ *  lookups, so Search/Read/Search reads as one exploration. Commands fold only
+ *  from three, and a serious one always keeps its own row. */
 export function groupRuns(calls: ToolCall[]): (ToolCall | ToolRun)[] {
   const out: (ToolCall | ToolRun)[] = [];
   let i = 0;
 
   while (i < calls.length) {
-    let end = i + 1;
-    while (end < calls.length && calls[end].name === calls[i].name) end++;
-
-    if (end - i >= RUN_MIN) {
-      out.push({ id: `run-${calls[i].id}`, name: calls[i].name, calls: calls.slice(i, end) });
-    } else {
-      out.push(...calls.slice(i, end));
+    if (isSerious(calls[i])) {
+      out.push(calls[i]);
+      i++;
+      continue;
     }
+
+    const name = calls[i].name;
+    const fits = READ_ONLY.has(name)
+      ? (next: ToolCall) => READ_ONLY.has(next.name)
+      : (next: ToolCall) => next.name === name && !isSerious(next);
+    let end = i + 1;
+    while (end < calls.length && fits(calls[end])) end++;
+
+    if (end - i < (COMMANDS.has(name) ? COMMAND_RUN_MIN : RUN_MIN)) {
+      out.push(...calls.slice(i, end));
+      i = end;
+      continue;
+    }
+
+    const stretch = calls.slice(i, end);
+    const mixed = stretch.some((call) => call.name !== name);
+    out.push({
+      id: `run-${calls[i].id}`,
+      name,
+      calls: stretch,
+      label: mixed ? explorationLabel(stretch) : undefined,
+    });
     i = end;
   }
 
@@ -442,6 +531,28 @@ const RUN_NOUNS: Record<string, [string, string]> = {
   explore: ["batch", "batches"],
   aster_mcp: ["tool call", "tool calls"],
 };
+
+const LOOKUP_NOUNS: Record<string, [string, string]> = {
+  read_file: ["file", "files"],
+  search_files: ["search", "searches"],
+  find_files: ["pattern", "patterns"],
+  list_files: ["directory", "directories"],
+  explore: ["batch", "batches"],
+  read_skill: ["skill", "skills"],
+  recall: ["memory", "memories"],
+  chat_history: ["past chat", "past chats"],
+};
+
+/** The header a mixed exploration wears, e.g. "Explored 3 files, 2 searches". */
+function explorationLabel(calls: ToolCall[]): string {
+  const counts = new Map<string, number>();
+  for (const call of calls) counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
+  const parts = [...counts].map(([name, count]) => {
+    const noun = LOOKUP_NOUNS[name] ?? ["lookup", "lookups"];
+    return `${count} ${count === 1 ? noun[0] : noun[1]}`;
+  });
+  return `Explored ${parts.join(", ")}`;
+}
 
 /** The header a folded run wears, e.g. "Read 6 files". */
 export function runLabel(name: string, count: number): string {

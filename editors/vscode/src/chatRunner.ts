@@ -108,7 +108,9 @@ export class ChatRunner {
       () => 0,
       (err) => {
         // A cancelled turn was already torn down by `cancel`; surfacing the
-        // kill as an error would read as a failure.
+        // kill as an error would read as a failure. A terminal event still
+        // has to land: the host counts one, and a turn that ends without it
+        // gets reported to the user as a crash with an exit code.
         const live = this.turn === turn;
         // The slot must free on failure too, or every later message queues
         // behind a turn that already died.
@@ -119,6 +121,8 @@ export class ChatRunner {
             type: "error",
             message: err instanceof Error ? err.message : String(err),
           });
+        } else {
+          turn.options.onEvent({ type: "done", reply: turn.reply, edits: turn.edits });
         }
         return 1;
       }

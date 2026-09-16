@@ -14,8 +14,21 @@ export function setRoot(next: string): void {
 
 export const stub = {
   workspace: {
-    getConfiguration(): { get<T>(key: string): T | undefined } {
-      return { get: <T,>(key: string) => settings[key] as T | undefined };
+    getConfiguration(_section?: string): {
+      get<T>(key: string): T | undefined;
+      update(key: string, value: unknown): Promise<void>;
+    } {
+      return {
+        get: <T,>(key: string) => settings[key] as T | undefined,
+        update: (key: string, value: unknown) => {
+          if (value === undefined) {
+            delete settings[key];
+          } else {
+            settings[key] = value;
+          }
+          return Promise.resolve();
+        },
+      };
     },
     get workspaceFolders(): { uri: { fsPath: string } }[] | undefined {
       return root ? [{ uri: { fsPath: root } }] : undefined;

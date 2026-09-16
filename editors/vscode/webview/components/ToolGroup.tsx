@@ -4,14 +4,14 @@ import { PlanCard } from "./PlanCard";
 import { ToolCallRow } from "./ToolCallRow";
 import { ToolRun } from "./ToolRun";
 
-/** A stretch of tool calls in the order they happened, with repeated tools
- *  folded into a single run. Plan updates render inline as a PlanCard where
- *  they landed, the same as any other tool output. */
-export function ToolGroup({ calls }: { calls: ToolCall[] }) {
+/** A stretch of tool calls in the order they happened, folded into runs unless
+ *  `grouped` is off. Plan updates render inline as a PlanCard where they landed,
+ *  the same as any other tool output. */
+export function ToolGroup({ calls, grouped }: { calls: ToolCall[]; grouped: boolean }) {
   if (calls.length === 0) return null;
   return (
     <div className="tool-list">
-      {groupRuns(calls).map((item) =>
+      {(grouped ? groupRuns(calls) : calls).map((item) =>
         isRun(item) ? (
           <ToolRun key={item.id} run={item} />
         ) : item.name === "update_plan" ? (

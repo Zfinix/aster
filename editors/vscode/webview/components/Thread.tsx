@@ -29,6 +29,7 @@ export function Thread({
   login,
   providers,
   busy,
+  grouping,
   onApproval,
   onRedirect,
   onAnswer,
@@ -42,6 +43,7 @@ export function Thread({
   login: LoginState | null;
   providers: Provider[];
   busy: boolean;
+  grouping: boolean;
   onApproval: (allow: boolean, always?: boolean) => void;
   onRedirect: (instead: string) => void;
   onAnswer: (choice: string | null) => void;
@@ -139,7 +141,7 @@ export function Thread({
                 {/* Arrival order, so steps sit under the thought that led to them. */}
                 {turn.blocks.map((block) =>
                   block.kind === "tools" ? (
-                    <ToolGroup key={block.id} calls={block.calls} />
+                    <ToolGroup key={block.id} calls={block.calls} grouped={grouping} />
                   ) : block.kind === "reasoning" ? (
                     <ReasoningBlock
                       key={block.id}

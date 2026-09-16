@@ -3,26 +3,24 @@ import { runLabel, type ToolRun as Run } from "../lib/tools";
 import { ToolCallRow } from "./ToolCallRow";
 import { AlertIcon, ChevronIcon, LayersIcon } from "./icons";
 
-/** A folded run of same-tool steps. Open while it is still working, so progress
- *  stays visible, then closed once it lands — until the reader says otherwise,
- *  after which their choice sticks. */
+/** A folded run of steps. It stays closed until the reader opens it; the header
+ *  still says when a step is running or failed. */
 export function ToolRun({ run }: { run: Run }) {
-  const [choice, setChoice] = useState<boolean>();
+  const [open, setOpen] = useState(false);
   const running = run.calls.some((call) => call.result === undefined && !call.stopped);
   const failures = run.calls.filter((call) => call.error === true).length;
-  const open = choice ?? (running || failures > 0);
 
   return (
     <div className="tool-run" data-error={failures > 0} data-running={running}>
       <button
         className="tool-row"
-        onClick={() => setChoice(!open)}
+        onClick={() => setOpen(!open)}
         aria-expanded={open}
         title={open ? "Fold these steps" : "Show these steps"}
       >
         <span className="tool-icon">{failures > 0 ? <AlertIcon /> : <LayersIcon />}</span>
         <span className="tool-label">
-          <span className="tool-verb">{runLabel(run.name, run.calls.length)}</span>
+          <span className="tool-verb">{run.label ?? runLabel(run.name, run.calls.length)}</span>
         </span>
         <span className="tool-hint">
           {running ? "running…" : failures > 0 ? `${failures} failed` : undefined}

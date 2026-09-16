@@ -633,6 +633,11 @@ export class AsterPanel implements vscode.WebviewViewProvider {
           .getConfiguration("aster")
           .update("sounds", message.enabled, vscode.ConfigurationTarget.Global);
         break;
+      case "setGroupToolCalls":
+        await vscode.workspace
+          .getConfiguration("aster")
+          .update("groupToolCalls", message.enabled, vscode.ConfigurationTarget.Global);
+        break;
       case "setPermissionMode":
         await this.context.globalState.update(PERMISSION_KEY, message.mode);
         break;
@@ -1219,9 +1224,13 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       effort: this.effort(),
       binaryOk: await checkBinary(cliConfig().binary),
       sounds: vscode.workspace.getConfiguration("aster").get<boolean>("sounds", true),
+      groupToolCalls: vscode.workspace
+        .getConfiguration("aster")
+        .get<boolean>("groupToolCalls", true),
       completionSound: vscode.workspace
         .getConfiguration("aster")
         .get<string>("completionSound", "sparkle"),
+      accent: vscode.workspace.getConfiguration("aster").get<string>("accent", "steel"),
       skills: await skillCommands(root),
       setup: await info.setupNeeded(root ?? os.homedir(), this.env()).catch(() => null),
       announcements: announcements.length > 0 ? announcements : undefined,
@@ -1280,7 +1289,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         origin.postMessage({
           type: "chatError",
           id: message.id,
-          message: `aster chat exited with code ${code}. See the Aster output channel.`,
+          message: `aster acp exited with code ${code}. See the Aster output channel.`,
         });
       }
     } catch (err) {
@@ -1348,7 +1357,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         origin.postMessage({
           type: "reviewError",
           id,
-          message: `aster exited with code ${code}. See the Aster output channel.`,
+          message: runner.crashMessage(code),
         });
       } else {
         origin.postMessage({ type: "reviewDone", id });

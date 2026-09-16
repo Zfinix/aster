@@ -112,6 +112,22 @@ describe("ChatRunner", () => {
     expect((error as { message: string }).message).toContain("code 101");
   });
 
+  it("closes a cancelled turn without reporting a crash", async () => {
+    const agent = new FakeAgent();
+    agent.silentPrompt = true;
+    spawn.mockReturnValue(agent);
+    const events: ChatStreamEvent[] = [];
+    const runner = new ChatRunner();
+
+    const done = runner.run(options((event) => events.push(event)));
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
+    runner.cancel();
+
+    expect(await done).toBe(1);
+    expect(events.find((e) => e.type === "error")).toBeUndefined();
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
   it("still sends a message once the capped history stops growing", async () => {
     const agent = new FakeAgent();
     spawn.mockReturnValue(agent);

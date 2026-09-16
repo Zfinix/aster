@@ -7,6 +7,7 @@ import {
   displayOutput,
   groupRuns,
   isRun,
+  isSerious,
   resultHint,
   outputTitle,
   humanize,
@@ -223,9 +224,17 @@ describe("groupRuns", () => {
     expect(isRun(run) && run.calls).toHaveLength(3);
   });
 
-  it("leaves a pair alone, since the header would cost more than it hides", () => {
+  it("folds a pair, so two steps take one row", () => {
     const calls = [call("read_file", { path: "a.rs" }), call("read_file", { path: "b.rs" })];
-    expect(groupRuns(calls).every((item) => !isRun(item))).toBe(true);
+    const grouped = groupRuns(calls);
+    expect(grouped).toHaveLength(1);
+    expect(isRun(grouped[0]) && grouped[0].calls).toHaveLength(2);
+  });
+
+  it("leaves a lone step as its own row", () => {
+    expect(groupRuns([call("edit_file", { path: "a.rs" })]).every((item) => !isRun(item))).toBe(
+      true
+    );
   });
 
   it("keeps interleaved steps in order rather than gathering by tool", () => {
@@ -239,12 +248,101 @@ describe("groupRuns", () => {
 
   it("folds each run separately when two runs sit back to back", () => {
     const calls = [
-      ...Array.from({ length: 3 }, () => call("read_file", { path: "a.rs" })),
-      ...Array.from({ length: 3 }, () => call("search_files", { query: "fn" })),
+      ...Array.from({ length: 3 }, () => call("edit_file", { path: "a.rs" })),
+      ...Array.from({ length: 3 }, () => call("run_command", { command: "cargo" })),
     ];
     const grouped = groupRuns(calls);
     expect(grouped).toHaveLength(2);
-    expect(grouped.map((item) => item.name)).toEqual(["read_file", "search_files"]);
+    expect(grouped.map((item) => item.name)).toEqual(["edit_file", "run_command"]);
+  });
+
+  it("shows one or two commands as their own rows", () => {
+    const calls = [call("run_command", { command: "ls" }), call("run_command", { command: "pwd" })];
+    expect(groupRuns(calls).every((item) => !isRun(item))).toBe(true);
+  });
+
+  it("folds three commands but keeps a serious one out of the fold", () => {
+    const calls = [
+      call("run_command", { command: "cargo", args: ["build"] }),
+      call("run_command", { command: "cargo", args: ["test"] }),
+      call("run_command", { command: "cargo", args: ["fmt"] }),
+      call("run_command", { command: "rm", args: ["-rf", "target"] }),
+    ];
+    const grouped = groupRuns(calls);
+    expect(grouped).toHaveLength(2);
+    expect(isRun(grouped[0]) && grouped[0].calls).toHaveLength(3);
+    expect(isRun(grouped[1])).toBe(false);
+  });
+
+  it("keeps the tool's own label when every lookup used the same tool", () => {
+    const calls = Array.from({ length: 3 }, () => call("read_file", { path: "a.rs" }));
+    const [run] = groupRuns(calls);
+    expect(isRun(run) && run.label).toBeUndefined();
+  });
+
+  it("does not split an exploration where the tool changes after a repeat", () => {
+    const calls = [
+      ...Array.from({ length: 3 }, () => call("search_files", { query: "fn" })),
+      call("read_file", { path: "a.rs" }),
+      call("read_file", { path: "b.rs" }),
+    ];
+    const grouped = groupRuns(calls);
+    expect(grouped).toHaveLength(1);
+    expect(isRun(grouped[0]) && grouped[0].label).toBe("Explored 3 searches, 2 files");
+  });
+
+  it("folds a mixed stretch of read-only lookups into one exploration", () => {
+    const calls = [
+      call("search_files", { query: "groupRuns" }),
+      call("read_file", { path: "a.rs" }),
+      call("search_files", { query: "ToolRun" }),
+      call("find_files", { pattern: "*.tsx" }),
+    ];
+    const [run] = groupRuns(calls);
+    expect(isRun(run) && run.label).toBe("Explored 2 searches, 1 file, 1 pattern");
+    expect(isRun(run) && run.calls).toHaveLength(4);
+  });
+
+  it("folds a mixed pair of lookups", () => {
+    const calls = [call("search_files", { query: "a" }), call("read_file", { path: "a.rs" })];
+    const [run] = groupRuns(calls);
+    expect(isRun(run) && run.label).toBe("Explored 1 search, 1 file");
+  });
+
+  it("stops the exploration at a command that changes things", () => {
+    const calls = [
+      call("search_files", { query: "a" }),
+      call("read_file", { path: "a.rs" }),
+      call("search_files", { query: "b" }),
+      call("edit_file", { path: "a.rs" }),
+      call("read_file", { path: "b.rs" }),
+    ];
+    const grouped = groupRuns(calls);
+    expect(grouped).toHaveLength(3);
+    expect(isRun(grouped[0]) && grouped[0].label).toBe("Explored 2 searches, 1 file");
+    expect(grouped[1].name).toBe("edit_file");
+    expect(grouped[2].name).toBe("read_file");
+  });
+});
+
+describe("isSerious", () => {
+  const sh = (script: string) => call("run_command", { command: "bash", args: ["-lc", script] });
+
+  it("flags commands that delete, escalate, or rewrite history", () => {
+    expect(isSerious(call("run_command", { command: "rm", args: ["-rf", "target"] }))).toBe(true);
+    expect(isSerious(sh("cargo build && sudo make install"))).toBe(true);
+    expect(isSerious(sh("git push --force origin main"))).toBe(true);
+    expect(isSerious(sh("git reset --hard HEAD~1"))).toBe(true);
+    expect(isSerious(sh("git clean -fd"))).toBe(true);
+    expect(isSerious(sh("find . -name '*.orig' -delete"))).toBe(true);
+    expect(isSerious(sh("cargo publish"))).toBe(true);
+  });
+
+  it("leaves everyday commands alone", () => {
+    expect(isSerious(sh("git push origin main"))).toBe(false);
+    expect(isSerious(sh("cargo test | tail -5"))).toBe(false);
+    expect(isSerious(sh("grep -rn rm src"))).toBe(false);
+    expect(isSerious(call("read_file", { path: "rm" }))).toBe(false);
   });
 });
 

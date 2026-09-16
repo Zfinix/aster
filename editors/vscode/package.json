@@ -279,6 +279,11 @@
           "default": true,
           "description": "Play interaction sounds in the Aster panel when a turn or review starts and finishes."
         },
+        "aster.groupToolCalls": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fold runs of tool calls in the Aster panel behind one collapsed row. Risky commands always keep their own row."
+        },
         "aster.completionSound": {
           "type": "string",
           "enum": [
@@ -290,6 +295,20 @@
           ],
           "default": "sparkle",
           "description": "Which sound plays when the agent finishes a turn or review."
+        },
+        "aster.accent": {
+          "type": "string",
+          "enum": [
+            "steel",
+            "midnight",
+            "nord",
+            "forest",
+            "gruvbox",
+            "dracula",
+            "none"
+          ],
+          "default": "steel",
+          "description": "Hue of the tool blocks in the Aster panel, drawn from the Aster terminal themes. Applies immediately; `none` drops the wash."
         },
         "aster.extraArgs": {
           "type": "array",

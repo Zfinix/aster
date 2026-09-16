@@ -7,6 +7,7 @@ import {
   arg,
   describeTool,
   displayOutput,
+  isSerious,
   mcpMatches,
   mcpTarget,
   numberArg,
@@ -24,26 +25,24 @@ import { Markdown } from "./Markdown";
 import { McpMatches } from "./McpMatches";
 import { ToolOutput } from "./ToolOutput";
 import { WebResults } from "./WebResults";
-import { AlertIcon, ChevronIcon, ExternalIcon } from "./icons";
+import { AlertIcon, ChevronIcon, ExternalIcon, WarningIcon } from "./icons";
 import { toolIcon } from "./toolIcons";
 
-const OPEN_BY_DEFAULT = new Set(["run_command", "run_tests"]);
-
 /** One step, collapsed to its header until asked: eighteen reads stay a list
- *  rather than a wall. Failures open themselves, since that is the one case the
- *  reader was always going to expand. `nested` is a step inside a folded run. */
+ *  rather than a wall. `nested` is a step inside a folded run. */
 export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean }) {
   const running = call.result === undefined && !call.stopped;
   const output = displayOutput(call);
   const input = toolInput(call);
-  const [expanded, setExpanded] = useState(OPEN_BY_DEFAULT.has(call.name));
+  const [expanded, setExpanded] = useState(false);
   const { verb, detail, code } = describeTool(call);
   const matches = mcpMatches(call);
   const results = webResults(call);
   const path = toolPath(call);
   const prose = rendersAsMarkdown(call);
   const card = Boolean(output || input);
-  const open = card && (expanded || call.error === true);
+  const serious = isSerious(call);
+  const open = card && expanded;
 
   const lead = nested ? undefined : verb;
   const body = nested && !detail ? verb : detail;
@@ -69,7 +68,12 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   };
 
   return (
-    <div className="tool" data-error={call.error === true} data-running={running}>
+    <div
+      className="tool"
+      data-error={call.error === true}
+      data-running={running}
+      data-serious={serious}
+    >
       <button
         className="tool-row"
         onClick={() => setExpanded(!expanded)}
@@ -79,7 +83,13 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
       >
         {!nested && (
           <span className="tool-icon">
-            {call.error ? <AlertIcon /> : toolIcon(call.name, mcpTarget(call))}
+            {call.error ? (
+              <AlertIcon />
+            ) : serious ? (
+              <WarningIcon />
+            ) : (
+              toolIcon(call.name, mcpTarget(call))
+            )}
           </span>
         )}
         <span className="tool-label" data-oneline={Boolean(input)} data-lead={!lead}>

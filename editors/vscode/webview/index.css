@@ -2281,6 +2281,18 @@ code {
   opacity: 1;
 }
 
+/* A command that deletes, force-pushes or escalates wears the warning colour, so
+   it stands out of a long list of steps without opening. */
+.tool-list > [data-serious="true"]:not([data-error="true"]) > .tool-row::before {
+  background: var(--sev-medium);
+  opacity: 1;
+}
+
+.tool[data-serious="true"]:not([data-error="true"]) .tool-icon,
+.tool[data-serious="true"]:not([data-error="true"], [data-running="true"]) .tool-detail {
+  color: var(--sev-medium);
+}
+
 /* With no run to sit on, the node marks nothing. Last, so it also wins over the
    running and error states. */
 .tool-list > :only-child > .tool-row::before {

@@ -115,5 +115,13 @@ export function parseError(message: string): ParsedError {
     };
   }
 
+  if (/^nothing to compact yet$/i.test(stripped)) {
+    return {
+      label: "Nothing to compact",
+      hint: "The conversation is still short, so there is no earlier history to fold into a summary yet.",
+      detail: "",
+    };
+  }
+
   return { label: "Something went wrong", detail: message };
 }

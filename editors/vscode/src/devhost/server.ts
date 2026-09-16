@@ -22,6 +22,7 @@ import { deleteSession, listSessions, loadSession, renameSession } from "../sess
 import * as settingsData from "../settingsData";
 import * as asterConfig from "../asterConfig";
 import { shell } from "./shell";
+import { stub } from "./vscodeStub";
 
 interface State {
   model: string | null;
@@ -160,6 +161,10 @@ export function start(root: string, port: number): void {
           await info.toggleMcp(root, message.name, message.disabled);
           break;
         case "setEditor":
+          await stub.workspace.getConfiguration("aster").update(message.key, message.value);
+          // The chat tab reads the accent from init, so re-send it.
+          if (message.key === "accent") await onMessage({ type: "ready" });
+          break;
         case "openConfigFile":
           noEditor(message.type);
           break;
@@ -189,7 +194,9 @@ export function start(root: string, port: number): void {
           effort: state.effort,
           binaryOk: await checkBinary(cliConfig().binary),
           sounds: true,
+          groupToolCalls: true,
           completionSound: "sparkle",
+          accent: settingsData.editorSettings().accent,
           skills: await skillCommands(root),
           setup: state.showSetup
             ? { provider: "OpenRouter", base_url: "https://openrouter.ai/api/v1", login: "openrouter", key_vars: ["OPENROUTER_API_KEY"] }
@@ -221,12 +228,23 @@ export function start(root: string, port: number): void {
               sawTerminal ||= event.type === "done" || event.type === "error";
               post({ type: "chatEvent", id: message.id, event });
             },
-            onStderr: (line) => post({ type: "log", line }),
+            onStderr: (line) => {
+              // The webview drops log frames, so the agent's last words have
+              // to land here too or a crash leaves nothing to diagnose.
+              console.error(`[aster] ${line}`);
+              post({ type: "log", line });
+            },
           });
           runState();
           const code = await running;
           if (!sawTerminal) {
-            post({ type: "chatError", id: message.id, message: `aster chat exited with ${code}` });
+            // Shaped so the webview's parseError strips the prefix and shows
+            // the friendly "stopped unexpectedly" box instead of a raw code.
+            post({
+              type: "chatError",
+              id: message.id,
+              message: `aster acp exited with code ${code}. See the Aster output channel.`,
+            });
           }
           try {
             const mom = await info.momState(root);
@@ -256,8 +274,12 @@ export function start(root: string, port: number): void {
             onStderr: (line) => post({ type: "log", line }),
           });
           runState();
-          await running;
-          post({ type: "reviewDone", id: message.id });
+          const code = await running;
+          if (code !== 0) {
+            post({ type: "reviewError", id: message.id, message: review.crashMessage(code) });
+          } else {
+            post({ type: "reviewDone", id: message.id });
+          }
         } catch (err) {
           post({ type: "reviewError", id: message.id, message: describe(err) });
         }

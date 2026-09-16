@@ -1,4 +1,5 @@
 import type { ConfigValue, EditorSettings } from "../../src/protocol";
+import { ACCENTS } from "../lib/accent";
 import { ListInput } from "./controls/ListInput";
 import { NumberInput } from "./controls/NumberInput";
 import { Select } from "./controls/Select";
@@ -111,6 +112,21 @@ export function EditorSection({
             label="Completion sound"
             onChange={(next) => onSet("completionSound", next)}
           />
+        </div>
+      </div>
+
+      <div className="set-row">
+        <div className="set-row-text">
+          <div className="set-row-head">
+            <span className="set-row-label">Accent</span>
+          </div>
+          <p className="set-row-help">
+            Hue of the tool blocks in the chat panel, drawn from the Aster terminal themes. Applies immediately; `none` drops the wash.
+          </p>
+          <p className="set-row-key mono">aster.accent</p>
+        </div>
+        <div className="set-row-control">
+          <Select options={ACCENTS} value={editor.accent} label="Accent" onChange={(next) => onSet("accent", next)} />
         </div>
       </div>
 
