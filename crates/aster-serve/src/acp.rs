@@ -43,13 +43,26 @@ struct Turn {
     edits: Vec<String>,
     tool_names: HashMap<String, String>,
     permission: Option<Permission>,
-    /// Reasoning chars seen so far; ACP gives no token counts, so the tab
-    /// gets a chars/4 estimate. `None` once the answer starts.
+    /// Chars in the open thinking block; ACP gives no token counts, so the
+    /// tab gets a chars/4 estimate.
     reasoning_chars: usize,
     reasoning_started: Option<Instant>,
     /// Mirrored into the turn's `Run`, so a tab that loads mid-prompt still
     /// sees the card the browser that started the turn saw.
     pending: Arc<Mutex<Option<Value>>>,
+}
+
+impl Turn {
+    /// Close the open thinking block, if any, so the next one counts from zero.
+    fn end_thinking(&mut self) -> Option<Value> {
+        let start = self.reasoning_started.take()?;
+        let tokens = reasoning_tokens(std::mem::take(&mut self.reasoning_chars));
+        Some(json!({
+            "type": "reasoning_done",
+            "tokens": tokens,
+            "duration_ms": start.elapsed().as_millis() as u64,
+        }))
+    }
 }
 
 /// Session state that survives between turns: the agent holds the history, so
@@ -939,6 +952,14 @@ impl Agent {
         let kind = update["sessionUpdate"].as_str().unwrap_or_default();
         let (event_id, event) = {
             let mut inner = self.inner.lock().expect("agent state poisoned");
+            // Reply text or a tool call ends a thinking block, so the next
+            // block counts its own tokens from zero.
+            if matches!(kind, "agent_message_chunk" | "tool_call")
+                && let Some(turn) = inner.turn.as_mut()
+                && let Some(done) = turn.end_thinking()
+            {
+                self.post(&turn.event_id.clone(), &done);
+            }
             let event = match kind {
                 "agent_message_chunk" => {
                     let text = content_text(&update["content"]);
@@ -948,17 +969,6 @@ impl Agent {
                         return;
                     };
                     turn.reply.push_str(&text);
-                    let event_id = turn.event_id.clone();
-                    let done = turn.reasoning_started.take().map(|start| {
-                        json!({
-                            "type": "reasoning_done",
-                            "tokens": turn.reasoning_chars / 4,
-                            "duration_ms": start.elapsed().as_millis() as u64,
-                        })
-                    });
-                    if let Some(done) = done {
-                        self.post(&event_id, &done);
-                    }
                     json!({ "type": "token", "content": text })
                 }
                 "agent_thought_chunk" => {
@@ -969,7 +979,7 @@ impl Agent {
                                 turn.reasoning_started = Some(Instant::now());
                             }
                             turn.reasoning_chars += text.chars().count();
-                            turn.reasoning_chars / 4
+                            reasoning_tokens(turn.reasoning_chars)
                         }
                         None => return,
                     };
@@ -1054,6 +1064,11 @@ impl Agent {
     }
 }
 
+/// Thinking tokens estimated from characters, rounded up like the CLI's count.
+fn reasoning_tokens(chars: usize) -> usize {
+    chars.div_ceil(4)
+}
+
 fn content_text(content: &Value) -> String {
     match content {
         Value::Array(blocks) => blocks
@@ -1065,3 +1080,7 @@ fn content_text(content: &Value) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/acp_test.rs"]
+mod tests;
