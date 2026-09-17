@@ -11,6 +11,7 @@ fn tool_call(id: &str, name: &str, args: &str) -> ToolCall {
             name: name.to_string(),
             arguments: args.to_string(),
         },
+        extra_content: None,
     }
 }
 

@@ -37,6 +37,10 @@ mod tool_args;
 mod repetition;
 pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
 
+mod reasoning;
+pub use reasoning::THINKING_EXHAUSTED;
+use reasoning::{Memo, Reasoned, Replay, ThinkTags};
+
 mod wire;
 use wire::{
     apply_cache_control, carries_images, fold_system_chat, fold_system_notes, strip_image_parts,
@@ -49,8 +53,8 @@ pub use models::{
     MessageContent, ReasoningDetail, ToolCall, ToolCallFunction, UrlCitation, WebSearchPlugin,
 };
 use models::{
-    ChatRequest, ChatResponse, ChatStreamChunk, Reasoning, StreamOptions, ToolCallDelta,
-    ToolChatRequest, ToolChatResponse, Usage,
+    ChatRequest, ChatResponse, ChatStreamChunk, StreamOptions, ToolCallDelta, ToolChatRequest,
+    ToolChatResponse, Usage,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -117,6 +121,7 @@ pub struct AiClient {
     web_search: bool,
     info: Arc<OnceCell<Option<ModelInfo>>>,
     attribution_headers: Vec<(String, String)>,
+    reasoning_memo: Arc<std::sync::Mutex<Memo>>,
 }
 
 impl AiClient {
@@ -209,6 +214,7 @@ impl AiClient {
             web_search: env_truthy("ASTER_WEB_SEARCH"),
             info: Arc::new(OnceCell::new()),
             attribution_headers: Vec::new(),
+            reasoning_memo: Arc::default(),
         }
     }
 
@@ -330,27 +336,39 @@ impl AiClient {
             }),
             seed: self.seed,
             max_tokens: self.max_tokens,
-            reasoning: self.reasoning(),
+            reasoning: self.reasoning_fields(model),
             plugins: self.plugins(),
         }
     }
 
-    fn reasoning(&self) -> Option<Reasoning> {
-        // `reasoning` is an OpenRouter-only parameter; Codex translates it to
-        // `reasoning_effort`, but every other provider rejects it outright.
-        if !self.base_url.contains("openrouter") && !codex_api::is_codex(&self.base_url) {
-            return None;
+    /// The thinking fields for `model` at the current effort, after any
+    /// refusal this session has already worked around.
+    fn reasoning_fields(&self, model: &str) -> serde_json::Map<String, serde_json::Value> {
+        reasoning::fields(
+            reasoning::dialect(&self.base_url).knob,
+            self.effort_for(model),
+        )
+    }
+
+    fn effort_for(&self, model: &str) -> Option<Effort> {
+        self.memo()
+            .efforts
+            .get(&(model.to_string(), self.effort))
+            .copied()
+            .unwrap_or(Some(self.effort))
+    }
+
+    fn history_replay(&self) -> Replay {
+        match self.memo().strip_history {
+            true => Replay::Strip,
+            false => reasoning::dialect(&self.base_url).replay,
         }
-        match self.effort {
-            Effort::Off => Some(Reasoning {
-                effort: None,
-                enabled: Some(false),
-            }),
-            effort => Some(Reasoning {
-                effort: Some(effort.as_str().to_string()),
-                enabled: None,
-            }),
-        }
+    }
+
+    fn memo(&self) -> std::sync::MutexGuard<'_, Memo> {
+        self.reasoning_memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn plugins(&self) -> Vec<WebSearchPlugin> {
@@ -439,7 +457,7 @@ impl AiClient {
         let mut content = String::new();
 
         for pass in 0..=MAX_CONTINUATION_PASSES {
-            let response = match self.send_with_retry(&request, "chat request").await {
+            let response = match self.send_reasoned(&mut request, "chat request").await {
                 Err(err) if images && pass == 0 && rejected_images(&err) => {
                     tracing::debug!(model = %self.model, "endpoint rejected the images; describing them instead");
                     self.caption_chat_messages(&mut request.messages).await;
@@ -449,14 +467,13 @@ impl AiClient {
                             .iter_mut()
                             .for_each(|m| m.content.strip_images());
                     }
-                    self.send_with_retry(&request, "chat request").await?
+                    self.send_reasoned(&mut request, "chat request").await?
                 }
                 result => result?,
             };
             let body = response.text().await.context("reading response body")?;
 
-            let parsed: ChatResponse =
-                serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+            let parsed: ChatResponse = parse_body(&body)?;
             let choice = parsed
                 .choices
                 .into_iter()
@@ -466,6 +483,9 @@ impl AiClient {
             self.record_usage(parsed.usage, prompt_chars, content.len());
             if choice.finish_reason.as_deref() != Some("length") {
                 return Ok(content);
+            }
+            if content.trim().is_empty() {
+                return Err(anyhow!(THINKING_EXHAUSTED));
             }
             // The reply hit the output budget mid-sentence; feed the partial
             // back so the model finishes it instead of returning a cut reply.
@@ -489,11 +509,10 @@ impl AiClient {
         let mut content = String::new();
 
         for _ in 0..=MAX_CONTINUATION_PASSES {
-            let response = self.send_with_retry(&request, "chat request").await?;
+            let response = self.send_reasoned(&mut request, "chat request").await?;
             let body = response.text().await.context("reading response body")?;
 
-            let parsed: ChatResponse =
-                serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+            let parsed: ChatResponse = parse_body(&body)?;
             let choice = parsed
                 .choices
                 .into_iter()
@@ -503,6 +522,9 @@ impl AiClient {
             self.record_usage(parsed.usage, system.len() + user.len(), content.len());
             if choice.finish_reason.as_deref() != Some("length") {
                 return Ok(content);
+            }
+            if content.trim().is_empty() {
+                return Err(anyhow!(THINKING_EXHAUSTED));
             }
             // The reply hit the output budget mid-sentence; feed the partial
             // back so the model finishes it instead of returning a cut reply.
@@ -534,6 +556,7 @@ impl AiClient {
         temperature: f64,
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
+        reasoning::replay(&mut messages, self.history_replay());
         let images = self.settle_images(&mut messages).await;
         if wants_cache_control(&self.base_url, model) {
             apply_cache_control(&mut messages);
@@ -551,13 +574,13 @@ impl AiClient {
             stream_options: None,
             seed: self.seed,
             max_tokens: self.output_budget(request_chars).await,
-            reasoning: self.reasoning(),
+            reasoning: self.reasoning_fields(model),
             plugins: Vec::new(),
         };
 
         let mut request_content = String::new();
         for pass in 0..=MAX_CONTINUATION_PASSES {
-            let response = match self.send_with_retry(&request, "tool chat request").await {
+            let response = match self.send_reasoned(&mut request, "tool chat request").await {
                 Err(err) if images && pass == 0 && rejected_images(&err) => {
                     tracing::debug!(
                         model,
@@ -567,20 +590,31 @@ impl AiClient {
                     if carries_images(&request.messages) {
                         strip_image_parts(&mut request.messages);
                     }
-                    self.send_with_retry(&request, "tool chat request").await?
+                    self.send_reasoned(&mut request, "tool chat request")
+                        .await?
                 }
                 result => result?,
             };
             let body = response.text().await.context("reading response body")?;
 
-            let parsed: ToolChatResponse =
-                serde_json::from_str(&body).with_context(|| format!("parsing response: {body}"))?;
+            let parsed: ToolChatResponse = parse_body(&body)?;
             let choice = parsed
                 .choices
                 .into_iter()
                 .next()
                 .context("no choices in model response")?;
             let mut message = choice.message;
+            if message.reasoning_details.is_empty()
+                && let Some(thinking) = message
+                    .reasoning_content
+                    .take()
+                    .filter(|t| !t.trim().is_empty())
+            {
+                message
+                    .reasoning_details
+                    .push(ReasoningDetail::from_text(thinking));
+            }
+            message.reasoning_content = None;
             if message.tool_calls.is_empty()
                 && let Some(content) = message.content.as_deref()
             {
@@ -608,6 +642,12 @@ impl AiClient {
             // Prose reply: accumulate it, and if it hit the output budget, feed
             // it back so the model finishes it instead of returning a cut reply.
             let fragment = message.content.take().unwrap_or_default();
+            if choice.finish_reason.as_deref() == Some("length")
+                && request_content.is_empty()
+                && fragment.trim().is_empty()
+            {
+                return Err(anyhow!(THINKING_EXHAUSTED));
+            }
             request_content.push_str(&fragment);
             if is_degenerate(&request_content) {
                 return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
@@ -645,42 +685,60 @@ impl AiClient {
         temperature: f64,
         mut on_token: impl FnMut(&str),
     ) -> Result<String> {
-        let request = self.build_request(model, system, user, temperature, true);
+        let mut request = self.build_request(model, system, user, temperature, true);
 
         let response = self
-            .send_with_retry(&request, "streaming chat request")
+            .send_reasoned(&mut request, "streaming chat request")
             .await?;
 
         let mut acc = String::new();
         let mut usage: Option<Usage> = None;
+        let mut tags = ThinkTags::default();
+        let mut thought = false;
+        let mut finish: Option<String> = None;
         let mut adapt = self.sse_adapter();
         let streamed = read_sse(response, |data| {
             let Some(data) = adapt(data) else {
                 return true;
             };
-            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(&data) else {
+            let Some(parsed) = parse_chunk(&data) else {
                 return true;
             };
             if let Some(u) = parsed.usage {
                 usage = Some(u);
             }
-            if let Some(delta) = parsed
-                .choices
-                .into_iter()
-                .next()
-                .and_then(|c| c.delta.content)
-                && !delta.is_empty()
+            let Some(choice) = parsed.choices.into_iter().next() else {
+                return true;
+            };
+            finish = choice.finish_reason.or(finish.take());
+            if choice
+                .delta
+                .reasoning_content
+                .is_some_and(|r| !r.is_empty())
+                || !choice.delta.reasoning_details.is_empty()
             {
-                acc.push_str(&delta);
-                on_token(&delta);
+                thought = true;
+            }
+            if let Some(delta) = choice.delta.content.filter(|d| !d.is_empty()) {
+                let (text, thinking) = tags.feed(&delta);
+                thought |= !thinking.is_empty();
+                if !text.is_empty() {
+                    acc.push_str(&text);
+                    on_token(&text);
+                }
             }
             true
         })
         .await;
+        let (text, _) = tags.finish();
+        if !text.is_empty() {
+            acc.push_str(&text);
+            on_token(&text);
+        }
         if let Err(e) = streamed {
             // Nothing reached the caller yet, so a fresh request duplicates
             // nothing; a drop after output surfaces instead of re-streaming.
-            if acc.is_empty() {
+            if acc.is_empty() && !thought {
                 tracing::debug!(
                     model,
                     "stream died before any content: {e:#}; retrying without streaming"
@@ -690,6 +748,9 @@ impl AiClient {
             return Err(e.context("the stream dropped mid-reply"));
         }
 
+        if acc.is_empty() && thought {
+            return Err(anyhow!(THINKING_EXHAUSTED));
+        }
         // Some endpoints ignore `stream` and return an empty body; fall back to a
         // non-streaming call (which records its own usage).
         if acc.is_empty() {
@@ -716,6 +777,7 @@ impl AiClient {
         mut on_reasoning: impl FnMut(&str),
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
+        reasoning::replay(&mut messages, self.history_replay());
         let images = self.settle_images(&mut messages).await;
         if wants_cache_control(&self.base_url, model) {
             apply_cache_control(&mut messages);
@@ -733,12 +795,12 @@ impl AiClient {
             }),
             seed: self.seed,
             max_tokens: self.output_budget(request_chars).await,
-            reasoning: self.reasoning(),
+            reasoning: self.reasoning_fields(model),
             plugins: Vec::new(),
         };
 
         let response = match self
-            .send_with_retry(&request, "streaming tool chat request")
+            .send_reasoned(&mut request, "streaming tool chat request")
             .await
         {
             Err(err) if images && rejected_images(&err) => {
@@ -750,7 +812,7 @@ impl AiClient {
                 if carries_images(&request.messages) {
                     strip_image_parts(&mut request.messages);
                 }
-                self.send_with_retry(&request, "streaming tool chat request")
+                self.send_reasoned(&mut request, "streaming tool chat request")
                     .await?
             }
             result => result?,
@@ -761,6 +823,10 @@ impl AiClient {
         let mut partials: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
         let mut annotations: Vec<Annotation> = Vec::new();
         let mut reasoning_details: Vec<ReasoningDetail> = Vec::new();
+        // Thinking sent as a bare string rather than `reasoning_details` blocks.
+        let mut plain_thinking = String::new();
+        let mut tags = ThinkTags::default();
+        let mut finish: Option<String> = None;
         // Some models write their tool calls into the content. The gate keeps
         // that markup off the screen; the block is parsed back out below.
         let mut gate = TokenGate::default();
@@ -774,7 +840,7 @@ impl AiClient {
             let Some(data) = adapt(data) else {
                 return true;
             };
-            let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(&data) else {
+            let Some(parsed) = parse_chunk(&data) else {
                 return true;
             };
             if let Some(u) = parsed.usage {
@@ -783,7 +849,16 @@ impl AiClient {
             let Some(choice) = parsed.choices.into_iter().next() else {
                 return true;
             };
-            if let Some(delta) = choice.delta.content.filter(|d| !d.is_empty()) {
+            finish = choice.finish_reason.or(finish.take());
+            let (delta, tagged) = match choice.delta.content.filter(|d| !d.is_empty()) {
+                Some(delta) => tags.feed(&delta),
+                None => (String::new(), String::new()),
+            };
+            if !tagged.is_empty() {
+                plain_thinking.push_str(&tagged);
+                on_reasoning(&tagged);
+            }
+            if !delta.is_empty() {
                 content.push_str(&delta);
                 // The guard sees the raw delta, before the gate strips tool
                 // markup, so suppressed markup cannot hide repetition.
@@ -802,6 +877,7 @@ impl AiClient {
                 .as_deref()
                 .filter(|s| !s.is_empty())
             {
+                plain_thinking.push_str(thinking);
                 on_reasoning(thinking);
             }
             for fragment in choice.delta.reasoning_details {
@@ -821,10 +897,23 @@ impl AiClient {
             true
         })
         .await;
+        let (rest, tagged) = tags.finish();
+        if !tagged.is_empty() {
+            plain_thinking.push_str(&tagged);
+            on_reasoning(&tagged);
+        }
+        if !rest.is_empty() {
+            content.push_str(&rest);
+            gate.feed(&rest, &mut on_token);
+        }
+        if reasoning_details.is_empty() && !plain_thinking.trim().is_empty() {
+            reasoning_details.push(ReasoningDetail::from_text(plain_thinking));
+        }
+        let thought = !reasoning_details.is_empty();
         if let Err(e) = streamed {
             // Safe to redo only while the caller has seen nothing: after
             // visible output, a retry would duplicate what is on screen.
-            if content.is_empty() && partials.is_empty() && reasoning_details.is_empty() {
+            if content.is_empty() && partials.is_empty() && !thought {
                 tracing::debug!(
                     model,
                     "stream died before any content: {e:#}; retrying without streaming"
@@ -840,6 +929,21 @@ impl AiClient {
             return Err(anyhow::Error::new(DegenerateOutput).context(msg));
         }
 
+        // The stream worked but the model only thought. Asking again without
+        // streaming would think all over again, out of sight.
+        if content.is_empty() && partials.is_empty() && thought {
+            if finish.as_deref() == Some("length") {
+                return Err(anyhow!(THINKING_EXHAUSTED));
+            }
+            self.record_usage(usage, prompt_chars, 0);
+            return Ok(AssistantMessage {
+                content: None,
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                annotations,
+                reasoning_details,
+            });
+        }
         if content.is_empty() && partials.is_empty() {
             tracing::debug!(
                 model,
@@ -866,6 +970,7 @@ impl AiClient {
                     name: p.name,
                     arguments: p.arguments,
                 },
+                extra_content: p.extra_content,
             })
             .collect();
 
@@ -893,12 +998,51 @@ impl AiClient {
 
         Ok(AssistantMessage {
             content: (!content.is_empty()).then_some(content),
-            // Already streamed as reasoning; history replays reasoning_details.
+            // Folded into reasoning_details, which history replays.
             reasoning_content: None,
             tool_calls,
             annotations,
             reasoning_details,
         })
+    }
+
+    /// [`Self::send_with_retry`], stepping the thinking settings down when the
+    /// provider refuses them: earlier thinking is dropped from history, then the
+    /// effort is relaxed. Each step is remembered, so it is paid for once.
+    async fn send_reasoned<R: Reasoned>(
+        &self,
+        request: &mut R,
+        ctx: &str,
+    ) -> Result<reqwest::Response> {
+        let knob = reasoning::dialect(&self.base_url).knob;
+        let mut effort = self.effort_for(request.model());
+        loop {
+            let err = match self.send_with_retry(request, ctx).await {
+                Err(err) => err,
+                sent => return sent,
+            };
+            if reasoning::rejected_history(&err)
+                && let Some(history) = request.history_mut()
+                && reasoning::carries_thinking(history)
+            {
+                reasoning::replay(history, Replay::Strip);
+                tracing::debug!("provider refused earlier thinking; dropping it");
+                self.memo().strip_history = true;
+                continue;
+            }
+            if !reasoning::rejected_effort(&err) {
+                return Err(err);
+            }
+            let Some(next) = reasoning::relax(effort) else {
+                return Err(err);
+            };
+            tracing::debug!(model = request.model(), from = ?effort, to = ?next, "provider refused the effort; relaxing it");
+            self.memo()
+                .efforts
+                .insert((request.model().to_string(), self.effort), next);
+            effort = next;
+            *request.reasoning_mut() = reasoning::fields(knob, next);
+        }
     }
 
     /// POST a chat request. A non-success status that survives the retry middleware
@@ -1432,6 +1576,7 @@ struct PartialToolCall {
     id: String,
     name: String,
     arguments: String,
+    extra_content: Option<serde_json::Value>,
 }
 
 fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: ToolCallDelta) {
@@ -1442,6 +1587,9 @@ fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: To
     let slot = partials.entry(index).or_default();
     if let Some(id) = fragment.id.filter(|s| !s.is_empty()) {
         slot.id = id;
+    }
+    if fragment.extra_content.is_some() {
+        slot.extra_content = fragment.extra_content;
     }
     if let Some(function) = fragment.function {
         if let Some(name) = function.name.filter(|s| !s.is_empty()) {
@@ -1477,6 +1625,21 @@ fn same_call(slot: &PartialToolCall, fragment: &ToolCallDelta) -> bool {
 
 fn fresh_index(partials: &BTreeMap<usize, PartialToolCall>) -> usize {
     partials.last_key_value().map_or(0, |(&key, _)| key + 1)
+}
+
+/// One SSE payload, with every provider's thinking fields brought into one shape.
+fn parse_chunk(data: &str) -> Option<ChatStreamChunk> {
+    let mut value: serde_json::Value = serde_json::from_str(data).ok()?;
+    reasoning::normalize(&mut value, "delta");
+    serde_json::from_value(value).ok()
+}
+
+/// A whole response body, normalized the same way as [`parse_chunk`].
+fn parse_body<T: serde::de::DeserializeOwned>(body: &str) -> Result<T> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(body).with_context(|| format!("parsing response: {body}"))?;
+    reasoning::normalize(&mut value, "message");
+    serde_json::from_value(value).with_context(|| format!("parsing response: {body}"))
 }
 
 async fn read_sse(

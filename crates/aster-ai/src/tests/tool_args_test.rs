@@ -9,6 +9,7 @@ fn call(arguments: &str) -> ToolCall {
             name: "read_file".into(),
             arguments: arguments.into(),
         },
+        extra_content: None,
     }
 }
 

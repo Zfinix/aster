@@ -56,6 +56,7 @@ fn parse_invokes(block: &str) -> Vec<ToolCall> {
                 name,
                 arguments: Value::Object(parse_parameters(body)).to_string(),
             },
+            extra_content: None,
         });
         rest = tail;
     }

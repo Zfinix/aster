@@ -561,6 +561,9 @@ export class ChatRunner {
       return;
     }
     const kind = update["sessionUpdate"];
+    if (turn && kind !== "agent_thought_chunk") {
+      turn.reasoningChars = 0;
+    }
     if (kind === "agent_message_chunk") {
       const text = contentText([update["content"]]);
       if (turn) {

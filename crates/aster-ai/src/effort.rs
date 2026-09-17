@@ -8,7 +8,7 @@ use serde::Deserialize;
 /// Reasoning budget, lowest to highest. Providers that do not support thinking
 /// ignore it; `Off` asks for none at all. `XHigh`, `Max`, and `Ultra` pass
 /// through as-is, so only models that accept those levels can use them.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Effort {
     #[serde(alias = "none")]

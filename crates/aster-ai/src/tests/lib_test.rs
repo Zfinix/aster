@@ -231,6 +231,7 @@ fn fragment(
     ToolCallDelta {
         index,
         id: id.map(str::to_string),
+        extra_content: None,
         function: Some(crate::models::ToolCallFunctionDelta {
             name: name.map(str::to_string),
             arguments: args.map(str::to_string),

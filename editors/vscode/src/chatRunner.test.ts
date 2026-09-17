@@ -112,6 +112,38 @@ describe("ChatRunner", () => {
     expect((error as { message: string }).message).toContain("code 101");
   });
 
+  it("counts each thinking block's tokens on their own", async () => {
+    const agent = new FakeAgent();
+    agent.silentPrompt = true;
+    spawn.mockReturnValue(agent);
+    const events: ChatStreamEvent[] = [];
+    const runner = new ChatRunner();
+
+    const done = runner.run(options((event) => events.push(event)));
+    await vi.waitFor(() => expect(agent.prompts).toHaveLength(1));
+    const update = (body: Record<string, unknown>) =>
+      agent.stdout.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId: "s1", update: body },
+        })}\n`
+      );
+    const thought = (text: string) =>
+      update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text } });
+    thought("a".repeat(400));
+    update({ sessionUpdate: "tool_call", toolCallId: "t1", title: "read_file" });
+    thought("b".repeat(40));
+    await vi.waitFor(() =>
+      expect(events.filter((e) => e.type === "reasoning_delta")).toHaveLength(2)
+    );
+    runner.cancel();
+    await done;
+
+    const tokens = events.flatMap((e) => (e.type === "reasoning_delta" ? [e.tokens] : []));
+    expect(tokens).toEqual([100, 10]);
+  });
+
   it("closes a cancelled turn without reporting a crash", async () => {
     const agent = new FakeAgent();
     agent.silentPrompt = true;

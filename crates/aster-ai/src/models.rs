@@ -27,8 +27,9 @@ pub struct ChatRequest {
     pub seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<Reasoning>,
+    /// The provider's own thinking fields, from [`crate::reasoning::fields`].
+    #[serde(flatten)]
+    pub reasoning: serde_json::Map<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<WebSearchPlugin>,
 }
@@ -51,15 +52,6 @@ pub struct WebSearchPlugin {
 #[derive(Serialize)]
 pub struct StreamOptions {
     pub include_usage: bool,
-}
-
-/// `effort` is "low"/"medium"/"high"; `enabled: false` turns reasoning off.
-#[derive(Serialize)]
-pub struct Reasoning {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,8 +224,9 @@ pub struct ToolChatRequest {
     pub seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<Reasoning>,
+    /// The provider's own thinking fields, from [`crate::reasoning::fields`].
+    #[serde(flatten)]
+    pub reasoning: serde_json::Map<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<WebSearchPlugin>,
 }
@@ -304,6 +297,20 @@ pub struct ReasoningDetail {
 }
 
 impl ReasoningDetail {
+    /// A thinking block from text a provider sent as a bare string.
+    pub fn from_text(text: String) -> Self {
+        Self {
+            kind: "reasoning.text".into(),
+            format: None,
+            text: Some(text),
+            summary: None,
+            data: None,
+            signature: None,
+            id: None,
+            index: None,
+        }
+    }
+
     /// Whether a different model may be shown this block. Encrypted payloads
     /// and signed text are sealed against the model that produced them, so
     /// replaying either after a `/model` switch is rejected upstream.
@@ -343,6 +350,10 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub kind: String,
     pub function: ToolCallFunction,
+    /// Provider data that must go back with the call, such as Gemini's
+    /// `google.thought_signature`, without which the next request is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<serde_json::Value>,
 }
 
 /// `arguments` is a JSON string, per the OpenAI schema.
@@ -380,14 +391,16 @@ pub struct ChatStreamChunk {
 #[derive(Deserialize)]
 pub struct ChatStreamChoice {
     pub delta: ChatDelta,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct ChatDelta {
     #[serde(default)]
     pub content: Option<String>,
-    /// Workers AI's spelling for a thinking model's output. Without it the
-    /// whole reply is dropped, since `content` stays empty until it finishes.
+    /// Thinking as plain text. Other spellings (`reasoning`, thinking chunks)
+    /// are moved here by [`crate::reasoning::normalize`] before parsing.
     #[serde(default)]
     pub reasoning_content: Option<String>,
     #[serde(default, deserialize_with = "null_default")]
@@ -404,6 +417,8 @@ pub struct ToolCallDelta {
     pub index: usize,
     #[serde(default)]
     pub id: Option<String>,
+    #[serde(default)]
+    pub extra_content: Option<serde_json::Value>,
     #[serde(default)]
     pub function: Option<ToolCallFunctionDelta>,
 }
