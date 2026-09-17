@@ -44,6 +44,15 @@ struct AuthStatus {
     model: Option<String>,
 }
 
+// Without this the CLI sidecar opens a visible console window on Windows
+// for the length of each run.
+fn hide_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 fn provider_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("aster").join("desktop.json"))
 }
@@ -63,6 +72,7 @@ fn inject_provider_env(
 
 async fn cli_json(args: &[&str]) -> Result<serde_json::Value, String> {
     let mut cmd = Command::new(resolve_bin());
+    hide_console(&mut cmd);
     cmd.args(args).arg("--json");
     cmd.env("PATH", augmented_path());
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -166,6 +176,7 @@ async fn run_aster_json(
     payload: Vec<u8>,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = Command::new(resolve_bin());
+    hide_console(&mut cmd);
     cmd.args(cli_args);
     if let Some(repo) = repo_path.filter(|p| !p.is_empty() && std::path::Path::new(p).is_dir()) {
         cmd.current_dir(repo);
@@ -270,6 +281,7 @@ async fn chat(
     }
 
     let mut cmd = Command::new(resolve_bin());
+    hide_console(&mut cmd);
     cmd.args(&args);
     if let Some(repo) = repo_path.filter(|p| !p.is_empty() && std::path::Path::new(p).is_dir()) {
         cmd.current_dir(repo);
