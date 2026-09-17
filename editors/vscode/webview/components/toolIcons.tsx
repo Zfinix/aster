@@ -36,6 +36,7 @@ const ICONS: Record<string, ReactElement> = {
   read_skill: <BookIcon />,
   update_plan: <ListOrderedIcon />,
   ask_user: <QuestionIcon />,
+  write_plan: <ListOrderedIcon />,
   exit_plan_mode: <CheckAllIcon />,
   agent: <AgentIcon />,
   aster_mcp: <PlugIcon />,

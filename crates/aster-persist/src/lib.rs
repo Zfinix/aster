@@ -68,6 +68,15 @@ impl Store {
         )
     }
 
+    /// The plan a session drafts before editing, kept beside the session so it
+    /// outlives the approval and can be reopened.
+    pub fn plan_path(&self, repo_root: &Path, session_id: &str) -> PathBuf {
+        self.home
+            .join("plans")
+            .join(project_slug(repo_root))
+            .join(format!("{}.md", slugify(session_id)))
+    }
+
     fn sessions_dir(&self, repo_root: &Path) -> PathBuf {
         self.home.join("sessions").join(project_slug(repo_root))
     }

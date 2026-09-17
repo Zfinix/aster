@@ -894,7 +894,7 @@ async fn update_plan_needs_at_least_one_step() {
 async fn exit_plan_mode_needs_a_plan_first() {
     let repo = tempfile::tempdir().unwrap();
     let out = run_tool(repo.path(), "exit_plan_mode", json!({})).await;
-    assert!(out.contains("needs a `plan`"), "{out}");
+    assert!(out.contains("no plan to present"), "{out}");
 }
 
 #[tokio::test]
@@ -961,8 +961,8 @@ async fn approving_the_plan_unlocks_editing() {
         &mut policy,
         None,
         &ctx,
-        "update_plan",
-        steps(&[("ship it", "pending")]),
+        "write_plan",
+        json!({ "content": "- [ ] ship it" }),
     )
     .await;
     let out = run_tool_with(
@@ -1016,8 +1016,8 @@ async fn approving_the_plan_lets_the_same_turn_run_commands() {
         &mut policy,
         None,
         &ctx,
-        "update_plan",
-        steps(&[("ship it", "pending")]),
+        "write_plan",
+        json!({ "content": "- [ ] ship it" }),
     )
     .await;
     run_tool_with(
@@ -1053,8 +1053,8 @@ async fn rejecting_the_plan_leaves_editing_locked() {
         &mut policy,
         None,
         &ctx,
-        "update_plan",
-        steps(&[("ship it", "pending")]),
+        "write_plan",
+        json!({ "content": "- [ ] ship it" }),
     )
     .await;
     let out = run_tool_with(
@@ -1094,8 +1094,8 @@ async fn an_editable_turn_still_asks_for_plan_approval() {
         &mut policy,
         None,
         &ctx,
-        "update_plan",
-        steps(&[("ship it", "pending")]),
+        "write_plan",
+        json!({ "content": "- [ ] ship it" }),
     )
     .await;
     let out = run_tool_with(
@@ -1137,8 +1137,8 @@ async fn rejecting_the_plan_locks_an_editable_turn() {
         &mut policy,
         None,
         &ctx,
-        "update_plan",
-        steps(&[("ship it", "pending")]),
+        "write_plan",
+        json!({ "content": "- [ ] ship it" }),
     )
     .await;
     let out = run_tool_with(
@@ -1176,8 +1176,8 @@ async fn an_approved_plan_is_not_presented_twice() {
         &mut policy,
         None,
         &ctx,
-        "update_plan",
-        steps(&[("ship it", "pending")]),
+        "write_plan",
+        json!({ "content": "- [ ] ship it" }),
     )
     .await;
     run_tool_with(
@@ -1192,7 +1192,7 @@ async fn an_approved_plan_is_not_presented_twice() {
     .await;
     prompt.await.unwrap();
 
-    // Ticking the step off keeps the approval; only a rewritten plan clears it.
+    // Tracking progress keeps the approval; only a rewritten document clears it.
     run_tool_with(
         repo.path(),
         &mut allow_edits,

@@ -2827,7 +2827,8 @@ impl ChatApp {
         let content = match self.mode {
             Mode::Plan => format!(
                 "{EDIT_NOTE_PREFIX}disabled: `edit_file` is unavailable. \
-                 Explore the code and present a plan instead."
+                 Explore the code, draft the plan with `write_plan`, and present it \
+                 with `exit_plan_mode`."
             ),
             mode => format!(
                 "{EDIT_NOTE_PREFIX}enabled ({}): `edit_file` is available.",

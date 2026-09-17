@@ -3348,6 +3348,7 @@ fn tool_line(name: &str, arguments: &str) -> String {
         "forget" => step("🧠", "Forget", &field(&["name"])),
         "read_skill" => step("📚", "Skill", &field(&["name"])),
         "update_plan" => "📋 <b>Updating the plan</b>".into(),
+        "write_plan" => "📝 <b>Drafting the plan</b>".into(),
         "exit_plan_mode" => "📋 <b>Plan ready</b>".into(),
         "ask_user" => "💬 <b>Asking you</b>".into(),
         other => mcp_line(other, &args, &step),

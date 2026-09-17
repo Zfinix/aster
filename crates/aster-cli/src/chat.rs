@@ -165,10 +165,11 @@ pub(crate) struct SubAgentOverrides {
     pub tool_allowlist: std::collections::HashSet<String>,
 }
 
-/// Phased plan the agent builds and tracks with `update_plan`. Read by the
-/// `exit_plan_mode` tool and rendered by both front-ends.
+/// The plan document drafted with `write_plan` and presented by
+/// `exit_plan_mode`, plus the progress steps tracked with `update_plan`.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PlanState {
+    pub document: String,
     pub steps: Vec<PlanStep>,
     pub approved: bool,
 }
@@ -3185,14 +3186,26 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
         tools.push(json!({
             "type": "function",
             "function": {
-                "name": "exit_plan_mode",
-                "description": "Present your plan for user approval and wait for their answer. `plan` is the document they read before deciding, so write it for them, not for you: what you are going to do and why, the files and functions you will touch, the approach you picked and what you rejected, anything you are unsure of or want them to weigh in on. Markdown, with headings and short paragraphs; a bare list of stage names is not a plan. Scale it to the work: a page for a subsystem, a few lines for a small change. Do not edit files or run state-changing commands until the user approves; if they reject, fold their feedback in and present it again.",
+                "name": "write_plan",
+                "description": "Write or revise the plan document before presenting it with `exit_plan_mode`. The plan is a file kept with the session: write a skeleton of headings as soon as you know the shape of the work, fill each section in as you read the code, and edit sections with `old_str`/`new_str` as findings change your mind rather than rewriting from memory. Research first and write from what you read, never from a guess about the code. Sections, in this order: `## Context` (what is true today and why the change is needed, citing `path:line` for every claim about the code), `## Decisions` (each choice with the evidence behind it and the alternative you rejected, with a real reason), `## Changes` (per file: the functions that change, what changes in them, and the existing code you will reuse), `## Risks` (anything irreversible, outward-facing, or uncertain; say so first if it applies), `## Verification` (the exact commands to run and the result each should give). Settle real forks with the user through `ask_user` before writing them into the plan. A plan is judged on whether the user can point at the sentence they disagree with; a list of stage names is not a plan.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "plan": { "type": "string", "description": "The plan as a markdown document, written for the user to read and approve" }
-                    },
-                    "required": ["plan"]
+                        "content": { "type": "string", "description": "The whole plan as markdown. Replaces the current draft" },
+                        "old_str": { "type": "string", "description": "Text in the current draft to replace; must appear exactly once" },
+                        "new_str": { "type": "string", "description": "Replacement for `old_str`; empty to delete it" }
+                    }
+                }
+            }
+        }));
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "exit_plan_mode",
+                "description": "Present the plan written with `write_plan` for the user's approval and wait for their answer. Call it only once the draft is complete: every section filled from code you have read. Do not edit files or run state-changing commands until the user approves. If they reject, revise the sections they objected to with `write_plan` and present again.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         }));
@@ -3401,8 +3414,23 @@ async fn exec_tool(
             }
             Err(e) => Err(e),
         },
+        "write_plan" => crate::plan_file::write_plan(
+            ctx,
+            repo_root,
+            str_arg("content").as_deref(),
+            str_arg("old_str").as_deref(),
+            str_arg("new_str").as_deref(),
+        ),
         "exit_plan_mode" => {
-            exit_plan_mode(approver, ctx, allow_edits, policy, str_arg("plan").as_deref()).await
+            exit_plan_mode(
+                approver,
+                ctx,
+                repo_root,
+                allow_edits,
+                policy,
+                str_arg("plan").as_deref(),
+            )
+            .await
         }
         "read_file" => match str_arg("path").context("read_file needs a `path`") {
             Ok(path) if !edits::exists_anywhere(repo_root, &path) => {
@@ -4036,15 +4064,8 @@ fn update_plan(ctx: &SessionCtx, steps: Vec<(String, Option<&str>)>) -> Result<S
         .plan
         .lock()
         .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?;
-    if relabelled(&plan.steps, &parsed) {
-        plan.approved = false;
-    }
     plan.steps = parsed;
     Ok(format!("plan updated:\n{}", plan.render()))
-}
-
-fn relabelled(before: &[PlanStep], after: &[PlanStep]) -> bool {
-    before.len() != after.len() || before.iter().zip(after).any(|(a, b)| a.label != b.label)
 }
 
 async fn ask_user(
@@ -4092,34 +4113,33 @@ async fn ask_user(
 async fn exit_plan_mode(
     approver: Option<&UiSender>,
     ctx: &SessionCtx,
+    repo_root: &Path,
     allow_edits: &mut bool,
     policy: &mut Policy,
-    document: Option<&str>,
+    inline: Option<&str>,
 ) -> Result<String> {
-    let plan = ctx
+    if ctx
         .plan
         .lock()
         .map_err(|_| anyhow::anyhow!("plan state lock poisoned"))?
-        .clone();
-    let document = document.map(str::trim).filter(|d| !d.is_empty());
-    if document.is_none() && plan.steps.is_empty() {
-        return Err(anyhow::anyhow!(
-            "exit_plan_mode needs a `plan`: the markdown document the user reads before approving"
-        ));
-    }
-    if plan.approved {
+        .approved
+    {
         return Err(anyhow::anyhow!(
             "this plan is already approved; carry it out instead of presenting it again"
         ));
     }
+    // Older callers still pass the document inline; it is saved like any draft.
+    if let Some(doc) = inline.map(str::trim).filter(|d| !d.is_empty()) {
+        crate::plan_file::write_plan(ctx, repo_root, Some(doc), None, None)?;
+    }
+    let markdown = crate::plan_file::read_plan(ctx, repo_root);
+    if markdown.trim().is_empty() {
+        return Err(anyhow::anyhow!(
+            "there is no plan to present: draft it with `write_plan` first, from the code you have read"
+        ));
+    }
 
     let locked = !*allow_edits;
-    // The step list is the progress strip, not the plan. It stands in only when
-    // the model presented no document, which the schema asks it for.
-    let markdown = match document {
-        Some(doc) => doc.to_string(),
-        None => plan_markdown(&plan),
-    };
     let preview = format!("Approve this plan and start editing?\n\n{markdown}");
     if !request_plan_approval(approver, preview, Some(markdown))
         .await
@@ -4130,7 +4150,8 @@ async fn exit_plan_mode(
         *allow_edits = false;
         policy.demote(aster_policy::Mode::Plan);
         return Ok(
-            "the user did not approve the plan; stay in plan mode and revise it".to_string(),
+            "the user did not approve the plan; stay in plan mode, revise the parts they objected to with `write_plan`, and present it again"
+                .to_string(),
         );
     }
     ctx.plan
@@ -4147,18 +4168,6 @@ async fn exit_plan_mode(
     *allow_edits = true;
     policy.promote(aster_policy::Mode::Edit);
     Ok("plan approved; edit mode is now active".to_string())
-}
-
-fn plan_markdown(plan: &PlanState) -> String {
-    let mut out = String::from("## Plan\n");
-    for step in &plan.steps {
-        let box_ = match step.status {
-            PlanStepStatus::Done => "x",
-            _ => " ",
-        };
-        out.push_str(&format!("- [{box_}] {}\n", step.label));
-    }
-    out
 }
 
 fn missing_dir(repo_root: &Path, dir: &Option<String>) -> Option<String> {

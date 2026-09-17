@@ -317,6 +317,8 @@ export function describeTool(call: ToolCall): ToolDescription {
       return { verb: "Plan", detail: `${steps(call).length} steps` };
     case "ask_user":
       return { verb: "Ask", detail: arg(call, "header") ?? arg(call, "question") };
+    case "write_plan":
+      return { verb: "Plan", detail: arg(call, "content") !== undefined ? "wrote the draft" : "revised a section" };
     case "exit_plan_mode":
       return { detail: "Asked to leave plan mode" };
     case "agent": {

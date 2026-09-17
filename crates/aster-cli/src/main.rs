@@ -31,6 +31,7 @@ mod mom;
 mod openrouter_auth;
 mod persist;
 mod picker;
+mod plan_file;
 mod plugins;
 mod preview;
 mod project;

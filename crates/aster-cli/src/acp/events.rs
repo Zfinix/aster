@@ -417,7 +417,7 @@ fn kind(name: &str, args: &Value) -> ToolKind {
                 ToolKind::Read
             }
         }
-        "edit_file" | "ast_edit" | "remember" => ToolKind::Edit,
+        "edit_file" | "ast_edit" | "remember" | "write_plan" => ToolKind::Edit,
         "forget" => ToolKind::Delete,
         "run_command" | "run_tests" => ToolKind::Execute,
         "ask_user" => ToolKind::Think,
