@@ -1,0 +1,10 @@
+{
+  "name": "figma-bridge",
+  "id": "figma-bridge-dev",
+  "api": "1.0.0",
+  "main": "code.js",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["http://127.0.0.1:4395", "ws://127.0.0.1:4395"]
+  }
+}

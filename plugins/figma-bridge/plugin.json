@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "figma-bridge",
+  "version": "0.1.0",
+  "description": "Full read/write access to the Figma desktop app over the Plugin API: execute code, screenshot the canvas, walk the node tree"
+}
