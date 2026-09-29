@@ -568,7 +568,13 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       case "dictation": {
         let dictation = this.dictations.get(origin);
         if (!dictation) {
-          dictation = new Dictation((event) => this.postTo(origin, { type: "dictation", event }));
+          dictation = new Dictation((event) => {
+            if (event.type === "error") {
+              if (event.detail) this.output.appendLine(`[dictation] ${event.detail}`);
+              void vscode.window.showErrorMessage(event.message);
+            }
+            this.postTo(origin, { type: "dictation", event });
+          });
           this.dictations.set(origin, dictation);
         }
         switch (message.action) {

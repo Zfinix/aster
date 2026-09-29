@@ -801,7 +801,6 @@ export function Composer({
             onScroll={syncScroll}
           />
         </div>
-        {dictation.error && <p className="composer-note">{dictation.error}</p>}
         <div className="composer-foot">
           <button
             ref={addRef}
