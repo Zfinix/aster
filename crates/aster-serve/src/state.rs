@@ -28,6 +28,7 @@ pub struct Instance {
     /// The tab's persistent agent, spawned on the first chat and reused until
     /// its process dies.
     pub agent: Mutex<Option<Arc<crate::acp::Agent>>>,
+    pub dictation: Mutex<Option<crate::dictation::Dictation>>,
 }
 
 impl Instance {
@@ -38,6 +39,7 @@ impl Instance {
             review: Mutex::new(None),
             events,
             agent: Mutex::new(None),
+            dictation: Mutex::new(None),
         }
     }
 

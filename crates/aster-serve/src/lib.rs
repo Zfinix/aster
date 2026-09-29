@@ -6,6 +6,7 @@
 mod acp;
 mod assets;
 mod cli;
+mod dictation;
 mod files;
 mod guard;
 mod host;

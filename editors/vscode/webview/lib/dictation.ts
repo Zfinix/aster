@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import { onHostMessage, post } from "./host";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { inEditor, onHostMessage, post } from "./host";
 
 export type DictationState = "idle" | "listening" | "transcribing";
 
 /** One press starts listening, the next turns the recording into text. The
- *  host runs `aster dictate`, relays its events as `dictation` messages, and
- *  shows failures as a notification. */
+ *  host runs `aster dictate` and relays its events as `dictation` messages.
+ *  An editor shows failures as a notification; a page gets `error` to show. */
 export function useDictation(onText: (text: string) => void) {
   const [state, setState] = useState<DictationState>("idle");
+  const [error, setError] = useState<string | null>(null);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
   const pending = useRef(false);
@@ -29,6 +30,7 @@ export function useDictation(onText: (text: string) => void) {
         case "error":
           pending.current = false;
           setState("idle");
+          if (!inEditor) setError(event.message);
           break;
       }
     });
@@ -39,6 +41,7 @@ export function useDictation(onText: (text: string) => void) {
   }, []);
 
   const toggle = () => {
+    setError(null);
     if (state === "idle") {
       pending.current = true;
       setState("listening");
@@ -56,5 +59,7 @@ export function useDictation(onText: (text: string) => void) {
     post({ type: "dictation", action: "cancel" });
   };
 
-  return { state, toggle, cancel };
+  const dismiss = useCallback(() => setError(null), []);
+
+  return { state, error, toggle, cancel, dismiss };
 }

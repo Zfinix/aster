@@ -23,6 +23,7 @@ import { ContextMeter } from "./ContextMeter";
 import { McpPicker } from "./McpPicker";
 import { ModelMenu } from "./ModelMenu";
 import { Popover } from "./Popover";
+import { Toast } from "./Toast";
 import { QueuedList } from "./QueuedTurn";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
 import {
@@ -801,6 +802,7 @@ export function Composer({
             onScroll={syncScroll}
           />
         </div>
+        {dictation.error && <Toast message={dictation.error} onDone={dictation.dismiss} />}
         <div className="composer-foot">
           <button
             ref={addRef}
@@ -860,18 +862,16 @@ export function Composer({
             {permissionLabel(permissionMode)}
           </button>
 
-          {inEditor && (
-            <button
-              className={dictation.state === "idle" ? "ghost foot-btn" : "ghost foot-btn mic-on"}
-              onClick={dictation.toggle}
-              disabled={dictation.state === "transcribing"}
-              title={micTitle[dictation.state]}
-              aria-label={micTitle[dictation.state]}
-              aria-pressed={dictation.state === "listening"}
-            >
-              <MicIcon />
-            </button>
-          )}
+          <button
+            className={dictation.state === "idle" ? "ghost foot-btn" : "ghost foot-btn mic-on"}
+            onClick={dictation.toggle}
+            disabled={dictation.state === "transcribing"}
+            title={micTitle[dictation.state]}
+            aria-label={micTitle[dictation.state]}
+            aria-pressed={dictation.state === "listening"}
+          >
+            <MicIcon />
+          </button>
 
           {/* One button whose glyph morphs between send and stop, so the swap
               reads as the same control changing job rather than a re-render.

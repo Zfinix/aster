@@ -17,7 +17,7 @@ use tokio_stream::{Stream, StreamExt};
 
 use crate::cli::Cli;
 use crate::state::{AppState, Instance};
-use crate::{acp, files, info, run, sessions};
+use crate::{acp, dictation, files, info, run, sessions};
 
 pub async fn message(
     State(state): State<Arc<AppState>>,
@@ -119,6 +119,14 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             // turn's unwind.
         }
         // A review is still a per-run child with no agent behind it.
+        "dictation" => {
+            dictation::handle(
+                state,
+                &instance,
+                message["action"].as_str().unwrap_or_default(),
+            )
+            .await;
+        }
         "cancelReview" => {
             run::cancel(&mut *instance.review.lock().await).await;
             instance.post_run_state().await;
