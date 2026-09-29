@@ -3,6 +3,7 @@
 mod bottom_pane;
 mod chat;
 mod composer;
+mod dictation;
 mod guard;
 mod helpers;
 mod history;

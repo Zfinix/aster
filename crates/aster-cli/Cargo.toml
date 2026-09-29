@@ -36,6 +36,7 @@ aster-shortcuts = { path = "../aster-shortcuts" }
 aster-skills = { path = "../aster-skills" }
 aster-telemetry = { path = "../aster-telemetry" }
 aster-tools = { path = "../aster-tools" }
+aster-voice = { path = "../aster-voice" }
 aster-web = { path = "../aster-web" }
 aster-webmcp = { path = "../aster-webmcp" }
 base64 = "0.23.1"

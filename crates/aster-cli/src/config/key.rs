@@ -238,6 +238,18 @@ pub(crate) fn rows(repo_root: &Path, all: bool) -> Vec<Row> {
         source: source("ASTER_JEV_API_KEY", repo_root),
         masked: masked("ASTER_JEV_API_KEY"),
     });
+    out.extend(
+        aster_voice::KEY_VARS
+            .iter()
+            .map(|(provider, var, buys)| Row {
+                group: "Voice",
+                label: (*provider).to_string(),
+                var,
+                help: (*buys).to_string(),
+                source: source(var, repo_root),
+                masked: masked(var),
+            }),
+    );
     out.push(Row {
         group: "Model",
         label: "Any endpoint".to_string(),
@@ -287,7 +299,7 @@ pub(crate) fn list(repo_root: &Path, all: bool) -> Result<()> {
         return Ok(());
     }
 
-    for group in ["Web tools", "Services", "Model"] {
+    for group in ["Web tools", "Services", "Voice", "Model"] {
         let rows: Vec<&Row> = rows.iter().filter(|r| r.group == group).collect();
         if rows.is_empty() {
             continue;
@@ -531,6 +543,7 @@ fn known(var: &str) -> bool {
         || var == "ASTER_JEV_API_KEY"
         || aster_web::KEY_VARS
             .iter()
+            .chain(aster_voice::KEY_VARS)
             .any(|(_, known, _)| *known == var)
         || catalog_key_vars().iter().any(|(_, known)| *known == var)
 }
