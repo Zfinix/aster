@@ -14,6 +14,7 @@ mod cloudflare_auth;
 mod config;
 mod credentials;
 mod cron;
+mod dictate;
 mod edits;
 mod fix;
 mod git;
@@ -164,6 +165,8 @@ enum Command {
     Announce(announce::AnnounceArgs),
     /// Set a one-shot native notification: `aster remind "text" "in 10s"`.
     Remind(remind::RemindArgs),
+    /// Record from the microphone until stdin gets a line, then print the transcript as NDJSON.
+    Dictate,
     /// Score the last turn of a session and refine the learned skill for that task.
     Learn(learn::LearnArgs),
     /// Run Python 3 with the standard library built in: `aster python script.py` or `-c "..."`.
@@ -258,6 +261,7 @@ async fn main() -> Result<()> {
         Command::Cron(args) => cron::run(args),
         Command::Announce(args) => announce::run(args).await,
         Command::Remind(args) => remind::run(args),
+        Command::Dictate => dictate::run().await,
         Command::Learn(args) => learn::run(args).await,
         #[cfg(target_os = "android")]
         Command::Python(args) => python::run(args),

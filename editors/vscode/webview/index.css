@@ -4229,6 +4229,27 @@ code {
   color: var(--fg);
 }
 
+.foot-btn.mic-on,
+.foot-btn.mic-on:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.foot-btn.mic-on[aria-pressed="true"] svg {
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .foot-btn.mic-on[aria-pressed="true"] svg {
+    animation: none;
+  }
+}
+
 /* A dial rather than a number: the exact figure only matters near the end, and
    that is what the warning colour is for. */
 .context-wrap {

@@ -415,6 +415,22 @@ collision, so a repo can point a shared server name at its own binary.
 **`mcp.tools`** unions both lists, like `permissions`: a global `deny` is a
 decision, and a project file omitting the key must not undo it.
 
+## Voice input
+
+In the chat TUI, ctrl+r starts listening and a second ctrl+r turns what it
+heard into text in the input box. Esc while listening throws the recording away.
+A recording stops on its own after five minutes.
+
+The desktop app and the VS Code extension have a mic button in the composer
+that works the same way. Both run `aster dictate`, which prints NDJSON:
+`listening`, `transcribing`, then `transcript` with `text` or `error` with
+`message` and `detail`. It stops listening when stdin gets a line or closes.
+
+Speech to text needs one key: `ELEVENLABS_API_KEY` (Scribe) is used first, then
+`OPENAI_API_KEY` (`gpt-4o-transcribe`). `aster key list` shows both under
+Voice. The microphone works on macOS and Windows; other platforms say voice
+input is not available yet.
+
 ## Settings that are environment-only
 
 A few knobs have no `aster.yaml` key.

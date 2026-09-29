@@ -21,6 +21,7 @@ members = [
     "crates/aster-tools",
     "crates/aster-sandbox",
     "crates/aster-web",
+    "crates/aster-voice",
     "crates/aster-webmcp",
     "crates/aster-shortcuts",
     "crates/aster-serve",

@@ -258,6 +258,13 @@ export type SettingsToWebview =
   | { type: "envValue"; var: string; value: string | null }
   | { type: "settingsError"; key?: string; message: string };
 
+/** One line of `aster dictate` output. */
+export type DictationEvent =
+  | { type: "listening" }
+  | { type: "transcribing" }
+  | { type: "transcript"; text: string }
+  | { type: "error"; message: string; detail: string | null };
+
 export type ToHost =
   | { type: "ready"; session?: string; title?: string }
   | {
@@ -273,6 +280,7 @@ export type ToHost =
   | { type: "answer"; choice: string | null }
   | { type: "inject"; text: string }
   | { type: "cancelChat" }
+  | { type: "dictation"; action: "start" | "stop" | "cancel" }
   | { type: "review"; id: string; source: ReviewSource }
   | { type: "cancelReview" }
   | { type: "openFinding"; finding: Finding }
@@ -326,6 +334,7 @@ export interface MomState {
 }
 
 export type ToWebview =
+  | { type: "dictation"; event: DictationEvent }
   | {
       type: "init";
       workspaceRoot: string | null;

@@ -23,6 +23,7 @@ use super::bottom_pane::{
     BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem, UnifiedItem,
     UnifiedSection, scan_mentions,
 };
+use super::dictation::Dictation;
 use super::guard::TuiGuard;
 use super::helpers::{clip_row, count_of, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
@@ -32,6 +33,7 @@ use super::{history, theme, wrap};
 use crate::chat::{
     Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
 };
+use crate::dictate::DictationFailure;
 use crate::persist::Recorder;
 
 type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
@@ -100,6 +102,7 @@ pub(super) enum AppEvent {
         runtime: Option<crate::mcp::McpRuntime>,
         problems: Vec<String>,
     },
+    Dictated(Result<String, DictationFailure>),
 }
 
 fn spawn_mention_search(
@@ -605,6 +608,17 @@ fn on_key(
     let interrupt = (ctrl && key.code == KeyCode::Char('c')) || key.code == KeyCode::Esc;
 
     if !pane.has_active_view() {
+        if ctrl && key.code == KeyCode::Char('r') {
+            if let Err(failure) = app.dictation.toggle(&pane.sender()) {
+                app.dictation_failed(failure);
+            }
+            return Flow::Continue;
+        }
+        if interrupt && matches!(app.dictation, Dictation::Listening(..)) {
+            app.dictation = Dictation::Idle;
+            app.flash = Some("recording discarded".into());
+            return Flow::Continue;
+        }
         if interrupt {
             if turn.is_some() {
                 abort(app, turn, pane);
@@ -1258,6 +1272,7 @@ struct ChatApp {
     mom_turns: u64,
     theme_name: String,
     show_welcome: bool,
+    dictation: Dictation,
 }
 
 struct Takeover {
@@ -1328,6 +1343,7 @@ impl ChatApp {
             mom_turns: 0,
             theme_name: "default".to_string(),
             show_welcome: true,
+            dictation: Dictation::Idle,
         }
     }
 
@@ -1341,6 +1357,13 @@ impl ChatApp {
     fn note(&mut self, text: &str) {
         let block = history::notice(text, self.width);
         self.emit(block);
+    }
+
+    fn dictation_failed(&mut self, failure: DictationFailure) {
+        self.dictation = Dictation::Idle;
+        let mut texts = vec![failure.message.to_string()];
+        texts.extend(failure.detail);
+        self.error_box(&texts);
     }
 
     fn error_box(&mut self, texts: &[String]) {
@@ -2012,6 +2035,23 @@ impl ChatApp {
             AppEvent::CompactFailed(e) => {
                 self.flash = None;
                 self.note(&format!("compact failed: {e}"));
+            }
+            AppEvent::Dictated(result) => {
+                self.dictation = Dictation::Idle;
+                match result {
+                    Ok(text) if text.is_empty() => {
+                        self.flash = Some("didn't catch any words".into());
+                    }
+                    Ok(text) => {
+                        let spaced = !pane.composer.is_empty()
+                            && !pane.composer.text().ends_with(char::is_whitespace);
+                        pane.composer.insert_str(&match spaced {
+                            true => format!(" {text}"),
+                            false => text,
+                        });
+                    }
+                    Err(failure) => self.dictation_failed(failure),
+                }
             }
         }
     }
@@ -2862,6 +2902,10 @@ impl ChatApp {
             Span::styled(format!("  ⌁ {}", self.effort), dark),
             Span::styled("  ⌄", theme::get().dimmer_style()),
         ];
+        if let Some(label) = self.dictation.label() {
+            spans.push(Span::styled("  ·  ", dark));
+            spans.push(Span::styled(label, theme::get().accent_style()));
+        }
         if let Some(msg) = &self.flash {
             spans.push(Span::styled("  ·  ", dark));
             spans.push(Span::styled(msg.clone(), theme::get().accent_style()));

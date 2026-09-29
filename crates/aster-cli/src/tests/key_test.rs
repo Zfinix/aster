@@ -16,7 +16,7 @@ fn a_name_is_uppercased_and_checked() {
 fn every_web_provider_var_is_known() {
     // The catalog `aster key list` reads is the one aster-web resolves from, so
     // a provider cannot gain a key without turning up here.
-    for (_, var, _) in aster_web::KEY_VARS {
+    for (_, var, _) in aster_web::KEY_VARS.iter().chain(aster_voice::KEY_VARS) {
         assert!(known(var), "{var} should be listed");
     }
     assert!(known(SHARED_KEY_VAR));

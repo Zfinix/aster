@@ -1,3 +1,5 @@
+mod dictation;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -971,6 +973,9 @@ pub fn run() {
             chat,
             answer_approval,
             cancel_chat,
+            dictation::start_dictation,
+            dictation::stop_dictation,
+            dictation::cancel_dictation,
             apply_fix,
             list_sessions,
             show_session,

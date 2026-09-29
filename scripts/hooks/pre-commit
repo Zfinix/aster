@@ -2,6 +2,10 @@
 # Mirrors the CI gate: fmt, clippy, test. Run before every commit.
 set -e
 
+# Git exports these to hooks. Tests that shell out to git in a temp dir would
+# inherit them and write to this repository instead.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_COMMON_DIR
+
 echo "==> cargo fmt --check"
 cargo fmt --check
 

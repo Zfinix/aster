@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { checkBinary, cliConfig, cliEnv, ProviderOverride, runCli, runLogin } from "../asterCli";
 import { probe } from "../connect";
 import { ChatRunner } from "../chatRunner";
+import { Dictation } from "../dictation";
 import { skillCommands } from "../commands";
 import * as info from "../info";
 import {
@@ -47,6 +48,7 @@ export function start(root: string, port: number): void {
   const chat = new ChatRunner();
   const review = new ReviewRunner();
   const clients = new Set<http.ServerResponse>();
+  const dictation = new Dictation((event) => post({ type: "dictation", event }));
 
   const post = (message: ToWebview | SettingsToWebview) => {
     const frame = `data: ${JSON.stringify(message)}\n\n`;
@@ -288,6 +290,19 @@ export function start(root: string, port: number): void {
         break;
       }
 
+      case "dictation":
+        switch (message.action) {
+          case "start":
+            dictation.start(root, process.env);
+            break;
+          case "stop":
+            dictation.stop();
+            break;
+          case "cancel":
+            dictation.cancel();
+            break;
+        }
+        break;
       case "cancelChat":
       case "cancelReview":
         chat.cancel();

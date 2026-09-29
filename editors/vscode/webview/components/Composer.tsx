@@ -11,6 +11,7 @@ import type {
 import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
 import { inEditor, onHostMessage, post } from "../lib/host";
 import { fileUrisFromTransfer, filesFromTransfer } from "../lib/dataTransfer";
+import { useDictation } from "../lib/dictation";
 import { useListNav } from "../lib/listnav";
 import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
 import { modelChip, modelShort } from "../lib/model";
@@ -41,6 +42,7 @@ import {
   GitPullRequestIcon,
   HistoryIcon,
   LayersIcon,
+  MicIcon,
   MinimizeIcon,
   MomIcon,
   NewChatIcon,
@@ -57,6 +59,12 @@ import {
 } from "./icons";
 
 const MAX_ROWS = 10;
+
+const micTitle = {
+  idle: "Dictate a message",
+  listening: "Stop and turn into text (Esc discards)",
+  transcribing: "Turning your recording into text…",
+} as const;
 
 type Menu = "none" | "add" | "commands" | "permission" | "settings" | "model" | "provider" | "mcp";
 
@@ -395,6 +403,12 @@ export function Composer({
     write(applyTrigger(text, trigger, item.value), trigger.start + item.value.length + 1);
   };
 
+  const dictation = useDictation((heard) => {
+    const before = text.slice(0, caret);
+    const gap = before && !/\s$/.test(before) ? " " : "";
+    write(before + gap + heard + text.slice(caret), caret + gap.length + heard.length);
+  });
+
   const write = (next: string, at = next.length) => {
     setText(next);
     setCaret(at);
@@ -629,6 +643,10 @@ export function Composer({
   ]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape" && dictation.state === "listening") {
+      dictation.cancel();
+      return;
+    }
     // The command menu reads its own keys off the document, ahead of this, so
     // Enter on a highlighted row must not also send the line.
     if (command) return;
@@ -841,6 +859,19 @@ export function Composer({
             {permissionIcon(permissionMode)}
             {permissionLabel(permissionMode)}
           </button>
+
+          {inEditor && (
+            <button
+              className={dictation.state === "idle" ? "ghost foot-btn" : "ghost foot-btn mic-on"}
+              onClick={dictation.toggle}
+              disabled={dictation.state === "transcribing"}
+              title={micTitle[dictation.state]}
+              aria-label={micTitle[dictation.state]}
+              aria-pressed={dictation.state === "listening"}
+            >
+              <MicIcon />
+            </button>
+          )}
 
           {/* One button whose glyph morphs between send and stop, so the swap
               reads as the same control changing job rather than a re-render.
