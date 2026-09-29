@@ -85,6 +85,82 @@ async fn parses_typed_answers() {
     );
 }
 
+fn entries() -> Vec<(String, String)> {
+    vec![
+        (
+            "everyday".to_string(),
+            "small edits and questions".to_string(),
+        ),
+        (
+            "deep".to_string(),
+            "multi-step design and debugging".to_string(),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn route_sends_entries_as_choice_criteria() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(serde_json::json!({
+            "state": "User message:\nwhy does the retry loop deadlock?",
+            "questions": { "entry": {
+                "type": "choice",
+                "criteria": {
+                    "everyday": "small edits and questions",
+                    "deep": "multi-step design and debugging",
+                },
+            } },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "answers": { "entry": choice_answer("deep", 0.91) }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = JevClient::new("key").base_url(server.uri());
+    let pick = client
+        .route("why does the retry loop deadlock?", &entries())
+        .await
+        .unwrap();
+    assert_eq!(
+        pick,
+        RoutePick {
+            entry: "deep".to_string(),
+            probability: 0.91,
+        }
+    );
+}
+
+#[tokio::test]
+async fn route_rejects_an_undeclared_entry() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "answers": { "entry": choice_answer("scout", 0.99) }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = JevClient::new("key").base_url(server.uri());
+    assert!(client.route("rename x", &entries()).await.is_err());
+}
+
+#[tokio::test]
+async fn route_reports_a_failed_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({})))
+        .mount(&server)
+        .await;
+
+    let client = JevClient::new("key").base_url(server.uri());
+    assert!(client.route("rename x", &entries()).await.is_err());
+}
+
 #[tokio::test]
 async fn confident_stop_is_advised() {
     let server = MockServer::start().await;
