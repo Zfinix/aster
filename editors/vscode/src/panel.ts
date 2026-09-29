@@ -6,6 +6,7 @@ import { checkBinary, cliConfig, INSTALL_CMD, installCli, LoginRun, ProviderOver
 import * as info from "./info";
 import { persist, probe } from "./connect";
 import { ChatRunner } from "./chatRunner";
+import { Dictation } from "./dictation";
 import { IGNORED, searchFiles, skillCommands } from "./commands";
 import { deleteSession, listSessions, loadSession, renameSession } from "./sessions";
 import { FindingDiagnostics } from "./diagnostics";
@@ -101,6 +102,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   private readonly surfaces = new Set<vscode.Webview>();
   private readonly chatRunners = new Map<vscode.Webview, ChatRunner>();
   private readonly reviewRunners = new Map<vscode.Webview, ReviewRunner>();
+  private readonly dictations = new Map<vscode.Webview, Dictation>();
   private login: LoginRun | undefined;
 
   constructor(
@@ -158,8 +160,10 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   private detach(webview: vscode.Webview): void {
     this.chatRunners.get(webview)?.cancel();
     this.reviewRunners.get(webview)?.cancel();
+    this.dictations.get(webview)?.cancel();
     this.chatRunners.delete(webview);
     this.reviewRunners.delete(webview);
+    this.dictations.delete(webview);
     this.surfaces.delete(webview);
     if (this.active === webview) {
       this.active = this.surfaces.values().next().value;
@@ -561,6 +565,25 @@ export class AsterPanel implements vscode.WebviewViewProvider {
         break;
       // Cancel both: whichever is idle is a no-op, and this removes any
       // dependence on the webview guessing which kind of run is in flight.
+      case "dictation": {
+        let dictation = this.dictations.get(origin);
+        if (!dictation) {
+          dictation = new Dictation((event) => this.postTo(origin, { type: "dictation", event }));
+          this.dictations.set(origin, dictation);
+        }
+        switch (message.action) {
+          case "start":
+            dictation.start(workspaceRoot(), this.env());
+            break;
+          case "stop":
+            dictation.stop();
+            break;
+          case "cancel":
+            dictation.cancel();
+            break;
+        }
+        break;
+      }
       case "cancelReview":
       case "cancelChat":
         this.reviewRunners.get(origin)?.cancel();

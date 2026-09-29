@@ -94,6 +94,21 @@ export function cancelChat(): Promise<void> {
   return invoke("cancel_chat");
 }
 
+/** Start `aster dictate`; its NDJSON arrives as `aster://dictation`. */
+export function startDictation(): Promise<void> {
+  return invoke("start_dictation");
+}
+
+/** Stop listening and have the recording transcribed. */
+export function stopDictation(): Promise<void> {
+  return invoke("stop_dictation");
+}
+
+/** Drop the recording without transcribing it. */
+export function cancelDictation(): Promise<void> {
+  return invoke("cancel_dictation");
+}
+
 export interface SessionSummary {
   id: string;
   created_at: string;

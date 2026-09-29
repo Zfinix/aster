@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode
 import type { Effort, PermissionMode, Provider, ReviewOpts, SourceKind } from "../lib/types";
 import { SOURCE_LABELS } from "../lib/session";
 import { listRepoFiles } from "../lib/aster";
+import { useDictation } from "../lib/dictation";
 import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
 import { useListNav } from "../lib/listnav";
 import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
@@ -10,6 +11,7 @@ import { ApprovalPicker, permissionIcon, permissionLabel } from "./ApprovalPicke
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { ChoiceList } from "./ChoiceList";
 import { CommandMenu, type MenuItem, type MenuSection } from "./CommandMenu";
+import { useToast } from "./chrome";
 import { ModelMenu } from "./ModelMenu";
 import { Popover } from "./Popover";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
@@ -26,6 +28,7 @@ import {
   GearIcon,
   GitCommitIcon,
   GitPullRequestIcon,
+  MicIcon,
   NewChatIcon,
   PlusIcon,
   ReviewIcon,
@@ -35,6 +38,12 @@ import {
 } from "./icons";
 
 const MAX_ROWS = 10;
+
+const micTitle = {
+  idle: "Dictate a message",
+  listening: "Stop and turn into text (Esc discards)",
+  transcribing: "Turning your recording into text…",
+} as const;
 
 type Menu = "none" | "add" | "commands" | "permission" | "settings" | "model" | "provider" | "project" | "source";
 
@@ -236,6 +245,13 @@ export function Composer({
     focusInput(at);
   };
 
+  const toast = useToast();
+  const dictation = useDictation((heard) => {
+    const before = text.slice(0, caret);
+    const gap = before && !/\s$/.test(before) ? " " : "";
+    write(before + gap + heard + text.slice(caret), caret + gap.length + heard.length);
+  }, toast);
+
   const send = () => {
     const trimmed = text.trim();
     if (busy) return;
@@ -386,6 +402,10 @@ export function Composer({
   }, [menuOpen, model, providers, effort, permissionMode, intent, repoName, onCommand, onEffort, onOpenSettings]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape" && dictation.state === "listening") {
+      dictation.cancel();
+      return;
+    }
     if (command) return;
     if (suggestions.length > 0 && files.onKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
@@ -627,6 +647,19 @@ export function Composer({
             {intent === "review" ? <ReviewIcon /> : permissionIcon(permissionMode)}
             <span>{intent === "review" ? "Review" : permissionLabel(permissionMode)}</span>
           </button>
+
+          {intent === "chat" && (
+            <button
+              className={dictation.state === "idle" ? "ghost foot-btn" : "ghost foot-btn mic-on"}
+              onClick={dictation.toggle}
+              disabled={dictation.state === "transcribing"}
+              title={micTitle[dictation.state]}
+              aria-label={micTitle[dictation.state]}
+              aria-pressed={dictation.state === "listening"}
+            >
+              <MicIcon />
+            </button>
+          )}
 
           <button
             className={busy ? "send stop" : "send"}

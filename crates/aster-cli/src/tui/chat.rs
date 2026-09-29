@@ -23,7 +23,7 @@ use super::bottom_pane::{
     BottomPane, CommandDesc, InputResult, ModelPickerView, SelectionItem, UnifiedItem,
     UnifiedSection, scan_mentions,
 };
-use super::dictation::{Dictation, DictationFailure};
+use super::dictation::Dictation;
 use super::guard::TuiGuard;
 use super::helpers::{clip_row, count_of, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
@@ -33,6 +33,7 @@ use super::{history, theme, wrap};
 use crate::chat::{
     Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
 };
+use crate::dictate::DictationFailure;
 use crate::persist::Recorder;
 
 type ChatTurn = tokio::task::JoinHandle<Result<(String, Vec<String>, Option<Vec<ChatMessage>>)>>;
