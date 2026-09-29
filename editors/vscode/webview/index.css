@@ -4250,6 +4250,36 @@ code {
   }
 }
 
+.toast {
+  position: absolute;
+  bottom: calc(100% + var(--s2));
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 2 * var(--s3));
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--vscode-menu-border, var(--border));
+  border-radius: var(--radius-xl);
+  background: var(--vscode-menu-background, var(--surface));
+  color: var(--vscode-menu-foreground, var(--fg));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  animation: toast-in 160ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+
 /* A dial rather than a number: the exact figure only matters near the end, and
    that is what the warning colour is for. */
 .context-wrap {

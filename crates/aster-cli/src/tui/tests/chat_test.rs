@@ -895,45 +895,31 @@ fn record_user_persists_turn() {
     assert!(persisted);
 }
 
-#[test]
-fn a_submit_before_mcp_connects_is_held_not_run() {
+#[tokio::test]
+async fn a_submit_before_mcp_connects_runs_straight_away() {
     let mut client = AiClient::new("http://localhost", "k", "m1");
     let mut app = chat_app(client.model.clone());
     app.mcp_pending = true;
 
-    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
+    let turn = app.submit("go", &[], &mut client, std::path::Path::new("/tmp"));
 
-    assert!(turn.is_none());
-    assert_eq!(
-        app.held_submit.as_ref().map(|(t, _)| t.as_str()),
-        Some("go")
-    );
-    assert!(app.history.is_empty());
-}
-
-#[tokio::test]
-async fn a_submit_after_mcp_connects_runs_straight_away() {
-    let mut client = AiClient::new("http://localhost", "k", "m1");
-    let mut app = chat_app(client.model.clone());
-
-    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
-
-    assert!(turn.is_some());
-    assert!(app.held_submit.is_none());
     assert!(
         app.history
             .iter()
             .any(|m| m.role == "user" && m.content.text() == "go")
     );
-    turn.unwrap().abort();
+    assert_eq!(
+        app.flash.as_deref(),
+        Some("MCP servers still connecting · their tools join your next message")
+    );
+    turn.abort();
 }
 
 #[tokio::test]
 async fn a_message_typed_mid_turn_queues_into_the_running_turn() {
     let mut client = AiClient::new("http://localhost", "k", "m1");
     let mut app = chat_app(client.model.clone());
-    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
-    assert!(turn.is_some());
+    let turn = app.submit("go", &[], &mut client, std::path::Path::new("/tmp"));
 
     assert!(app.queue_mid_turn("and this too", &[]));
 
@@ -945,7 +931,7 @@ async fn a_message_typed_mid_turn_queues_into_the_running_turn() {
     assert_eq!(queued, vec!["and this too".to_string()]);
     // The scrollback and history wait for the engine's injected event.
     assert_eq!(app.history.iter().filter(|m| m.role == "user").count(), 1);
-    turn.unwrap().abort();
+    turn.abort();
 }
 
 #[test]
@@ -972,7 +958,7 @@ fn an_injected_event_lands_in_scrollback_and_history() {
 async fn unsent_queued_messages_are_reclaimed_when_the_turn_ends() {
     let mut client = AiClient::new("http://localhost", "k", "m1");
     let mut app = chat_app(client.model.clone());
-    let turn = app.submit_or_hold("go", &[], &mut client, std::path::Path::new("/tmp"));
+    let turn = app.submit("go", &[], &mut client, std::path::Path::new("/tmp"));
     assert!(app.queue_mid_turn("late arrival", &[]));
 
     let unsent = app.take_unsent();
@@ -980,7 +966,7 @@ async fn unsent_queued_messages_are_reclaimed_when_the_turn_ends() {
     assert_eq!(unsent, vec!["late arrival".to_string()]);
     assert!(app.turn_injected.is_none());
     assert!(app.take_unsent().is_empty());
-    turn.unwrap().abort();
+    turn.abort();
 }
 
 fn app_with_memory(dir: &tempfile::TempDir) -> ChatApp {

@@ -13,18 +13,6 @@ fn a_name_is_uppercased_and_checked() {
 }
 
 #[test]
-fn every_web_provider_var_is_known() {
-    // The catalog `aster key list` reads is the one aster-web resolves from, so
-    // a provider cannot gain a key without turning up here.
-    for (_, var, _) in aster_web::KEY_VARS.iter().chain(aster_voice::KEY_VARS) {
-        assert!(known(var), "{var} should be listed");
-    }
-    assert!(known(SHARED_KEY_VAR));
-    assert!(known("OPENAI_API_KEY"), "catalog vars count as known");
-    assert!(!known("NOT_A_REAL_KEY"));
-}
-
-#[test]
 fn an_assignment_is_read_back_with_or_without_quotes() {
     assert_eq!(assignment("FOO=bar", "FOO"), Some("bar"));
     assert_eq!(assignment("  FOO=bar  ", "FOO"), Some("bar"));

@@ -418,17 +418,6 @@ pub(crate) fn set(
     if let Some(note) = shadow_note(&var, before, local) {
         println!("{}", paint(DIM, &note));
     }
-    if !known(&var) {
-        println!(
-            "{}",
-            paint(
-                DIM,
-                &format!(
-                    "Nothing in Aster reads {var}; `aster key list` shows the ones that are read."
-                ),
-            )
-        );
-    }
     Ok(())
 }
 
@@ -536,16 +525,6 @@ fn normalize(var: &str) -> Result<String> {
         );
     }
     Ok(var)
-}
-
-fn known(var: &str) -> bool {
-    var == SHARED_KEY_VAR
-        || var == "ASTER_JEV_API_KEY"
-        || aster_web::KEY_VARS
-            .iter()
-            .chain(aster_voice::KEY_VARS)
-            .any(|(_, known, _)| *known == var)
-        || catalog_key_vars().iter().any(|(_, known)| *known == var)
 }
 
 fn ask(var: &str) -> Result<String> {

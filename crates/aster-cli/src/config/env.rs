@@ -262,15 +262,6 @@ fn set(
     if let Some(note) = shadow_note(&var, before, local) {
         println!("{}", paint(DIM, &note));
     }
-    if !VARS.iter().any(|v| v.var == var) {
-        println!(
-            "{}",
-            paint(
-                DIM,
-                &format!("Nothing in Aster reads {var}; `aster env list` shows the ones that are read."),
-            )
-        );
-    }
     Ok(())
 }
 

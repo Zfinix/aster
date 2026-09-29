@@ -185,8 +185,8 @@ pub async fn run_chat(
     app.width = tui.width() as usize;
     app.markdown.set_width(app.width);
     app.instructions = sync::Arc::new(crate::instructions::discover(&repo_root));
-    // A cached catalog means the first submit can run now; without one it
-    // waits for the connect like before.
+    // A cached catalog gives the first turn its MCP tools. Without one the turn
+    // starts anyway, and the tools join the turn after the connect lands.
     app.mcp = cached;
     app.mcp_pending = app.mcp.is_none();
     app.limits = limits;
@@ -270,7 +270,7 @@ pub async fn run_chat(
 
     let mut turn: Option<ChatTurn> = None;
     if let Some(seed) = seed.filter(|s| !s.trim().is_empty()) {
-        turn = app.submit_or_hold(&seed, &[], &mut client, &repo_root);
+        turn = Some(app.submit(&seed, &[], &mut client, &repo_root));
         pane.set_task_running(turn.is_some());
     }
 
@@ -395,13 +395,11 @@ pub async fn run_chat(
                     AppEvent::McpReady { runtime, problems } => {
                         app.mcp = runtime;
                         app.mcp_pending = false;
+                        if app.flash.as_deref().is_some_and(|f| f.starts_with("MCP servers still connecting")) {
+                            app.flash = None;
+                        }
                         // Do not print "MCP connected" anymore.
                         app.error_box(&problems);
-                        if let Some((text, refs)) = app.held_submit.take() {
-                            app.flash = None;
-                            turn = Some(app.submit(&text, &refs, &mut client, &repo_root));
-                            pane.set_task_running(true);
-                        }
                     }
 
                     AppEvent::SetMode(Mode::Yolo) => app.confirm_yolo(&mut pane),
@@ -432,7 +430,7 @@ pub async fn run_chat(
                 if turn.is_none() {
                     let unsent = app.take_unsent();
                     if !unsent.is_empty() {
-                        turn = app.submit_or_hold(&unsent.join("\n\n"), &[], &mut client, &repo_root);
+                        turn = Some(app.submit(&unsent.join("\n\n"), &[], &mut client, &repo_root));
                     }
                 }
                 pane.set_task_running(turn.is_some());
@@ -660,7 +658,7 @@ fn on_key(
     match pane.handle_key(key, app.width as u16) {
         InputResult::Submitted { text, refs } => {
             app.flash = None;
-            *turn = app.submit_or_hold(&text, &refs, client, repo_root);
+            *turn = Some(app.submit(&text, &refs, client, repo_root));
             pane.set_task_running(turn.is_some());
         }
         InputResult::Command(cmd) => {
@@ -682,7 +680,7 @@ fn on_key(
             // cancelled, so they do not render as part of the new turn.
             while events_rx.try_recv().is_ok() {}
             app.flash = None;
-            *turn = app.submit_or_hold(&text, &refs, client, repo_root);
+            *turn = Some(app.submit(&text, &refs, client, repo_root));
             pane.set_task_running(turn.is_some());
         }
         InputResult::None => {
@@ -1257,7 +1255,6 @@ struct ChatApp {
     instructions: sync::Arc<crate::instructions::Instructions>,
     mcp: Option<crate::mcp::McpRuntime>,
     mcp_pending: bool,
-    held_submit: Option<(String, Vec<(String, String)>)>,
     turn_injected: Option<sync::Arc<sync::Mutex<Vec<String>>>>,
     limits: crate::chat::Limits,
     provider_base_url: String,
@@ -1327,7 +1324,6 @@ impl ChatApp {
             instructions: sync::Arc::default(),
             mcp: None,
             mcp_pending: false,
-            held_submit: None,
             turn_injected: None,
             limits: crate::chat::Limits::default(),
             provider_base_url: String::new(),
@@ -1637,21 +1633,6 @@ impl ChatApp {
         }
     }
 
-    fn submit_or_hold(
-        &mut self,
-        text: &str,
-        refs: &[(String, String)],
-        client: &mut AiClient,
-        repo_root: &std::path::Path,
-    ) -> Option<ChatTurn> {
-        if self.mcp_pending {
-            self.held_submit = Some((text.to_string(), refs.to_vec()));
-            self.flash = Some("connecting to MCP servers…".into());
-            return None;
-        }
-        Some(self.submit(text, refs, client, repo_root))
-    }
-
     fn submit(
         &mut self,
         text: &str,
@@ -1659,6 +1640,10 @@ impl ChatApp {
         client: &mut AiClient,
         repo_root: &std::path::Path,
     ) -> ChatTurn {
+        if self.mcp_pending {
+            self.flash =
+                Some("MCP servers still connecting · their tools join your next message".into());
+        }
         // A dismissed session picker leaves no transcript open; start one now
         // rather than dropping the conversation on the floor.
         if self.recorder.is_none() {
@@ -1936,7 +1921,7 @@ impl ChatApp {
         pane: &mut BottomPane<AppEvent>,
     ) {
         match ev {
-            // Handled on the run loop, which owns the turn a hold replays into.
+            // Handled on the run loop, which owns the problems box.
             AppEvent::McpReady { .. } => {}
             // Entering YOLO goes through `confirm_yolo`, never straight here.
             AppEvent::SetMode(Mode::Yolo) => {}
