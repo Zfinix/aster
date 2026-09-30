@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-30
+
+### Added
+
+- **Voice dictation.** Press ctrl+r in the chat TUI to talk into the composer.
+  The desktop app, the VS Code panel, and the `aster serve` page get a mic
+  button that runs the new `aster dictate`. Recording works on macOS and
+  Windows and transcribes through ElevenLabs Scribe or OpenAI.
+- **Themes.** `/theme` opens a picker that previews live, with dracula,
+  catppuccin, nord, gruvbox, solarized, synthwave, midnight, and forest built
+  in. Your own themes load from disk. The old `dark` theme is now `default`,
+  and `dark` still works as an alias.
+- **Plans as files.** `write_plan` drafts a plan into a session file you can
+  read and edit.
+- **MCP panels in VS Code.** Each server gets an on/off switch and a panel with
+  its own actions, including signing in.
+- **Existing sign-ins in setup.** `aster init` spots a ChatGPT sign-in already
+  on this machine and uses it without opening a browser.
+- **Endpoint picker.** Choosing a provider endpoint keeps the model and the
+  endpoint in step.
+- **Experimental Jev checks.** Behind the `jev` feature, Jev can advise the agent
+  loop on whether to continue, and can pick the mom router entry before the
+  router model is asked.
+- An explicit compact now folds everything, and a question to you ends the
+  turn.
+
+### Fixed
+
+- **Thinking settings reach every provider.** Turning thinking off used to only
+  work on OpenRouter and Codex. Gemini thought signatures now survive tool
+  loops.
+- **The first message sends right away** instead of waiting for every MCP server
+  to connect.
+- **VS Code follows provider changes.** Switching provider in the panel no
+  longer sends the new model name to the old endpoint.
+- `aster serve` no longer streams blank replies from ACP agents, closes the
+  thinking block on tool calls, and cleans up agents on discard.
+- The installer shows download progress and gives up quickly on a stalled
+  download.
+- Setup sees a key right after you store it.
+- `aster key set` no longer warns about variables Aster does not list.
+- Internal skill reads inside `explore` stay out of the transcript.
+- The desktop app no longer flashes a console window on Windows.
+- Edit diffs in VS Code start open, and failed tool rows are no longer tinted
+  red.
+
 ## [0.6.1] - 2026-09-14
 
 ### Fixed
