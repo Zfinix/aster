@@ -1,11 +1,13 @@
-//! `aster dictate`: record until stdin gets a line or closes, then print the
-//! transcript. Front-ends with no chat turn running use it for their mic button.
+//! `aster dictate`: record until the speaker goes quiet or stdin gets a line,
+//! then print the transcript. Front-ends use it for their mic button.
 
 use std::io::BufRead;
 
 use anyhow::Result;
 use aster_voice::{Recording, Transcriber, VoiceError};
 use serde_json::json;
+
+const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What went wrong, in one plain sentence, with the raw detail kept apart.
 #[derive(Clone, Debug)]
@@ -69,10 +71,21 @@ async fn dictate() -> Result<String, DictationFailure> {
     let transcriber = Transcriber::from_env().ok_or_else(DictationFailure::no_key)?;
     let recording = Recording::start()?;
     println!("{}", json!({ "type": "listening" }));
-    tokio::task::spawn_blocking(|| std::io::stdin().lock().read_line(&mut String::new()))
-        .await
-        .map_err(|e| DictationFailure::interrupted(e.to_string()))?
-        .map_err(|e| DictationFailure::interrupted(e.to_string()))?;
+    let (line_tx, mut line) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = line_tx.send(std::io::stdin().lock().read_line(&mut String::new()));
+    });
+    while !recording.ended() {
+        tokio::select! {
+            read = &mut line => {
+                if let Ok(Err(e)) = read {
+                    return Err(DictationFailure::interrupted(e.to_string()));
+                }
+                break;
+            }
+            () = tokio::time::sleep(POLL) => {}
+        }
+    }
     println!("{}", json!({ "type": "transcribing" }));
     let clip = tokio::task::spawn_blocking(|| recording.finish())
         .await

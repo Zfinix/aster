@@ -339,9 +339,12 @@ pub async fn run_chat(
                     if let Some(flash) = app.usage_flash() {
                         app.flash = Some(flash);
                     }
+                    let listening = app.dictation.tick(&pane.sender());
                     draw(&mut tui, &app, &pane)?;
                     if app.takeover.is_some() || theme::is_transitioning() {
                         frames.schedule_in(std::time::Duration::from_millis(16));
+                    } else if listening {
+                        frames.schedule_in(std::time::Duration::from_millis(100));
                     }
                 }
             },
@@ -612,7 +615,7 @@ fn on_key(
             }
             return Flow::Continue;
         }
-        if interrupt && matches!(app.dictation, Dictation::Listening(..)) {
+        if interrupt && matches!(app.dictation, Dictation::Listening { .. }) {
             app.dictation = Dictation::Idle;
             app.flash = Some("recording discarded".into());
             return Flow::Continue;

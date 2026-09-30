@@ -420,14 +420,17 @@ decision, and a project file omitting the key must not undo it.
 
 ## Voice input
 
-In the chat TUI, ctrl+r starts listening and a second ctrl+r turns what it
-heard into text in the input box. Esc while listening throws the recording away.
-A recording stops on its own after five minutes.
+In the chat TUI, ctrl+r starts listening. Once you have spoken and then gone
+quiet for about a second and a half, it stops by itself and turns what it heard
+into text in the input box; a second ctrl+r stops it sooner, and Esc throws the
+recording away. The footer shows how long it has been listening and a level
+meter, so you can see it hearing you. A recording never runs past five minutes.
 
-The desktop app and the VS Code extension have a mic button in the composer
-that works the same way. Both run `aster dictate`, which prints NDJSON:
-`listening`, `transcribing`, then `transcript` with `text` or `error` with
-`message` and `detail`. It stops listening when stdin gets a line or closes.
+The desktop app, the VS Code extension, and the `aster serve` page have a mic
+button in the composer that works the same way. They run `aster dictate`, which
+prints NDJSON: `listening`, `transcribing`, then `transcript` with `text` or
+`error` with `message` and `detail`. It stops listening when the speaker goes
+quiet, or sooner when stdin gets a line or closes.
 
 Speech to text needs one key: `ELEVENLABS_API_KEY` (Scribe) is used first, then
 `OPENAI_API_KEY` (`gpt-4o-transcribe`). `aster key list` shows both under
