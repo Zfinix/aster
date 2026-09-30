@@ -90,8 +90,11 @@ change or disappear in any release.
   [Jev](https://typesafe.ai) classifier at each tool round whether the agent
   loop should continue, retry, ask you, or stop. Advisory only: a
   low-confidence answer is ignored, the round cap still binds, and a failed
-  check changes nothing. Needs a build with the `jev` cargo feature and
-  `ASTER_JEV_API_KEY` set.
+  check changes nothing. With a mom router enabled, Jev also answers the
+  router first: it picks an entry as a typed choice, a pick under 0.6
+  probability keeps `start-with`, and a failed call falls through to the
+  router model. Every consultation lands in `~/.aster/logs/mom-router.jsonl`.
+  Needs a build with the `jev` cargo feature and `ASTER_JEV_API_KEY` set.
 
 ## Where the file lives
 

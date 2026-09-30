@@ -22,6 +22,8 @@ const ADVISE_TIMEOUT_SECS: u64 = 2;
 /// A suggestion below this probability of its chosen option is ignored.
 pub const ADVISE_CONFIDENCE_MIN: f64 = 0.8;
 
+pub const ROUTE_CONFIDENCE_MIN: f64 = 0.6;
+
 const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
 const DEFAULT_MODEL: &str = "jev-latest";
 
@@ -264,6 +266,50 @@ impl JevClient {
             _ => None,
         }
     }
+
+    pub async fn route(&self, message: &str, entries: &[(String, String)]) -> Result<RoutePick> {
+        let mut questions = BTreeMap::new();
+        questions.insert(
+            "entry".to_string(),
+            Question::Choice {
+                instructions: "Which model entry is best suited to answer this user message? \
+                               Multi-step design, debugging, or refactoring work goes to a \
+                               stronger entry; small mechanical asks go to a cheaper one."
+                    .to_string(),
+                criteria: entries.to_vec(),
+            },
+        );
+        let state = format!("User message:\n{}", truncate(message, MAX_STATE_CHARS));
+        let answers = self.evaluate(&state, &questions).await?;
+        match answers.get("entry") {
+            Some(Answer::Choice {
+                choice,
+                probabilities,
+                confidence,
+            }) => {
+                anyhow::ensure!(
+                    entries.iter().any(|(name, _)| name == choice),
+                    "jev picked {choice:?}, which is not a declared entry"
+                );
+                let probability = probabilities
+                    .get(choice)
+                    .copied()
+                    .or(*confidence)
+                    .unwrap_or(0.0);
+                Ok(RoutePick {
+                    entry: choice.clone(),
+                    probability,
+                })
+            }
+            other => anyhow::bail!("jev returned no entry choice: {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoutePick {
+    pub entry: String,
+    pub probability: f64,
 }
 
 /// What the agent loop should do at a round boundary.

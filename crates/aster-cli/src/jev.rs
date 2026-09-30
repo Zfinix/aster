@@ -16,6 +16,15 @@ pub(crate) enum Advice {
     Stop,
 }
 
+#[cfg_attr(not(feature = "jev"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RouteAdvice {
+    Unavailable,
+    Picked { entry: String, probability: f64 },
+    Unsure { entry: String, probability: f64 },
+    Failed(String),
+}
+
 pub(crate) struct Advisor {
     #[cfg(feature = "jev")]
     client: Option<aster_jev::JevClient>,
@@ -91,6 +100,33 @@ impl Advisor {
         {
             let _ = (wire, round, round_cap);
             Advice::None
+        }
+    }
+
+    pub(crate) async fn route(&self, message: &str, entries: &[(String, String)]) -> RouteAdvice {
+        #[cfg(feature = "jev")]
+        {
+            let Some(client) = &self.client else {
+                return RouteAdvice::Unavailable;
+            };
+            match client.route(message, entries).await {
+                Ok(pick) if pick.probability >= aster_jev::ROUTE_CONFIDENCE_MIN => {
+                    RouteAdvice::Picked {
+                        entry: pick.entry,
+                        probability: pick.probability,
+                    }
+                }
+                Ok(pick) => RouteAdvice::Unsure {
+                    entry: pick.entry,
+                    probability: pick.probability,
+                },
+                Err(e) => RouteAdvice::Failed(format!("{e:#}")),
+            }
+        }
+        #[cfg(not(feature = "jev"))]
+        {
+            let _ = (message, entries);
+            RouteAdvice::Unavailable
         }
     }
 }

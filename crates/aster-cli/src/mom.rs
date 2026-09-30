@@ -5,6 +5,10 @@ use anyhow::Result;
 use aster_mom::{Catalog, Engine, ModelEntry, Power, Resolver, Selection, Signals, Thinking};
 use clap::{Args, Subcommand};
 
+use crate::jev::RouteAdvice;
+
+const JEV_ROUTER: &str = "jev";
+
 /// Everything needed to reach one resolved model from a turn task.
 #[derive(Debug, Clone)]
 pub struct RouterTarget {
@@ -461,6 +465,25 @@ pub async fn consult_router(
     plan: &RouterPlan,
     message: &str,
 ) -> Option<String> {
+    match crate::jev::current().route(message, &plan.entries).await {
+        RouteAdvice::Picked { entry, probability } => {
+            log_router(JEV_ROUTER, &format!("picked {entry} (p={probability:.2})"));
+            return Some(entry);
+        }
+        RouteAdvice::Unsure { entry, probability } => {
+            log_router(
+                JEV_ROUTER,
+                &format!("unsure: {entry} at p={probability:.2}, keeping start-with"),
+            );
+            return None;
+        }
+        RouteAdvice::Failed(err) => log_router(
+            JEV_ROUTER,
+            &format!("call failed: {err}; asking the router model"),
+        ),
+        RouteAdvice::Unavailable => {}
+    }
+
     let mut client = client.clone();
     if client.base_url().trim_end_matches('/') != plan.router.base_url.trim_end_matches('/') {
         client.set_endpoint(&plan.router.base_url, plan.router.key.clone());
@@ -590,6 +613,9 @@ async fn route(message: &str) -> Result<()> {
         anyhow::bail!("give me a message to route, e.g. aster mom route fix this typo");
     }
     let repo_root = std::env::current_dir().unwrap_or_default();
+    if let Ok(settings) = crate::settings::Settings::load(Some(&repo_root)) {
+        crate::jev::init(&settings.experimental);
+    }
     let Some(session) = MomSession::load(&repo_root) else {
         println!("no mom.yaml found (looked in the project root, .agents/, and ~/.aster)");
         return Ok(());
