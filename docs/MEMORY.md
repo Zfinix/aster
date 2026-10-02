@@ -262,8 +262,6 @@ recorded as an `eviction` event, so the transcript shows what was dropped.
 
 ## What is deferred
 
-- **Auto end-of-session distillation** of memory: save what is relevant to the
-  work and the user, not every fact stated (memory is tool-driven and manual today).
 - **A derived SQLite/FTS5 recall index** over transcripts and memory, added only
   when a linear scan across files gets slow. It would be rebuildable from the
   files, never authoritative.
@@ -297,12 +295,14 @@ Implemented incrementally; each stage lands independently:
   `MAX_INDEX_ENTRIES` (60), ordered most-recent-first, with a truncation notice.
   Model-visible memory cannot grow without bound.
 
-### Stage 2 (next): consolidation
+### Stage 2: consolidation
 
-A model-backed consolidation pass, run on turn/session boundaries, distills
-durable semantic memory from the episodic transcript: propose new blocks,
-merge duplicates, drop contradictions, archive stale facts. Bounded and
-budgeted per AGENTS.md; never dumps the full transcript into context.
+When a session of at least six turns finishes, a model-backed pass
+(`aster-memory`) reads a bounded digest of the transcript and proposes new
+blocks, merges of duplicates, archives of facts the session contradicted, and
+lessons from corrections. Every change goes through the journal, and a marker
+keeps a session from being consolidated twice. It never puts the full
+transcript into context.
 
 ### Stage 3 (next): retrieval
 
