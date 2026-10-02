@@ -17,8 +17,9 @@ Three ideas shape it:
 
 - **You own the whole thing.** Your key, your model, your machine. Sessions,
   memory, and skills are plain files on your disk. There is no hosted control
-  plane, no vector database, and no telemetry. Point it at a local model and it
-  works with no network at all.
+  plane, no vector database, and no telemetry unless you point it at your own
+  OpenTelemetry endpoint. Point it at a local model and it works with no network
+  at all.
 - **A harness, not a prompt.** Tools, permissions, history, memory, and
   retrieval are shared infrastructure. Chat, review, and fix all inherit them,
   so a new capability is a small addition rather than another agent rebuilding
@@ -372,8 +373,9 @@ listed by title and read in full only when the agent needs them.
 Skills are folders with a `SKILL.md` telling the agent how to do something
 specific. Aster reads the titles and loads the body only when it is relevant.
 
-Five core skills ship built in and are always available: git and GitHub
-workflows, security review, security scanning, and skill authoring. Eleven more
+Six core skills ship built in and are always available: git and GitHub
+workflows, security review, security scanning, skill authoring, and artifact
+design. Twelve more
 guide the agent's own conduct (verifying before reporting done, build triage,
 shell batching, CLI craft, context economy, web research, taking corrections,
 and so on); those are internal, so they never appear in a skills list or as a
@@ -559,6 +561,8 @@ crates/
   aster-eval/        the evaluation harness
   aster-telemetry/   optional OpenTelemetry export
   aster-shortcuts/   Apple Shortcuts tools, listed and run without opening the app
+  aster-voice/       voice dictation: records the microphone and transcribes it
+  aster-jev/         experimental Jev advice for the agent loop, behind the `jev` feature
   aster-models/      shared domain types
 desktop/             the desktop app (Tauri)
 editors/vscode/      the VS Code extension, and the panel `aster serve` hands a browser
