@@ -1,15 +1,26 @@
-## What this does
+## TL;DR
 
-<!-- A short description of the change and why it is needed. -->
+<!-- One sentence: what changes for the person using Aster. -->
 
-## Related issues
+## Changes
 
-<!-- e.g. Closes #123 -->
+<!-- 3 to 5 bullets, one line each. Link files only when it helps. -->
 
-## Checklist
+-
 
-- [ ] `cargo fmt --all --check` passes
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] `cargo test --workspace` passes
-- [ ] Tests added or updated for behavior changes
-- [ ] Docs updated if behavior or config changed
+## Try it
+
+<!-- The command or click that shows it working. -->
+
+## Tested
+
+- [ ] `make check` passes
+- [ ] Tried it for real: <!-- what you ran, what you saw -->
+
+## Heads up
+
+<!-- Only what a reviewer must not miss: breaking changes, new dependencies,
+anything that moves early model context or can exceed ~1K tokens. Delete this
+section if there is nothing. -->
+
+Closes #

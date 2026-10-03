@@ -6,6 +6,8 @@ mod clip;
 mod elevenlabs;
 mod mic;
 mod openai;
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+mod vad;
 
 use std::time::Duration;
 
