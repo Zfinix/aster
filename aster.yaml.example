@@ -134,9 +134,9 @@ agents:
 ui:
   # Print the session header (model, provider, skills) when chat starts.
   welcome: true
-  # Chat color theme: dark, light, midnight, or forest. `/theme` in a chat
-  # picks one and saves.
-  theme: dark
+  # Chat color theme: default, light, midnight, forest, or any theme in
+  # THEMES.md. `/theme` in a chat picks one and saves.
+  theme: default
 
 # Dictation (ctrl+r in chat, the mic button elsewhere) and reading replies
 # aloud. `/voice` in a chat shows the setup and saves changes. With nothing
