@@ -1,0 +1,90 @@
+name: Aster Review
+
+# Aster reviews its own pull requests: it runs the same hypothesis/verify
+# harness used by `aster review` locally and posts the findings as inline
+# comments on the PR. Findings are informational; this workflow never fails
+# the run on findings, only when the review itself errors. The aster binary is
+# downloaded from the latest cli-v* release, so the job never compiles anything.
+#
+# Required secrets / variables:
+#   ASTER_API_KEY            (secret) DeepSeek API key (from DEEPSEEK_API_KEY)
+#   ASTER_BASE_URL           (var)    provider base URL; https://api.deepseek.com/v1
+#   ASTER_MODEL              (var)    fallback model; deepseek-v4-pro
+#   ASTER_HYPOTHESIS_MODEL   (var)    first-pass model; deepseek-v4-flash (cheap)
+#   ASTER_VERIFY_MODEL       (var)    adversarial verifier; deepseek-v4-pro
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number to review (blank = the PR that triggered the run)'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-latest
+    # Fork PRs don't get this repo's secrets, so there is no ASTER_API_KEY for
+    # them. Skip them; only same-repo PRs and manual runs go through.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      # Index the PR head, not the default branch: the verifier's symbol index
+      # reads the files on disk, and `--pr` only fetches the diff over the API.
+      # Shallow, since nothing here needs history.
+      - name: Check out the PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Resolve the latest CLI release
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName --jq '[.[] | select(.tagName | startswith("cli-v"))][0].tagName')"
+          [ -n "$TAG" ] || { echo "no cli-v* release to download" >&2; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#cli-v}" >> "$GITHUB_OUTPUT"
+          echo "Using $TAG"
+
+      # No build: pull the shipped binary from the cli-v* release. That keeps
+      # this job seconds instead of the minutes a release build takes.
+      - name: Download the prebuilt aster
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: |
+          ASSET="aster-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET"
+          tar -xzf "$ASSET"
+          DIR="aster-${VERSION}-x86_64-unknown-linux-gnu"
+          chmod +x "$DIR/aster"
+          echo "$GITHUB_WORKSPACE/$DIR" >> "$GITHUB_PATH"
+
+      - name: Resolve PR number
+        id: pr
+        shell: bash
+        run: echo "number=${{ github.event.pull_request.number || github.event.inputs.pr }}" >> "$GITHUB_OUTPUT"
+
+      - name: Review and comment
+        env:
+          ASTER_API_KEY: ${{ secrets.ASTER_API_KEY }}
+          ASTER_BASE_URL: ${{ vars.ASTER_BASE_URL }}
+          ASTER_MODEL: ${{ vars.ASTER_MODEL }}
+          ASTER_HYPOTHESIS_MODEL: ${{ vars.ASTER_HYPOTHESIS_MODEL }}
+          ASTER_VERIFY_MODEL: ${{ vars.ASTER_VERIFY_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          aster review \
+            --pr "${{ steps.pr.outputs.number }}" \
+            --repo "${{ github.repository }}" \
+            --comment --yes
