@@ -31,12 +31,14 @@ pub use types::{
 };
 
 /// Extract a single page as Markdown.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait WebExtract: Send + Sync {
     async fn extract(&self, url: &str) -> anyhow::Result<ExtractedPage>;
 }
 
 /// Crawl a site starting from `url`, returning Markdown for every page.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait WebCrawl: Send + Sync {
     async fn crawl(&self, url: &str, opts: &CrawlOptions) -> anyhow::Result<CrawlResult>;
