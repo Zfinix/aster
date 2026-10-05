@@ -104,7 +104,7 @@ impl Rule {
             // also match `rmdir`.
             Match::CommandPrefix(prefix) => match line.strip_prefix(prefix.as_str()) {
                 Some("") => true,
-                Some(rest) => rest.starts_with(char::is_whitespace),
+                Some(rest) => !rest.starts_with(char::is_whitespace),
                 None => false,
             },
             Match::Path(_) => false,
