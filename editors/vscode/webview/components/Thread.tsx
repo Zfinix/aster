@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { post } from "../lib/host";
 import { openFilePreview } from "../lib/filePreview";
 import type { LoginState } from "../lib/login";
-import type { Turn } from "../lib/thread";
+import type { ReviewData, Turn } from "../lib/thread";
 import type { Provider } from "../../src/protocol";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import { NewItemsPill } from "../interior/new-items-pill";
@@ -16,7 +16,7 @@ import { QuestionPrompt } from "./QuestionPrompt";
 import { ReviewTurn } from "./ReviewTurn";
 import { SetupCard } from "./SetupCard";
 import { UserText } from "./UserText";
-import { UserTurnActions, UserTurnEditor } from "./UserTurnActions";
+import { UserTurnActions } from "./UserTurnActions";
 import { StatusLine } from "./StatusLine";
 import { AgentGroup } from "./AgentGroup";
 import { GoalCard } from "./GoalCard";
@@ -35,9 +35,8 @@ export function Thread({
   onAnswer,
   editing,
   onEditStart,
-  onEditCancel,
-  onEditSend,
   onFork,
+  onReviewChange,
 }: {
   turns: Turn[];
   login: LoginState | null;
@@ -49,9 +48,8 @@ export function Thread({
   onAnswer: (choice: string | null) => void;
   editing: string | null;
   onEditStart: (id: string) => void;
-  onEditCancel: () => void;
-  onEditSend: (id: string, text: string) => void;
   onFork: (id: string) => void;
+  onReviewChange: (id: string, patch: (data: ReviewData) => ReviewData) => void;
 }) {
   const { viewport, content, atBottom, onScroll, scrollToBottom } = useStickToBottom();
 
@@ -84,32 +82,31 @@ export function Thread({
           {turns.map((turn) => {
             if (turn.role === "user") {
               return (
-                <div key={turn.id} className="turn-user-wrap">
-                  {editing === turn.id ? (
-                    <UserTurnEditor
-                      text={turn.text}
-                      onSend={(next) => onEditSend(turn.id, next)}
-                      onCancel={onEditCancel}
-                    />
-                  ) : (
-                    <>
-                      <div className="turn-user">
-                        <div className="turn-user-text">
-                          <UserText text={turn.text} />
-                        </div>
-                      </div>
-                      <UserTurnActions
-                        busy={busy}
-                        onEdit={() => onEditStart(turn.id)}
-                        onFork={() => onFork(turn.id)}
-                      />
-                    </>
-                  )}
+                <div
+                  key={turn.id}
+                  className={editing === turn.id ? "turn-user-wrap editing" : "turn-user-wrap"}
+                >
+                  <div className="turn-user">
+                    <div className="turn-user-text">
+                      <UserText text={turn.text} />
+                    </div>
+                  </div>
+                  <UserTurnActions
+                    busy={busy}
+                    onEdit={() => onEditStart(turn.id)}
+                    onFork={() => onFork(turn.id)}
+                  />
                 </div>
               );
             }
             if (turn.role === "review") {
-              return <ReviewTurn key={turn.id} data={turn.data} />;
+              return (
+                <ReviewTurn
+                  key={turn.id}
+                  data={turn.data}
+                  onChange={(patch) => onReviewChange(turn.id, patch)}
+                />
+              );
             }
             if (turn.role === "info") {
               return <InfoCard key={turn.id} turn={turn} />;

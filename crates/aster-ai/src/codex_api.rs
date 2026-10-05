@@ -235,6 +235,9 @@ fn translate_usage(usage: &Value) -> Value {
     if let Some(v) = usage["output_tokens"].as_u64() {
         mapped["completion_tokens"] = json!(v);
     }
+    if let Some(v) = usage["input_tokens_details"]["cached_tokens"].as_u64() {
+        mapped["prompt_tokens_details"] = json!({ "cached_tokens": v });
+    }
     if let (Some(p), Some(c)) = (
         usage["input_tokens"].as_u64(),
         usage["output_tokens"].as_u64(),

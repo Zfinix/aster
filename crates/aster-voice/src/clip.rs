@@ -8,6 +8,17 @@ pub struct Clip {
 }
 
 impl Clip {
+    /// Raw little-endian 16-bit mono PCM, the format speech replies come in.
+    pub fn from_pcm(bytes: &[u8], sample_rate: u32) -> Self {
+        Self {
+            samples: bytes
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect(),
+            sample_rate,
+        }
+    }
+
     pub fn duration(&self) -> Duration {
         if self.sample_rate == 0 {
             return Duration::ZERO;

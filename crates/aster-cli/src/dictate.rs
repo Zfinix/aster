@@ -1,32 +1,24 @@
-//! `aster dictate`: record until the speaker goes quiet or stdin gets a line,
-//! then print the transcript. Front-ends use it for their mic button.
+//! `aster dictate`: record until stdin gets a line or closes, then print the
+//! transcript. Front-ends with no chat turn running use it for their mic button.
 
 use std::io::BufRead;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use aster_voice::{Recording, Transcriber, VoiceError};
+use aster_voice::{Missing, Recording, Transcriber, VoiceConfig, VoiceError};
 use serde_json::json;
-
-const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What went wrong, in one plain sentence, with the raw detail kept apart.
 #[derive(Clone, Debug)]
 pub(crate) struct DictationFailure {
-    pub(crate) message: &'static str,
+    pub(crate) message: String,
     pub(crate) detail: Option<String>,
 }
 
 impl DictationFailure {
-    pub(crate) fn no_key() -> Self {
-        Self {
-            message: "Voice input needs a speech key. Run `aster key set ELEVENLABS_API_KEY` (or OPENAI_API_KEY), then try again.",
-            detail: None,
-        }
-    }
-
     pub(crate) fn interrupted(detail: String) -> Self {
         Self {
-            message: "Recording stopped unexpectedly. Try again.",
+            message: "Recording stopped unexpectedly. Try again.".into(),
             detail: Some(detail),
         }
     }
@@ -34,8 +26,18 @@ impl DictationFailure {
 
 impl From<VoiceError> for DictationFailure {
     fn from(err: VoiceError) -> Self {
-        let (message, detail) = match err {
-            VoiceError::Unsupported => ("Voice input isn't available on this system yet.", None),
+        let (message, detail): (&str, _) = match err {
+            VoiceError::Unsupported => ("Voice isn't available on this system yet.", None),
+            VoiceError::NotSetUp(missing) => {
+                return Self {
+                    message: not_set_up(missing),
+                    detail: None,
+                };
+            }
+            VoiceError::NoSpeaker(detail) => (
+                "Can't play sound. Check your speakers or headphones, then try again.",
+                Some(detail),
+            ),
             VoiceError::NoMicrophone(detail) => (
                 "Can't reach your microphone. Check that Aster has microphone access in System Settings, then try again.",
                 Some(detail),
@@ -45,12 +47,34 @@ impl From<VoiceError> for DictationFailure {
                 None,
             ),
             VoiceError::Provider { provider, detail } => (
-                "Couldn't turn your recording into text. Check your speech key and connection, then try again.",
+                "The voice service didn't answer. Check your voice key and connection, then try again.",
                 Some(format!("{provider}: {detail}")),
             ),
         };
-        Self { message, detail }
+        Self {
+            message: message.into(),
+            detail,
+        }
     }
+}
+
+fn not_set_up(missing: Missing) -> String {
+    match missing {
+        Missing::AnyKey => "Voice input needs a speech key. Run `aster key set GROQ_API_KEY` (or ELEVENLABS_API_KEY, OPENAI_API_KEY, DEEPGRAM_API_KEY), then try again.".into(),
+        Missing::Key(var) => format!("Voice needs {var}. Run `aster key set {var}`, then try again."),
+        Missing::Url(key) => format!("Voice needs the address of your speech server. Set voice.{key} in aster.yaml, then try again."),
+    }
+}
+
+/// The voice block in effect here. A malformed aster.yaml is an error, so a
+/// misspelled provider never quietly falls back to the default.
+pub(crate) fn voice_config(repo_root: &Path) -> Result<VoiceConfig, DictationFailure> {
+    crate::settings::Settings::load(Some(repo_root))
+        .map(|s| s.voice)
+        .map_err(|e| DictationFailure {
+            message: "Your aster.yaml has a mistake in it. Fix it, then try again.".into(),
+            detail: Some(format!("{e:#}")),
+        })
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -68,27 +92,20 @@ pub(crate) async fn run() -> Result<()> {
 }
 
 async fn dictate() -> Result<String, DictationFailure> {
-    let transcriber = Transcriber::from_env().ok_or_else(DictationFailure::no_key)?;
+    let transcriber = Transcriber::from_config(&voice_config(&cwd())?)?;
     let recording = Recording::start()?;
     println!("{}", json!({ "type": "listening" }));
-    let (line_tx, mut line) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let _ = line_tx.send(std::io::stdin().lock().read_line(&mut String::new()));
-    });
-    while !recording.ended() {
-        tokio::select! {
-            read = &mut line => {
-                if let Ok(Err(e)) = read {
-                    return Err(DictationFailure::interrupted(e.to_string()));
-                }
-                break;
-            }
-            () = tokio::time::sleep(POLL) => {}
-        }
-    }
+    tokio::task::spawn_blocking(|| std::io::stdin().lock().read_line(&mut String::new()))
+        .await
+        .map_err(|e| DictationFailure::interrupted(e.to_string()))?
+        .map_err(|e| DictationFailure::interrupted(e.to_string()))?;
     println!("{}", json!({ "type": "transcribing" }));
     let clip = tokio::task::spawn_blocking(|| recording.finish())
         .await
         .map_err(|e| DictationFailure::interrupted(e.to_string()))?;
     Ok(transcriber.transcribe(&clip).await?)
+}
+
+pub(crate) fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_default()
 }

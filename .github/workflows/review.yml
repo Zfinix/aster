@@ -2,7 +2,8 @@ name: Aster Review
 
 # Aster reviews its own pull requests: it runs the same hypothesis/verify
 # harness used by `aster review` locally and posts the findings as inline
-# comments on the PR. Findings are informational; this workflow never fails
+# comments on the PR, authored by the Aster Review GitHub App rather than
+# github-actions[bot]. Findings are informational; this workflow never fails
 # the run on findings, only when the review itself errors. The aster binary is
 # downloaded from the latest cli-v* release, so the job never compiles anything.
 #
@@ -12,6 +13,8 @@ name: Aster Review
 #   ASTER_MODEL              (var)    fallback model; deepseek-v4-pro
 #   ASTER_HYPOTHESIS_MODEL   (var)    first-pass model; deepseek-v4-flash (cheap)
 #   ASTER_VERIFY_MODEL       (var)    adversarial verifier; deepseek-v4-pro
+#   ASTER_APP_ID             (secret) GitHub App ID (the Aster Review app)
+#   ASTER_APP_PRIVATE_KEY    (secret) the app's RSA private key (PEM)
 
 on:
   pull_request:
@@ -24,7 +27,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   review:
@@ -75,6 +77,16 @@ jobs:
         shell: bash
         run: echo "number=${{ github.event.pull_request.number || github.event.inputs.pr }}" >> "$GITHUB_OUTPUT"
 
+      # Mint an installation token for the Aster Review app so the review is
+      # posted by the bot account (aster-review[bot]), not github-actions[bot].
+      - name: Mint the Aster app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ASTER_APP_ID }}
+          private-key: ${{ secrets.ASTER_APP_PRIVATE_KEY }}
+          repositories: aster
+
       - name: Review and comment
         env:
           ASTER_API_KEY: ${{ secrets.ASTER_API_KEY }}
@@ -82,7 +94,7 @@ jobs:
           ASTER_MODEL: ${{ vars.ASTER_MODEL }}
           ASTER_HYPOTHESIS_MODEL: ${{ vars.ASTER_HYPOTHESIS_MODEL }}
           ASTER_VERIFY_MODEL: ${{ vars.ASTER_VERIFY_MODEL }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           aster review \
             --pr "${{ steps.pr.outputs.number }}" \

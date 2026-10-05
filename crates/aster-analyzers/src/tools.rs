@@ -1,6 +1,7 @@
 //! Chat-tool entry points over the embedded analyzers: structural search,
 //! structural rewrite, and a security scan rendered for the model.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -31,8 +32,60 @@ fn lang_from_str(name: &str) -> Option<SupportLang> {
     })
 }
 
-fn pattern_for(pattern: &str, lang: SupportLang) -> Pattern {
-    Pattern::new(pattern, lang)
+/// Patterns compiled once per language. A pattern that does not parse for a
+/// detected language skips those files; it is only an error when no language
+/// accepted it, or when the caller named the language.
+struct Patterns<'a> {
+    src: &'a str,
+    compiled: HashMap<SupportLang, Option<Pattern>>,
+    error: Option<anyhow::Error>,
+}
+
+impl<'a> Patterns<'a> {
+    fn new(src: &'a str, only: Option<SupportLang>) -> Result<Self> {
+        let mut patterns = Self {
+            src,
+            compiled: HashMap::new(),
+            error: None,
+        };
+        if let Some(lang) = only
+            && patterns.get(lang).is_none()
+        {
+            return Err(patterns
+                .error
+                .take()
+                .expect("failed compile records an error"));
+        }
+        Ok(patterns)
+    }
+
+    fn get(&mut self, lang: SupportLang) -> Option<&Pattern> {
+        let src = self.src;
+        let error = &mut self.error;
+        self.compiled
+            .entry(lang)
+            .or_insert_with(|| match Pattern::try_new(src, lang) {
+                Ok(pattern) => Some(pattern),
+                Err(e) => {
+                    error.get_or_insert_with(|| {
+                        anyhow::anyhow!(
+                            "invalid {lang} pattern: {e} A pattern must be one expression or \
+                             statement; search for one statement at a time."
+                        )
+                    });
+                    None
+                }
+            })
+            .as_ref()
+    }
+
+    fn into_error(self) -> Option<anyhow::Error> {
+        if self.compiled.values().any(Option::is_some) {
+            None
+        } else {
+            self.error
+        }
+    }
 }
 
 /// Find every match of an ast-grep pattern under `root`, one `file:line: text`
@@ -45,6 +98,7 @@ pub fn ast_grep_search(root: &Path, pattern: &str, language: Option<&str>) -> Re
         ),
         None => None,
     };
+    let mut patterns = Patterns::new(pattern, only)?;
     let mut out = Vec::new();
     for file in source_files(root) {
         let Some(lang) = only.or_else(|| lang_of(&file)) else {
@@ -53,9 +107,11 @@ pub fn ast_grep_search(root: &Path, pattern: &str, language: Option<&str>) -> Re
         let Ok(src) = std::fs::read_to_string(&file) else {
             continue;
         };
-        let pat = pattern_for(pattern, lang);
+        let Some(pat) = patterns.get(lang) else {
+            continue;
+        };
         let tree = lang.ast_grep(&src);
-        for m in tree.root().find_all(&pat) {
+        for m in tree.root().find_all(pat) {
             if out.len() == MAX_MATCHES {
                 out.push(format!(
                     "(more matches exist; showing the first {MAX_MATCHES})"
@@ -71,6 +127,9 @@ pub fn ast_grep_search(root: &Path, pattern: &str, language: Option<&str>) -> Re
         }
     }
     if out.is_empty() {
+        if let Some(e) = patterns.into_error() {
+            return Err(e);
+        }
         out.push("no matches".to_string());
     }
     Ok(out.join("\n"))
@@ -121,6 +180,7 @@ pub fn ast_edit_plan(
         ),
         None => None,
     };
+    let mut patterns = Patterns::new(pattern, only)?;
     let mut changes = Vec::new();
     let mut total = 0usize;
     let mut diff_lines = Vec::new();
@@ -132,16 +192,26 @@ pub fn ast_edit_plan(
         let Ok(src) = std::fs::read_to_string(&file) else {
             continue;
         };
-        let pat = pattern_for(pattern, lang);
+        let Some(pat) = patterns.get(lang) else {
+            continue;
+        };
         let tree = lang.ast_grep(&src);
-        let edits: Vec<(usize, usize, Vec<u8>)> = tree
+        // find_all walks outer nodes before inner ones, so dropping any edit
+        // that starts inside the last kept one leaves only outermost matches.
+        let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+        for e in tree
             .root()
-            .find_all(&pat)
-            .filter_map(|m| {
-                let e = m.replace(&pat, rewrite)?;
-                Some((e.position, e.deleted_length, e.inserted_text))
-            })
-            .collect();
+            .find_all(pat)
+            .filter_map(|m| m.replace(pat, rewrite))
+        {
+            if edits
+                .last()
+                .is_some_and(|(pos, len, _)| e.position < pos + len)
+            {
+                continue;
+            }
+            edits.push((e.position, e.deleted_length, e.inserted_text));
+        }
         if edits.is_empty() {
             continue;
         }
@@ -149,6 +219,11 @@ pub fn ast_edit_plan(
         total += edits.len();
         push_diff(&mut diff_lines, &file, &src, &new_src);
         changes.push((file, new_src));
+    }
+    if changes.is_empty()
+        && let Some(e) = patterns.into_error()
+    {
+        return Err(e);
     }
 
     Ok(AstEditPlan {

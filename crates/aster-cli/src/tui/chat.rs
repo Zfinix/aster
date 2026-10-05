@@ -29,6 +29,7 @@ use super::helpers::{clip_row, count_of, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
 use super::terminal::{Tui, TuiEvent};
+use super::voice::ReadAloud;
 use super::{history, theme, wrap};
 use crate::chat::{
     Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
@@ -103,6 +104,7 @@ pub(super) enum AppEvent {
         problems: Vec<String>,
     },
     Dictated(Result<String, DictationFailure>),
+    ReadAloudFailed(DictationFailure),
 }
 
 fn spawn_mention_search(
@@ -339,12 +341,9 @@ pub async fn run_chat(
                     if let Some(flash) = app.usage_flash() {
                         app.flash = Some(flash);
                     }
-                    let listening = app.dictation.tick(&pane.sender());
                     draw(&mut tui, &app, &pane)?;
                     if app.takeover.is_some() || theme::is_transitioning() {
                         frames.schedule_in(std::time::Duration::from_millis(16));
-                    } else if listening {
-                        frames.schedule_in(std::time::Duration::from_millis(100));
                     }
                 }
             },
@@ -416,6 +415,7 @@ pub async fn run_chat(
                 match res {
                     Ok(Ok((reply, edited, compacted))) => {
                         app.finish_turn(&reply, &edited, compacted);
+                        app.read_aloud.start(&reply, &repo_root, &pane.sender());
                     }
                     Ok(Err(e)) => {
                         let msg = format!("{e:#}");
@@ -610,12 +610,16 @@ fn on_key(
 
     if !pane.has_active_view() {
         if ctrl && key.code == KeyCode::Char('r') {
-            if let Err(failure) = app.dictation.toggle(&pane.sender()) {
+            app.read_aloud.stop();
+            if let Err(failure) = app.dictation.toggle(&pane.sender(), repo_root) {
                 app.dictation_failed(failure);
             }
             return Flow::Continue;
         }
-        if interrupt && matches!(app.dictation, Dictation::Listening { .. }) {
+        if interrupt && app.read_aloud.stop() {
+            return Flow::Continue;
+        }
+        if interrupt && matches!(app.dictation, Dictation::Listening(..)) {
             app.dictation = Dictation::Idle;
             app.flash = Some("recording discarded".into());
             return Flow::Continue;
@@ -1106,6 +1110,10 @@ const KEY_HELP: &[(&str, &str)] = &[
         "open the switcher: thinking, mode, effort, model, provider",
     ),
     ("ctrl+j", "newline without sending"),
+    (
+        "ctrl+r",
+        "dictate: press to listen, again to type what you said",
+    ),
     ("@", "mention a file from this repo"),
     ("↑ ↓", "move the cursor, then step through past messages"),
 ];
@@ -1120,6 +1128,11 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
         name: "mom",
         takes_arg: true,
         desc: "Your model policy: /mom on, /mom off, or no argument to see it",
+    },
+    CommandDesc {
+        name: "voice",
+        takes_arg: true,
+        desc: "Dictation and read aloud: /voice read on, /voice stt groq, or no argument to see it",
     },
     CommandDesc {
         name: "provider",
@@ -1273,6 +1286,7 @@ struct ChatApp {
     theme_name: String,
     show_welcome: bool,
     dictation: Dictation,
+    read_aloud: ReadAloud,
 }
 
 struct Takeover {
@@ -1343,6 +1357,7 @@ impl ChatApp {
             theme_name: "default".to_string(),
             show_welcome: true,
             dictation: Dictation::Idle,
+            read_aloud: ReadAloud::default(),
         }
     }
 
@@ -2041,6 +2056,7 @@ impl ChatApp {
                     Err(failure) => self.dictation_failed(failure),
                 }
             }
+            AppEvent::ReadAloudFailed(failure) => self.dictation_failed(failure),
         }
     }
 
@@ -2387,6 +2403,19 @@ impl ChatApp {
             self.history.pop();
         }
         Some(text)
+    }
+
+    fn show_voice(&mut self, arg: Option<&str>) {
+        if arg == Some("stop") {
+            self.read_aloud.stop();
+            return;
+        }
+        let block = history::assistant(
+            super::voice::command(arg, &self.repo_root),
+            true,
+            self.width,
+        );
+        self.emit(block);
     }
 
     fn show_mom(&mut self, arg: Option<&str>) {
@@ -2838,6 +2867,7 @@ impl ChatApp {
             }
             "compact" => self.start_compact(client, pane.sender()),
             "mom" => self.show_mom(arg),
+            "voice" => self.show_voice(arg),
             "status" => self.show_status(),
             "diff" | "d" => self.show_diff(),
             "mcp" => self.show_mcp(pane),

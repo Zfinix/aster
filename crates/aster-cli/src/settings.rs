@@ -18,6 +18,7 @@ pub struct Settings {
     pub mom: Mom,
     pub providers: Providers,
     pub experimental: Experimental,
+    pub voice: aster_voice::VoiceConfig,
     pub schedules: Vec<aster_cron::Schedule>,
 }
 
@@ -192,6 +193,7 @@ impl Settings {
             experimental: Experimental {
                 jev: project.experimental.jev.or(self.experimental.jev),
             },
+            voice: self.voice.overlaid_with(project.voice),
             // Schedules merge by name, the project's definition winning, so a
             // repo can override a global cadence without dropping the rest.
             schedules: {
@@ -325,6 +327,12 @@ pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> 
 /// `"true"`.
 pub fn persist_mom_enabled(repo_root: Option<&Path>, enabled: bool) -> Result<Saved> {
     persist_user_section("mom", repo_root, &[("enabled", enabled.to_string())])
+}
+
+/// Voice choices follow the user between repos, like the model. `value` is
+/// already in YAML form.
+pub fn persist_voice(repo_root: Option<&Path>, key: &str, value: String) -> Result<Saved> {
+    persist_user_section("voice", repo_root, &[(key, value)])
 }
 
 /// One write for any section. Values arrive in YAML form already, since only

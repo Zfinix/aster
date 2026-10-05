@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use aster_ai::{ToolCall, ToolCallFunction};
-use aster_persist::{MessageEvent, Store, TranscriptEvent};
+use aster_persist::{EventUsage, MessageEvent, Store, TranscriptEvent};
 
 fn tool_call(id: &str, name: &str, args: &str) -> ToolCall {
     ToolCall {
@@ -81,6 +81,60 @@ fn append_and_reload_preserves_full_fidelity() {
     assert_eq!(chat[0].content.text(), "read main.rs");
     assert_eq!(chat[1].role, "assistant");
     assert_eq!(chat[1].content.text(), "It is the entrypoint.");
+}
+
+#[test]
+fn round_usage_survives_reload_and_old_rows_still_load() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open(home.path()).unwrap();
+    let repo = Path::new("/tmp/usage-repo");
+    let usage = EventUsage {
+        prompt_tokens: 1200,
+        completion_tokens: 80,
+        cached_tokens: 900,
+        cost_usd: Some(0.0031),
+        estimated: false,
+    };
+
+    let (id, path) = {
+        let mut writer = store.new_session(repo, repo, None, None).unwrap();
+        writer
+            .append_message(
+                MessageEvent::assistant(Some("done".into()), vec![]).with_usage(Some(usage)),
+            )
+            .unwrap();
+        (writer.id().to_string(), writer.path().to_path_buf())
+    };
+    let mut raw = std::fs::read_to_string(&path).unwrap();
+    raw.push_str(
+        r#"{"type":"message","role":"assistant","content":"old","ts":"2026-08-01T00:00:00Z","usage":{"prompt_tokens":10,"completion_tokens":2}}"#,
+    );
+    raw.push('\n');
+    std::fs::write(&path, raw).unwrap();
+
+    let usages: Vec<_> = store
+        .resume(repo, &id)
+        .unwrap()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            TranscriptEvent::Message(m) => m.usage,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        usages,
+        vec![
+            usage,
+            EventUsage {
+                prompt_tokens: 10,
+                completion_tokens: 2,
+                cached_tokens: 0,
+                cost_usd: None,
+                estimated: false,
+            },
+        ]
+    );
 }
 
 #[test]

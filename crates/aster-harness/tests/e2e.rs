@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use aster_ai::AiClient;
-use aster_harness::{HarnessConfig, ReviewDeps, ReviewInput, review};
+use aster_harness::{
+    HarnessConfig, Progress, ReviewDeps, ReviewInput, RuledOut, review, review_with_progress,
+};
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -101,6 +103,55 @@ async fn low_confidence_is_refuted_by_the_gate() {
         report.findings.len(),
         0,
         "low-confidence finding must be gated out"
+    );
+}
+
+#[tokio::test]
+async fn ruled_out_candidate_reports_where_it_was_and_why() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        "over-produce",
+        r#"{"candidates":[{"file":"src/foo.rs","line":2,"defect_class":"correctness","severity":"high","title":"maybe a bug","failure_scenario":"could crash","suggestion":"look into it"}]}"#,
+    )
+    .await;
+    mount(
+        &server,
+        "REFUTE",
+        r#"{"real":true,"confidence":0.2,"reason":"unsure","explanation":"might crash"}"#,
+    )
+    .await;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    review_with_progress(&deps(server.uri()), input(), &Some(tx))
+        .await
+        .unwrap();
+    let ruled_out: Vec<_> = rx
+        .try_iter()
+        .filter_map(|event| match event {
+            Progress::Refuted {
+                title,
+                file,
+                line,
+                severity,
+                category,
+                why,
+                ..
+            } => Some((title, file, line, severity, category, why)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        ruled_out,
+        vec![(
+            "maybe a bug".to_string(),
+            "src/foo.rs".to_string(),
+            2,
+            "high".to_string(),
+            "correctness".to_string(),
+            RuledOut::Unsure { confidence: 0.2 },
+        )]
     );
 }
 

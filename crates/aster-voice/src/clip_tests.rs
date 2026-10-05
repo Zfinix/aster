@@ -21,6 +21,18 @@ fn wav_is_a_mono_16_bit_pcm_file() {
 }
 
 #[test]
+fn pcm_bytes_become_samples() {
+    let clip = Clip::from_pcm(&[0, 0, 1, 0, 0xff, 0xff, 0x7f], 24_000);
+    assert_eq!(
+        clip,
+        Clip {
+            samples: vec![0, 1, -1],
+            sample_rate: 24_000,
+        }
+    );
+}
+
+#[test]
 fn duration_follows_the_sample_rate() {
     let clip = Clip {
         samples: vec![0; 24_000],

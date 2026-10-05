@@ -1,26 +1,28 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReviewData } from "../lib/thread";
-import type { ToWebview } from "../../src/protocol";
-import { onHostMessage, post } from "../lib/host";
+import { post } from "../lib/host";
 import { openFilePreview } from "../lib/filePreview";
 import { Disclosure } from "../interior/disclosure";
-import { LoadingButton, type LoadingStatus } from "../interior/loading-button";
+import { LoadingButton } from "../interior/loading-button";
 import { TaskSteps, type TaskStep } from "../interior/task-steps";
-import { ARRIVE, CROSSFADE, INSTANT } from "../interior/springs";
-import { CheckIcon, ChevronIcon, ShieldIcon } from "./icons";
+import { ARRIVE, CELL, CROSSFADE, INSTANT } from "../interior/springs";
+import {
+  findingKey,
+  fixAllRunning,
+  fixOf,
+  setFix,
+  startFixAll,
+  takeNextFix,
+  tally,
+} from "../lib/review";
+import { CheckIcon, ChevronIcon, CircleCheckFilledIcon, ShieldIcon } from "./icons";
 import { ErrorBox } from "./ErrorBox";
 import { FindingCard } from "./FindingCard";
+import { RefutedItem } from "./RefutedItem";
+import type { Finding } from "../../src/types";
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
-
-type FixAllStatus = "idle" | "fixing" | "done";
-
-const FIX_STATUS: Record<FixAllStatus, LoadingStatus> = {
-  idle: "idle",
-  fixing: "pending",
-  done: "success",
-};
 
 function stepId(phase: string): string {
   if (phase.startsWith("Verifying")) return "verify";
@@ -28,21 +30,39 @@ function stepId(phase: string): string {
   return phase;
 }
 
-export function ReviewTurn({ data }: { data: ReviewData }) {
+export function ReviewTurn({
+  data,
+  onChange,
+}: {
+  data: ReviewData;
+  onChange: (patch: (data: ReviewData) => ReviewData) => void;
+}) {
   const reduced = useReducedMotion() === true;
   const [open, setOpen] = useState(true);
   const [showFiles, setShowFiles] = useState(false);
   const [showRefuted, setShowRefuted] = useState(false);
-  const [fixAllStatus, setFixAllStatus] = useState<FixAllStatus>("idle");
   const [steps, setSteps] = useState<TaskStep[]>([]);
+  const sent = useRef<string | null>(null);
 
-  const handle = useCallback((message: ToWebview) => {
-    if (message.type === "fixAllResult") {
-      setFixAllStatus("done");
+  // "Fix all" sends one issue at a time: each reply clears the in-flight mark,
+  // which lets the next one go. `sent` keeps a re-run effect from sending twice.
+  useEffect(() => {
+    const next = takeNextFix(data);
+    if (!next) {
+      sent.current = null;
+      return;
     }
-  }, []);
+    const key = findingKey(next.finding);
+    if (sent.current === key) return;
+    sent.current = key;
+    onChange((current) => takeNextFix(current)?.data ?? current);
+    post({ type: "fixFinding", finding: next.finding });
+  }, [data, onChange]);
 
-  useEffect(() => onHostMessage(handle), [handle]);
+  const fix = (finding: Finding) => {
+    onChange((current) => setFix(current, findingKey(finding), { status: "fixing" }));
+    post({ type: "fixFinding", finding });
+  };
 
   useEffect(() => {
     const phase = data.phase;
@@ -65,6 +85,37 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
   const done = data.status === "done";
   const stopped = data.status === "stopped";
   const failed = data.status === "error";
+  const counts = tally(data);
+  const handled = findings.length > 0 && counts.open === 0 && counts.failed === 0;
+  const fixingAll = fixAllRunning(data);
+  const batch = data.fixAll && !fixingAll ? tally(data, data.fixAll.keys) : null;
+  const fixable = counts.open + counts.failed;
+  const tallyLine = [
+    counts.open > 0 && `${counts.open} ${counts.open === 1 ? "issue" : "issues"}`,
+    counts.fixed > 0 && `${counts.fixed} fixed`,
+    counts.dismissed > 0 && `${counts.dismissed} dismissed`,
+    counts.failed > 0 && `${counts.failed} not fixed`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const work = [
+    data.files.length > 0 && `${data.files.length} ${data.files.length === 1 ? "file" : "files"}`,
+    data.usage &&
+      (data.usage.estimated_cost_usd != null
+        ? `~$${data.usage.estimated_cost_usd.toFixed(3)}`
+        : `${formatTokens(data.usage.total_tokens)} tokens`),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  // Real progress, like the agents card: checks landed while it runs, fixes
+  // landed during a Fix all, nothing once it settles.
+  const progress = running
+    ? data.verify
+      ? data.verify.index / data.verify.total
+      : 0
+    : fixingAll && data.fixAll
+      ? (data.fixAll.keys.length - data.fixAll.queue.length - 1) / data.fixAll.keys.length
+      : null;
 
   // Live tallies ride the step rows: candidate count on the hypothesis step,
   // verify progress on the verify step.
@@ -102,33 +153,40 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
                   {data.verify ? `Verifying ${data.verify.index} of ${data.verify.total}` : data.phase}
                 </span>
               ) : failed ? (
-                "Review failed"
+                "Couldn't finish"
               ) : stopped ? (
                 "Stopped"
               ) : findings.length === 0 ? (
                 <span className="review-clean">
-                  <CheckIcon />
+                  <CircleCheckFilledIcon />
                   No issues found
                 </span>
+              ) : handled ? (
+                <span className="review-clean">
+                  <CircleCheckFilledIcon />
+                  All handled · {tallyLine}
+                </span>
               ) : (
-                <>
-                  {findings.length} finding{findings.length === 1 ? "" : "s"}
-                  {SEVERITY_ORDER.filter(
-                    (s) => s !== "info" && findings.some((f) => f.severity === s)
-                  ).map((s) => (
-                    <span key={s} className="review-sev" data-severity={s}>
-                      {findings.filter((f) => f.severity === s).length} {s}
-                    </span>
-                  ))}
-                </>
+                tallyLine
               )}
             </motion.span>
           </AnimatePresence>
         </span>
+        {work && <span className="review-work">{work}</span>}
         <span className="review-caret">
           <ChevronIcon open={open} />
         </span>
       </button>
+      {progress != null && (
+        <div className="agent-net-progress" role="progressbar" aria-label="Review progress">
+          <motion.span
+            className="agent-net-progress-fill"
+            initial={false}
+            animate={{ scaleX: progress }}
+            transition={reduced ? INSTANT : CELL}
+          />
+        </div>
+      )}
 
       <Disclosure open={open}>
         <div className="review-body">
@@ -150,11 +208,9 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
 
           {failed && <ErrorBox message={data.errorMsg} />}
 
-          {data.summary && !running && <p className="review-summary">{data.summary}</p>}
-
           {findings.length > 0 && (
             <div className="finding-list">
-              {findings.map((finding, i) => (
+              {findings.map((finding) => (
                 <motion.div
                   key={`${finding.file_path}:${finding.line}:${finding.title}`}
                   layout={reduced ? undefined : "position"}
@@ -162,56 +218,21 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
                   animate={{ opacity: 1, y: 0 }}
                   transition={reduced ? INSTANT : ARRIVE}
                 >
-                  <FindingCard finding={finding} />
+                  <FindingCard
+                    finding={finding}
+                    fix={fixOf(data, finding)}
+                    onFix={() => fix(finding)}
+                    onDismiss={() =>
+                      onChange((current) =>
+                        setFix(current, findingKey(finding), { status: "dismissed" })
+                      )
+                    }
+                    onRestore={() =>
+                      onChange((current) => setFix(current, findingKey(finding), null))
+                    }
+                  />
                 </motion.div>
               ))}
-            </div>
-          )}
-
-          {!running && !failed && (
-            <div className="review-foot">
-              <span className="review-meta">
-                {data.files.length > 0 && (
-                  <button
-                    className="review-meta-toggle"
-                    onClick={() => setShowFiles(!showFiles)}
-                    aria-expanded={showFiles}
-                  >
-                    <ChevronIcon open={showFiles} />
-                    {data.files.length} file{data.files.length === 1 ? "" : "s"}
-                  </button>
-                )}
-                {data.refuted.length > 0 && (
-                  <button
-                    className="review-meta-toggle"
-                    onClick={() => setShowRefuted(!showRefuted)}
-                    aria-expanded={showRefuted}
-                  >
-                    <ChevronIcon open={showRefuted} />
-                    {data.refuted.length} refuted
-                  </button>
-                )}
-                {data.usage && (
-                  <span className="review-usage">
-                    {formatTokens(data.usage.total_tokens)} tokens
-                    {data.usage.estimated_cost_usd != null &&
-                      ` · ~$${data.usage.estimated_cost_usd.toFixed(4)}`}
-                  </span>
-                )}
-              </span>
-              {done && findings.length > 0 && (
-                <LoadingButton
-                  status={FIX_STATUS[fixAllStatus]}
-                  disabled={fixAllStatus !== "idle"}
-                  idleLabel="Fix all"
-                  pendingLabel="Fixing…"
-                  successLabel="Done"
-                  onClick={() => {
-                    setFixAllStatus("fixing");
-                    post({ type: "fixAllFindings", findings });
-                  }}
-                />
-              )}
             </div>
           )}
 
@@ -233,14 +254,62 @@ export function ReviewTurn({ data }: { data: ReviewData }) {
 
           <Disclosure open={showRefuted}>
             <div className="refuted-list">
+              <span className="refuted-heading">Ruled out</span>
               {data.refuted.map((r, i) => (
-                <div key={i} className="refuted-item">
-                  <span className="refuted-title">{r.title}</span>
-                  <span className="refuted-reason">{r.reason}</span>
-                </div>
+                <RefutedItem key={i} number={i + 1} item={r} />
               ))}
             </div>
           </Disclosure>
+          {!running && !failed && (
+            <div className="review-foot">
+              <span className="review-meta">
+                {data.files.length > 0 && (
+                  <button
+                    className="review-meta-toggle"
+                    onClick={() => setShowFiles(!showFiles)}
+                    aria-expanded={showFiles}
+                  >
+                    <ChevronIcon open={showFiles} />
+                    {data.files.length} file{data.files.length === 1 ? "" : "s"}
+                  </button>
+                )}
+                {data.refuted.length > 0 && (
+                  <button
+                    className="review-meta-toggle"
+                    onClick={() => setShowRefuted(!showRefuted)}
+                    aria-expanded={showRefuted}
+                  >
+                    <ChevronIcon open={showRefuted} />
+                    {data.refuted.length} ruled out
+                  </button>
+                )}
+              </span>
+              {batch && !fixingAll && (
+                <span className="review-fix-result">
+                  {[
+                    batch.fixed > 0 && `${batch.fixed} fixed`,
+                    batch.failed > 0 && `${batch.failed} not fixed`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+              )}
+              {(done || stopped) && (fixingAll || fixable > 0) && (
+                <LoadingButton
+                  status={fixingAll ? "pending" : "idle"}
+                  disabled={fixingAll}
+                  idleLabel={fixable === 1 ? "Fix it" : "Fix all"}
+                  pendingLabel={
+                    data.fixAll
+                      ? `Fixing ${data.fixAll.keys.length - data.fixAll.queue.length} of ${data.fixAll.keys.length}`
+                      : "Fixing…"
+                  }
+                  onClick={() => onChange(startFixAll)}
+                />
+              )}
+            </div>
+          )}
+
         </div>
       </Disclosure>
     </div>

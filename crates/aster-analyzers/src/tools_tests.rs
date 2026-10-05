@@ -33,6 +33,34 @@ fn search_reports_no_matches() {
     assert_eq!(out, "no matches");
 }
 
+const MULTI_STATEMENT: &str = "const $N = await get($ID); if (!$N) throw new Error($ID);";
+
+#[test]
+fn search_rejects_multi_node_pattern_instead_of_panicking() {
+    let dir = fixture(&[("a.js", "const n = await get(1);\n")]);
+    let err = ast_grep_search(dir.path(), MULTI_STATEMENT, Some("js")).expect_err("bad pattern");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "invalid JavaScript pattern: Multiple AST nodes are detected. Please check the \
+             pattern source `{MULTI_STATEMENT}`. A pattern must be one expression or \
+             statement; search for one statement at a time."
+        )
+    );
+}
+
+#[test]
+fn search_without_language_rejects_pattern_no_file_accepts() {
+    let dir = fixture(&[("a.js", "const n = await get(1);\n")]);
+    assert!(ast_grep_search(dir.path(), MULTI_STATEMENT, None).is_err());
+}
+
+#[test]
+fn edit_rejects_multi_node_pattern() {
+    let dir = fixture(&[("a.js", "const n = await get(1);\n")]);
+    assert!(ast_edit_apply(dir.path(), MULTI_STATEMENT, "x", None).is_err());
+}
+
 #[test]
 fn edit_rewrites_matches_in_place() {
     let dir = fixture(&[("a.rs", "fn main() {\n    dbg!(1);\n    dbg!(2);\n}\n")]);
@@ -117,4 +145,12 @@ fn security_scan_refuses_a_missing_scope() {
     let err =
         security_scan(dir.path(), Some(std::path::Path::new("nope/"))).expect_err("must refuse");
     assert!(err.to_string().contains("does not exist"), "{err:#}");
+}
+
+#[test]
+fn edit_rewrites_only_the_outer_match_when_matches_nest() {
+    let dir = fixture(&[("a.rs", "fn main() {\n    foo(foo(aaaaaaaaaa));\n}\n")]);
+    ast_edit_apply(dir.path(), "foo($A)", "x", Some("rust")).expect("edit");
+    let after = fs::read_to_string(dir.path().join("a.rs")).expect("read");
+    assert_eq!(after, "fn main() {\n    x;\n}\n");
 }

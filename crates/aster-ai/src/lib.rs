@@ -87,9 +87,13 @@ const MAX_CONTINUATION_PASSES: usize = 3;
 struct UsageCounter {
     prompt_tokens: AtomicU64,
     completion_tokens: AtomicU64,
+    cached_tokens: AtomicU64,
     requests: AtomicU64,
-    // Set when any request's tokens were estimated, so the snapshot is labeled honestly.
-    estimated: std::sync::atomic::AtomicBool,
+    // Requests whose tokens were estimated, so the snapshot is labeled honestly.
+    estimated_requests: AtomicU64,
+    // Provider-reported cost in nano-USD, and how many requests reported one.
+    reported_cost_nanos: AtomicU64,
+    reported_cost_requests: AtomicU64,
 }
 
 fn estimate_tokens(chars: usize) -> u64 {
@@ -101,10 +105,14 @@ pub struct UsageSnapshot {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub cached_tokens: u64,
     pub requests: u64,
+    pub estimated_requests: u64,
     pub estimated_cost_usd: Option<f64>,
     pub cost_is_estimate: bool,
     pub estimated: bool,
+    pub reported_cost_usd: f64,
+    pub reported_cost_requests: u64,
 }
 
 #[derive(Clone)]
@@ -401,16 +409,38 @@ impl AiClient {
         let price_completion = self
             .price_completion_per_m
             .unwrap_or(DEFAULT_PRICE_COMPLETION_PER_M);
-        let cost = prompt as f64 / 1e6 * price_prompt + completion as f64 / 1e6 * price_completion;
-        let tokens_estimated = self.usage.estimated.load(Ordering::Relaxed);
+        let requests = self.usage.requests.load(Ordering::Relaxed);
+        let estimated_requests = self.usage.estimated_requests.load(Ordering::Relaxed);
+        // Read the cost counter pair atomically-ish: retry until the request
+        // count is unchanged across the read, so nanos and count belong to the
+        // same set of completed requests.
+        let (reported_cost_requests, reported_cost_usd) = loop {
+            let before = self.usage.reported_cost_requests.load(Ordering::SeqCst);
+            let nanos = self.usage.reported_cost_nanos.load(Ordering::SeqCst);
+            let after = self.usage.reported_cost_requests.load(Ordering::SeqCst);
+            if before == after {
+                break (after, nanos as f64 / 1e9);
+            }
+        };
+        let fully_reported = requests > 0 && reported_cost_requests == requests;
+        let cost = if fully_reported {
+            reported_cost_usd
+        } else {
+            prompt as f64 / 1e6 * price_prompt + completion as f64 / 1e6 * price_completion
+        };
+        let tokens_estimated = estimated_requests > 0;
         UsageSnapshot {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
-            requests: self.usage.requests.load(Ordering::Relaxed),
+            cached_tokens: self.usage.cached_tokens.load(Ordering::Relaxed),
+            requests,
+            estimated_requests,
             estimated_cost_usd: Some(cost),
-            cost_is_estimate: priced_by_default || tokens_estimated,
+            cost_is_estimate: !fully_reported && (priced_by_default || tokens_estimated),
             estimated: tokens_estimated,
+            reported_cost_usd,
+            reported_cost_requests,
         }
     }
 
@@ -424,6 +454,17 @@ impl AiClient {
                 self.usage
                     .completion_tokens
                     .fetch_add(u.completion_tokens, Ordering::Relaxed);
+                self.usage
+                    .cached_tokens
+                    .fetch_add(u.cached_tokens(), Ordering::Relaxed);
+                if let Some(cost) = u.cost.filter(|c| c.is_finite() && *c >= 0.0) {
+                    self.usage
+                        .reported_cost_nanos
+                        .fetch_add((cost * 1e9).round() as u64, Ordering::Relaxed);
+                    self.usage
+                        .reported_cost_requests
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
             None => {
                 self.usage
@@ -432,7 +473,9 @@ impl AiClient {
                 self.usage
                     .completion_tokens
                     .fetch_add(estimate_tokens(completion_chars), Ordering::Relaxed);
-                self.usage.estimated.store(true, Ordering::Relaxed);
+                self.usage
+                    .estimated_requests
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }

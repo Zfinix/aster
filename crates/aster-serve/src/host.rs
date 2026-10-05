@@ -526,11 +526,17 @@ async fn fix(state: &Arc<AppState>, findings: &Value) -> Vec<Value> {
             Some(&findings.to_string()),
         )
         .await;
+    // A run where every fix fails still prints each reason before exiting
+    // non-zero, and those reasons beat the exit code.
     match out {
         Err(error) => failed(error),
-        Ok(out) if out.code != 0 => failed(format!("aster fix exited with code {}", out.code)),
-        Ok(out) => serde_json::from_str::<Vec<Value>>(out.stdout.trim())
-            .unwrap_or_else(|_| failed("unexpected output from aster fix".into())),
+        Ok(out) => serde_json::from_str::<Vec<Value>>(out.stdout.trim()).unwrap_or_else(|_| {
+            failed(if out.code == 0 {
+                "unexpected output from aster fix".into()
+            } else {
+                format!("aster fix exited with code {}", out.code)
+            })
+        }),
     }
 }
 

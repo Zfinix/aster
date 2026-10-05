@@ -12,6 +12,19 @@ export interface Finding {
   confidence?: number | null;
 }
 
+/** A possible issue the review checked and dropped. Everything past `reason`
+ *  is optional: older CLIs sent only the title and reason. */
+export interface RuledOut {
+  title: string;
+  reason: string;
+  file_path?: string;
+  line?: number;
+  severity?: string;
+  category?: string;
+  kind?: "not_real" | "unsure" | "check_failed";
+  confidence?: number | null;
+}
+
 export interface UsageSummary {
   prompt_tokens: number;
   completion_tokens: number;
@@ -28,5 +41,5 @@ export type StreamEvent =
   | { type: "hypothesized"; count: number }
   | { type: "verifying"; index: number; total: number; title: string }
   | ({ type: "finding" } & Finding)
-  | { type: "refuted"; title: string; reason: string }
+  | ({ type: "refuted" } & RuledOut)
   | { type: "done"; summary: string; total: number; usage?: UsageSummary };

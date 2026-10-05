@@ -193,3 +193,26 @@ fn a_repo_that_pins_the_model_is_moved_along_with_the_global_choice() {
     // Everything the repo set for itself survives the switch.
     assert!(out.contains("min_confidence: 0.9"), "{out}");
 }
+
+#[test]
+fn voice_block_parses_and_overlays_field_by_field() {
+    let global: Settings = serde_yaml::from_str(
+        "voice:\n  stt: groq\n  tts: openai-compatible\n  tts_url: http://localhost:8880/v1\n  read_aloud: true\n",
+    )
+    .expect("parse");
+    let project: Settings = serde_yaml::from_str(
+        "voice:\n  stt: openai-compatible\n  stt_url: http://localhost:8000/v1\n",
+    )
+    .expect("parse");
+    assert_eq!(
+        global.overlaid_with(project).voice,
+        aster_voice::VoiceConfig {
+            stt: Some(aster_voice::SttProvider::OpenAiCompatible),
+            stt_url: Some("http://localhost:8000/v1".into()),
+            tts: Some(aster_voice::TtsProvider::OpenAiCompatible),
+            tts_url: Some("http://localhost:8880/v1".into()),
+            read_aloud: Some(true),
+            ..Default::default()
+        }
+    );
+}

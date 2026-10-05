@@ -34,6 +34,7 @@ import { applyAccent } from "./lib/accent";
 import { type LoginState, loginLine } from "./lib/login";
 import { modelShort, recentsFor } from "./lib/model";
 import { closePlan, onPlanAnswer } from "./lib/plan-tab";
+import { applyFixResult, applyReviewEvent } from "./lib/review";
 import {
   appendAgentActivity,
   appendCall,
@@ -45,7 +46,6 @@ import {
   buildMessages,
   emptyReview,
   finishReasoning,
-  parseDiffFiles,
   hydrate,
   newTurn,
   patchCall,
@@ -178,6 +178,15 @@ export function App() {
         : [...prev, { id, role: "review", data: patch(emptyReview()) }]
     );
 
+  // Fixes outlive a stop: the findings a stopped review already showed can
+  // still be fixed or dismissed.
+  const changeReview = (id: string, patch: (data: ReviewData) => ReviewData) =>
+    setTurns((prev) =>
+      prev.map((turn) =>
+        turn.role === "review" && turn.id === id ? { ...turn, data: patch(turn.data) } : turn
+      )
+    );
+
   const patchAssistant = (id: string, patch: (turn: AssistantTurn) => AssistantTurn) =>
     setTurns((prev) =>
       prev.map((turn) =>
@@ -284,6 +293,25 @@ export function App() {
           status: "error",
           errorMsg: message.message,
         }));
+        break;
+
+      case "fixResult":
+        setTurns((prev) =>
+          prev.map((turn) =>
+            turn.role === "review"
+              ? {
+                  ...turn,
+                  data: applyFixResult(
+                    turn.data,
+                    message.finding,
+                    message.status,
+                    message.reason,
+                    message.patch
+                  ),
+                }
+              : turn
+          )
+        );
         break;
 
       case "newConversation":
@@ -764,6 +792,16 @@ export function App() {
   };
 
   const [editing, setEditing] = useState<string | null>(null);
+  const editText = useMemo(() => {
+    if (!editing) return null;
+    const turn = turns.find((t) => t.id === editing);
+    return turn && turn.role === "user" ? turn.text : null;
+  }, [editing, turns]);
+
+  // A cleared, reloaded or forked thread takes the edit target with it.
+  useEffect(() => {
+    if (editing && !turns.some((t) => t.id === editing)) setEditing(null);
+  }, [editing, turns]);
 
   // Flushed one at a time so history stays ordered.
   const onSend = (text: string) => {
@@ -969,9 +1007,8 @@ export function App() {
             }
           }}
           editing={editing}
+          onReviewChange={changeReview}
           onEditStart={(id) => setEditing(id)}
-          onEditCancel={() => setEditing(null)}
-          onEditSend={resendFrom}
           onFork={forkFrom}
         />
       )}
@@ -1003,6 +1040,10 @@ export function App() {
           onInserted={() => setPendingMention(null)}
           onSearchFiles={onSearchFiles}
           onSend={onSend}
+          editId={editing}
+          editText={editText}
+          onEditSubmit={(text) => editing && resendFrom(editing, text)}
+          onEditCancel={() => setEditing(null)}
           onCommand={onCommand}
           onCancel={onCancel}
           onReview={() => startReview({ kind: "working" })}
@@ -1156,35 +1197,4 @@ interface MemoryState {
   blocks: MemoryBlock[];
   project: MemoryProject | null;
   error?: string;
-}
-
-type ReviewEvent = Extract<ToWebview, { type: "reviewEvent" }>["event"];
-
-function applyReviewEvent(data: ReviewData, event: ReviewEvent): ReviewData {
-  switch (event.type) {
-    case "phase":
-      return { ...data, phase: event.name };
-    case "hypothesized":
-      return { ...data, candidates: event.count };
-    case "verifying":
-      return {
-        ...data,
-        verify: { index: event.index, total: event.total, title: event.title },
-      };
-    case "diff":
-      return { ...data, files: parseDiffFiles(event.content) };
-    case "finding": {
-      const { type: _type, ...finding } = event;
-      return { ...data, findings: [...data.findings, finding] };
-    }
-    case "refuted":
-      return {
-        ...data,
-        refuted: [...data.refuted, { title: event.title, reason: event.reason }],
-      };
-    case "done":
-      return { ...data, summary: event.summary, usage: event.usage };
-    default:
-      return data;
-  }
 }

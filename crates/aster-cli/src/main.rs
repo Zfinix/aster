@@ -48,9 +48,11 @@ mod serve;
 mod sessions;
 mod settings;
 mod skills;
+mod speak;
 mod status;
 mod term;
 mod test_runner;
+mod tool_alias;
 mod tui;
 mod update;
 mod upgrade;
@@ -167,6 +169,8 @@ enum Command {
     Remind(remind::RemindArgs),
     /// Record from the microphone until stdin gets a line, then print the transcript as NDJSON.
     Dictate,
+    /// Read text aloud with the voice from aster.yaml, printing NDJSON. Stops when stdin gets a line.
+    Speak(speak::SpeakArgs),
     /// Score the last turn of a session and refine the learned skill for that task.
     Learn(learn::LearnArgs),
     /// Run Python 3 with the standard library built in: `aster python script.py` or `-c "..."`.
@@ -262,6 +266,7 @@ async fn main() -> Result<()> {
         Command::Announce(args) => announce::run(args).await,
         Command::Remind(args) => remind::run(args),
         Command::Dictate => dictate::run().await,
+        Command::Speak(args) => speak::run(args).await,
         Command::Learn(args) => learn::run(args).await,
         #[cfg(target_os = "android")]
         Command::Python(args) => python::run(args),

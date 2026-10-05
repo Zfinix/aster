@@ -47,6 +47,7 @@ import {
   MinimizeIcon,
   MomIcon,
   NewChatIcon,
+  PencilIcon,
   PlugIcon,
   PlusIcon,
   ReviewIcon,
@@ -130,6 +131,10 @@ export function Composer({
   onInserted,
   onSearchFiles,
   onSend,
+  editId,
+  editText,
+  onEditSubmit,
+  onEditCancel,
   onCommand,
   onCancel,
   onReview,
@@ -174,6 +179,10 @@ export function Composer({
   onInserted: () => void;
   onSearchFiles: (query: string) => void;
   onSend: (text: string) => void;
+  editId: string | null;
+  editText: string | null;
+  onEditSubmit: (text: string) => void;
+  onEditCancel: () => void;
   onCommand: (name: string) => void;
   onCancel: () => void;
   onReview: () => void;
@@ -203,6 +212,7 @@ export function Composer({
   const [dropping, setDropping] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const addRef = useRef<HTMLButtonElement>(null);
+  const lastEdit = useRef<string | null>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const mentions = useRef(new Map<string, string>());
@@ -329,6 +339,29 @@ export function Composer({
     requestAnimationFrame(() => areaRef.current?.focus());
   }, [insertText, insertMentions, onInserted]);
 
+  // Editing a message takes over the composer: its text lands here and the next
+  // send replaces that turn instead of appending. Seeded once per target so
+  // typing is never overwritten.
+  useEffect(() => {
+    if (!editId) {
+      lastEdit.current = null;
+      return;
+    }
+    if (lastEdit.current === editId) return;
+    lastEdit.current = editId;
+    const seed = editText ?? "";
+    setAttachments([]);
+    setMenu("none");
+    setText(seed);
+    setCaret(seed.length);
+    requestAnimationFrame(() => {
+      const area = areaRef.current;
+      if (!area) return;
+      area.focus();
+      area.setSelectionRange(seed.length, seed.length);
+    });
+  }, [editId, editText]);
+
   useEffect(() => {
     const area = areaRef.current;
     if (!area) return;
@@ -421,7 +454,17 @@ export function Composer({
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
     const pictures = attachments.map((a) => a.mention).join(" ");
-    onSend([expandMentions(trimmed, mentions.current), pictures].filter(Boolean).join(" "));
+    const message = [expandMentions(trimmed, mentions.current), pictures].filter(Boolean).join(" ");
+    if (editId) onEditSubmit(message);
+    else onSend(message);
+    setText("");
+    setCaret(0);
+    setAttachments([]);
+  };
+
+  // Dropping the edit hands the composer back to a plain message.
+  const cancelEdit = () => {
+    onEditCancel();
     setText("");
     setCaret(0);
     setAttachments([]);
@@ -648,6 +691,11 @@ export function Composer({
       dictation.cancel();
       return;
     }
+    if (e.key === "Escape" && editId) {
+      e.preventDefault();
+      cancelEdit();
+      return;
+    }
     // The command menu reads its own keys off the document, ahead of this, so
     // Enter on a highlighted row must not also send the line.
     if (command) return;
@@ -751,6 +799,21 @@ export function Composer({
         }}
         onDrop={onDrop}
       >
+        {editId && (
+          <div className="composer-edit">
+            <PencilIcon />
+            <span className="composer-edit-label">Editing message</span>
+            <span className="composer-edit-hint">Enter to resend · Esc to cancel</span>
+            <button
+              className="ghost composer-edit-cancel"
+              onClick={cancelEdit}
+              title="Cancel edit"
+              aria-label="Cancel edit"
+            >
+              <XIcon />
+            </button>
+          </div>
+        )}
         <QueuedList
           queued={queued}
           onSteer={onSteerQueued}
@@ -792,7 +855,11 @@ export function Composer({
             rows={1}
             value={text}
             placeholder={
-              busy ? "Queue a follow-up…" : "Ask Aster, @ for files, / for commands"
+              editId
+                ? "Edit your message…"
+                : busy
+                  ? "Queue a follow-up…"
+                  : "Ask Aster, @ for files, / for commands"
             }
             onChange={(e) => sync(e.currentTarget)}
             onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}

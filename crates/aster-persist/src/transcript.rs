@@ -134,12 +134,25 @@ impl MessageEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EventUsage {
     #[serde(default)]
     pub prompt_tokens: u64,
     #[serde(default)]
     pub completion_tokens: u64,
+    /// Prompt tokens the provider served from its cache. Zero when it did not say.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cached_tokens: u64,
+    /// What the provider charged in USD, when it reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The provider sent no counts, so the tokens were estimated from length.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

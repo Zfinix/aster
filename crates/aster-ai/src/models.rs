@@ -378,6 +378,28 @@ pub struct Usage {
     pub prompt_tokens: u64,
     #[serde(default)]
     pub completion_tokens: u64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub prompt_tokens_details: PromptTokensDetails,
+    /// DeepSeek reports cache hits here instead of in `prompt_tokens_details`.
+    #[serde(default, deserialize_with = "null_default")]
+    pub prompt_cache_hit_tokens: u64,
+    /// What the provider charged in USD. OpenRouter sends it on every reply.
+    #[serde(default)]
+    pub cost: Option<f64>,
+}
+
+impl Usage {
+    pub fn cached_tokens(&self) -> u64 {
+        self.prompt_tokens_details
+            .cached_tokens
+            .max(self.prompt_cache_hit_tokens)
+    }
+}
+
+#[derive(Deserialize, Default, Clone, Copy)]
+pub struct PromptTokensDetails {
+    #[serde(default, deserialize_with = "null_default")]
+    pub cached_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -489,6 +511,33 @@ mod tests {
         assert_eq!(choice.finish_reason.as_deref(), Some("length"));
         assert_eq!(choice.message.content, None);
         assert_eq!(parsed.usage.expect("usage present").completion_tokens, 8000);
+    }
+
+    #[test]
+    fn usage_reads_cache_hits_and_cost_from_each_provider_shape() {
+        let openrouter: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1000,"completion_tokens":50,"cost":0.0042,
+            "prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":0}}"#,
+        )
+        .unwrap();
+        let deepseek: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1000,"completion_tokens":50,
+            "prompt_cache_hit_tokens":600,"prompt_cache_miss_tokens":400}"#,
+        )
+        .unwrap();
+        let bare: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":1000,"completion_tokens":50,"prompt_tokens_details":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            [
+                (openrouter.cached_tokens(), openrouter.cost),
+                (deepseek.cached_tokens(), deepseek.cost),
+                (bare.cached_tokens(), bare.cost),
+            ],
+            [(800, Some(0.0042)), (600, None), (0, None)]
+        );
     }
 
     #[test]

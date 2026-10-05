@@ -3202,6 +3202,26 @@ code {
   color: var(--fg);
 }
 
+/* Free-text answer for questions whose options do not fit. */
+.question-other {
+  font: inherit;
+  line-height: 1.5;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--s2) var(--s3);
+}
+
+.question-other::placeholder {
+  color: var(--fg-dim);
+}
+
+.question-other:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, var(--border));
+}
+
 .question-skip {
   align-self: flex-start;
   font-size: 0.9em;
@@ -3264,7 +3284,7 @@ code {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--code-bg-soft);
   overflow: hidden;
 }
@@ -3285,6 +3305,16 @@ code {
 
 .review-head:hover {
   background: var(--list-hover);
+}
+
+/* The head's own corners follow the card's, so its hover fill and focus ring
+   never show a square corner inside a round one. */
+.review-head {
+  border-radius: calc(var(--radius-xl) - 1px) calc(var(--radius-xl) - 1px) 0 0;
+}
+
+.review-card:not(:has(.review-body)) .review-head {
+  border-radius: calc(var(--radius-xl) - 1px);
 }
 
 .review-head:focus,
@@ -3341,12 +3371,22 @@ code {
   display: inline-flex;
   align-items: center;
   gap: var(--s1);
-  color: var(--diff-add);
+}
+
+/* The cost of the run on the right, like the agents card's work summary. */
+.review-work {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .review-clean svg {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
+  color: var(--diff-add);
 }
 
 .review-caret {
@@ -3365,7 +3405,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  padding-bottom: var(--s2);
+  padding: var(--s1) 0 var(--s2);
 }
 
 /* Sections carry the card's inset themselves; finding rows are pills that sit
@@ -3466,12 +3506,6 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
-.review-summary {
-  margin: 0;
-  line-height: 1.5;
-  color: var(--fg-dim);
-}
-
 .review-files-list {
   list-style: none;
   margin: 0;
@@ -3500,32 +3534,22 @@ code {
   flex-direction: column;
 }
 
-.finding[data-severity="critical"],
-.finding[data-severity="high"] {
-  --sev: var(--sev-critical);
-}
-.finding[data-severity="medium"] {
-  --sev: var(--sev-medium);
-}
-.finding[data-severity="low"] {
-  --sev: var(--sev-low);
-}
-.finding[data-severity="info"] {
-  --sev: var(--sev-info);
-}
-
 /* A quiet row: severity dot, title, location, caret. The actions live in the
    detail, after the reading, so a list of findings is a list, not a toolbar. */
+/* Everything hangs off the first line: the mark, label and caret share the
+   title's 20px line box, so a wrapped title grows down without the row's
+   ends drifting to its middle. */
 .finding-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--s2);
   width: 100%;
   min-width: 0;
   text-align: left;
   font: inherit;
+  line-height: 20px;
   color: var(--fg-dim);
-  padding: 5px var(--s2);
+  padding: var(--s2);
   border: none;
   border-radius: calc(var(--radius-xl) - var(--s1));
   background: var(--code-bg);
@@ -3552,35 +3576,87 @@ code {
 }
 
 .finding-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--sev, var(--fg-dim));
+  background: var(--fg-dim);
 }
 
 .finding-mark svg {
   width: 12px;
   height: 12px;
-  color: var(--diff-add);
 }
 
+/* Two lines before the cut, so a title says what is wrong before it trails. */
 .finding-title {
   flex: 1;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 600;
   color: var(--fg);
 }
 
 .finding[data-open="true"] .finding-title {
-  white-space: normal;
+  display: block;
 }
 
-/* Fixed reads as settled: the tick replaces the dot and the row steps back. */
-.finding[data-fixed] .finding-title {
+/* Handled reads as settled: the mark changes and the row steps back. */
+.finding[data-state="fixed"] .finding-title,
+.finding[data-state="dismissed"] .finding-title {
   color: var(--fg-dim);
+  font-weight: 500;
+}
+
+/* A settled issue wears its outcome as a filled mark, green for fixed and red
+   for not fixed, the agents card's colours. Colour lives only here. */
+.finding[data-state="fixed"] .finding-mark,
+.finding[data-state="failed"] .finding-mark,
+.finding[data-state="blocked"] .finding-mark {
+  background: none;
+}
+
+.finding[data-state="fixed"] .finding-mark svg,
+.finding[data-state="failed"] .finding-mark svg,
+.finding[data-state="blocked"] .finding-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.finding[data-state="fixed"] .finding-mark {
+  color: var(--diff-add);
+}
+
+.finding[data-state="failed"] .finding-mark,
+.finding[data-state="blocked"] .finding-mark {
+  color: var(--sev-critical);
+}
+
+.finding[data-state="dismissed"] .finding-mark svg {
+  color: var(--fg-dim);
+}
+
+.finding[data-state="fixing"] .finding-mark svg {
+  color: var(--fg-dim);
+  animation: markSpin 1.2s linear infinite;
+}
+
+.finding-state {
+  flex: none;
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.finding-sev {
+  font-family: var(--vscode-font-family);
+  font-size: 0.85rem;
+}
+
+.finding-sev::after {
+  content: " · ";
 }
 
 .finding-loc {
@@ -3596,6 +3672,8 @@ code {
 
 .finding-caret {
   display: flex;
+  align-items: center;
+  height: 20px;
   flex: none;
   color: var(--fg-dim);
   opacity: 0.7;
@@ -3636,9 +3714,23 @@ code {
   min-width: 0;
 }
 
-.finding-actions .btn-faces {
+/* Every action is a real button at one size: outlined for the secondary ones,
+   filled for Fix, so what can be pressed never reads as a caption. */
+.finding-actions .btn,
+.finding-actions .btn-faces,
+.review-foot .btn-faces {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 3px 10px;
   font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.finding-actions .btn svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
 }
 
 .finding-tags {
@@ -3651,25 +3743,25 @@ code {
   font-size: 0.85em;
 }
 
-.finding-fix-reason {
+.finding-outcome {
   margin: 0;
+  color: var(--fg);
+}
+
+.finding-outcome p {
+  margin: 0;
+}
+
+.finding-outcome[data-tone="warn"] {
+  padding: var(--s2);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+}
+
+.finding-outcome-detail {
+  margin-top: var(--s1) !important;
   color: var(--fg-dim);
   font-size: 0.85em;
-}
-
-.review-sev {
-  font-size: 0.9em;
-}
-
-.review-sev[data-severity="critical"],
-.review-sev[data-severity="high"] {
-  color: var(--sev-critical);
-}
-.review-sev[data-severity="medium"] {
-  color: var(--sev-medium);
-}
-.review-sev[data-severity="low"] {
-  color: var(--sev-low);
 }
 
 .spinner-icon {
@@ -3721,25 +3813,114 @@ code {
   white-space: nowrap;
 }
 
+.review-fix-result {
+  white-space: nowrap;
+}
+
+
+/* Ruled-out ideas are background: rows on the finding geometry with no fill
+   until hovered, so they never outweigh the issues that were real. */
 .refuted-list {
   display: flex;
   flex-direction: column;
-  gap: var(--s1);
-  font-size: 0.9em;
 }
 
 .refuted-item {
+  border-top: 1px solid var(--border);
+}
+
+.refuted-item:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.refuted-heading {
+  padding: var(--s1) var(--s2);
+  color: var(--fg-dim);
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.refuted-row {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s2);
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  line-height: 20px;
+  color: var(--fg-dim);
+  padding: 6px var(--s2);
+  border: none;
+  background: none;
+  cursor: pointer;
+  transition: background 120ms ease-out;
+}
+
+.refuted-row:hover,
+.refuted-item[data-open="true"] .refuted-row {
+  background: var(--code-bg);
+}
+
+.refuted-row:focus {
+  outline: none;
+}
+
+.refuted-row:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.refuted-mark {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 
 .refuted-title {
-  color: var(--fg-dim);
-  text-decoration: line-through;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refuted-item[data-open="true"] .refuted-title {
+  white-space: normal;
+  color: var(--fg);
+}
+
+/* The detail sits on the title's column, like a finding's detail. */
+.refuted-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: 0 var(--s2) var(--s2) calc(var(--s2) * 2 + 20px);
+  font-size: 0.9em;
+}
+
+.refuted-verdict {
+  color: var(--fg);
+  font-weight: 500;
 }
 
 .refuted-reason {
+  margin: 0;
   color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+.refuted-detail .finding-actions {
+  padding-top: var(--s1);
 }
 
 /* Empty state */

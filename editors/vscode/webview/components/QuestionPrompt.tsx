@@ -1,12 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { Question } from "../lib/thread";
 import { Modal } from "./Modal";
 
 const letter = (index: number) => String.fromCharCode(65 + index);
 
 /** Modal shown while `ask_user` blocks the turn: lettered options, answerable
- *  by click or by pressing A/B/C or 1/2/3. Skipping answers `null`, which hands
- *  the decision back to the agent rather than cancelling the turn. */
+ *  by click or by pressing A/B/C or 1/2/3, plus a free-text field for answers
+ *  that fit no option. Skipping answers `null`, which hands the decision back
+ *  to the agent rather than cancelling the turn. */
 export function QuestionPrompt({
   question,
   onAnswer,
@@ -14,6 +15,11 @@ export function QuestionPrompt({
   question: Question;
   onAnswer: (choice: string | null) => void;
 }) {
+  const [custom, setCustom] = useState("");
+  const sendCustom = () => {
+    const text = custom.trim();
+    if (text) onAnswer(text);
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -46,6 +52,19 @@ export function QuestionPrompt({
             </button>
           ))}
         </div>
+        <input
+          className="question-other"
+          value={custom}
+          placeholder="Other: type your own answer and press Enter"
+          aria-label="Other answer"
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              sendCustom();
+            }
+          }}
+        />
         <button className="link question-skip" onClick={() => onAnswer(null)}>
           Skip and let Aster decide
         </button>

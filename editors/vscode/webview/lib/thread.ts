@@ -1,5 +1,6 @@
-import type { Finding, UsageSummary } from "../../src/types";
+import type { Finding, RuledOut, UsageSummary } from "../../src/types";
 import type { ChatMessage, InfoRow, SetupInfo } from "../../src/protocol";
+import { findingKey, type FixAll, type FixState } from "./review";
 
 export interface ToolCall {
   id: string;
@@ -16,11 +17,15 @@ export interface ReviewData {
   candidates?: number;
   verify?: { index: number; total: number; title: string };
   findings: Finding[];
-  refuted: { title: string; reason: string }[];
+  refuted: RuledOut[];
   summary: string;
   usage?: UsageSummary;
   errorMsg?: string;
   files: string[];
+  /** Keyed by `findingKey`; optional so reviews saved before fixes lived here
+   *  still load. */
+  fixes?: Record<string, FixState>;
+  fixAll?: FixAll;
 }
 
 /** One sub-agent inside an `agent` tool call, fed by `agent_status` events. */
@@ -668,7 +673,9 @@ function reviewContext(data: ReviewData): string {
   }
   const lines = data.findings.slice(0, 25).map((f, i) => {
     const confidence = f.confidence != null ? ` [confidence ${f.confidence.toFixed(2)}]` : "";
-    return `${i + 1}. ${f.severity.toUpperCase()} — ${f.title} (${f.file_path}:${f.line})${confidence}: ${f.description}`;
+    const fix = data.fixes?.[findingKey(f)]?.status;
+    const handled = fix === "fixed" ? " [fixed]" : fix === "dismissed" ? " [dismissed by the user]" : "";
+    return `${i + 1}. ${f.severity.toUpperCase()} — ${f.title} (${f.file_path}:${f.line})${confidence}${handled}: ${f.description}`;
   });
   return `Findings from the code review I ran (${data.findings.length} total):\n${data.summary}\n${lines.join("\n")}`;
 }

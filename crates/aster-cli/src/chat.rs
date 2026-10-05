@@ -2212,7 +2212,7 @@ pub(crate) async fn agent_loop(
         // The client only exposes a cumulative counter, so this round's spend is
         // the delta across the call.
         let before = client.usage_snapshot();
-        let msg = match client
+        let mut msg = match client
             .complete_tools_stream_with(
                 &client.model,
                 wire.clone(),
@@ -2270,6 +2270,9 @@ pub(crate) async fn agent_loop(
             }
             Err(e) => return Err(e),
         };
+        msg.tool_calls
+            .iter_mut()
+            .for_each(crate::tool_alias::canonicalize);
         let duration_ms = started.elapsed().as_millis() as u64;
         let usage = round_usage(before, client.usage_snapshot());
         if streamed_reasoning {
@@ -2876,9 +2879,16 @@ fn round_usage(before: UsageSnapshot, after: UsageSnapshot) -> Option<EventUsage
     let completion_tokens = after
         .completion_tokens
         .saturating_sub(before.completion_tokens);
+    let reported = after
+        .reported_cost_requests
+        .saturating_sub(before.reported_cost_requests);
     (prompt_tokens > 0 || completion_tokens > 0).then_some(EventUsage {
         prompt_tokens,
         completion_tokens,
+        cached_tokens: after.cached_tokens.saturating_sub(before.cached_tokens),
+        cost_usd: (reported > 0)
+            .then(|| (after.reported_cost_usd - before.reported_cost_usd).max(0.0)),
+        estimated: after.estimated_requests > before.estimated_requests,
     })
 }
 
@@ -3815,8 +3825,13 @@ async fn explore(
     let handles: Vec<_> = steps
         .iter()
         .map(|step| {
-            let name = step_tool(step);
-            let step_args = step_args(step);
+            let (name, step_args) = match step_args(step) {
+                Value::Object(args) => {
+                    let (name, args) = crate::tool_alias::rewrite(&step_tool(step), args);
+                    (name, Value::Object(args))
+                }
+                other => (step_tool(step), other),
+            };
             let arguments = step_args.to_string();
             let label = step_label(&name, &step_args);
             let repo_root = repo_root.to_path_buf();

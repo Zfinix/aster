@@ -1548,7 +1548,11 @@ async function runFix(
       cwd,
       input
     );
-    if (code !== 0) {
+    // A run where every fix fails still prints each reason before exiting
+    // non-zero, and those reasons beat the exit code.
+    try {
+      return JSON.parse(stdout) as FixOutput[];
+    } catch {
       return findings.map((f) => ({
         file_path: f.file_path,
         line: f.line,
@@ -1557,7 +1561,6 @@ async function runFix(
         reason: `aster fix exited with code ${code}`,
       }));
     }
-    return JSON.parse(stdout) as FixOutput[];
   } catch (err) {
     return findings.map((f) => ({
       file_path: f.file_path,

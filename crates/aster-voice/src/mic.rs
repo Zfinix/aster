@@ -1,63 +1,28 @@
 //! Capture from the default input device. The stream lives on its own thread
 //! because a cpal stream is not `Send` on every host.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use crate::{Clip, VoiceError};
 
-/// What the capture thread shares while it runs: the latest loudness, and
-/// whether it stopped by itself because the speaker went quiet.
-#[derive(Default)]
-struct Meter {
-    level: AtomicU32,
-    ended: AtomicBool,
-}
-
-impl Meter {
-    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
-    fn set_level(&self, level: f32) {
-        self.level.store(level.to_bits(), Ordering::Relaxed);
-    }
-}
-
-/// A microphone that is listening. It stops by itself once the speaker has
-/// finished; [`Recording::finish`] stops it sooner and returns what it heard,
-/// and dropping it discards the audio.
+/// A microphone that is listening. [`Recording::finish`] closes it and
+/// returns what it heard; dropping it discards the audio.
 pub struct Recording {
     stop: mpsc::Sender<()>,
     worker: JoinHandle<Clip>,
-    meter: Arc<Meter>,
 }
 
 impl Recording {
     pub fn start() -> Result<Self, VoiceError> {
         let (stop, stopped) = mpsc::channel();
         let (ready, started) = mpsc::channel();
-        let meter = Arc::new(Meter::default());
-        let shared = Arc::clone(&meter);
-        let worker = std::thread::spawn(move || imp::capture(&ready, &stopped, &shared));
+        let worker = std::thread::spawn(move || imp::capture(&ready, &stopped));
         match started.recv() {
-            Ok(Ok(())) => Ok(Self {
-                stop,
-                worker,
-                meter,
-            }),
+            Ok(Ok(())) => Ok(Self { stop, worker }),
             Ok(Err(err)) => Err(err),
             Err(_) => Err(VoiceError::NoMicrophone("capture thread exited".into())),
         }
-    }
-
-    /// Loudness of the latest audio, from 0 to 1.
-    pub fn level(&self) -> f32 {
-        f32::from_bits(self.meter.level.load(Ordering::Relaxed))
-    }
-
-    /// True once the microphone has closed by itself.
-    pub fn ended(&self) -> bool {
-        self.meter.ended.load(Ordering::Relaxed)
     }
 
     /// Blocks until the capture thread hands back its audio.
@@ -72,25 +37,18 @@ impl Recording {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod imp {
-    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex, mpsc};
-    use std::time::{Duration, Instant};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 
-    use super::Meter;
-    use crate::vad::Endpoint;
     use crate::{Clip, MAX_RECORDING, VoiceError};
-
-    const SLICE: Duration = Duration::from_millis(50);
 
     type Samples = Arc<Mutex<Vec<i16>>>;
 
     pub(super) fn capture(
         ready: &mpsc::Sender<Result<(), VoiceError>>,
         stopped: &mpsc::Receiver<()>,
-        meter: &Meter,
     ) -> Clip {
         let samples = Samples::default();
         let opened = open(&samples);
@@ -105,40 +63,13 @@ mod imp {
             }
         };
         let _ = ready.send(Ok(()));
-        let started = Instant::now();
-        let mut endpoint = Endpoint::default();
-        let mut read = 0;
-        while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(SLICE) {
-            let level = {
-                let buf = samples.lock().unwrap_or_else(|e| e.into_inner());
-                let level = rms(&buf[read.min(buf.len())..]);
-                read = buf.len();
-                level
-            };
-            meter.set_level(level);
-            if endpoint.update(level, SLICE) || started.elapsed() >= MAX_RECORDING {
-                meter.ended.store(true, Ordering::Relaxed);
-                break;
-            }
-        }
-        meter.set_level(0.0);
+        let _ = stopped.recv_timeout(MAX_RECORDING);
         drop(stream);
         let samples = std::mem::take(&mut *samples.lock().unwrap_or_else(|e| e.into_inner()));
         Clip {
             samples,
             sample_rate,
         }
-    }
-
-    fn rms(samples: &[i16]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-        let sum: f64 = samples
-            .iter()
-            .map(|&s| (f64::from(s) / f64::from(i16::MAX)).powi(2))
-            .sum();
-        (sum / samples.len() as f64).sqrt() as f32
     }
 
     fn open(samples: &Samples) -> Result<(cpal::Stream, u32), VoiceError> {
@@ -200,13 +131,11 @@ mod imp {
 mod imp {
     use std::sync::mpsc;
 
-    use super::Meter;
     use crate::{Clip, VoiceError};
 
     pub(super) fn capture(
         ready: &mpsc::Sender<Result<(), VoiceError>>,
         _stopped: &mpsc::Receiver<()>,
-        _meter: &Meter,
     ) -> Clip {
         let _ = ready.send(Err(VoiceError::Unsupported));
         Clip {

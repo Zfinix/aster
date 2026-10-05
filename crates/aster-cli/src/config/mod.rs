@@ -353,11 +353,12 @@ enum Group {
     Review,
     Mcp,
     Ui,
+    Voice,
     Experimental,
 }
 
 impl Group {
-    const ALL: [Group; 10] = [
+    const ALL: [Group; 11] = [
         Group::Model,
         Group::Mom,
         Group::Providers,
@@ -367,6 +368,7 @@ impl Group {
         Group::Review,
         Group::Mcp,
         Group::Ui,
+        Group::Voice,
         Group::Experimental,
     ];
 
@@ -381,6 +383,7 @@ impl Group {
             Group::Review => "Code review",
             Group::Mcp => "MCP tools",
             Group::Ui => "Display",
+            Group::Voice => "Voice",
             Group::Experimental => "Experimental",
         }
     }
@@ -396,6 +399,7 @@ impl Group {
             Group::Review => "the review pipeline only, not chat",
             Group::Mcp => "how much of the tool catalogue the model sees",
             Group::Ui => "what chat prints on its own",
+            Group::Voice => "dictation and reading replies aloud",
             Group::Experimental => "opt-in behavior that may change or disappear",
         }
     }
@@ -431,6 +435,14 @@ impl Key {
 
 const EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max", "ultra"];
 const MODES: &[&str] = &["plan", "manual", "auto", "edit", "yolo"];
+const STT_PROVIDERS: &[&str] = &[
+    "elevenlabs",
+    "openai",
+    "groq",
+    "deepgram",
+    "openai-compatible",
+];
+const TTS_PROVIDERS: &[&str] = &["system", "elevenlabs", "openai", "openai-compatible"];
 
 #[cfg(target_os = "android")]
 const DEFAULT_MAX_TOOL_ROUNDS: &str = "200";
@@ -817,6 +829,96 @@ const KEYS: &[Key] = &[
         help: "Color palette chat renders in. `/theme` in chat previews and saves it",
     },
     Key {
+        name: "voice.stt",
+        label: "Dictation service",
+        group: Group::Voice,
+        kind: Kind::Choice(STT_PROVIDERS),
+        unit: Unit::None,
+        env: &[],
+        default: "the first with a key set",
+        help: "Speech to text for ctrl+r and the mic button",
+    },
+    Key {
+        name: "voice.stt_model",
+        label: "Dictation model",
+        group: Group::Voice,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "the service's default",
+        help: "Model id the dictation service runs",
+    },
+    Key {
+        name: "voice.stt_url",
+        label: "Dictation server",
+        group: Group::Voice,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "unset",
+        help: "Base URL of your own speech server, for openai-compatible",
+    },
+    Key {
+        name: "voice.tts",
+        label: "Reading voice",
+        group: Group::Voice,
+        kind: Kind::Choice(TTS_PROVIDERS),
+        unit: Unit::None,
+        env: &[],
+        default: "system",
+        help: "Text to speech for read aloud and `aster speak`",
+    },
+    Key {
+        name: "voice.tts_model",
+        label: "Voice model",
+        group: Group::Voice,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "the service's default",
+        help: "Model id the reading voice runs",
+    },
+    Key {
+        name: "voice.tts_voice",
+        label: "Voice",
+        group: Group::Voice,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "the service's default",
+        help: "Which voice reads, such as alloy or af_heart",
+    },
+    Key {
+        name: "voice.tts_url",
+        label: "Voice server",
+        group: Group::Voice,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "unset",
+        help: "Base URL of your own voice server, for openai-compatible",
+    },
+    Key {
+        name: "voice.language",
+        label: "Spoken language",
+        group: Group::Voice,
+        kind: Kind::Text,
+        unit: Unit::None,
+        env: &[],
+        default: "detected",
+        help: "ISO 639-1 code such as en. Unset lets the service detect it",
+    },
+    Key {
+        name: "voice.read_aloud",
+        label: "Read replies aloud",
+        group: Group::Voice,
+        kind: Kind::Bool,
+        unit: Unit::None,
+        env: &[],
+        default: "false",
+        help: "Speak each finished reply in chat. `/voice read on` saves it",
+    },
+    Key {
         name: "experimental.jev",
         label: "Jev loop check",
         group: Group::Experimental,
@@ -861,6 +963,7 @@ fn configured(settings: &Settings, name: &str) -> Value {
     let agent = &settings.agent;
     let agents = &settings.agents;
     let mcp = &settings.mcp;
+    let voice = &settings.voice;
     match name {
         "review.model" => json!(review.model),
         "review.base_url" => json!(review.base_url),
@@ -899,6 +1002,15 @@ fn configured(settings: &Settings, name: &str) -> Value {
         "mom.manifest" => json!(settings.mom.manifest),
         "ui.welcome" => json!(settings.ui.welcome),
         "ui.theme" => json!(settings.ui.theme),
+        "voice.stt" => json!(voice.stt.map(aster_voice::SttProvider::id)),
+        "voice.stt_model" => json!(voice.stt_model),
+        "voice.stt_url" => json!(voice.stt_url),
+        "voice.tts" => json!(voice.tts.map(aster_voice::TtsProvider::id)),
+        "voice.tts_model" => json!(voice.tts_model),
+        "voice.tts_voice" => json!(voice.tts_voice),
+        "voice.tts_url" => json!(voice.tts_url),
+        "voice.language" => json!(voice.language),
+        "voice.read_aloud" => json!(voice.read_aloud),
         "experimental.jev" => json!(settings.experimental.jev),
         _ => Value::Null,
     }

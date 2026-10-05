@@ -1,10 +1,13 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use aster_ai::UsageSnapshot;
 use aster_ai::retry::RetryWithBackoff;
 use aster_models::Finding;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use serde_json::json;
+
+use crate::util::human;
 
 const API: &str = "https://api.github.com";
 const API_VERSION: &str = "2022-11-28";
@@ -61,6 +64,7 @@ pub async fn post_review(
     pr: u64,
     token: &str,
     findings: &[Finding],
+    usage: UsageSnapshot,
 ) -> Result<()> {
     let client = client(token)?;
     let url = format!("{API}/repos/{owner}/{repo}/pulls/{pr}/reviews");
@@ -68,7 +72,7 @@ pub async fn post_review(
     let comments: Vec<_> = findings.iter().map(inline_comment).collect();
     let body = json!({
         "event": "COMMENT",
-        "body": review_summary(findings),
+        "body": review_summary(findings, usage),
         "comments": comments,
     });
 
@@ -86,7 +90,7 @@ pub async fn post_review(
     if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
         let fallback = json!({
             "event": "COMMENT",
-            "body": findings_markdown(findings),
+            "body": findings_markdown(findings, usage),
         });
         let resp = client
             .post(&url)
@@ -137,20 +141,66 @@ fn comment_body(f: &Finding) -> String {
     )
 }
 
-fn review_summary(findings: &[Finding]) -> String {
-    if findings.is_empty() {
-        return "Aster reviewed this PR and found no issues that survived verification.".into();
+fn severity_counts(findings: &[Finding]) -> String {
+    let mut parts = Vec::new();
+    for severity in ["critical", "high", "medium", "low", "info"] {
+        let n = findings.iter().filter(|f| f.severity == severity).count();
+        if n > 0 {
+            parts.push(format!("`{n}` {severity}"));
+        }
     }
+    parts.join(" · ")
+}
+
+fn summary_body(findings: &[Finding]) -> String {
+    let mut out = String::from("## ⭐ Aster Review\n\n");
+    if findings.is_empty() {
+        out.push_str("No issues found. ✨\n");
+        return out;
+    }
+    let n = findings.len();
+    let plural = if n == 1 { "" } else { "s" };
+    out.push_str(&format!(
+        "Reviewed this PR and found **{n} issue{plural}** ({})\n\n",
+        severity_counts(findings),
+    ));
+    out.push_str("| Severity | Category | Location | Finding |\n");
+    out.push_str("|---|---|---|---|\n");
+    for f in findings {
+        out.push_str(&format!(
+            "| `{}` | `{}` | `{}:{}` | {} |\n",
+            f.severity, f.category, f.file_path, f.line, f.title
+        ));
+    }
+    out
+}
+
+fn review_summary(findings: &[Finding], usage: UsageSnapshot) -> String {
+    let mut out = summary_body(findings);
+    out.push('\n');
+    out.push_str(&cost_footer(usage));
+    out
+}
+
+fn cost_footer(usage: UsageSnapshot) -> String {
+    let cost = usage
+        .estimated_cost_usd
+        .map(|c| format!("~${c:.4}"))
+        .unwrap_or_else(|| "n/a".into());
     format!(
-        "Aster reviewed this PR: {} finding(s) survived adversarial verification.",
-        findings.len()
+        "\n<details>\n<summary>⭐ Cost &amp; usage</summary>\n\n| Metric | Value |\n|---|---|\n| Total tokens | {} |\n| Prompt / completion | {} / {} |\n| Requests | {} |\n| Estimated cost | {} |\n\n</details>\n",
+        human(usage.total_tokens),
+        human(usage.prompt_tokens),
+        human(usage.completion_tokens),
+        usage.requests,
+        cost,
     )
 }
 
-fn findings_markdown(findings: &[Finding]) -> String {
-    let mut out = review_summary(findings);
+fn findings_markdown(findings: &[Finding], usage: UsageSnapshot) -> String {
+    let mut out = summary_body(findings);
     out.push_str(
-        "\n\n_Some findings referenced lines outside the diff, so they are listed here instead of as inline comments._\n",
+        "\n_Some findings referenced lines outside the diff, so they are listed here instead of as inline comments._\n",
     );
     for f in findings {
         let conf = f
@@ -158,9 +208,10 @@ fn findings_markdown(findings: &[Finding]) -> String {
             .map(|c| format!(" · {:.0}% confident", c * 100.0))
             .unwrap_or_default();
         out.push_str(&format!(
-            "\n---\n\n### {} — `{}:{}`\n\n**Severity:** {} / {}{}\n\n{}\n\n**Fix:** {}\n",
+            "\n---\n\n### {} · `{}:{}`\n\n**Severity:** {} / {}{}\n\n{}\n\n**Fix:** {}\n",
             f.title, f.file_path, f.line, f.severity, f.category, conf, f.description, f.suggestion
         ));
     }
+    out.push_str(&cost_footer(usage));
     out
 }

@@ -89,6 +89,7 @@ it. Ask it something outside a repo and it still works, it just has less to look
 | `esc esc` | Quit (two presses, so a stray one does not). |
 | `shift+tab` | Step to the next permission mode. |
 | `ctrl+j` | Newline without sending. |
+| `ctrl+r` | Dictate: press to listen, again to type what you said. Also stops a reply being read aloud. |
 | `@` | Mention a file from this repo. |
 | `↑` `↓` | Step through what you have sent. |
 
@@ -102,6 +103,7 @@ Type `/` for commands:
 | `/mode` | Choose how freely the agent edits (also `shift+tab`). |
 | `/effort` | Reasoning budget: `off`, `low`, `medium`, `high`. |
 | `/resume` | Reopen one of this repo's earlier sessions. |
+| `/voice` | Dictation and read aloud: `/voice read on`, `/voice stt groq`, `/voice tts system`. |
 | `/clear` | Start fresh. |
 | `/help` | Everything above, in the terminal. |
 
@@ -270,6 +272,8 @@ probability, so treat the number as a ranking signal rather than odds.
 | `aster web` | The web as Markdown. `search`, `extract`, `crawl`, `sitemap`, `screenshot`. |
 | `aster fix` | Turn review findings into edits. Dry run unless you pass `--apply`. |
 | `aster serve` | Open the agent in your browser on this machine. |
+| `aster dictate` | Record from the mic until stdin gets a line, then print the transcript. |
+| `aster speak` | Read text aloud: `aster speak "hello"`. Stops when stdin gets a line. |
 | `aster status` | What the next turn would run with: model, mode, limits, wiring. |
 | `aster remote` | Drive the agent from Telegram, approvals and all. |
 | `aster login` | Link GitHub for PRs, or a provider account: `login codex`, `login openrouter`, `login zai`. `aster logout` removes them all. |
@@ -354,6 +358,33 @@ Writes land in the repo's config when it has one, else the global one;
 misspelled key is an error rather than a surprise on the next turn, and reads
 name where a value came from, since a shell variable outranks the file. Full
 reference in [docs/CONFIG.md](./docs/CONFIG.md).
+
+### Voice
+
+Dictation and read aloud pick their service from the `voice:` block in
+`aster.yaml`. With nothing set, dictation uses the first key it finds and read
+aloud uses your system voice, so `/voice read on` works with no key at all.
+
+```bash
+aster key set GROQ_API_KEY              # free hosted Whisper for dictation
+aster config set voice.stt groq
+aster config set voice.read_aloud true
+aster speak "testing one two"           # hear the voice you picked
+```
+
+ElevenLabs, OpenAI, Groq, and Deepgram are built in. `openai-compatible` points
+at any server you run yourself, such as speaches or a Parakeet server for
+dictation and kokoro-fastapi for read aloud:
+
+```yaml
+voice:
+  stt: openai-compatible
+  stt_url: http://localhost:8000/v1
+  tts: openai-compatible
+  tts_url: http://localhost:8880/v1
+```
+
+Every key is in [docs/CONFIG.md](docs/CONFIG.md#voice-input).
 
 ### Memory
 

@@ -16,7 +16,7 @@ use aster_models::{Finding, ReviewReport};
 use futures_util::StreamExt;
 
 pub use models::{Candidate, CandidateList, CandidateSource, HarnessConfig, ReviewInput, Verdict};
-pub use progress::{Progress, ProgressSink};
+pub use progress::{Progress, ProgressSink, RuledOut};
 
 pub struct ReviewDeps {
     pub ai_client: Arc<AiClient>,
@@ -97,32 +97,26 @@ pub async fn review_with_progress(
                 tracing::debug!(title = %candidate.title, reason, "refuted on low confidence");
                 progress::emit(
                     sink,
-                    Progress::Refuted {
-                        title: candidate.title,
+                    refuted(
+                        candidate,
                         reason,
-                    },
+                        RuledOut::Unsure {
+                            confidence: verdict.confidence,
+                        },
+                    ),
                 );
                 None
             }
             Ok(verdict) => {
                 tracing::debug!(title = %candidate.title, reason = %verdict.reason, "refuted");
-                progress::emit(
-                    sink,
-                    Progress::Refuted {
-                        title: candidate.title,
-                        reason: verdict.reason,
-                    },
-                );
+                progress::emit(sink, refuted(candidate, verdict.reason, RuledOut::NotReal));
                 None
             }
             Err(e) => {
                 tracing::warn!(title = %candidate.title, error = %e, "verify failed; dropping");
                 progress::emit(
                     sink,
-                    Progress::Refuted {
-                        title: candidate.title,
-                        reason: format!("verify failed: {e}"),
-                    },
+                    refuted(candidate, format!("{e:#}"), RuledOut::CheckFailed),
                 );
                 None
             }
@@ -135,12 +129,20 @@ pub async fn review_with_progress(
 
     let findings = shape_report(ordered);
 
-    let summary = format!(
-        "Reviewed {} against {}: {} finding(s) survived adversarial verification.",
-        input.repo_name,
-        input.base_branch,
-        findings.len()
-    );
+    let summary = match findings.len() {
+        0 => format!(
+            "Reviewed {} against {}: no issues found.",
+            input.repo_name, input.base_branch
+        ),
+        1 => format!(
+            "Reviewed {} against {}: found 1 issue.",
+            input.repo_name, input.base_branch
+        ),
+        n => format!(
+            "Reviewed {} against {}: found {n} issues.",
+            input.repo_name, input.base_branch
+        ),
+    };
     progress::emit(
         sink,
         Progress::Done {
@@ -498,6 +500,18 @@ async fn verify(
     let json = extract_json(&content);
     serde_json::from_str(&json)
         .map_err(|e| anyhow::anyhow!("failed to parse verdict: {e}; raw: {json}"))
+}
+
+fn refuted(candidate: Candidate, reason: String, why: RuledOut) -> Progress {
+    Progress::Refuted {
+        title: candidate.title,
+        reason,
+        file: candidate.file,
+        line: candidate.line,
+        severity: candidate.severity,
+        category: candidate.defect_class,
+        why,
+    }
 }
 
 fn shape(candidate: Candidate, verdict: Verdict) -> Finding {

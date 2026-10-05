@@ -5,18 +5,68 @@ fn snapshot(prompt: u64, completion: u64) -> UsageSnapshot {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: prompt + completion,
+        cached_tokens: 0,
         requests: 1,
+        estimated_requests: 0,
         estimated_cost_usd: None,
         cost_is_estimate: false,
         estimated: false,
+        reported_cost_usd: 0.0,
+        reported_cost_requests: 0,
     }
 }
 
 #[test]
 fn round_usage_is_the_delta_between_snapshots() {
     let usage = round_usage(snapshot(100, 10), snapshot(450, 35)).unwrap();
-    assert_eq!(usage.prompt_tokens, 350);
-    assert_eq!(usage.completion_tokens, 25);
+    assert_eq!(
+        usage,
+        EventUsage {
+            prompt_tokens: 350,
+            completion_tokens: 25,
+            cached_tokens: 0,
+            cost_usd: None,
+            estimated: false,
+        }
+    );
+}
+
+#[test]
+fn round_usage_carries_cache_hits_and_reported_cost() {
+    let before = UsageSnapshot {
+        cached_tokens: 50,
+        reported_cost_usd: 0.25,
+        reported_cost_requests: 2,
+        ..snapshot(100, 10)
+    };
+    let after = UsageSnapshot {
+        cached_tokens: 330,
+        reported_cost_usd: 0.75,
+        reported_cost_requests: 3,
+        ..snapshot(450, 35)
+    };
+    assert_eq!(
+        round_usage(before, after),
+        Some(EventUsage {
+            prompt_tokens: 350,
+            completion_tokens: 25,
+            cached_tokens: 280,
+            cost_usd: Some(0.5),
+            estimated: false,
+        })
+    );
+}
+
+#[test]
+fn round_usage_flags_a_round_whose_tokens_were_estimated() {
+    let after = UsageSnapshot {
+        estimated_requests: 1,
+        ..snapshot(450, 35)
+    };
+    assert_eq!(
+        round_usage(snapshot(100, 10), after).map(|u| (u.estimated, u.cost_usd)),
+        Some((true, None))
+    );
 }
 
 #[test]
@@ -2182,6 +2232,69 @@ async fn turn_against(server: &wiremock::MockServer) -> Result<String> {
     )
     .await
     .map(|(reply, _, _)| reply)
+}
+
+#[tokio::test]
+async fn a_write_file_call_from_another_harness_creates_the_file() {
+    let server = wiremock::MockServer::start().await;
+    let no_result_yet =
+        |req: &wiremock::Request| !String::from_utf8_lossy(&req.body).contains(r#""role":"tool""#);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(no_result_yet)
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": json!({ "file_path": "notes.md", "content": "# Notes\n" }).to_string(),
+                    },
+                }],
+            } }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body("written"))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let repo = tempfile::tempdir().unwrap();
+
+    let (reply, edited, _) = crate::chat::agent_turn_streaming(
+        AiClient::new(server.uri(), "k", "mock-model"),
+        repo.path().to_path_buf(),
+        vec![ChatMessage {
+            role: "user".into(),
+            content: "write notes".into(),
+        }],
+        true,
+        std::sync::Arc::new(Policy::permissive()),
+        std::sync::Arc::new(Grants::default()),
+        None,
+        SessionCtx::default(),
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        (
+            reply.as_str(),
+            edited,
+            std::fs::read_to_string(repo.path().join("notes.md")).unwrap()
+        ),
+        (
+            "written",
+            vec!["notes.md".to_string()],
+            "# Notes\n".to_string()
+        )
+    );
 }
 
 #[tokio::test]

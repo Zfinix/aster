@@ -86,7 +86,7 @@ fn translate_response_text_and_tool_calls() {
             {"type": "message", "content": [{"type": "output_text", "text": "doing it"}]},
             {"type": "function_call", "call_id": "call_9", "name": "shell", "arguments": "{}"},
         ],
-        "usage": {"input_tokens": 10, "output_tokens": 4},
+        "usage": {"input_tokens": 10, "output_tokens": 4, "input_tokens_details": {"cached_tokens": 6}},
     });
     let out = translate_response(&responses);
     let message = &out["choices"][0]["message"];
@@ -97,6 +97,7 @@ fn translate_response_text_and_tool_calls() {
     assert_eq!(out["usage"]["prompt_tokens"], 10);
     assert_eq!(out["usage"]["completion_tokens"], 4);
     assert_eq!(out["usage"]["total_tokens"], 14);
+    assert_eq!(out["usage"]["prompt_tokens_details"]["cached_tokens"], 6);
 }
 
 #[test]

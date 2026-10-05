@@ -7,7 +7,8 @@ use std::{env, fs, mem};
 use anyhow::{Context, Result, bail};
 use aster_ai::AiClient;
 use aster_harness::{
-    HarnessConfig, Progress, ProgressSink, ReviewDeps, ReviewInput, indexing, review_with_progress,
+    HarnessConfig, Progress, ProgressSink, ReviewDeps, ReviewInput, RuledOut, indexing,
+    review_with_progress,
 };
 use aster_models::{Finding, ReviewReport};
 use clap::Args;
@@ -197,7 +198,15 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
             println!("Nothing posted.");
             return Ok(());
         }
-        github::post_review(&owner, &repo, pr, &token, &findings).await?;
+        github::post_review(
+            &owner,
+            &repo,
+            pr,
+            &token,
+            &findings,
+            usage_handle.usage_snapshot(),
+        )
+        .await?;
         println!(
             "Posted {} comment(s) to {owner}/{repo}#{pr}.",
             findings.len()
@@ -213,7 +222,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
 fn confirm_post(findings: &[Finding], owner: &str, repo: &str, pr: u64, yes: bool) -> Result<bool> {
     if findings.is_empty() {
-        println!("No findings survived verification; nothing to post.");
+        println!("No issues found; nothing to post.");
         return Ok(false);
     }
     if yes || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -304,8 +313,31 @@ fn emit_event(out: &mut impl Write, event: &Progress, min_confidence: f32) {
             }
             v
         }
-        Progress::Refuted { title, reason } => {
-            serde_json::json!({ "type": "refuted", "title": title, "reason": reason })
+        Progress::Refuted {
+            title,
+            reason,
+            file,
+            line,
+            severity,
+            category,
+            why,
+        } => {
+            let (kind, confidence) = match why {
+                RuledOut::NotReal => ("not_real", None),
+                RuledOut::Unsure { confidence } => ("unsure", Some(confidence)),
+                RuledOut::CheckFailed => ("check_failed", None),
+            };
+            serde_json::json!({
+                "type": "refuted",
+                "title": title,
+                "reason": reason,
+                "file_path": file,
+                "line": line,
+                "severity": severity,
+                "category": category,
+                "kind": kind,
+                "confidence": confidence,
+            })
         }
         Progress::Done { .. } => return,
     };
@@ -568,10 +600,7 @@ fn print_findings(summary: &str, findings: &[Finding]) {
     println!("  {dot} {}", paint(BOLD, summary));
 
     if findings.is_empty() {
-        println!(
-            "  {}\n",
-            paint(DIM, "nothing survived verification — clean diff.")
-        );
+        println!("  {}\n", paint(DIM, "no issues found."));
         return;
     }
     println!();

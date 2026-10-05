@@ -979,7 +979,9 @@ impl McpRuntime {
                 // outright saves the search round a large catalogue forces.
                 // chrome-devtools is pinned too so `take_screenshot` is always
                 // visible for localhost pages that web/screenshot cannot reach.
-                Ok(injector) => injector.pin_servers(["web", "chrome-devtools"]),
+                // paper is pinned so its design tools stay discoverable without
+                // a search round each; the catalogue is far over budget anyway.
+                Ok(injector) => injector.pin_servers(["web", "chrome-devtools", "paper"]),
                 Err(e) => {
                     problems.push(format!("MCP injector rejected: {e}"));
                     return (None, problems);

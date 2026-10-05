@@ -420,22 +420,56 @@ decision, and a project file omitting the key must not undo it.
 
 ## Voice input
 
-In the chat TUI, ctrl+r starts listening. Once you have spoken and then gone
-quiet for about a second and a half, it stops by itself and turns what it heard
-into text in the input box; a second ctrl+r stops it sooner, and Esc throws the
-recording away. The footer shows how long it has been listening and a level
-meter, so you can see it hearing you. A recording never runs past five minutes.
+In the chat TUI, ctrl+r starts listening and a second ctrl+r turns what it
+heard into text in the input box. Esc while listening throws the recording away.
+A recording stops on its own after five minutes.
 
-The desktop app, the VS Code extension, and the `aster serve` page have a mic
-button in the composer that works the same way. They run `aster dictate`, which
-prints NDJSON: `listening`, `transcribing`, then `transcript` with `text` or
-`error` with `message` and `detail`. It stops listening when the speaker goes
-quiet, or sooner when stdin gets a line or closes.
+The desktop app and the VS Code extension have a mic button in the composer
+that works the same way. Both run `aster dictate`, which prints NDJSON:
+`listening`, `transcribing`, then `transcript` with `text` or `error` with
+`message` and `detail`. It stops listening when stdin gets a line or closes.
 
-Speech to text needs one key: `ELEVENLABS_API_KEY` (Scribe) is used first, then
-`OPENAI_API_KEY` (`gpt-4o-transcribe`). `aster key list` shows both under
-Voice. The microphone works on macOS and Windows; other platforms say voice
-input is not available yet.
+`/voice` in the chat shows which provider dictation and read aloud use, and
+changes them: `/voice stt groq`, `/voice tts openai`, `/voice read on`. Each
+choice is saved to the `voice:` block of the global `aster.yaml`, since it
+follows you between repos. `aster config set voice.stt groq` does the same from
+the shell, and `aster config unset voice.stt` goes back to picking by key.
+
+```yaml
+voice:
+  stt: groq            # elevenlabs, openai, groq, deepgram, openai-compatible
+  stt_model: whisper-large-v3-turbo
+  stt_url: http://localhost:8000/v1
+  tts: system          # system, elevenlabs, openai, openai-compatible
+  tts_model: kokoro
+  tts_voice: af_heart
+  tts_url: http://localhost:8880/v1
+  language: en
+  read_aloud: true
+```
+
+| Provider | Speech to text | Read aloud | Key |
+| --- | --- | --- | --- |
+| `elevenlabs` | Scribe (`scribe_v2`) | Flash (`eleven_flash_v2_5`) | `ELEVENLABS_API_KEY` |
+| `openai` | `gpt-4o-transcribe` | `gpt-4o-mini-tts`, voice `alloy` | `OPENAI_API_KEY` |
+| `groq` | `whisper-large-v3-turbo`, free tier | none | `GROQ_API_KEY` |
+| `deepgram` | `nova-3` | none | `DEEPGRAM_API_KEY` |
+| `openai-compatible` | any server at `stt_url` | any server at `tts_url` | `ASTER_VOICE_API_KEY`, optional |
+| `system` | none | `say` on macOS, SAPI on Windows, `espeak-ng` on Linux | none |
+
+With `stt` unset, dictation uses the first of ElevenLabs, OpenAI, Groq, and
+Deepgram that has a key, or the `stt_url` server when only that is set. With
+`tts` unset, read aloud uses the system voice. `openai-compatible` covers free
+engines you run yourself: speaches or a Parakeet server for speech to text,
+kokoro-fastapi for read aloud. Its default model is `whisper-1` for speech and
+`kokoro` with voice `af_heart` for read aloud.
+
+Read aloud speaks the prose of each finished reply. It skips code blocks and
+tables and stops at the last sentence within 2,000 characters. Esc or ctrl+r
+stops it. `aster speak "text"` reads text aloud the same way and prints
+NDJSON: `speaking`, then `done` or `error`. It stops when stdin gets a line or
+closes. `aster key list` shows every voice key under Voice. The microphone and
+cloud voices play on macOS and Windows; the system voice also works on Linux.
 
 ## Settings that are environment-only
 

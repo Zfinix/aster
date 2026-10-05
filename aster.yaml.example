@@ -138,6 +138,20 @@ ui:
   # picks one and saves.
   theme: dark
 
+# Dictation (ctrl+r in chat, the mic button elsewhere) and reading replies
+# aloud. `/voice` in a chat shows the setup and saves changes. With nothing
+# set, dictation uses the first key found (ELEVENLABS_API_KEY, OPENAI_API_KEY,
+# GROQ_API_KEY, DEEPGRAM_API_KEY) and read aloud uses the system voice.
+# voice:
+#   stt: groq                 # elevenlabs, openai, groq, deepgram, openai-compatible
+#   stt_model: whisper-large-v3-turbo
+#   stt_url: http://localhost:8000/v1   # for openai-compatible, e.g. speaches
+#   tts: system               # system, elevenlabs, openai, openai-compatible
+#   tts_voice: af_heart
+#   tts_url: http://localhost:8880/v1   # for openai-compatible, e.g. kokoro-fastapi
+#   language: en              # unset lets the provider detect it
+#   read_aloud: false
+
 # MCP servers that give the agent extra tools. `aster mcp list` shows what they
 # expose; `aster mcp enable|disable <name>` flips them without editing by hand.
 # Installed plugins add their own here as `<plugin>/<server>`; see
