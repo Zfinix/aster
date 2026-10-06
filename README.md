@@ -405,9 +405,9 @@ listed by title and read in full only when the agent needs them.
 Skills are folders with a `SKILL.md` telling the agent how to do something
 specific. Aster reads the titles and loads the body only when it is relevant.
 
-Six core skills ship built in and are always available: git and GitHub
-workflows, security review, security scanning, skill authoring, and artifact
-design. Twelve more
+Seven core skills ship built in and are always available: git and GitHub
+workflows, security review, security scanning, skill authoring, artifact
+design, and Aster's own map of where its files live and how to change them. Twelve more
 guide the agent's own conduct (verifying before reporting done, build triage,
 shell batching, CLI craft, context economy, web research, taking corrections,
 and so on); those are internal, so they never appear in a skills list or as a
