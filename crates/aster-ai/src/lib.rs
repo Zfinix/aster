@@ -68,6 +68,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_DEADLINE_SECS: u64 = 180;
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 // Assumed $/million tokens (roughly gpt-4o-mini) when no pricing is configured;
 // override with ASTER_PRICE_PROMPT_PER_M / ASTER_PRICE_COMPLETION_PER_M.
 const DEFAULT_PRICE_PROMPT_PER_M: f64 = 0.15;
@@ -338,7 +339,7 @@ impl AiClient {
     ) -> ChatRequest {
         ChatRequest {
             model: model.to_string(),
-            temperature: Some(temperature),
+            temperature: self.temperature_for(model, temperature),
             messages: fold_system_chat(messages),
             stream,
             stream_options: stream.then_some(StreamOptions {
@@ -358,6 +359,13 @@ impl AiClient {
             reasoning::dialect(&self.base_url).knob,
             self.effort_for(model),
         )
+    }
+
+    fn temperature_for(&self, model: &str, temperature: f64) -> Option<f64> {
+        match self.memo().no_temperature.contains(model) {
+            true => None,
+            false => Some(temperature),
+        }
     }
 
     fn effort_for(&self, model: &str) -> Option<Effort> {
@@ -612,7 +620,7 @@ impl AiClient {
         let request_chars = prompt_chars + json_chars(&tools);
         let mut request = ToolChatRequest {
             model: model.to_string(),
-            temperature: Some(temperature),
+            temperature: self.temperature_for(model, temperature),
             messages,
             tools,
             stream: false,
@@ -831,7 +839,7 @@ impl AiClient {
         let request_chars = prompt_chars + json_chars(&tools);
         let mut request = ToolChatRequest {
             model: model.to_string(),
-            temperature: Some(temperature),
+            temperature: self.temperature_for(model, temperature),
             messages: messages.clone(),
             tools: tools.clone(),
             stream: true,
@@ -1051,8 +1059,8 @@ impl AiClient {
         })
     }
 
-    /// [`Self::send_with_retry`], stepping the thinking settings down when the
-    /// provider refuses them: earlier thinking is dropped from history, then the
+    /// [`Self::send_with_retry`], stepping settings down when the provider
+    /// refuses them: the temperature is dropped, then earlier thinking, then the
     /// effort is relaxed. Each step is remembered, so it is paid for once.
     async fn send_reasoned<R: Reasoned>(
         &self,
@@ -1066,6 +1074,16 @@ impl AiClient {
                 Err(err) => err,
                 sent => return sent,
             };
+            if reasoning::rejected_temperature(&err) && request.temperature_mut().take().is_some() {
+                tracing::debug!(
+                    model = request.model(),
+                    "provider refused the temperature; dropping it"
+                );
+                self.memo()
+                    .no_temperature
+                    .insert(request.model().to_string());
+                continue;
+            }
             if reasoning::rejected_history(&err)
                 && let Some(history) = request.history_mut()
                 && reasoning::carries_thinking(history)
@@ -1245,14 +1263,17 @@ impl AiClient {
         self.get_url(&format!("{}{path}", self.base_url), ctx).await
     }
 
+    /// Anthropic's `/models` is its native API, not the compat layer, so it
+    /// wants the key and API version in its own headers.
     async fn get_url(&self, url: &str, ctx: &str) -> Result<reqwest::Response> {
-        let response = self
-            .http
-            .get(url)
-            .bearer_auth(self.bearer().await?)
-            .send()
-            .await
-            .with_context(|| format!("{ctx} failed"))?;
+        let get = self.http.get(url);
+        let get = match url.contains("api.anthropic.com") {
+            true => get
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+            false => get.bearer_auth(self.bearer().await?),
+        };
+        let response = get.send().await.with_context(|| format!("{ctx} failed"))?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

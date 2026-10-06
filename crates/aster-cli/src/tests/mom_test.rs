@@ -101,3 +101,49 @@ fn pick_model_endpoint_leaves_bare_and_unresolvable_ids_alone() {
         None
     );
 }
+
+#[test]
+fn direct_model_id_drops_a_router_prefix_on_the_providers_own_endpoint() {
+    let catalog = vec!["claude-opus-5".to_string()];
+    let ids = [
+        "anthropic/claude-sonnet-5",
+        "claude-sonnet-5",
+        "deepseek/deepseek-v4-pro",
+    ]
+    .map(|id| direct_model_id(id, "https://api.anthropic.com/v1", &urls(), &catalog));
+    assert_eq!(
+        ids,
+        [
+            "claude-sonnet-5",
+            "claude-sonnet-5",
+            "deepseek/deepseek-v4-pro"
+        ]
+    );
+}
+
+#[test]
+fn direct_model_id_keeps_prefixes_an_endpoint_takes_as_its_own() {
+    let urls = BTreeMap::from([
+        ("orcarouter".into(), "https://api.orcarouter.ai/v1".into()),
+        (
+            "cloudflare".into(),
+            "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1".into(),
+        ),
+    ]);
+    let orca = direct_model_id(
+        "orcarouter/auto",
+        "https://api.orcarouter.ai/v1",
+        &urls,
+        &["orcarouter/auto".to_string()],
+    );
+    let cloudflare = direct_model_id(
+        "@cf/zai-org/glm-5.3",
+        "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+        &urls,
+        &["@cf/zai-org/glm-5.3".to_string()],
+    );
+    assert_eq!(
+        [orca, cloudflare],
+        ["orcarouter/auto", "@cf/zai-org/glm-5.3"]
+    );
+}

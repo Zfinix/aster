@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -108,6 +110,12 @@ fn refusals_are_told_apart_by_what_they_name() {
 
     let unrelated = anyhow::anyhow!("rate limited (429): slow down");
     assert!(!rejected_effort(&unrelated));
+    assert!(!rejected_temperature(&unrelated));
+
+    let temperature =
+        anyhow::anyhow!("bad request (400): `temperature` is deprecated for this model.");
+    assert!(rejected_temperature(&temperature));
+    assert!(!rejected_effort(&temperature));
 }
 
 fn assistant_with_thinking() -> Value {
@@ -357,4 +365,42 @@ async fn refused_history_thinking_is_dropped_and_retried() {
         .await
         .unwrap();
     assert_eq!(msg.content.as_deref(), Some("ok"));
+}
+
+#[tokio::test]
+async fn a_refused_temperature_is_dropped_once_per_session() {
+    let server = MockServer::start().await;
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let seen = bodies.clone();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            seen.lock().unwrap().push(body.get("temperature").cloned());
+            if body.get("temperature").is_some() {
+                return ResponseTemplate::new(400).set_body_json(json!({
+                    "error": { "message": "`temperature` is deprecated for this model." }
+                }));
+            }
+            ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "role": "assistant", "content": "hi" } }]
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "claude-sonnet-5");
+    for _ in 0..2 {
+        let msg = client
+            .complete_tools_with(
+                "claude-sonnet-5",
+                vec![json!({ "role": "user", "content": "hi" })],
+                vec![],
+                0.2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(msg.content.as_deref(), Some("hi"));
+    }
+    assert_eq!(*bodies.lock().unwrap(), vec![Some(json!(0.2)), None, None]);
 }

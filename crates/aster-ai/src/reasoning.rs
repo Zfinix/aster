@@ -2,7 +2,7 @@
 //! effort, the reply fields thinking arrives in, and the message field that
 //! hands earlier thinking back. None of this is in the OpenAI schema.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -184,6 +184,12 @@ pub(crate) fn rejected_effort(err: &anyhow::Error) -> bool {
             .any(|word| text.contains(word))
 }
 
+/// A 400 or 422 that names `temperature`, which newer models refuse outright.
+pub(crate) fn rejected_temperature(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}").to_lowercase();
+    (text.contains("(400)") || text.contains("(422)")) && text.contains("temperature")
+}
+
 /// A refusal of the thinking carried on earlier assistant messages.
 pub(crate) fn rejected_history(err: &anyhow::Error) -> bool {
     let text = format!("{err:#}").to_lowercase();
@@ -331,11 +337,15 @@ pub(crate) struct Memo {
     pub efforts: HashMap<(String, Effort), Option<Effort>>,
     /// Earlier thinking on assistant turns was refused, so none is sent.
     pub strip_history: bool,
+    /// Models that refused a temperature, so none is sent to them.
+    pub no_temperature: HashSet<String>,
 }
 
-/// A request whose thinking fields can be rewritten after a refusal.
+/// A request whose thinking fields and temperature can be rewritten after a
+/// refusal.
 pub(crate) trait Reasoned: Serialize {
     fn model(&self) -> &str;
+    fn temperature_mut(&mut self) -> &mut Option<f64>;
     fn reasoning_mut(&mut self) -> &mut Map<String, Value>;
     fn history_mut(&mut self) -> Option<&mut [Value]>;
 }
@@ -343,6 +353,9 @@ pub(crate) trait Reasoned: Serialize {
 impl Reasoned for ChatRequest {
     fn model(&self) -> &str {
         &self.model
+    }
+    fn temperature_mut(&mut self) -> &mut Option<f64> {
+        &mut self.temperature
     }
     fn reasoning_mut(&mut self) -> &mut Map<String, Value> {
         &mut self.reasoning
@@ -355,6 +368,9 @@ impl Reasoned for ChatRequest {
 impl Reasoned for ToolChatRequest {
     fn model(&self) -> &str {
         &self.model
+    }
+    fn temperature_mut(&mut self) -> &mut Option<f64> {
+        &mut self.temperature
     }
     fn reasoning_mut(&mut self) -> &mut Map<String, Value> {
         &mut self.reasoning

@@ -161,14 +161,39 @@ pub(crate) fn target_for_model(model_id: &str, current_base_url: &str) -> Option
         .iter()
         .any(|m| m == model_id);
     let has_key = |url: &str| aster_ai::keys::resolve_key(url).is_some();
-    let (base_url, model_param) =
-        pick_model_endpoint(model_id, current_base_url, &urls, served, &has_key)?;
+    let catalog = aster_ai::keys::catalog_models(current_base_url);
+    let bare = direct_model_id(model_id, current_base_url, &urls, &catalog);
+    let (base_url, model_param) = match bare != model_id {
+        true => (current_base_url.to_string(), bare.to_string()),
+        false => pick_model_endpoint(model_id, current_base_url, &urls, served, &has_key)?,
+    };
     let (key, _) = aster_ai::keys::resolve_key(&base_url)?;
     Some(RouterTarget {
         base_url,
         key,
         model_param,
     })
+}
+
+/// A router-style id like `anthropic/claude-sonnet-5` on that provider's own
+/// endpoint, in the bare form the endpoint takes. An endpoint whose own catalog
+/// ids carry a prefix (Cloudflare's `@cf/...`, a router's) keeps the id.
+pub(crate) fn direct_model_id<'a>(
+    model_id: &'a str,
+    base_url: &str,
+    urls: &BTreeMap<String, String>,
+    catalog: &[String],
+) -> &'a str {
+    let Some((prefix, rest)) = model_id.split_once('/') else {
+        return model_id;
+    };
+    let own_host = urls
+        .get(provider_id(prefix))
+        .is_some_and(|url| url_host(url) == url_host(base_url));
+    match own_host && !catalog.iter().any(|id| id.contains('/')) {
+        true => rest,
+        false => model_id,
+    }
 }
 
 fn pick_model_endpoint(

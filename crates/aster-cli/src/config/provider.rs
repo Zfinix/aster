@@ -112,6 +112,9 @@ pub fn resolve_endpoint(review: &Review, model_flag: Option<&str>) -> (String, S
         .map(str::to_string)
         .or_else(|| env_or("ASTER_MODEL", review.model.as_deref()))
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let urls = crate::init::provider_base_urls().into_iter().collect();
+    let catalog = aster_ai::keys::catalog_models(&base_url);
+    let model = crate::mom::direct_model_id(&model, &base_url, &urls, &catalog).to_string();
     (base_url, model)
 }
 
