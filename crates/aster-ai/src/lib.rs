@@ -21,6 +21,7 @@ pub mod codex_api;
 mod error_log;
 pub mod keys;
 pub mod logins;
+mod mistral;
 pub mod pkce;
 pub mod router;
 
@@ -1185,6 +1186,9 @@ impl AiClient {
         let adapted;
         let body = if cloudflare::is_workers_ai(&self.base_url) {
             adapted = cloudflare::adapt_request(body);
+            &adapted
+        } else if mistral::is_mistral(&self.base_url) {
+            adapted = mistral::adapt_request(body);
             &adapted
         } else {
             body
