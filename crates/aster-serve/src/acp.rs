@@ -450,7 +450,7 @@ impl Agent {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        let fields = &message["params"]["toolCall"]["fields"];
+        let fields = &message["params"]["toolCall"];
         let question = fields["kind"] == json!("think");
         let body = content_text(&fields["content"]);
         let title = fields["title"].as_str().unwrap_or_default().to_string();
@@ -1042,7 +1042,7 @@ impl Agent {
                         .and_then(|turn| turn.tool_names.get(&id))
                         .cloned()
                         .unwrap_or_default();
-                    let output = &update["fields"]["rawOutput"];
+                    let output = &update["rawOutput"];
                     let result = match output {
                         Value::String(text) => json!(text),
                         Value::Null => json!(""),
@@ -1053,7 +1053,7 @@ impl Agent {
                         "id": id,
                         "name": name,
                         "result": result,
-                        "error": update["fields"]["status"] == json!("failed"),
+                        "error": update["status"] == json!("failed"),
                     })
                 }
                 "session_info" => match update["title"].as_str() {

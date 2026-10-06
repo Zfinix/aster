@@ -101,7 +101,7 @@ impl Sink {
     }
 
     fn tool_call(&self, id: &str, name: &str, arguments: &str) -> Vec<SessionUpdate> {
-        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let args = crate::chat::parse_arguments(arguments).unwrap_or(Value::Null);
         // The plan panel is the whole story; a tool row beside it is noise.
         if name == "update_plan" {
             return plan_from_args(&args)
