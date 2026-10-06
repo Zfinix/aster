@@ -196,7 +196,8 @@ aster memory remove tone
 ```sh
 aster config                          # form in a terminal, table when piped
 aster config list | get KEY | set KEY VALUE [--global|--local] | unset KEY
-aster config path | edit [--global|--local]
+aster config path
+aster config edit [--global|--local]
 aster config providers | provider [ID --model M] | models [--capabilities] | model [ID]
 aster config keys [--all] | key [VAR [VALUE]] [--local]
 

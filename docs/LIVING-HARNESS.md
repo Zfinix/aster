@@ -94,11 +94,11 @@ Shipped (via `include_str!` in
 [builtins/](../crates/aster-skills/builtins/)) as two tiers, because the index
 is a standing context cost:
 
-**Core, always in the index (18):** git-workflow, gh-pr-workflow,
+**Core, always in the index (19):** git-workflow, gh-pr-workflow,
 verify-before-done, plan-and-present, build-triage, batched-bash, cli-toolbox,
 context-economy, correction-protocol, security-hygiene, security-review,
 security-scan, web-research, structural-edits, lsp-navigation, git-worktrees,
-skill-creator, artifact-design.
+skill-creator, artifact-design, aster-self.
 The bar: earns its place on a routine
 coding turn. An installed skill with the same name shadows its built-in.
 

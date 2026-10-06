@@ -5,7 +5,7 @@ description: Reference for aster.yaml, covering review models, analyzers, focus 
 
 # Configuring Aster (aster.yaml)
 
-`aster init` writes `aster.yaml` at the repo root (or `~/.config/aster/aster.yaml` with `-g`). Every field is optional. Precedence: CLI flags > shell env > aster.yaml > built-in defaults. API keys are NEVER read from this file; they come from `ASTER_API_KEY` or the key stored by `aster init` / `aster login`, so aster.yaml is safe to commit.
+`aster init` writes the global `~/.aster/aster.yaml` (or `aster.yaml` at the repo root with `--local`). Every field is optional. Precedence: CLI flags > shell env > repo aster.yaml > global aster.yaml > built-in defaults. `aster config path` shows which files apply here. API keys are NEVER read from this file; they come from `ASTER_API_KEY` or the key stored by `aster init` / `aster login`, so aster.yaml is safe to commit.
 
 ## Review block
 
