@@ -23,6 +23,7 @@ import { ContextMeter } from "./ContextMeter";
 import { McpPicker } from "./McpPicker";
 import { ModelMenu } from "./ModelMenu";
 import { Popover } from "./Popover";
+import { DictationBar } from "./DictationBar";
 import { Toast } from "./Toast";
 import { QueuedList } from "./QueuedTurn";
 import { IconMorphGlyph, sendStop } from "../interior/icon-morph";
@@ -61,12 +62,6 @@ import {
 } from "./icons";
 
 const MAX_ROWS = 10;
-
-const micTitle = {
-  idle: "Dictate a message",
-  listening: "Stop and turn into text (Esc discards)",
-  transcribing: "Turning your recording into text…",
-} as const;
 
 type Menu = "none" | "add" | "commands" | "permission" | "settings" | "model" | "provider" | "mcp";
 
@@ -437,11 +432,24 @@ export function Composer({
     write(applyTrigger(text, trigger, item.value), trigger.start + item.value.length + 1);
   };
 
+  const sendDictated = useRef(false);
   const dictation = useDictation((heard) => {
     const before = text.slice(0, caret);
     const gap = before && !/\s$/.test(before) ? " " : "";
-    write(before + gap + heard + text.slice(caret), caret + gap.length + heard.length);
+    const next = before + gap + heard + text.slice(caret);
+    if (sendDictated.current) send(next);
+    else write(next, caret + gap.length + heard.length);
   });
+
+  const startDictation = () => {
+    sendDictated.current = false;
+    dictation.toggle();
+  };
+
+  const stopAndSend = () => {
+    sendDictated.current = true;
+    if (dictation.state === "listening") dictation.toggle();
+  };
 
   const write = (next: string, at = next.length) => {
     setText(next);
@@ -450,8 +458,8 @@ export function Composer({
   };
 
   // Sending while busy is allowed: App queues it and flushes when the run ends.
-  const send = () => {
-    const trimmed = text.trim();
+  const send = (body = text) => {
+    const trimmed = body.trim();
     if (!trimmed && attachments.length === 0) return;
     const pictures = attachments.map((a) => a.mention).join(" ");
     const message = [expandMentions(trimmed, mentions.current), pictures].filter(Boolean).join(" ");
@@ -697,10 +705,6 @@ export function Composer({
   ]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Escape" && dictation.state === "listening") {
-      dictation.cancel();
-      return;
-    }
     if (e.key === "Escape" && editId) {
       e.preventDefault();
       cancelEdit();
@@ -880,99 +884,96 @@ export function Composer({
           />
         </div>
         {dictation.error && <Toast message={dictation.error} onDone={dictation.dismiss} />}
-        <div className="composer-foot">
-          <button
-            ref={addRef}
-            className="ghost foot-btn"
-            onMouseDown={toggle("add")}
-            title="Add a file"
-            aria-label="Add a file"
-            aria-haspopup="menu"
-            aria-expanded={menu === "add"}
-          >
-            <PlusIcon />
-          </button>
+        {dictation.state === "idle" ? (
+          <div className="composer-foot">
+            <button
+              ref={addRef}
+              className="ghost foot-btn"
+              onMouseDown={toggle("add")}
+              title="Add a file"
+              aria-label="Add a file"
+              aria-haspopup="menu"
+              aria-expanded={menu === "add"}
+            >
+              <PlusIcon />
+            </button>
 
-          <button
-            className="ghost foot-btn"
-            onMouseDown={toggle("commands")}
-            title="Show command menu (/)"
-            aria-label="Show command menu"
-            aria-haspopup="dialog"
-            aria-expanded={menu === "commands"}
-          >
-            <CommandIcon />
-          </button>
+            <button
+              className="ghost foot-btn"
+              onMouseDown={toggle("commands")}
+              title="Show command menu (/)"
+              aria-label="Show command menu"
+              aria-haspopup="dialog"
+              aria-expanded={menu === "commands"}
+            >
+              <CommandIcon />
+            </button>
 
-          <button
-            ref={chipRef}
-            className="ghost model-btn"
-            onMouseDown={toggle("settings")}
-            title={
-              momActive
-                ? `mom.yaml picks the model for each turn · ${mom.suspended ? "suspended: your choice stands" : "active"}`
-                : effort
-                  ? `${model ?? "Model"} · ${effort} effort`
-                  : (model ?? "Model")
-            }
-            aria-haspopup="menu"
-            aria-expanded={menu === "settings"}
-          >
-            {momActive && <MomIcon />}
-            <span className={momActive ? "model-label mom-label" : "model-label"}>
-              {momActive ? `mom · ${mom.entry ?? mom.model ?? "policy"}` : modelChip(model)}
-            </span>
-            {effort && !momActive && <span className="model-effort">{effortShort(effort)}</span>}
-          </button>
+            <button
+              ref={chipRef}
+              className="ghost model-btn"
+              onMouseDown={toggle("settings")}
+              title={
+                momActive
+                  ? `mom.yaml picks the model for each turn · ${mom.suspended ? "suspended: your choice stands" : "active"}`
+                  : effort
+                    ? `${model ?? "Model"} · ${effort} effort`
+                    : (model ?? "Model")
+              }
+              aria-haspopup="menu"
+              aria-expanded={menu === "settings"}
+            >
+              {momActive && <MomIcon />}
+              <span className={momActive ? "model-label mom-label" : "model-label"}>
+                {momActive ? `mom · ${mom.entry ?? mom.model ?? "policy"}` : modelChip(model)}
+              </span>
+              {effort && !momActive && <span className="model-effort">{effortShort(effort)}</span>}
+            </button>
 
-          <ContextMeter used={contextUsed} budget={contextBudget} onCompact={() => onCommand("compact")} />
+            <ContextMeter used={contextUsed} budget={contextBudget} onCompact={() => onCommand("compact")} />
 
-          <span className="grow" />
+            <span className="grow" />
 
-          <button
-            className="ghost mode-btn"
-            onMouseDown={toggle("permission")}
-            title="Mode"
-            aria-expanded={menu === "permission"}
-          >
-            {permissionIcon(permissionMode)}
-            {permissionLabel(permissionMode)}
-          </button>
+            <button
+              className="ghost mode-btn"
+              onMouseDown={toggle("permission")}
+              title="Mode"
+              aria-expanded={menu === "permission"}
+            >
+              {permissionIcon(permissionMode)}
+              {permissionLabel(permissionMode)}
+            </button>
 
-          {dictation.state !== "idle" && dictation.model && (
-            <span className="mic-model" aria-live="polite">
-              {dictation.model}
-            </span>
-          )}
+            <button
+              className="ghost foot-btn"
+              onClick={startDictation}
+              title="Dictate a message"
+              aria-label="Dictate a message"
+            >
+              <MicIcon />
+            </button>
 
-          <button
-            className={dictation.state === "idle" ? "ghost foot-btn" : "ghost foot-btn mic-on"}
-            onClick={dictation.toggle}
-            disabled={dictation.state === "transcribing"}
-            title={
-              dictation.state !== "idle" && dictation.model
-                ? `${micTitle[dictation.state]} · ${dictation.model}`
-                : micTitle[dictation.state]
-            }
-            aria-label={micTitle[dictation.state]}
-            aria-pressed={dictation.state === "listening"}
-          >
-            <MicIcon />
-          </button>
-
-          {/* One button whose glyph morphs between send and stop, so the swap
-              reads as the same control changing job rather than a re-render.
-              Queueing a follow-up mid-run stays on Enter. */}
-          <button
-            className={busy ? "send stop" : "send"}
-            onClick={busy ? onCancel : send}
-            disabled={!busy && !canSend}
-            title={busy ? "Stop" : "Send"}
-            aria-label={busy ? "Stop" : "Send"}
-          >
-            <IconMorphGlyph shapes={sendStop} active={busy ? 1 : 0} />
-          </button>
-        </div>
+            {/* One button whose glyph morphs between send and stop, so the swap
+                reads as the same control changing job rather than a re-render.
+                Queueing a follow-up mid-run stays on Enter. */}
+            <button
+              className={busy ? "send stop" : "send"}
+              onClick={busy ? onCancel : () => send()}
+              disabled={!busy && !canSend}
+              title={busy ? "Stop" : "Send"}
+              aria-label={busy ? "Stop" : "Send"}
+            >
+              <IconMorphGlyph shapes={sendStop} active={busy ? 1 : 0} />
+            </button>
+          </div>
+        ) : (
+          <DictationBar
+            state={dictation.state}
+            onStop={dictation.toggle}
+            onSend={stopAndSend}
+            onDiscard={dictation.cancel}
+          />
+        )}
       </div>
     </div>
   );

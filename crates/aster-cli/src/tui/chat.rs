@@ -342,9 +342,12 @@ pub async fn run_chat(
                     if let Some(flash) = app.usage_flash() {
                         app.flash = Some(flash);
                     }
+                    let listening = app.dictation.tick(&pane.sender());
                     draw(&mut tui, &app, &pane)?;
                     if app.takeover.is_some() || theme::is_transitioning() {
                         frames.schedule_in(std::time::Duration::from_millis(16));
+                    } else if listening {
+                        frames.schedule_in(std::time::Duration::from_millis(100));
                     }
                 }
             },
@@ -570,7 +573,10 @@ fn draw(tui: &mut Tui, app: &ChatApp, pane: &BottomPane<AppEvent>) -> Result<()>
         return Ok(());
     }
     let pane_h = pane.desired_height(width);
-    let footer = app.footer_line();
+    let footer = app
+        .dictation
+        .footer(width)
+        .unwrap_or_else(|| app.footer_line());
     tui.draw(pane_h + 1, |frame| {
         let area = frame.area();
         let pane_area = Rect {
@@ -612,7 +618,7 @@ fn on_key(
     if !pane.has_active_view() {
         if ctrl && key.code == KeyCode::Char('r') {
             app.read_aloud.stop();
-            if let Err(failure) = app.dictation.toggle(&pane.sender(), repo_root) {
+            if let Err(failure) = app.dictation.toggle(repo_root) {
                 app.dictation_failed(failure);
             }
             return Flow::Continue;
@@ -620,7 +626,7 @@ fn on_key(
         if interrupt && app.read_aloud.stop() {
             return Flow::Continue;
         }
-        if interrupt && matches!(app.dictation, Dictation::Listening(..)) {
+        if interrupt && matches!(app.dictation, Dictation::Listening(_)) {
             app.dictation = Dictation::Idle;
             app.flash = Some("recording discarded".into());
             return Flow::Continue;
@@ -2929,10 +2935,6 @@ impl ChatApp {
             Span::styled(format!("  ⌁ {}", self.effort), dark),
             Span::styled("  ⌄", theme::get().dimmer_style()),
         ];
-        if let Some(label) = self.dictation.label() {
-            spans.push(Span::styled("  ·  ", dark));
-            spans.push(Span::styled(label, theme::get().accent_style()));
-        }
         if let Some(msg) = &self.flash {
             spans.push(Span::styled("  ·  ", dark));
             spans.push(Span::styled(msg.clone(), theme::get().accent_style()));

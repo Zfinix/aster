@@ -262,6 +262,8 @@ export type SettingsToWebview =
 /** One line of `aster dictate` output. */
 export type DictationEvent =
   | { type: "listening"; service?: string; model?: string }
+  | { type: "level"; level: number }
+  | { type: "partial"; text: string }
   | { type: "transcribing" }
   | { type: "transcript"; text: string }
   | { type: "error"; message: string; detail: string | null };

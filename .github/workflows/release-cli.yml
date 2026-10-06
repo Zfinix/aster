@@ -144,6 +144,36 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p aster-cli --bin aster --target ${{ matrix.target }}
 
+      # macOS grants the microphone and speech recognition per signed app. Ad-hoc
+      # signatures change every build, so an unsigned aster would ask again after
+      # each upgrade; one Developer ID identity keeps the grant. Forks without
+      # the certificate ship unsigned.
+      - name: Sign (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] || { echo "no signing certificate, leaving aster unsigned"; exit 0; }
+          KEYCHAIN="$RUNNER_TEMP/sign.keychain-db"
+          PASS="$(uuidgen)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          codesign --force --timestamp --options runtime \
+            --identifier dev.aster.cli \
+            --entitlements crates/aster-cli/macos/aster.entitlements \
+            --sign "$APPLE_SIGNING_IDENTITY" "target/$TARGET/release/aster"
+          codesign --verify --strict --verbose=2 "target/$TARGET/release/aster"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         id: pkg

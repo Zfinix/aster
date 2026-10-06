@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.aster.cli</string>
+	<key>CFBundleName</key>
+	<string>Aster</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Aster listens while you dictate a message.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Aster turns what you say into text on this Mac.</string>
+</dict>
+</plist>

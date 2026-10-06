@@ -249,6 +249,7 @@ fn needs(err: &VoiceError) -> String {
             format!("needs its address · set voice.{key}")
         }
         VoiceError::Unsupported
+        | VoiceError::SpeechNotAllowed
         | VoiceError::NoMicrophone(_)
         | VoiceError::NoSpeaker(_)
         | VoiceError::TooShort

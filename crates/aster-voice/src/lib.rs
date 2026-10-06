@@ -1,8 +1,14 @@
-#![forbid(unsafe_code)]
-//! Voice for Aster: record from the default microphone with [`Recording`], turn
-//! the clip into text with a [`Transcriber`], and read replies aloud with a
-//! [`Speaker`]. Providers come from the `voice:` block in `aster.yaml`.
+#![deny(unsafe_code)]
+//! Voice for Aster: record from the default microphone with [`Recording`], hear
+//! it live on this machine with [`listen_on_device`] or turn the clip into text
+//! with a [`Transcriber`], and read replies aloud with a [`Speaker`]. Providers
+//! come from the `voice:` block in `aster.yaml`.
 
+#[cfg(target_os = "macos")]
+mod apple;
+#[cfg(not(target_os = "macos"))]
+#[path = "apple_unsupported.rs"]
+mod apple;
 mod clip;
 mod config;
 mod deepgram;
@@ -11,9 +17,12 @@ mod mic;
 mod openai;
 mod playback;
 mod speech;
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+mod vad;
 
 use std::time::Duration;
 
+pub use apple::{ask_for_microphone, listen_on_device, relaunch_as_own_app};
 pub use clip::Clip;
 pub use config::{SttProvider, TtsProvider, VoiceConfig};
 pub use mic::Recording;
@@ -55,10 +64,20 @@ const AUTO_STT: &[SttProvider] = &[
     SttProvider::Deepgram,
 ];
 
+/// What the on-device recognizer has heard so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heard {
+    /// Everything said so far; the last words may still change.
+    Partial(String),
+    /// The settled text once the audio has ended.
+    Final(String),
+}
+
 #[derive(Debug)]
 pub enum VoiceError {
     Unsupported,
     NotSetUp(Missing),
+    SpeechNotAllowed,
     NoMicrophone(String),
     NoSpeaker(String),
     TooShort,
@@ -83,6 +102,7 @@ impl std::fmt::Display for VoiceError {
             Self::NotSetUp(Missing::AnyKey) => write!(f, "no speech key is set"),
             Self::NotSetUp(Missing::Key(var)) => write!(f, "{var} is not set"),
             Self::NotSetUp(Missing::Url(key)) => write!(f, "voice.{key} is not set"),
+            Self::SpeechNotAllowed => write!(f, "speech recognition access was refused"),
             Self::NoMicrophone(detail) => write!(f, "microphone unavailable: {detail}"),
             Self::NoSpeaker(detail) => write!(f, "speaker unavailable: {detail}"),
             Self::TooShort => write!(f, "recording too short to transcribe"),
