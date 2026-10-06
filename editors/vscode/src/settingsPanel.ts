@@ -10,14 +10,17 @@ import { ConfigScope, SettingsToHost } from "./protocol";
 export class SettingsPanel {
   private static readonly viewType = "aster.settings";
   private tab: vscode.WebviewPanel | undefined;
+  private pendingSection: string | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  open(): void {
+  open(section?: string): void {
     if (this.tab) {
       this.tab.reveal();
+      if (section) this.post({ type: "showSection", id: section });
       return;
     }
+    this.pendingSection = section;
     const tab = vscode.window.createWebviewPanel(
       SettingsPanel.viewType,
       "Aster Settings",
@@ -44,6 +47,10 @@ export class SettingsPanel {
       case "ready":
       case "reload":
         await this.send();
+        if (this.pendingSection) {
+          this.post({ type: "showSection", id: this.pendingSection });
+          this.pendingSection = undefined;
+        }
         break;
 
       case "setKey":

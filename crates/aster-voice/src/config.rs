@@ -68,6 +68,16 @@ impl SttProvider {
             Self::OpenAiCompatible => "openai-compatible",
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ElevenLabs => "ElevenLabs",
+            Self::OpenAi => "OpenAI",
+            Self::Groq => "Groq",
+            Self::Deepgram => "Deepgram",
+            Self::OpenAiCompatible => "Your own server",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -96,6 +106,15 @@ impl TtsProvider {
             Self::ElevenLabs => "elevenlabs",
             Self::OpenAi => "openai",
             Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System voice",
+            Self::ElevenLabs => "ElevenLabs",
+            Self::OpenAi => "OpenAI",
+            Self::OpenAiCompatible => "Your own server",
         }
     }
 }

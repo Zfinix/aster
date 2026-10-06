@@ -9,6 +9,7 @@ export type DictationState = "idle" | "listening" | "transcribing";
 export function useDictation(onText: (text: string) => void) {
   const [state, setState] = useState<DictationState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [model, setModel] = useState<string | null>(null);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
   const pending = useRef(false);
@@ -19,8 +20,11 @@ export function useDictation(onText: (text: string) => void) {
       const event = message.event;
       switch (event.type) {
         case "listening":
+          setState("listening");
+          setModel(event.model ?? null);
+          break;
         case "transcribing":
-          setState(event.type);
+          setState("transcribing");
           break;
         case "transcript":
           pending.current = false;
@@ -61,5 +65,5 @@ export function useDictation(onText: (text: string) => void) {
 
   const dismiss = useCallback(() => setError(null), []);
 
-  return { state, error, toggle, cancel, dismiss };
+  return { state, error, model, toggle, cancel, dismiss };
 }

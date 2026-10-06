@@ -160,13 +160,7 @@ impl Transcriber {
     }
 
     pub fn name(&self) -> &'static str {
-        match self.provider {
-            SttProvider::ElevenLabs => "ElevenLabs",
-            SttProvider::OpenAi => "OpenAI",
-            SttProvider::Groq => "Groq",
-            SttProvider::Deepgram => "Deepgram",
-            SttProvider::OpenAiCompatible => "your speech server",
-        }
+        self.provider.label()
     }
 
     pub fn model(&self) -> &str {

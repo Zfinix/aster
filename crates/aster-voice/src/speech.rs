@@ -93,10 +93,10 @@ impl Speaker {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Self::System { .. } => "system voice",
-            Self::ElevenLabs { .. } => "ElevenLabs",
-            Self::OpenAi { .. } => "OpenAI",
-            Self::Server { .. } => "your voice server",
+            Self::System { .. } => TtsProvider::System.label(),
+            Self::ElevenLabs { .. } => TtsProvider::ElevenLabs.label(),
+            Self::OpenAi { .. } => TtsProvider::OpenAi.label(),
+            Self::Server { .. } => TtsProvider::OpenAiCompatible.label(),
         }
     }
 

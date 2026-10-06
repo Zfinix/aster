@@ -29,7 +29,7 @@ use super::helpers::{clip_row, count_of, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
 use super::terminal::{Tui, TuiEvent};
-use super::voice::ReadAloud;
+use super::voice::{ReadAloud, VoiceAction};
 use super::{history, theme, wrap};
 use crate::chat::{
     Answer, ApprovalRequest, QuestionRequest, Resume, SessionCtx, UiRequest, UiSender,
@@ -105,6 +105,7 @@ pub(super) enum AppEvent {
     },
     Dictated(Result<String, DictationFailure>),
     ReadAloudFailed(DictationFailure),
+    Voice(VoiceAction),
 }
 
 fn spawn_mention_search(
@@ -1132,7 +1133,7 @@ pub(super) const CHAT_COMMANDS: &[CommandDesc] = &[
     CommandDesc {
         name: "voice",
         takes_arg: true,
-        desc: "Dictation and read aloud: /voice read on, /voice stt groq, or no argument to see it",
+        desc: "Dictation and read aloud: pick the services and turn reading on or off",
     },
     CommandDesc {
         name: "provider",
@@ -2057,6 +2058,7 @@ impl ChatApp {
                 }
             }
             AppEvent::ReadAloudFailed(failure) => self.dictation_failed(failure),
+            AppEvent::Voice(action) => self.on_voice(action, pane),
         }
     }
 
@@ -2405,17 +2407,24 @@ impl ChatApp {
         Some(text)
     }
 
-    fn show_voice(&mut self, arg: Option<&str>) {
-        if arg == Some("stop") {
-            self.read_aloud.stop();
-            return;
+    fn show_voice(&mut self, arg: Option<&str>, pane: &mut BottomPane<AppEvent>) {
+        match arg {
+            Some("stop") => {
+                self.read_aloud.stop();
+            }
+            _ => self.on_voice(VoiceAction::Open, pane),
         }
-        let block = history::assistant(
-            super::voice::command(arg, &self.repo_root),
-            true,
-            self.width,
-        );
-        self.emit(block);
+    }
+
+    fn on_voice(&mut self, action: VoiceAction, pane: &mut BottomPane<AppEvent>) {
+        let (panel, problem) = super::voice::handle(action, &self.repo_root);
+        if let Some(problem) = problem {
+            self.flash = Some(problem);
+        }
+        match panel {
+            Ok(panel) => pane.push_picker(panel.title, panel.items, panel.back),
+            Err(failure) => self.dictation_failed(failure),
+        }
     }
 
     fn show_mom(&mut self, arg: Option<&str>) {
@@ -2867,7 +2876,7 @@ impl ChatApp {
             }
             "compact" => self.start_compact(client, pane.sender()),
             "mom" => self.show_mom(arg),
-            "voice" => self.show_voice(arg),
+            "voice" => self.show_voice(arg, pane),
             "status" => self.show_status(),
             "diff" | "d" => self.show_diff(),
             "mcp" => self.show_mcp(pane),

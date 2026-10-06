@@ -94,7 +94,14 @@ pub(crate) async fn run() -> Result<()> {
 async fn dictate() -> Result<String, DictationFailure> {
     let transcriber = Transcriber::from_config(&voice_config(&cwd())?)?;
     let recording = Recording::start()?;
-    println!("{}", json!({ "type": "listening" }));
+    println!(
+        "{}",
+        json!({
+            "type": "listening",
+            "service": transcriber.name(),
+            "model": transcriber.model(),
+        })
+    );
     tokio::task::spawn_blocking(|| std::io::stdin().lock().read_line(&mut String::new()))
         .await
         .map_err(|e| DictationFailure::interrupted(e.to_string()))?

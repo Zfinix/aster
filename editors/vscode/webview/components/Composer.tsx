@@ -588,6 +588,16 @@ export function Composer({
             icon: ICONS.settings,
             run: () => post({ type: "runCommand", command: "aster.openSettings" }),
           },
+          {
+            kind: "action" as const,
+            id: "voice",
+            label: "Voice",
+            hint: "Dictation and read-aloud services",
+            icon: <MicIcon />,
+            slash: "/voice",
+            run: () =>
+              post({ type: "runCommand", command: "aster.openSettings", args: ["voice"] }),
+          },
           action("help", "List commands"),
         ],
       },
@@ -929,11 +939,21 @@ export function Composer({
             {permissionLabel(permissionMode)}
           </button>
 
+          {dictation.state !== "idle" && dictation.model && (
+            <span className="mic-model" aria-live="polite">
+              {dictation.model}
+            </span>
+          )}
+
           <button
             className={dictation.state === "idle" ? "ghost foot-btn" : "ghost foot-btn mic-on"}
             onClick={dictation.toggle}
             disabled={dictation.state === "transcribing"}
-            title={micTitle[dictation.state]}
+            title={
+              dictation.state !== "idle" && dictation.model
+                ? `${micTitle[dictation.state]} · ${dictation.model}`
+                : micTitle[dictation.state]
+            }
             aria-label={micTitle[dictation.state]}
             aria-pressed={dictation.state === "listening"}
           >

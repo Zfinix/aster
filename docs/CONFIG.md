@@ -429,9 +429,10 @@ that works the same way. Both run `aster dictate`, which prints NDJSON:
 `listening`, `transcribing`, then `transcript` with `text` or `error` with
 `message` and `detail`. It stops listening when stdin gets a line or closes.
 
-`/voice` in the chat shows which provider dictation and read aloud use, and
-changes them: `/voice stt groq`, `/voice tts openai`, `/voice read on`. Each
-choice is saved to the `voice:` block of the global `aster.yaml`, since it
+`/voice` in the chat opens a panel with three rows: read aloud on or off, the
+reading voice, and the dictation service. Enter on a service row lists every
+service with what it still needs, such as a key or a server address; esc goes
+back. `/voice stop` stops a reply being read. Each choice is saved to the `voice:` block of the global `aster.yaml`, since it
 follows you between repos. `aster config set voice.stt groq` does the same from
 the shell, and `aster config unset voice.stt` goes back to picking by key.
 

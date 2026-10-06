@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Read aloud.** Chat can speak each finished reply: `/voice read on`. It
+- **Read aloud.** Chat can speak each finished reply; turn it on in `/voice`. It
   reads the prose, skips code and tables, and stops on esc or ctrl+r. The
   system voice needs no key; ElevenLabs, OpenAI, and any OpenAI-compatible
   server such as kokoro-fastapi work too. `aster speak "text"` does the same
@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenAI-compatible speech server, such as speaches or a local Parakeet
   server, join ElevenLabs and OpenAI.
 - **A `voice:` block in `aster.yaml`.** It picks the dictation service, the
-  reading voice, models, language, and read aloud. `/voice` in chat shows and
-  changes it, and `aster config` lists every key under Voice.
+  reading voice, models, language, and read aloud. `/voice` in chat is a panel
+  that changes it, and `aster config` lists every key under Voice.
 
 ## [0.7.0] - 2026-09-30
 

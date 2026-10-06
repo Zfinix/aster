@@ -335,6 +335,19 @@ pub fn persist_voice(repo_root: Option<&Path>, key: &str, value: String) -> Resu
     persist_user_section("voice", repo_root, &[(key, value)])
 }
 
+/// Drop `voice.<key>` from the global and project files, so the choice goes
+/// back to its default rather than to whatever the other file says.
+pub fn clear_voice(repo_root: Option<&Path>, key: &str) -> Result<()> {
+    let files = [user_config().ok(), project_config(repo_root)];
+    for path in files.into_iter().flatten() {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if let Some(updated) = without_key(&text, "voice", key) {
+            save(&path, updated)?;
+        }
+    }
+    Ok(())
+}
+
 /// One write for any section. Values arrive in YAML form already, since only
 /// the caller knows whether its setting is a string.
 fn persist_user_section(

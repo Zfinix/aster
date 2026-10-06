@@ -41,6 +41,12 @@ export function SettingsApp() {
         }
       } else if (message.type === "settingsError") {
         setErrors((prev) => ({ ...prev, [message.key ?? "*"]: message.message }));
+      } else if (message.type === "showSection") {
+        const target = SECTIONS.find((entry) => entry.id === message.id);
+        if (target) {
+          setQuery("");
+          setSection(target);
+        }
       }
     });
     post({ type: "ready" });

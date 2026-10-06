@@ -1,15 +1,18 @@
-//! Read aloud for finished replies, and `/voice` to see and change the voice
-//! setup. Choices are saved to the `voice:` block of the global aster.yaml.
+//! Read aloud for finished replies, and the `/voice` panel that picks the
+//! services. Choices are saved to the `voice:` block of the global aster.yaml.
 
 use std::path::Path;
 
-use aster_voice::{Hush, Speaker, SttProvider, Transcriber, TtsProvider, VoiceConfig, speakable};
-use ratatui::prelude::*;
+use aster_voice::{
+    Hush, Missing, Speaker, SttProvider, Transcriber, TtsProvider, VoiceConfig, VoiceError,
+    speakable,
+};
 use tokio::sync::mpsc;
 
+use super::bottom_pane::SelectionItem;
 use super::chat::AppEvent;
-use super::theme;
 use crate::dictate::{DictationFailure, voice_config};
+use crate::settings::yaml_scalar;
 
 /// The reply being spoken, if any. Its [`Hush`] is set once speech ends, so a
 /// set switch means nothing is playing.
@@ -80,80 +83,183 @@ impl ReadAloud {
     }
 }
 
-/// Apply a `/voice` argument, then describe the setup that results.
-pub(super) fn command(arg: Option<&str>, repo_root: &Path) -> Vec<Line<'static>> {
-    let mut words = arg.unwrap_or_default().split_whitespace();
-    let saved = match (words.next(), words.next()) {
-        (None, _) => None,
-        (Some("read"), Some(value @ ("on" | "off"))) => {
-            Some(save(repo_root, "read_aloud", (value == "on").to_string()))
-        }
-        (Some("stt"), Some(id)) => Some(match SttProvider::ALL.iter().find(|p| p.id() == id) {
-            Some(p) => save(repo_root, "stt", crate::settings::yaml_scalar(p.id())),
-            None => Err(format!("no speech-to-text provider called {id}")),
-        }),
-        (Some("tts"), Some(id)) => Some(match TtsProvider::ALL.iter().find(|p| p.id() == id) {
-            Some(p) => save(repo_root, "tts", crate::settings::yaml_scalar(p.id())),
-            None => Err(format!("no voice called {id}")),
-        }),
-        (Some(other), _) => Some(Err(format!("/voice {other} is not a choice"))),
-    };
-    let mut lines = vec![Line::from("Voice".bold())];
-    match saved {
-        Some(Ok(path)) => lines.push(format!("saved to {path}").dim().into()),
-        Some(Err(problem)) => lines.push(Line::from(Span::styled(
-            problem,
-            theme::get().accent_style(),
-        ))),
-        None => {}
-    }
-    lines.push("".into());
-    match voice_config(repo_root) {
-        Ok(config) => lines.extend(status(&config)),
-        Err(failure) => {
-            lines.push(failure.message.into());
-            lines.extend(failure.detail.map(|d| d.dim().into()));
-        }
-    }
-    lines.push("".into());
-    let stt: Vec<&str> = SttProvider::ALL.iter().map(|p| p.id()).collect();
-    let tts: Vec<&str> = TtsProvider::ALL.iter().map(|p| p.id()).collect();
-    for (usage, what) in [
-        ("/voice read on|off", "read replies aloud".to_string()),
-        ("/voice stt <name>", stt.join(", ")),
-        ("/voice tts <name>", tts.join(", ")),
-        ("/voice stop", "stop reading (or esc)".to_string()),
-    ] {
-        lines.push(vec![format!("{usage:<20}").cyan(), what.dim()].into());
-    }
-    lines
+/// What a row in the `/voice` panel does when picked.
+#[derive(Clone, Copy)]
+pub(super) enum VoiceAction {
+    Open,
+    ChooseStt,
+    ChooseTts,
+    ReadAloud(bool),
+    Stt(Option<SttProvider>),
+    Tts(Option<TtsProvider>),
 }
 
-fn status(config: &VoiceConfig) -> Vec<Line<'static>> {
-    let row = |label: &str, value: String| -> Line<'static> {
-        vec![format!("{label:<12}").cyan(), value.into()].into()
+pub(super) struct Panel {
+    pub(super) title: &'static str,
+    pub(super) items: Vec<SelectionItem<AppEvent>>,
+    pub(super) back: Option<AppEvent>,
+}
+
+/// Apply `action`, then build the panel to show next. A failed save comes
+/// back as the error, with the panel still built from what is on disk.
+pub(super) fn handle(
+    action: VoiceAction,
+    repo_root: &Path,
+) -> (Result<Panel, DictationFailure>, Option<String>) {
+    let saved = match action {
+        VoiceAction::Open | VoiceAction::ChooseStt | VoiceAction::ChooseTts => None,
+        VoiceAction::ReadAloud(on) => Some(save(repo_root, "read_aloud", Some(on.to_string()))),
+        VoiceAction::Stt(p) => Some(save(repo_root, "stt", p.map(|p| yaml_scalar(p.id())))),
+        VoiceAction::Tts(p) => Some(save(repo_root, "tts", p.map(|p| yaml_scalar(p.id())))),
     };
-    let dictation = match Transcriber::from_config(config) {
-        Ok(t) => format!("{} · {} · ctrl+r", t.name(), t.model()),
-        Err(err) => DictationFailure::from(err).message,
-    };
+    let problem = saved.and_then(Result::err);
+    let panel = voice_config(repo_root).map(|config| match action {
+        VoiceAction::ChooseStt => stt_panel(&config),
+        VoiceAction::ChooseTts => tts_panel(&config),
+        VoiceAction::Open
+        | VoiceAction::ReadAloud(_)
+        | VoiceAction::Stt(_)
+        | VoiceAction::Tts(_) => main_panel(&config),
+    });
+    (panel, problem)
+}
+
+fn main_panel(config: &VoiceConfig) -> Panel {
+    let read = config.read_aloud.unwrap_or(false);
     let voice = match Speaker::from_config(config) {
         Ok(s) => s.name().to_string(),
-        Err(err) => DictationFailure::from(err).message,
+        Err(err) => needs(&err),
     };
-    let read = match config.read_aloud.unwrap_or(false) {
-        true => "on",
-        false => "off",
+    let dictation = match Transcriber::from_config(config) {
+        Ok(t) => format!("{} · press ctrl+r in chat to talk", t.name()),
+        Err(err) => needs(&err),
     };
-    vec![
-        row("dictation", dictation),
-        row("voice", voice),
-        row("read aloud", read.to_string()),
-    ]
+    let item = |name: String, description: String, action| SelectionItem {
+        name,
+        description,
+        is_current: false,
+        event: AppEvent::Voice(action),
+    };
+    Panel {
+        title: "Voice · enter changes a setting, esc closes",
+        items: vec![
+            item(
+                format!("{} Read replies aloud", if read { "◼" } else { "◻" }),
+                match read {
+                    true => format!("on · {voice} · esc stops it"),
+                    false => "off".to_string(),
+                },
+                VoiceAction::ReadAloud(!read),
+            ),
+            item("Reading voice".to_string(), voice, VoiceAction::ChooseTts),
+            item("Dictation".to_string(), dictation, VoiceAction::ChooseStt),
+        ],
+        back: None,
+    }
 }
 
-fn save(repo_root: &Path, key: &str, value: String) -> Result<String, String> {
-    crate::settings::persist_voice(Some(repo_root), key, value)
-        .map(|saved| saved.path.display().to_string())
-        .map_err(|e| format!("couldn't save that: {e:#}"))
+fn stt_panel(config: &VoiceConfig) -> Panel {
+    let automatic = VoiceConfig {
+        stt: None,
+        ..config.clone()
+    };
+    let mut items = vec![SelectionItem {
+        name: "Automatic".to_string(),
+        description: match Transcriber::from_config(&automatic) {
+            Ok(t) => format!("the first service with a key · now {}", t.name()),
+            Err(err) => needs(&err),
+        },
+        is_current: config.stt.is_none(),
+        event: AppEvent::Voice(VoiceAction::Stt(None)),
+    }];
+    items.extend(SttProvider::ALL.iter().map(|&p| {
+        let trial = VoiceConfig {
+            stt: Some(p),
+            ..config.clone()
+        };
+        SelectionItem {
+            name: p.label().to_string(),
+            description: match Transcriber::from_config(&trial) {
+                Ok(t) => format!("{} · ready", stt_blurb(p, t.model())),
+                Err(err) => format!("{} · {}", stt_blurb(p, ""), needs(&err)),
+            },
+            is_current: config.stt == Some(p),
+            event: AppEvent::Voice(VoiceAction::Stt(Some(p))),
+        }
+    }));
+    Panel {
+        title: "Dictation · what turns your voice into text",
+        items,
+        back: Some(AppEvent::Voice(VoiceAction::Open)),
+    }
+}
+
+fn tts_panel(config: &VoiceConfig) -> Panel {
+    let items = TtsProvider::ALL
+        .iter()
+        .map(|&p| {
+            let trial = VoiceConfig {
+                tts: Some(p),
+                ..config.clone()
+            };
+            let blurb = match p {
+                TtsProvider::System => "built into your computer, free",
+                TtsProvider::ElevenLabs => "natural voices",
+                TtsProvider::OpenAi => "natural voices",
+                TtsProvider::OpenAiCompatible => "Kokoro or another engine you run",
+            };
+            SelectionItem {
+                name: p.label().to_string(),
+                description: match Speaker::from_config(&trial) {
+                    Ok(_) => format!("{blurb} · ready"),
+                    Err(err) => format!("{blurb} · {}", needs(&err)),
+                },
+                is_current: config.tts.unwrap_or(TtsProvider::System) == p,
+                event: AppEvent::Voice(VoiceAction::Tts(Some(p))),
+            }
+        })
+        .collect();
+    Panel {
+        title: "Reading voice · what reads replies aloud",
+        items,
+        back: Some(AppEvent::Voice(VoiceAction::Open)),
+    }
+}
+
+fn stt_blurb(provider: SttProvider, model: &str) -> String {
+    let what = match provider {
+        SttProvider::ElevenLabs => "Scribe",
+        SttProvider::OpenAi => "GPT-4o transcribe",
+        SttProvider::Groq => "free tier, hosted Whisper",
+        SttProvider::Deepgram => "Nova",
+        SttProvider::OpenAiCompatible => "Parakeet or another engine you run",
+    };
+    match (provider, model) {
+        (SttProvider::OpenAiCompatible, model) if !model.is_empty() => format!("{what} · {model}"),
+        _ => what.to_string(),
+    }
+}
+
+/// What is missing, short enough for one row.
+fn needs(err: &VoiceError) -> String {
+    match err {
+        VoiceError::NotSetUp(Missing::AnyKey) => "needs a key · run aster key list".to_string(),
+        VoiceError::NotSetUp(Missing::Key(var)) => format!("needs a key · aster key set {var}"),
+        VoiceError::NotSetUp(Missing::Url(key)) => {
+            format!("needs its address · set voice.{key}")
+        }
+        VoiceError::Unsupported
+        | VoiceError::NoMicrophone(_)
+        | VoiceError::NoSpeaker(_)
+        | VoiceError::TooShort
+        | VoiceError::Provider { .. } => err.to_string(),
+    }
+}
+
+fn save(repo_root: &Path, key: &str, value: Option<String>) -> Result<(), String> {
+    match value {
+        Some(value) => crate::settings::persist_voice(Some(repo_root), key, value).map(drop),
+        None => crate::settings::clear_voice(Some(repo_root), key),
+    }
+    .map_err(|e| format!("couldn't save that: {e:#}"))
 }

@@ -58,6 +58,28 @@ export const SECTIONS: Section[] = [
   { id: "review", label: "Code review", blurb: "The review pipeline, not chat", group: "Code review" },
   { id: "mcp", label: "MCP", blurb: "Tool servers, and how many the model sees", group: "MCP tools" },
   { id: "display", label: "Display", blurb: "What chat prints on its own", group: "Display" },
+  {
+    id: "voice",
+    label: "Voice",
+    blurb: "Who listens to the mic, and who reads replies aloud",
+    group: "Voice",
+    parts: [
+      {
+        title: "Dictation",
+        keys: ["voice.stt", "voice.stt_model", "voice.stt_url", "voice.language"],
+      },
+      {
+        title: "Read aloud",
+        keys: [
+          "voice.read_aloud",
+          "voice.tts",
+          "voice.tts_model",
+          "voice.tts_voice",
+          "voice.tts_url",
+        ],
+      },
+    ],
+  },
   { id: "env", label: "Environment", blurb: "Every ASTER_ variable Aster reads, stored in .env files" },
   { id: "editor", label: "Editor", blurb: "Settings this extension keeps, not aster.yaml" },
 ];

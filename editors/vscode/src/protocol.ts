@@ -256,11 +256,12 @@ export type SettingsToWebview =
   | { type: "settings"; snapshot: SettingsSnapshot }
   | { type: "apiKeyValue"; var: string; value: string | null }
   | { type: "envValue"; var: string; value: string | null }
-  | { type: "settingsError"; key?: string; message: string };
+  | { type: "settingsError"; key?: string; message: string }
+  | { type: "showSection"; id: string };
 
 /** One line of `aster dictate` output. */
 export type DictationEvent =
-  | { type: "listening" }
+  | { type: "listening"; service?: string; model?: string }
   | { type: "transcribing" }
   | { type: "transcript"; text: string }
   | { type: "error"; message: string; detail: string | null };
@@ -295,7 +296,7 @@ export type ToHost =
   | { type: "setModel"; model: string }
   | { type: "setEffort"; effort: Effort | null }
   | { type: "searchFiles"; query: string; requestId: string }
-  | { type: "runCommand"; command: string }
+  | { type: "runCommand"; command: string; args?: string[] }
   | { type: "fixFinding"; finding: Finding }
   | { type: "fixAllFindings"; findings: Finding[] }
   | { type: "listSessions" }

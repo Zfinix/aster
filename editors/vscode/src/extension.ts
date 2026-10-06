@@ -93,7 +93,9 @@ export function activate(context: vscode.ExtensionContext): void {
       panel.openInEditor(vscode.ViewColumn.One)
     ),
     vscode.commands.registerCommand("aster.openInNewWindow", () => panel.openInNewWindow()),
-    vscode.commands.registerCommand("aster.openSettings", () => settings.open()),
+    vscode.commands.registerCommand("aster.openSettings", (section?: string) =>
+      settings.open(typeof section === "string" ? section : undefined)
+    ),
     vscode.commands.registerCommand("aster.installShellCommand", async () => {
       const binary = useBundledCli(context.extensionPath) ?? cliConfig().binary;
       report(await installShellCommand(binary));

@@ -967,7 +967,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       }
       case "runCommand":
         if (message.command.startsWith("aster.")) {
-          await vscode.commands.executeCommand(message.command);
+          await vscode.commands.executeCommand(message.command, ...(message.args ?? []));
         }
         break;
       case "login":

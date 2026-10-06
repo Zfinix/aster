@@ -104,7 +104,7 @@ Type `/` for commands:
 | `/mode` | Choose how freely the agent edits (also `shift+tab`). |
 | `/effort` | Reasoning budget: `off`, `low`, `medium`, `high`. |
 | `/resume` | Reopen one of this repo's earlier sessions. |
-| `/voice` | Dictation and read aloud: `/voice read on`, `/voice stt groq`, `/voice tts system`. |
+| `/voice` | A panel to turn read aloud on or off and pick the dictation service and reading voice. |
 | `/clear` | Start fresh. |
 | `/help` | Everything above, in the terminal. |
 
@@ -364,7 +364,8 @@ reference in [docs/CONFIG.md](./docs/CONFIG.md).
 
 Dictation and read aloud pick their service from the `voice:` block in
 `aster.yaml`. With nothing set, dictation uses the first key it finds and read
-aloud uses your system voice, so `/voice read on` works with no key at all.
+aloud uses your system voice, so turning on read aloud in `/voice` works with
+no key at all.
 
 ```bash
 aster key set GROQ_API_KEY              # free hosted Whisper for dictation
