@@ -504,7 +504,8 @@ A few knobs have no `aster.yaml` key.
 | `ASTER_UI_DIR` | Serve `aster serve`'s page from this directory instead of the embedded build, for working on the UI itself. | unset |
 | `ASTER_MCP_EXTRA` | JSON of extra MCP servers a front-end injects for one session. | unset |
 | `ASTER_VISION_MODEL` | Model that describes attached images when the session model takes no image input. | `openai/gpt-4o-mini` |
-| `ASTER_NO_UPDATE_CHECK` | Set it to skip the update check. | unset |
+| `ASTER_NO_UPDATE_CHECK` | Set it to skip the update check and automatic updates. | unset |
+| `ASTER_NO_AUTO_UPDATE` | Set it to stop Aster installing new releases by itself. By default every command starts, at most once an hour, a background `aster upgrade` that swaps in a newer release for the next launch. Binaries from VS Code, the desktop app, cargo, Homebrew and Nix are never touched. | unset |
 | `ASTER_TELEGRAM_TOKEN` | Bot token for `aster remote`. | unset |
 | `ASTER_REMOTE_USERS` | Telegram user ids allowed to drive `aster remote`. | unset |
 

@@ -565,8 +565,15 @@ fn tip() -> &'static str {
 
 /// A newer release on GitHub: headline, changelog, and where to get it.
 pub(super) fn update(info: &crate::update::UpdateInfo, width: usize) -> Vec<Line<'static>> {
+    let headline = match crate::update::self_updating_exe() {
+        Some(_) => format!(
+            "aster {} is installing in the background, restart aster to use it",
+            info.latest
+        ),
+        None => format!("update available  {} → {}", info.current, info.latest),
+    };
     let mut lines = vec![Line::from(Span::styled(
-        format!("update available  {} → {}", info.current, info.latest),
+        headline,
         theme::get().text_style(),
     ))];
     for entry in &info.changelog {

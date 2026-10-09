@@ -10,6 +10,17 @@ const REPO: &str = "Zfinix/aster";
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CHANGELOG: usize = 10;
+const AUTO_UPDATE_EVERY: Duration = Duration::from_secs(60 * 60);
+/// Where a binary that something else installed and updates lives.
+const MANAGED_ELSEWHERE: [&str; 7] = [
+    "/extensions/",
+    ".app/Contents/",
+    "/target/debug/",
+    "/target/release/",
+    "/.cargo/bin/",
+    "/Cellar/",
+    "/nix/store/",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateInfo {
@@ -49,6 +60,70 @@ pub async fn check() -> Option<UpdateInfo> {
         update: update.clone(),
     });
     update
+}
+
+/// Start a detached `aster upgrade --background` at most once an hour, so the
+/// next launch runs the newest release. Never blocks or fails the command.
+pub fn auto_update() {
+    let Some(exe) = self_updating_exe() else {
+        return;
+    };
+    let Some(stamp) = dirs::home_dir().map(|h| h.join(".aster/auto-update-at")) else {
+        return;
+    };
+    let recent = std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < AUTO_UPDATE_EVERY));
+    if recent {
+        return;
+    }
+    if let Some(parent) = stamp.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::write(&stamp, now().to_string()).is_err() {
+        return;
+    }
+
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["upgrade", "--background"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    if let Err(e) = command.spawn() {
+        tracing::debug!("auto update spawn failed: {e}");
+    }
+}
+
+/// The running binary, when it is one Aster keeps up to date itself.
+pub fn self_updating_exe() -> Option<std::path::PathBuf> {
+    let opted_out = ["ASTER_NO_AUTO_UPDATE", "ASTER_NO_UPDATE_CHECK", "CI"]
+        .iter()
+        .any(|var| std::env::var_os(var).is_some());
+    if opted_out {
+        return None;
+    }
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()?;
+    (!managed_elsewhere(&exe)).then_some(exe)
+}
+
+fn managed_elsewhere(exe: &std::path::Path) -> bool {
+    let path = exe.to_string_lossy().replace('\\', "/");
+    MANAGED_ELSEWHERE.iter().any(|marker| path.contains(marker))
 }
 
 fn client() -> anyhow::Result<reqwest::Client> {
@@ -175,7 +250,7 @@ fn leading_number(part: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-fn is_newer(candidate: &str, current: &str) -> bool {
+pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
     match (version_triple(candidate), version_triple(current)) {
         (Some(a), Some(b)) => a > b,
         _ => false,

@@ -36,3 +36,21 @@ fn the_compare_range_starts_at_the_running_version_tag() {
     assert_eq!(tag_for(&releases, (0, 2, 0)), Some("v0.2.0".into()));
     assert_eq!(tag_for(&releases, (0, 1, 0)), None);
 }
+
+#[test]
+fn binaries_other_tools_install_are_left_alone() {
+    let paths = [
+        "/Users/a/.local/bin/aster",
+        "/Users/a/.cursor/extensions/zfinix.aster-0.7.1/bin/aster",
+        "/Applications/Aster.app/Contents/MacOS/aster",
+        "/Users/a/aster/target/release/aster",
+        "/Users/a/.cargo/bin/aster",
+        "/opt/homebrew/Cellar/aster/0.7.1/bin/aster",
+        "C:\\Users\\a\\.vscode\\extensions\\zfinix.aster\\bin\\aster.exe",
+    ];
+    let managed: Vec<bool> = paths
+        .iter()
+        .map(|p| managed_elsewhere(std::path::Path::new(p)))
+        .collect();
+    assert_eq!(managed, [false, true, true, true, true, true, true]);
+}

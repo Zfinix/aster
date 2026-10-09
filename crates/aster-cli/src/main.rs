@@ -238,6 +238,10 @@ async fn main() -> Result<()> {
     // A Z.ai plan key dies well before the sign-in that minted it.
     zai_auth::refresh_if_stale().await;
 
+    if !matches!(command, Command::Upgrade(_)) {
+        update::auto_update();
+    }
+
     let result = match command {
         Command::Init(args) => init::run(args).await,
         Command::Login(args) => auth::run(args).await,

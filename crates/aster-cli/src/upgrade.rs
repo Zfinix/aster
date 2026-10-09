@@ -2,8 +2,12 @@
 //! `github.com/.../releases/download/` URL (no GitHub API, so no rate limit),
 //! verify its sha256, and swap it in place with `self-replace`.
 
+use std::time::Instant;
+
 use anyhow::{Context, Result};
 use clap::Args;
+use kiln::install::{self, Bar, Change, Live};
+use ratatui::text::Line;
 
 const REPO_OWNER: &str = "zfinix";
 const REPO_NAME: &str = "aster";
@@ -16,59 +20,71 @@ pub struct UpgradeArgs {
     /// Reinstall even when the running binary is already current.
     #[arg(long)]
     force: bool,
+    /// Set by the automatic update: install only a newer release, silently.
+    #[arg(long, hide = true)]
+    background: bool,
 }
 
 pub async fn run(args: UpgradeArgs) -> Result<()> {
-    // The cliclack steps below only read well on a terminal; piped output
-    // stays plain `[aster]` lines.
-    let fancy = crate::picker::is_tty() && !crate::json_mode();
-    if fancy {
-        cliclack::set_theme(crate::init::AsterTheme);
-    }
-    let step = |msg: &str| {
-        if fancy {
-            let _ = cliclack::log::step(msg);
-        } else {
-            eprintln!("[aster] {msg}");
-        }
-    };
-
+    let started = Instant::now();
+    let live = Live::start("Resolving latest release...");
     let tag = match &args.version {
         Some(version) => normalize_tag(version),
-        None => {
-            step("Resolving latest release…");
-            tokio::task::spawn_blocking(latest_cli_tag)
-                .await?
-                .context("latest release lookup failed")?
-        }
+        None => tokio::task::spawn_blocking(latest_cli_tag)
+            .await?
+            .context("latest release lookup failed")?,
     };
     let version = tag
         .strip_prefix("cli-v")
         .with_context(|| format!("unexpected release tag: {tag}"))?
         .to_string();
+    live.println(&install::summary(
+        "Resolved",
+        &format!("aster {version}"),
+        started.elapsed(),
+    ));
     let current = env!("CARGO_PKG_VERSION");
+    if args.background {
+        let probe = std::env::current_exe()?.with_file_name(".aster-update-probe");
+        if !crate::update::is_newer(&version, current) || std::fs::write(&probe, b"").is_err() {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(probe);
+    }
     if !args.force && version == current {
-        println!("[aster] aster is up to date ({current}).");
+        live.finish();
+        install::emit(&Line::from(format!(
+            "aster {current} is already the latest version"
+        )));
         return Ok(());
     }
 
-    step(&format!("Installing aster {version}…"));
-
     // Blocking HTTP and file I/O, so keep it off the async executor.
     let install_version = version.clone();
-    tokio::task::spawn_blocking(move || install(&tag, &install_version))
-        .await?
-        .context("install failed")?;
+    let (live, installed) = tokio::task::spawn_blocking(move || {
+        let installed = install(&tag, &install_version, &live);
+        (live, installed)
+    })
+    .await?;
+    live.finish();
+    installed.context("install failed")?;
 
-    match fancy {
-        true => cliclack::outro(format!("Installed aster {version}"))?,
-        false => println!("[aster] Installed aster {version}."),
+    install::emit(&install::summary(
+        "Installed",
+        &format!("aster {version}"),
+        started.elapsed(),
+    ));
+    match version == current {
+        true => install::emit(&install::change(Change::Reinstalled, "aster", &version)),
+        false => {
+            install::emit(&install::change(Change::Removed, "aster", current));
+            install::emit(&install::change(Change::Added, "aster", &version));
+        }
     }
     Ok(())
 }
 
-fn install(tag: &str, version: &str) -> Result<()> {
-    let fancy = crate::picker::is_tty() && !crate::json_mode();
+fn install(tag: &str, version: &str, live: &Live) -> Result<()> {
     let target = target_triple();
     let base = format!(
         "https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/{tag}/aster-{version}-{target}"
@@ -79,38 +95,38 @@ fn install(tag: &str, version: &str) -> Result<()> {
         (format!("{base}.tar.gz"), false)
     };
 
-    let asset_name = format!(
-        "aster-{version}-{target}.{}",
-        if zipped { "zip" } else { "tar.gz" }
-    );
-    match fancy {
-        true => cliclack::log::step(format!("Downloading {asset_name}"))?,
-        false => eprintln!("[aster] Downloading {asset_url}..."),
-    }
-    let archive_path = download(&asset_url, "archive").context("asset download failed")?;
+    let started = Instant::now();
+    let label = format!("aster {version}");
+    live.set_message(&format!("Downloading {label}..."));
+    let archive_path =
+        download(&asset_url, "archive", Some((live, &label))).context("asset download failed")?;
+    live.println(&install::summary("Downloaded", &label, started.elapsed()));
 
-    let expected_path = download(&format!("{asset_url}.sha256"), "checksum").ok();
+    let checked = Instant::now();
+    let expected_path = download(&format!("{asset_url}.sha256"), "checksum", None).ok();
     let expected = expected_path
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|s| s.trim().to_string());
-    if let Some(expected) = expected {
-        let archive = std::fs::read(&archive_path).context("temp archive read failed")?;
-        verify_sha256(&archive, &expected).context("checksum verification failed")?;
-        if fancy {
-            cliclack::log::success("Checksum verified")?;
+    match expected {
+        Some(expected) => {
+            let archive = std::fs::read(&archive_path).context("temp archive read failed")?;
+            verify_sha256(&archive, &expected).context("checksum verification failed")?;
+            live.println(&install::summary("Verified", "checksum", checked.elapsed()));
         }
-    } else if fancy {
-        cliclack::log::warning("No checksum published for this release; skipping verification")?;
-    } else {
-        eprintln!("[aster] No checksum published for this release; skipping verification.");
+        None => live.println(&install::warning(
+            "No checksum was published for this release, so the download was not verified.",
+        )),
     }
 
+    live.set_message(&format!("Installing {label}..."));
     let binary = unpack_from_file(&archive_path, &format!("aster-{version}-{target}"), zipped)?;
     self_replace::self_replace(&binary).context("binary replacement failed")?;
     Ok(())
 }
 
-fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
+/// `shown` puts a bar for the download in the live rows, labelled; small
+/// files (a 65 B checksum) never get one.
+fn download(url: &str, name: &str, shown: Option<(&Live, &str)>) -> Result<std::path::PathBuf> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
         .timeout(std::time::Duration::from_secs(30 * 60))
@@ -122,19 +138,9 @@ fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
     let path = std::env::temp_dir().join(format!("aster-download-{}-{name}", std::process::id()));
     let mut file = std::fs::File::create(&path).context("temp file creation failed")?;
 
-    // Only real downloads get a bar; a 65 B checksum fetch renders as nothing.
-    let show_bar = crate::picker::is_tty() && total.is_some_and(|t| t > 1 << 20);
-    let bar = show_bar.then(|| {
-        std::sync::Arc::new(DownloadBar {
-            term: console::Term::stderr(),
-            total: total.unwrap_or_default(),
-            last: std::sync::Mutex::new((std::time::Instant::now(), 0)),
-        })
-    });
-    let shared = std::sync::Arc::new(SharedProgress {
-        downloaded: std::sync::atomic::AtomicU64::new(0),
-        bar,
-    });
+    let bar = shown
+        .zip(total.filter(|&t| t > 1 << 20))
+        .map(|((live, label), total)| live.bar(label, total));
 
     const CHUNKS: u64 = 16;
     let parallel = total.is_some_and(|t| t > 1 << 20)
@@ -158,7 +164,7 @@ fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
             let client = client.clone();
             let url = url.to_string();
             let path = path.clone();
-            let progress = shared.clone();
+            let bar = bar.clone();
             handles.push(
                 std::thread::Builder::new()
                     .name(format!("aster-dl-{chunk}"))
@@ -172,13 +178,12 @@ fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
                             .write(true)
                             .open(&path)
                             .context("temp file open failed")?;
-                        use std::io::Seek;
+                        use std::io::{Read, Seek};
                         file.seek(std::io::SeekFrom::Start(start))
                             .context("temp file seek failed")?;
-                        let mut reader = ChunkReader {
-                            inner: &mut resp,
-                            remaining: end - start,
-                            progress: &progress,
+                        let mut reader = ProgressReader {
+                            inner: (&mut resp).take(end - start),
+                            bar: bar.as_ref(),
                         };
                         std::io::copy(&mut reader, &mut file).context("download interrupted")?;
                         Ok(())
@@ -197,120 +202,30 @@ fn download(url: &str, name: &str) -> Result<std::path::PathBuf> {
     } else {
         let mut reader = ProgressReader {
             inner: response,
-            progress: shared.as_ref(),
+            bar: bar.as_ref(),
         };
         std::io::copy(&mut reader, &mut file)
             .map(|_| ())
             .context("download interrupted")
     };
-    if let Some(bar) = shared.bar.as_ref() {
-        bar.finish(shared.downloaded.load(std::sync::atomic::Ordering::Relaxed));
-    } else if total.is_some() {
-        eprintln!();
+    if let Some(bar) = &bar {
+        bar.finish();
     }
     result?;
     Ok(path)
 }
 
-struct SharedProgress {
-    downloaded: std::sync::atomic::AtomicU64,
-    bar: Option<std::sync::Arc<DownloadBar>>,
-}
-
-impl SharedProgress {
-    fn add(&self, n: u64) {
-        use std::sync::atomic::Ordering;
-        let downloaded = self.downloaded.fetch_add(n, Ordering::Relaxed) + n;
-        if let Some(bar) = &self.bar {
-            bar.draw(downloaded);
-        }
-    }
-}
-
-struct DownloadBar {
-    term: console::Term,
-    total: u64,
-    last: std::sync::Mutex<(std::time::Instant, u64)>,
-}
-
-impl DownloadBar {
-    const WIDTH: usize = 24;
-    const ORANGE: (u8, u8, u8) = (0xf2, 0x76, 0x4f);
-
-    fn line(&self, downloaded: u64, message: &str) -> String {
-        let frac = if self.total == 0 {
-            1.0
-        } else {
-            (downloaded as f64 / self.total as f64).min(1.0)
-        };
-        let filled = (frac * Self::WIDTH as f64).round() as usize;
-        let fill = console::style("█".repeat(filled)).true_color(
-            Self::ORANGE.0,
-            Self::ORANGE.1,
-            Self::ORANGE.2,
-        );
-        let rest = console::style("░".repeat(Self::WIDTH - filled)).dim();
-        let pct = format!("{:>3.0}%", frac * 100.0);
-        format!(
-            "{pct} {fill}{rest} {:>7}/{:<7} {message:<12}",
-            format_bytes(downloaded),
-            format_bytes(self.total),
-        )
-    }
-
-    fn draw(&self, downloaded: u64) {
-        let mut last = self.last.lock().unwrap();
-        let done = downloaded >= self.total;
-        if !done && last.0.elapsed() < std::time::Duration::from_millis(80) {
-            return;
-        }
-        *last = (std::time::Instant::now(), downloaded);
-        let _ = self
-            .term
-            .write_str(&format!("\r{}", self.line(downloaded, "Downloading")));
-    }
-
-    fn finish(&self, downloaded: u64) {
-        let _ = self.term.write_str(&format!(
-            "\r{}\n",
-            console::style(self.line(downloaded, "Downloaded")).bold()
-        ));
-    }
-}
-
-struct ChunkReader<'a, R: std::io::Read> {
-    inner: R,
-    remaining: u64,
-    progress: &'a SharedProgress,
-}
-
-impl<R: std::io::Read> std::io::Read for ChunkReader<'_, R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let cap = buf.len().min(self.remaining as usize);
-        let n = self.inner.read(&mut buf[..cap])?;
-        self.remaining -= n as u64;
-        self.progress.add(n as u64);
-        Ok(n)
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    match bytes {
-        b if b >= 1 << 20 => format!("{:.1} MiB", b as f64 / (1 << 20) as f64),
-        b if b >= 1 << 10 => format!("{:.1} KiB", b as f64 / (1 << 10) as f64),
-        b => format!("{b} B"),
-    }
-}
-
 struct ProgressReader<'a, R: std::io::Read> {
     inner: R,
-    progress: &'a SharedProgress,
+    bar: Option<&'a Bar>,
 }
 
 impl<R: std::io::Read> std::io::Read for ProgressReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.progress.add(n as u64);
+        if let Some(bar) = self.bar {
+            bar.inc(n as u64);
+        }
         Ok(n)
     }
 }
