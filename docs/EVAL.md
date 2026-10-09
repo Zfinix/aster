@@ -8,18 +8,17 @@ actual work, and session grading cannot tell you whether yesterday's commit
 helped, because every session ran a different task.
 
 The crate is [aster-eval](../crates/aster-eval). Its output is what
-[HARNESS-FINDINGS.md](HARNESS-FINDINGS.md) is written from. The live half runs
-on Ori, OpenRouter's agent harness and evaluation runner, with Aster swapped in
-for Ori's own agent; [What Ori is](#what-ori-is-and-why-aster-uses-it)
-explains that arrangement.
+[HARNESS-FINDINGS.md](HARNESS-FINDINGS.md) is written from. The live half
+spawns the real `aster` binary for each case and judges it from the NDJSON
+that `--stream` emits, so there is no runner between the cases and the
+shipped harness.
 
 ```mermaid
 graph LR
     subgraph Live["aster-eval live"]
-        C["cases in live.rs"] --> G["cases.eval.ts<br/>(generated)"]
-        G --> O["ori eval --json"]
-        O --> B["aster --stream<br/>(the real binary)"]
-        B --> R1["pass/fail, tools,<br/>wall, cost per model"]
+        C["cases in live.rs"] --> B["aster --stream<br/>(the real binary)"]
+        B --> E["NDJSON events"]
+        E --> R1["pass k/N, rounds, tools,<br/>wall, cost per model"]
     end
     subgraph Offline["aster-eval"]
         S["~/.local/share/aster/<br/>sessions/**.jsonl"] --> T["turns + rounds"]
@@ -102,126 +101,52 @@ One caveat specific to this mode: running Aster to produce the "after" sessions
 writes into the same directory the grader reads, so the corpus grows while you
 measure it. Freeze a `--json` snapshot before analysing.
 
-## What Ori is, and why Aster uses it
-
-[Ori](https://openrouter.ai/labs/ori) is a tool from OpenRouter. It runs AI
-agents, and it tests them.
-
-Three terms come first. The rest of this page uses them.
-
-- A **tool call** is a request from the model. The model asks to read a file, or
-  to run a search. It cannot do these things itself.
-- A **turn** is one exchange. The user sends a message. The agent makes tool
-  calls. The agent then gives an answer.
-- A **harness** is the code that runs a turn. It sends the prompt to a model. It
-  makes the tool calls that the model asks for. It sends each result back.
-
-Ori has two parts. The first part is a **test runner**. It starts an agent, gives
-it a prompt, and then checks what the agent did. The second part is Ori's own
-**harness**.
-
-Aster keeps the first part and replaces the second. The test runner is Ori's. The
-harness is Aster's. The program under test is therefore Aster.
-
-### How you write a test
-
-A test is a `*.eval.ts` file. `bun:test` runs the file. You call `setupAgent` to
-get an agent. You call `agent.run` to give it a prompt. You then check what it
-did. Each check reads as a sentence about behaviour:
-
-```ts
-const run = await agent.run("What activation events does the extension declare?");
-run.tool("edit_file").toNotBeCalled();
-run.toMention("activation");
-run.toComplete();
-```
-
-These three checks say: the agent must not edit a file, the answer must contain
-the word `activation`, and the run must finish without an error.
-
-### How Aster supplies its own harness
-
-`defineHarness` gives a harness a name and registers it. Ori then runs that
-harness in place of its own. The file must be at `features/<name>/feature.ts`
-inside an Ori workspace. For this reason, `crates/aster-eval/evals` is a bun
-workspace, and `features/*` is a member of it.
-
-### Why not write a test runner
-
-A test runner is the same for every project. It starts processes. It supplies
-the words for the checks. It records each pass and each failure. It measures
-time. It prints results that a program can read.
-
-None of that code is special to Aster, but somebody must maintain it. Aster
-borrows it instead. Aster then writes only the harness, which is the one part
-that is about Aster.
-
-Three results follow:
-
-- The checks test the real `aster` program. They do not test a copy of it.
-- One flag selects the model. One command can therefore test many models.
-- The report is JSON. Rust code reads it, so no person must read the screen
-  output.
-
-### What this costs
-
-Ori and Aster do not count a run the same way.
-
-Ori reports the tool calls as one flat list of names. It does not report which
-calls shared a round-trip. Aster therefore cannot write a check about rounds. See
-[Known limits](#known-limits-of-the-instruments).
-
-Ori also has no check for an upper limit. `toBeCalledTimes` needs an exact
-number. The generated file therefore contains a small `count()` helper. It is
-written by hand, and it supplies the `at_most` limits.
-
 ## Running the live evals
 
 ```bash
-cd crates/aster-eval/evals && bun install
-cargo run -p aster-eval -- live --models z-ai/glm-5.2,deepseek-chat
+cargo run -p aster-eval -- live --models glm-5p3-flash,deepseek-flash --runs 3
 ```
 
-Needs `ori` on PATH (or `ORI_BIN`), `bun`, and a credential for whatever endpoint
-the models live on. `ASTER_BIN` selects which binary to measure (default: `aster`
-on PATH), `--repo` the checkout it runs against, `--evals` the workspace.
+```
+aster-eval live [options]
 
-The driver renders the cases to `cases.eval.ts`, shells out to
-`ori eval --json --no-history`, parses the report, and prints one row per model
-plus a per-case tool summary. It exits non-zero if any case failed.
+  --models a,b   models to compare (default: the configured one)
+  --runs N       run every case N times and report medians (default: 1)
+  --bin PATH     aster binary to measure (default: `aster` on PATH)
+  --repo DIR     checkout aster runs against (default: the enclosing git repo)
+```
 
-### How the harness works
+Each case runs `aster --stream --permission-mode auto [--model M] <prompt>` in
+the repo, with a 10 minute ceiling. Pass `--bin target/debug/aster` to measure
+a build that is not installed yet. Credentials and the model catalogue come
+from the normal aster config, so whatever `aster` can reach, the eval can.
+Every case costs real tokens: start with `--runs 1` on one model and read the
+cost column before sweeping.
 
-Aster's harness lives in
-[evals/features/aster/feature.ts](../crates/aster-eval/evals/features/aster/feature.ts).
-It spawns `aster --stream` as a subprocess and translates its NDJSON into Ori's
-event vocabulary:
+The report prints one line per case, `pass k/N` with the median wall time and
+median rounds, then each failing run's reasons in plain words, then a table
+per model. It exits non-zero if any run failed.
 
-| Aster emits         | Ori receives                           |
-| ------------------- | -------------------------------------- |
-| `token` / `text`    | `assistant.text.delta`                 |
-| `tool_call`         | `tool.started`                         |
-| `tool_result`       | `tool.succeeded` / `tool.failed`       |
-| `done` (with usage) | `turn.succeeded` + `session.succeeded` |
-| `error`             | `turn.failed` + `session.failed`       |
+### How a run is judged
 
-Ori keeps scheduling, assertions, and reporting. It loses the agent loop, which
-is the whole point: the assertions then apply to the shipped binary. A case that
-needs a system prompt goes through `--messages-json` rather than a positional
-prompt, since that is the only way `aster` accepts one.
+The runner reads these events and ignores the rest:
 
-**Ori falls back to its own agent when a harness fails to boot**, and every
-assertion would pass green against the wrong subject. `summarise()` in
-[live.rs](../crates/aster-eval/src/live.rs) therefore reads `terminal.harness`
-out of the report and refuses to count a case as passed unless it says `aster`.
-A run that hit the fallback prints the harness it actually used. Check the
-feature independently with `ori harness test --harness aster`.
+| Event               | Used for                                   |
+| ------------------- | ------------------------------------------ |
+| `token` / `text`    | the answer text that `must_mention` checks |
+| `tool_call`         | the tool list and the round count          |
+| `tool_result`       | closing the current round                  |
+| `done`              | the final reply and `estimated_cost_usd`   |
+| `error`             | the failure reason                         |
+
+aster emits every `tool_call` of a round before any of its results, so a call
+that follows a result opens a new round. That is how the live suite measures
+batching directly. A run that exits without `done` or `error` fails with the
+last line aster wrote to stderr.
 
 ### Adding a case
 
-Cases live in `default_cases()` in [live.rs](../crates/aster-eval/src/live.rs)
-and are rendered to `cases.eval.ts`, which is generated and gitignored. Rust is
-the source of truth; TypeScript is only what Ori insists on. Edit the Rust.
+Cases live in `default_cases()` in [live.rs](../crates/aster-eval/src/live.rs).
 
 ```rust
 Case {
@@ -229,16 +154,60 @@ Case {
     prompt: "Which function in crates/aster-tools decides whether a directory \
              is skipped? Name it and the file it lives in.".into(),
     must_mention: Some("is_skipped".into()),
-    calls: Vec::new(),                       // tools that must run
+    calls: vec!["search_files".into()],      // tools that must run
     avoids: vec!["edit_file".into()],        // tools that must never run
     at_most: vec![("search_files".into(), 3)], // per-tool ceilings
+    max_rounds: None,                        // ceiling on model round-trips
 }
 ```
 
 Each case encodes a harness fix, so a regression in that fix fails an eval
 instead of going unnoticed until the next findings pass. The ceilings are the
 part that catches waste: a regression usually shows up as the answer staying
-correct while the call count climbs.
+correct while the call count climbs. `max_rounds` is the ceiling that does not
+care which tool the model picked.
+
+## Terminal-Bench
+
+The live suite checks Aster against its own regressions. For a number other
+people recognise, Aster runs [Terminal-Bench](https://www.tbench.ai) through
+[Harbor](https://harborframework.com), its official runner. Each task is a
+container with an instruction and a hidden verifier; the score is the share of
+tasks the verifier passes.
+
+[aster_agent.py](../crates/aster-eval/harbor/aster_agent.py) is the Harbor
+agent. It installs the static musl release of `aster` into each task container
+and runs `aster --stream --permission-mode yolo` on the instruction; the
+container is the isolation. Model and credentials come in as `ASTER_*`
+variables:
+
+```bash
+harbor datasets download terminal-bench/terminal-bench@4.0.0 -o tb
+PYTHONPATH=crates/aster-eval/harbor harbor run \
+  -p tb/terminal-bench/<task> -a aster_agent:Aster -n 1 \
+  --agent-timeout-multiplier 0.0625 \
+  --ae ASTER_BASE_URL=https://api.fireworks.ai/inference/v1 \
+  --ae ASTER_MODEL=accounts/fireworks/models/glm-5p3-flash \
+  --ae ASTER_API_KEY=$FIREWORKS_API_KEY \
+  --ae ASTER_MAX_TOOL_ROUNDS=60
+```
+
+Use `-d terminal-bench/terminal-bench@4.0.0` instead of `-p` for the full
+set. Pin a release with `--ak version=0.7.1`; the default is the latest. To
+measure unreleased changes, build a static binary for the task images
+(amd64) and pass it with `--ak binary=PATH`:
+
+```bash
+cargo zigbuild --release --locked -p aster-cli --bin aster \
+  --target x86_64-unknown-linux-musl
+```
+
+Terminal-Bench 4.0 tasks are expert work: the agent limit is eight hours and
+the expert estimate several hours each. Cap every run with
+`--agent-timeout-multiplier` and `ASTER_MAX_TOOL_ROUNDS`, and run a couple of
+tasks before the full set. A score taken under those caps is not comparable
+with a leaderboard entry run at the default limits; say which caps were used
+whenever a number is quoted.
 
 ## Known limits of the instruments
 
@@ -252,16 +221,14 @@ and the assertion passes without constraining anything. A case capping
 ceiling on the tool the case is actually about, and pair it with `calls` so the
 tool must run at all.
 
-**The live suite cannot see a round.** Ori reports tool calls as a flat list and
-the harness emits one event per call with no round grouping, so call counts
-survive the translation and round boundaries do not. The live suite therefore
-measures calls, and is structurally blind to the batch factor. A case named for
-batching can only assert a call count today.
+**Rounds are inferred from event order.** The stream carries no round id; the
+runner relies on aster emitting a round's calls before its results. Calls
+that aster handles internally (skill reads) are not emitted and do not count.
 
 **Single runs are noise.** The same case on the same model has produced
 `explore×1` on one run and `find_files×2 read_file×2` on the next; earlier
-measurements varied 1, 1, 3, 2 on one case. Take a median of N before believing
-a difference between models or builds.
+measurements varied 1, 1, 3, 2 on one case. Use `--runs` and compare medians
+before believing a difference between models or builds.
 
 **A batched round charges every call the slowest one's wall time.**
 [turn.rs](../crates/aster-eval/src/turn.rs) measures from the assistant
@@ -278,7 +245,8 @@ completion tokens at one global rate pair (`ASTER_PRICE_PROMPT_PER_M`,
 `ASTER_PRICE_COMPLETION_PER_M`, defaulting to 0.15/0.60), with no per-model
 table and no discount for cached input. In a `--models` sweep every model is
 priced identically, so the cost column ranks by token volume alone. The
-"fewest calls" recommendation is unaffected because it ranks on call count.
+"fewest rounds" recommendation is unaffected because it ranks on rounds and
+calls.
 `Usage` also parses only `prompt_tokens` and `completion_tokens`, so
 provider-side cache hits are invisible.
 
