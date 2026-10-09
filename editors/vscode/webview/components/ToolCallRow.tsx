@@ -9,6 +9,7 @@ import {
   displayOutput,
   isSerious,
   mcpMatches,
+  mcpSpec,
   mcpTarget,
   numberArg,
   outputTitle,
@@ -23,6 +24,7 @@ import { Code } from "./Code";
 import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { McpMatches } from "./McpMatches";
+import { McpSpecView } from "./McpSpecView";
 import { ToolOutput } from "./ToolOutput";
 import { WebResults } from "./WebResults";
 import { AlertIcon, ChevronIcon, ExternalIcon, WarningIcon } from "./icons";
@@ -39,6 +41,7 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
   const [expanded, setExpanded] = useState(() => call.name === "edit_file");
   const { verb, detail, code } = describeTool(call);
   const matches = mcpMatches(call);
+  const spec = mcpSpec(call);
   const results = webResults(call);
   const path = toolPath(call);
   const prose = rendersAsMarkdown(call);
@@ -142,6 +145,8 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
               >
                 {matches ? (
                   <McpMatches matches={matches} />
+                ) : spec ? (
+                  <McpSpecView spec={spec} />
                 ) : results ? (
                   <WebResults results={results} />
                 ) : prose ? (

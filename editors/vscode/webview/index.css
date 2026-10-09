@@ -2607,6 +2607,86 @@ code {
   text-overflow: ellipsis;
 }
 
+/* A tool inspection returns a JSON schema the model reads. The row header
+   already names the tool, so the cell holds the summary in body type and the
+   inputs as two aligned columns: name in mono, then type, a required tag, and
+   what the input is for. Prose leaves the cell's mono for the UI font. */
+.mcp-spec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  white-space: normal;
+}
+
+.mcp-spec-about {
+  margin: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.5;
+  color: var(--fg-dim);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.mcp-params {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--s3);
+  row-gap: var(--s2);
+  margin: 0;
+}
+
+.mcp-param {
+  display: contents;
+}
+
+.mcp-param-name {
+  color: var(--fg);
+}
+
+.mcp-param-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--s2);
+  row-gap: 2px;
+  margin: 0;
+  min-width: 0;
+}
+
+.mcp-param-type {
+  color: var(--fg-dim);
+}
+
+.mcp-param-required {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 var(--s1);
+  font-size: 0.9em;
+  color: var(--fg-dim);
+}
+
+.mcp-param-about {
+  flex-basis: 100%;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.45;
+  color: var(--fg-dim);
+}
+
+@media (max-width: 480px) {
+  .mcp-params {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .mcp-param-detail {
+    margin-bottom: var(--s2);
+  }
+}
+
 /* A web search returns a JSON array of pages the model reads. The reader wants
    the hits: title as the link, URL dimmed beneath, snippet clamped under that. */
 .web-results {

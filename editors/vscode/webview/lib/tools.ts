@@ -132,6 +132,49 @@ export function mcpMatches(call: ToolCall): McpMatch[] | undefined {
   return matches.length ? matches : undefined;
 }
 
+/** One input a described MCP tool takes. */
+export type McpParam = { name: string; type: string; required: boolean; description: string };
+
+/** What a `describe` call returned: the tool and the inputs it takes, which the
+ *  model reads as a JSON schema and the reader is better served seeing as a list. */
+export type McpSpec = { about: string; params: McpParam[] };
+
+/** A server's own tag (`[Google Docs MCP] ...`) and a param's `Required.` or
+ *  `Optional.` say what the view already shows, so they are dropped. */
+const SERVER_TAG = /^\[[^\]]*\]\s*/;
+const NEED_PREFIX = /^(required|optional)\.\s*/i;
+
+export function mcpSpec(call: ToolCall): McpSpec | undefined {
+  if (call.name !== "aster_mcp" || args(call).action !== "describe" || call.error) return undefined;
+  const raw = call.result?.trim();
+  if (!raw || !raw.startsWith("{")) return undefined;
+  let parsed: { id?: unknown; description?: unknown; input_schema?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed.id !== "string") return undefined;
+  const schema = (parsed.input_schema ?? {}) as { properties?: unknown; required?: unknown };
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const properties =
+    typeof schema.properties === "object" && schema.properties !== null
+      ? (schema.properties as Record<string, { type?: unknown; description?: unknown }>)
+      : {};
+  const description = typeof parsed.description === "string" ? parsed.description : "";
+  const params = Object.entries(properties).map(([name, prop]) => ({
+    name,
+    type: Array.isArray(prop?.type) ? prop.type.join(" | ") : String(prop?.type ?? "any"),
+    required: required.includes(name),
+    description:
+      typeof prop?.description === "string" ? prop.description.trim().replace(NEED_PREFIX, "") : "",
+  }));
+  return {
+    about: description.trim().replace(SERVER_TAG, "").split("\n\n")[0].replace(/\s+/g, " "),
+    params: [...params.filter((p) => p.required), ...params.filter((p) => !p.required)],
+  };
+}
+
 /** The MCP tool an `execute` call names, e.g. `websearch/search`. */
 export function mcpTarget(call: ToolCall): string | undefined {
   return call.name === "aster_mcp" && args(call).action === "execute"
@@ -379,6 +422,12 @@ export function resultHint(call: ToolCall): string | undefined {
   // actually found.
   const found = mcpMatches(call);
   if (found) return `${found.length} ${found.length === 1 ? "tool" : "tools"}`;
+
+  const spec = mcpSpec(call);
+  if (spec) {
+    const n = spec.params.length;
+    return n ? `${n} ${n === 1 ? "input" : "inputs"}` : "no inputs";
+  }
 
   const hits = webResults(call);
   if (hits) return `${hits.length} ${hits.length === 1 ? "result" : "results"}`;

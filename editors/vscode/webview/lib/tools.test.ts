@@ -8,6 +8,7 @@ import {
   groupRuns,
   isRun,
   isSerious,
+  mcpSpec,
   resultHint,
   outputTitle,
   humanize,
@@ -569,5 +570,57 @@ describe("webResults", () => {
     expect(webResults(call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, "{\"pages\":[]}"))).toBeUndefined();
     expect(webResults(call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, "not json"))).toBeUndefined();
     expect(webResults(call("aster_mcp", { action: "execute", name: "web/search", arguments: {} }, "[]"))).toBeUndefined();
+  });
+});
+
+describe("mcpSpec", () => {
+  const described = call(
+    "aster_mcp",
+    { action: "describe", name: "gdocs/google_read_doc" },
+    JSON.stringify({
+      id: "gdocs/google_read_doc",
+      description: "Reads a Google Doc.\n\nCorresponds to documents.get.",
+      input_schema: {
+        type: "object",
+        properties: {
+          documentId: { type: "string", description: "The document to read." },
+          commentsIncluded: { type: "boolean" },
+        },
+        required: ["documentId"],
+      },
+    })
+  );
+
+  it("lists what the tool does and its inputs instead of the schema", () => {
+    expect(mcpSpec(described)).toEqual({
+      about: "Reads a Google Doc.",
+      params: [
+        { name: "documentId", type: "string", required: true, description: "The document to read." },
+        { name: "commentsIncluded", type: "boolean", required: false, description: "" },
+      ],
+    });
+    expect(resultHint(described)).toBe("2 inputs");
+  });
+
+  it("drops the server tag and the required or optional prefix", () => {
+    const tagged = call(
+      "aster_mcp",
+      { action: "describe", name: "gdocs/x" },
+      JSON.stringify({
+        id: "gdocs/x",
+        description: "[Google Docs MCP] Retrieves a doc.",
+        input_schema: {
+          properties: { a: { type: "boolean", description: "Optional. If true, adds comments." } },
+        },
+      })
+    );
+    expect(mcpSpec(tagged)).toEqual({
+      about: "Retrieves a doc.",
+      params: [{ name: "a", type: "boolean", required: false, description: "If true, adds comments." }],
+    });
+  });
+
+  it("leaves other bridge actions alone", () => {
+    expect(mcpSpec(call("aster_mcp", { action: "search", query: "docs" }, "{}"))).toBeUndefined();
   });
 });
