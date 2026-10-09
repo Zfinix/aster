@@ -4,7 +4,7 @@ import { severityOf } from "../lib/severity";
 import { Disclosure } from "../interior/disclosure";
 import { LoadingButton, type LoadingStatus } from "../interior/loading-button";
 import { AssistantText } from "./AssistantText";
-import { CheckIcon, ChevronIcon } from "./icons";
+import { ChevronIcon, CircleCheckFilledIcon } from "./icons";
 
 /** One finding as a quiet row: severity dot, title, location. It opens into
  *  the detail where the actions live. Reading comes before fixing. */
@@ -36,7 +36,7 @@ export function FindingRow({
   return (
     <div className="finding" data-severity={sev} data-open={open} data-fixed={fixed || undefined}>
       <button type="button" className="finding-row" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span className="finding-mark">{fixed ? <CheckIcon /> : <span className="finding-dot" />}</span>
+        <span className="finding-mark">{fixed ? <CircleCheckFilledIcon /> : <span className="finding-dot" />}</span>
         <span className="finding-title">{finding.title}</span>
         <span className="finding-loc" title={finding.file_path}>
           {file}

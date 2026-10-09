@@ -2043,7 +2043,8 @@ export function CircleDotFilledIcon() {
 export function CircleCheckFilledIcon() {
   return (
     <svg {...solid}>
-      <path fillRule="evenodd" clipRule="evenodd" d="M8 1a7 7 0 100 14A7 7 0 008 1zM4.9 9.1l2.7 2.7 4.4-4.4-1-1-3.4 3.4-1.7-1.7-1 1z" />
+      <circle cx="8" cy="8" r="7" />
+      <path d="M5 8.3l2 2 4-4.3" fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -2051,7 +2052,8 @@ export function CircleCheckFilledIcon() {
 export function CircleXFilledIcon() {
   return (
     <svg {...solid}>
-      <path fillRule="evenodd" clipRule="evenodd" d="M8 1a7 7 0 100 14A7 7 0 008 1zm2.9 8.9l-1 1L8 9l-1.9 1.9-1-1L7 8 5.1 6.1l1-1L8 7l1.9-1.9 1 1L9 8z" />
+      <circle cx="8" cy="8" r="7" />
+      <path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

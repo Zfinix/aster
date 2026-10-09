@@ -151,17 +151,16 @@
 .step-mark {
   width: 16px;
   height: 16px;
-  border-radius: var(--radius);
+  border-radius: 50%;
+  color: #fff;
 }
 
 .step-tick {
-  color: var(--diff-add);
-  background: color-mix(in srgb, var(--diff-add) 14%, transparent);
+  background: var(--diff-add);
 }
 
 .step-cross {
-  color: var(--sev-critical);
-  background: color-mix(in srgb, var(--sev-critical) 12%, transparent);
+  background: var(--sev-critical);
 }
 
 .step-spin {
@@ -260,6 +259,10 @@
   align-items: center;
   justify-content: center;
   width: var(--glyph);
+}
+
+.finding[data-fixed] .finding-mark {
+  color: var(--diff-add);
 }
 
 .finding-dot {

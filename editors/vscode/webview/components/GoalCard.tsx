@@ -1,5 +1,5 @@
 import type { GoalOutcome, GoalVerdictRow, TurnBlock } from "../lib/thread";
-import { CheckIcon, SpinnerIcon, TargetIcon, XIcon } from "./icons";
+import { CircleCheckFilledIcon, CircleXFilledIcon, SpinnerIcon, TargetIcon } from "./icons";
 
 type GoalBlock = Extract<TurnBlock, { kind: "goal" }>;
 
@@ -33,7 +33,7 @@ export function GoalCard({ block }: { block: GoalBlock }) {
           {block.condition}
         </span>
         <span className="goal-state">
-          {running ? <SpinnerIcon /> : block.outcome === "met" ? <CheckIcon /> : <XIcon />}
+          {running ? <SpinnerIcon /> : block.outcome === "met" ? <CircleCheckFilledIcon /> : <CircleXFilledIcon />}
         </span>
       </div>
       {block.verdicts.length > 0 && (

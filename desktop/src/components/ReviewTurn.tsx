@@ -8,7 +8,7 @@ import { TaskSteps, type TaskStep } from "../interior/task-steps";
 import { ARRIVE, CROSSFADE, INSTANT } from "../interior/springs";
 import { ErrorBox } from "./ErrorBox";
 import { FindingRow } from "./FindingRow";
-import { CheckIcon, ChevronIcon, ShieldIcon } from "./icons";
+import { ChevronIcon, CircleCheckFilledIcon, ShieldIcon } from "./icons";
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
 
@@ -91,7 +91,7 @@ export function ReviewTurn({
                 "Review failed"
               ) : findings.length === 0 ? (
                 <span className="review-clean">
-                  <CheckIcon />
+                  <CircleCheckFilledIcon />
                   No issues found
                 </span>
               ) : (

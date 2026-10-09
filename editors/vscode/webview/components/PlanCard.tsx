@@ -2,19 +2,19 @@ import type { ReactNode } from "react";
 import type { PlanStepStatus, ToolCall } from "../lib/thread";
 import { parsePlan } from "../lib/thread";
 import {
-  CircleCheckIcon,
+  CircleCheckFilledIcon,
   CircleDotIcon,
   CircleIcon,
   CircleSkipIcon,
-  CircleXIcon,
+  CircleXFilledIcon,
 } from "./icons";
 
 const MARKS: Record<PlanStepStatus, ReactNode> = {
   pending: <CircleIcon />,
   in_progress: <CircleDotIcon />,
-  done: <CircleCheckIcon />,
+  done: <CircleCheckFilledIcon />,
   skipped: <CircleSkipIcon />,
-  blocked: <CircleXIcon />,
+  blocked: <CircleXFilledIcon />,
 };
 
 /** The agent's plan, rendered inline where the `update_plan` call landed —
