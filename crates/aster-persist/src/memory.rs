@@ -163,26 +163,31 @@ fn keywords(text: &str) -> std::collections::BTreeSet<String> {
 
 impl MemoryStore {
     pub fn near_duplicates(&self, name: &str, description: &str) -> Vec<String> {
-        let slug = slugify(name);
-        let wanted = keywords(&format!("{name} {description}"));
-        if wanted.is_empty() {
-            return Vec::new();
-        }
-        let mut hits: Vec<(usize, String)> = self
-            .list()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|m| m.name != slug)
-            .filter_map(|m| {
-                let have = keywords(&format!("{} {}", m.name, m.description));
-                let shared = wanted.iter().filter(|w| have.contains(*w)).count();
-                let smaller = wanted.len().min(have.len());
-                (smaller > 0 && shared * 2 >= smaller).then_some((shared, m.name))
-            })
-            .collect();
-        hits.sort_by_key(|(shared, _)| std::cmp::Reverse(*shared));
-        hits.into_iter().take(3).map(|(_, name)| name).collect()
+        let blocks = self.list().unwrap_or_default();
+        near_duplicates_in(&blocks, name, description)
     }
+}
+
+/// Blocks that already say something similar to `name`/`description`, best
+/// match first. Shared between the block store and the agent memory repo.
+pub fn near_duplicates_in(blocks: &[MemoryMeta], name: &str, description: &str) -> Vec<String> {
+    let slug = slugify(name);
+    let wanted = keywords(&format!("{name} {description}"));
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<(usize, String)> = blocks
+        .iter()
+        .filter(|m| m.name != slug)
+        .filter_map(|m| {
+            let have = keywords(&format!("{} {}", m.name, m.description));
+            let shared = wanted.iter().filter(|w| have.contains(*w)).count();
+            let smaller = wanted.len().min(have.len());
+            (smaller > 0 && shared * 2 >= smaller).then_some((shared, m.name.clone()))
+        })
+        .collect();
+    hits.sort_by_key(|(shared, _)| std::cmp::Reverse(*shared));
+    hits.into_iter().take(3).map(|(_, name)| name).collect()
 }
 
 impl MemoryStore {

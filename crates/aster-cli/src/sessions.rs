@@ -421,10 +421,18 @@ enum MemoryCmd {
     Remove { name: String },
     /// Print a memory block in full.
     Show { name: String },
+    /// Copy memory into the agent memory repo from `aster` (the block store),
+    /// `claude` (~/.claude/CLAUDE.md), or a markdown file path.
+    Import {
+        source: String,
+        /// Report what would be imported without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub fn run_memory(args: MemoryArgs) -> Result<()> {
-    let memory = crate::persist::store()?.memory();
+    let memory = crate::persist::memory()?;
 
     match args.cmd.unwrap_or(MemoryCmd::List) {
         MemoryCmd::List => {
@@ -505,6 +513,9 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
             }
         }
         MemoryCmd::Add { text, title } => memory_add(&memory, &text, title.as_deref())?,
+        MemoryCmd::Import { source, dry_run } => {
+            crate::memory_import::run(crate::memory_import::MemoryImportArgs { source, dry_run })?
+        }
     }
     Ok(())
 }
@@ -512,11 +523,11 @@ pub fn run_memory(args: MemoryArgs) -> Result<()> {
 /// Save a durable fact: a named block with `--title`, otherwise a line in
 /// project memory (ASTER.md).
 pub fn run_remember(args: RememberArgs) -> Result<()> {
-    let memory = crate::persist::store()?.memory();
+    let memory = crate::persist::memory()?;
     memory_add(&memory, &args.text, args.title.as_deref())
 }
 
-fn memory_add(memory: &aster_persist::MemoryStore, text: &str, title: Option<&str>) -> Result<()> {
+fn memory_add(memory: &aster_persist::Memory, text: &str, title: Option<&str>) -> Result<()> {
     let result = match title {
         Some(title) => {
             let path = memory.remember(title, text, text)?;

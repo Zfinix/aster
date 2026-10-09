@@ -3251,14 +3251,50 @@ impl ChatApp {
         }
     }
 
-    /// `/memory` is the index; `/memory <name>` reads one block in full, and
-    /// `/memory forget <name>` takes a wrong fact back.
+    /// `/memory` lists memory, `/memory <name>` shows a block, `/memory forget <name>` deletes one.
+    fn memory_backend(&self) -> anyhow::Result<aster_persist::Memory> {
+        match &self.store {
+            Some(store) => crate::persist::memory_in(store),
+            None => crate::persist::memory(),
+        }
+    }
+
     fn show_memory(&mut self, arg: Option<&str>) {
-        let Some(store) = &self.store else {
-            self.note("no store open, so nothing is remembered");
-            return;
+        if let Some(arg) = arg.map(str::trim).filter(|a| !a.is_empty()) {
+            match arg {
+                "repo on" | "repo off" => {
+                    let on = arg.ends_with("on");
+                    match crate::settings::persist_memory_agent_repo(None, on) {
+                        Ok(saved) => self.note(&format!(
+                            "agent memory repo {} · saved to {}",
+                            if on { "on" } else { "off" },
+                            saved.path.display()
+                        )),
+                        Err(e) => self.note(&format!("could not save the switch: {e:#}")),
+                    }
+                    return;
+                }
+                "repo" => {
+                    let on = crate::settings::Settings::load(None)
+                        .ok()
+                        .and_then(|s| s.memory.agent_repo)
+                        .unwrap_or(false);
+                    self.note(&format!(
+                        "agent memory repo is {} · /memory repo on|off to switch",
+                        if on { "on" } else { "off" }
+                    ));
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let memory = match self.memory_backend() {
+            Ok(memory) => memory,
+            Err(e) => {
+                self.note(&format!("memory is unavailable: {e:#}"));
+                return;
+            }
         };
-        let memory = store.memory();
         match arg.map(str::trim).filter(|a| !a.is_empty()) {
             Some(arg) => {
                 if let Some(name) = arg.strip_prefix("forget ") {
@@ -3276,8 +3312,13 @@ impl ChatApp {
     }
 
     fn show_memory_index(&mut self) {
-        let Some(store) = &self.store else { return };
-        let memory = store.memory();
+        let memory = match self.memory_backend() {
+            Ok(memory) => memory,
+            Err(e) => {
+                self.note(&format!("could not open memory: {e:#}"));
+                return;
+            }
+        };
         let blocks = match memory.list_recent() {
             Ok(blocks) => blocks,
             Err(e) => {
@@ -3367,19 +3408,24 @@ impl ChatApp {
             self.note("usage: /remember <text> · the fact lands in ASTER.md");
             return;
         };
-        let Some(store) = &self.store else {
-            self.note("memory is not available in this session");
-            return;
+        let memory = match self.memory_backend() {
+            Ok(memory) => memory,
+            Err(e) => {
+                self.note(&format!("memory is not available: {e:#}"));
+                return;
+            }
         };
-        match store.memory().append_project(text) {
+        match memory.append_project(text) {
             Ok(()) => self.note("saved to memory (ASTER.md)"),
             Err(e) => self.note(&format!("could not save: {e:#}")),
         }
     }
 
     fn show_memory_block(&mut self, name: &str) {
-        let Some(store) = &self.store else { return };
-        let memory = store.memory();
+        let memory = match self.memory_backend() {
+            Ok(memory) => memory,
+            Err(_) => return,
+        };
         if name.eq_ignore_ascii_case("project") || name.eq_ignore_ascii_case("aster.md") {
             match memory.project_text() {
                 Some(text) => self.emit_memory_body("ASTER.md", None, &text),

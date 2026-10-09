@@ -3,10 +3,10 @@ use aster_persist::{MemoryOp, Store};
 
 use super::{Proposals, already_consolidated, apply, parse_proposals, unconsolidated_sessions};
 
-fn store() -> (tempfile::TempDir, aster_persist::MemoryStore) {
+fn store() -> (tempfile::TempDir, aster_persist::Memory) {
     let home = tempfile::tempdir().unwrap();
     let store = Store::open(home.path()).unwrap();
-    let memory = store.memory();
+    let memory = store.memory_with(None);
     (home, memory)
 }
 

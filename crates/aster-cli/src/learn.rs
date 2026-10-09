@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use aster_eval::{RunScore, Turn, turns};
-use aster_persist::{MemoryStore, SessionMeta, SessionTranscript};
+use aster_persist::{SessionMeta, SessionTranscript};
 use chrono::{DateTime, Utc};
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -218,7 +218,7 @@ pub(crate) async fn run(args: LearnArgs) -> Result<()> {
         eprintln!("{reply}");
         return emit(report(skipped("dry run"), best, reflection.task, None));
     }
-    let memory = store.memory();
+    let memory = crate::persist::memory()?;
     let applied = apply(
         &home.join("skills"),
         &memory,
@@ -567,7 +567,7 @@ pub(crate) struct Applied {
 /// moves only on a run at least as good as the best, and a turn is learned once.
 pub(crate) fn apply(
     root: &Path,
-    memory: &MemoryStore,
+    memory: &aster_persist::Memory,
     session: &str,
     turn: usize,
     score: RunScore,

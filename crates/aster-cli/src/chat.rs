@@ -1023,7 +1023,10 @@ pub(crate) async fn consolidate_finished_session(
     let Ok(transcript) = store.resume(repo_root, session_id) else {
         return;
     };
-    let memory = store.memory();
+    let memory = crate::persist::memory();
+    let Ok(memory) = memory else {
+        return;
+    };
     let min_turns = aster_memory::consolidate::DEFAULT_MIN_TURNS;
     if let Err(err) =
         aster_memory::consolidate::consolidate_session(client, &memory, &transcript, min_turns)
@@ -3054,12 +3057,13 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "remember",
-                "description": "Save a durable fact to memory so it survives across sessions. Use for lasting project facts, conventions, or user preferences the model should recall later. `title` creates a named memory block; without it the note is appended to project memory (ASTER.md).",
+                "description": "Save a durable fact to memory so it survives across sessions. Use for lasting project facts, conventions, or user preferences the model should recall later. `title` creates a named memory block; without it the note is appended to project memory (ASTER.md). When the user asks for memory in their own git repo (an \"agent memory repo\"), pass `repo: true`; the first such save creates the repo and turns it on for future sessions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "note": { "type": "string", "description": "The fact to remember, stated plainly" },
-                        "title": { "type": "string", "description": "Optional short name for a dedicated memory block" }
+                        "title": { "type": "string", "description": "Optional short name for a dedicated memory block" },
+                        "repo": { "type": "boolean", "description": "Save to the user's agent memory repo (a separate git repo) instead of the default store; creates and enables it on first use" }
                     },
                     "required": ["note"]
                 }
@@ -3459,7 +3463,14 @@ async fn exec_tool(
     let result = match name {
         "remember" => str_arg("note")
             .context("remember needs a `note`")
-            .and_then(|note| remember(ctx, str_arg("title").as_deref(), &note)),
+            .and_then(|note| {
+                remember(
+                    ctx,
+                    str_arg("title").as_deref(),
+                    &note,
+                    args.get("repo").and_then(|v| v.as_bool()).unwrap_or(false),
+                )
+            }),
         "recall" => match str_arg("name") {
             Some(name) => recall(ctx, &name),
             None => recall_list(ctx, str_arg("query").as_deref()),
@@ -4794,12 +4805,13 @@ async fn run_tests_tool(
     serde_json::to_string_pretty(&result).context("serializing test results")
 }
 
-fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String> {
-    let store = ctx
-        .store
-        .as_ref()
-        .context("memory is unavailable; no store is open")?;
-    let memory = store.memory();
+fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str, repo: bool) -> Result<String> {
+    let memory = if repo {
+        enable_agent_repo(ctx)?;
+        crate::persist::memory()?
+    } else {
+        crate::persist::memory()?
+    };
     let source_session = ctx.session_id();
     match title.map(str::trim).filter(|t| !t.is_empty()) {
         Some(title) => {
@@ -4830,24 +4842,24 @@ fn remember(ctx: &SessionCtx, title: Option<&str>, note: &str) -> Result<String>
 }
 
 fn recall(ctx: &SessionCtx, name: &str) -> Result<String> {
-    let store = ctx
-        .store
-        .as_ref()
-        .context("memory is unavailable; no store is open")?;
-    store.memory().read_block(name)
+    let _ = ctx;
+    crate::persist::memory()?.read_block(name)
+}
+
+/// Turn the agent memory repo on for future sessions and make sure it exists.
+/// The save is the same one `/memory repo on` writes.
+fn enable_agent_repo(_ctx: &SessionCtx) -> Result<()> {
+    crate::settings::persist_memory_agent_repo(None, true)?;
+    Ok(())
 }
 
 /// Memory as it stands now. The index in the system prompt was taken when the
 /// session started, so anything written since, here or in another session, is
 /// missing from it, which is how the same fact ends up stored twice.
 fn recall_list(ctx: &SessionCtx, query: Option<&str>) -> Result<String> {
-    let store = ctx
-        .store
-        .as_ref()
-        .context("memory is unavailable; no store is open")?;
+    let _ = ctx;
     let needle = query.map(str::to_lowercase);
-    let blocks: Vec<String> = store
-        .memory()
+    let blocks: Vec<String> = crate::persist::memory()?
         .list_recent()?
         .into_iter()
         .filter(|b| {
@@ -4877,11 +4889,8 @@ fn recall_list(ctx: &SessionCtx, query: Option<&str>) -> Result<String> {
 }
 
 fn forget(ctx: &SessionCtx, name: &str) -> Result<String> {
-    let store = ctx
-        .store
-        .as_ref()
-        .context("memory is unavailable; no store is open")?;
-    if store.memory().forget(name)? {
+    let _ = ctx;
+    if crate::persist::memory()?.forget(name)? {
         Ok(format!("forgot \"{name}\""))
     } else {
         anyhow::bail!("no memory block named {name:?}; see Recallable memory for the list")

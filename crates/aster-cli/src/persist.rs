@@ -106,6 +106,42 @@ pub fn store() -> Result<Store> {
     Store::open(home()?)
 }
 
+/// The memory backend for this session: the block store by default, the agent
+/// memory repo when `memory.agent_repo` is on in settings.
+pub fn memory() -> Result<aster_persist::Memory> {
+    memory_in(&store()?)
+}
+
+/// Same, against a store the caller already holds (the TUI keeps one open).
+pub fn memory_in(store: &Store) -> Result<aster_persist::Memory> {
+    let cfg = crate::settings::Settings::load(None)
+        .map(|s| s.memory)
+        .unwrap_or_default();
+    if !cfg.agent_repo.unwrap_or(false) {
+        return Ok(store.memory_with(None));
+    }
+    Ok(store.memory_with(Some(amr_path()?)))
+}
+
+/// The agent memory repo path from settings, whether or not the backend is on.
+/// `aster memory import` writes there even before the toggle is flipped.
+pub fn amr_path() -> Result<PathBuf> {
+    let cfg = crate::settings::Settings::load(None)
+        .map(|s| s.memory)
+        .unwrap_or_default();
+    match cfg.repo_path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => match p.trim().strip_prefix("~/") {
+            Some(rest) => Ok(dirs::home_dir()
+                .context("could not determine home directory for the agent memory repo")?
+                .join(rest)),
+            None => Ok(PathBuf::from(p.trim().to_string())),
+        },
+        None => Ok(dirs::home_dir()
+            .context("could not determine home directory for the agent memory repo")?
+            .join("agent-memory")),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/persist_test.rs"]
 mod tests;

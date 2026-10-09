@@ -16,6 +16,7 @@ pub struct Settings {
     pub agents: Agents,
     pub ui: Ui,
     pub mom: Mom,
+    pub memory: MemoryConfig,
     pub providers: Providers,
     pub experimental: Experimental,
     pub voice: aster_voice::VoiceConfig,
@@ -48,6 +49,16 @@ pub struct Providers {
 pub struct Mom {
     pub enabled: Option<bool>,
     pub manifest: Option<String>,
+}
+
+/// Where durable memory lives. The agent memory repo is off by default; when
+/// on, facts go to a separate git repo instead of the block store.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MemoryConfig {
+    pub agent_repo: Option<bool>,
+    /// Where the repo lives, `~` expanded. Defaults to `~/agent-memory`.
+    pub repo_path: Option<String>,
 }
 
 /// Terminal presentation choices.
@@ -186,6 +197,10 @@ impl Settings {
             mom: Mom {
                 enabled: project.mom.enabled.or(self.mom.enabled),
                 manifest: project.mom.manifest.or(self.mom.manifest),
+            },
+            memory: MemoryConfig {
+                agent_repo: project.memory.agent_repo.or(self.memory.agent_repo),
+                repo_path: project.memory.repo_path.or(self.memory.repo_path),
             },
             providers: Providers {
                 catalog_url: project.providers.catalog_url.or(self.providers.catalog_url),
@@ -327,6 +342,11 @@ pub fn persist_user_review(repo_root: Option<&Path>, pairs: &[(&str, &str)]) -> 
 /// `"true"`.
 pub fn persist_mom_enabled(repo_root: Option<&Path>, enabled: bool) -> Result<Saved> {
     persist_user_section("mom", repo_root, &[("enabled", enabled.to_string())])
+}
+
+/// The agent memory repo switch travels with the user, like the model.
+pub fn persist_memory_agent_repo(repo_root: Option<&Path>, enabled: bool) -> Result<Saved> {
+    persist_user_section("memory", repo_root, &[("agent_repo", enabled.to_string())])
 }
 
 /// Voice choices follow the user between repos, like the model. `value` is

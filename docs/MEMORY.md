@@ -56,6 +56,24 @@ graph TD
 The separation is deliberate. Transcript answers "what happened in this session";
 memory answers "what should Aster always know about this project."
 
+## Agent memory repo (optional backend)
+
+Memory can also live in its own git repo instead of the block store, following
+the AgentMemoryRepo protocol: a `MEMORY.md` index of one-line bullets with
+`[added: ...]` metadata, longer facts in topic files linked as `[[slug]]`, and a
+git commit after every edit. The repo is never pushed anywhere; syncing it is
+the user's call.
+
+It is **off by default**. Turn it on with `memory.agent_repo: true` in
+`aster.yaml` (repo defaults to `~/agent-memory`, override with
+`memory.repo_path`), with `/memory repo on|off` in the chat TUI, or by asking
+Aster to remember something in your agent memory repo (the `remember` tool's
+`repo` argument creates and enables it on first use). When on, `remember`,
+`recall`, `forget`, and project memory all read and write the repo; the write
+journal and consolidation markers stay in the block store so the audit trail
+lives in one place. Writes refuse to run while the repo has uncommitted
+changes, so hand edits are never swept into a commit.
+
 ## On-disk layout
 
 Everything lives under the Aster data home (the same directory that holds

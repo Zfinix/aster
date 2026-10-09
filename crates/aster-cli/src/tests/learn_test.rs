@@ -27,16 +27,18 @@ fn reflection(task: Option<&str>, body: &str) -> Reflection {
     }
 }
 
-fn home() -> (tempfile::TempDir, PathBuf, MemoryStore) {
+fn home() -> (tempfile::TempDir, PathBuf, aster_persist::Memory) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("skills");
-    let memory = aster_persist::Store::open(dir.path()).unwrap().memory();
+    let memory = aster_persist::Store::open(dir.path())
+        .unwrap()
+        .memory_with(None);
     (dir, root, memory)
 }
 
 fn learn(
     root: &Path,
-    memory: &MemoryStore,
+    memory: &aster_persist::Memory,
     session: &str,
     turn: usize,
     s: RunScore,

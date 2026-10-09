@@ -29,9 +29,9 @@ pub fn run() -> Result<()> {
     let enabled = servers.iter().filter(|s| s["disabled"] == false).count();
 
     let store = crate::persist::store().ok();
-    let memory = store
-        .as_ref()
-        .and_then(|s| s.memory().list().ok())
+    let memory = crate::persist::memory()
+        .ok()
+        .and_then(|m| m.list().ok())
         .map(|blocks| blocks.len());
     let sessions = store
         .as_ref()

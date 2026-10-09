@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod amr;
 mod grants;
 mod memory;
 mod transcript;
 
+pub use amr::{AmrStore, ImportEntry, MAX_AMR_CONTEXT_CHARS, MEMORY_FILE, Memory};
 pub use grants::GrantStore;
 pub use memory::{
     MAX_INDEX_ENTRIES, MemoryJournalEntry, MemoryMeta, MemoryOp, MemoryStore, PROJECT_MEMORY_FILE,
@@ -45,6 +47,16 @@ impl Store {
 
     pub fn memory(&self) -> MemoryStore {
         MemoryStore::new(self.home.join("memory"))
+    }
+
+    /// The memory backend to use: the block store by default, the agent memory
+    /// repo when `repo_path` is set. The repo is not touched until the first
+    /// write.
+    pub fn memory_with(&self, repo_path: Option<PathBuf>) -> Memory {
+        match repo_path {
+            Some(root) => Memory::agent_repo(root),
+            None => Memory::blocks(self.memory()),
+        }
     }
 
     /// Out-of-repo directories approved for `repo_root`, scoped per project so

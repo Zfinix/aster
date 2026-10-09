@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use aster_ai::AiClient;
-use aster_persist::{MemoryOp, MemoryStore};
+use aster_persist::{Memory, MemoryOp};
 use chrono::{DateTime, Duration, Utc};
 
 use crate::digest::{self, SessionDigest};
@@ -90,7 +90,7 @@ pub struct ApplyReport {
 /// or has nothing durable.
 pub async fn consolidate_session(
     client: &AiClient,
-    memory: &MemoryStore,
+    memory: &Memory,
     transcript: &aster_persist::SessionTranscript,
     min_turns: usize,
 ) -> Result<Option<ApplyReport>> {
@@ -107,7 +107,7 @@ pub async fn consolidate_session(
 /// Run the consolidation model call. Exposed for tests with a canned client.
 pub async fn propose(
     client: &AiClient,
-    memory: &MemoryStore,
+    memory: &Memory,
     digest: &SessionDigest,
 ) -> Result<Proposals> {
     let index = current_index(memory);
@@ -151,7 +151,7 @@ fn strip_fences(raw: &str) -> &str {
 /// Apply proposals through the journaled store API. This is the audit point:
 /// every learned block carries the session that produced it, and the pass ends
 /// with a `Consolidated` marker so the startup sweep never re-runs it.
-pub fn apply(memory: &MemoryStore, session_id: &str, proposals: &Proposals) -> Result<ApplyReport> {
+pub fn apply(memory: &Memory, session_id: &str, proposals: &Proposals) -> Result<ApplyReport> {
     let mut report = ApplyReport::default();
 
     for block in proposals.new.iter().chain(proposals.lessons.iter()) {
@@ -198,7 +198,7 @@ fn valid_name(name: &str) -> String {
     name.chars().take(80).collect()
 }
 
-fn current_index(memory: &MemoryStore) -> Vec<String> {
+fn current_index(memory: &Memory) -> Vec<String> {
     memory
         .list()
         .unwrap_or_default()
@@ -210,7 +210,7 @@ fn current_index(memory: &MemoryStore) -> Vec<String> {
 
 /// Recent journal entries (memory ops across sessions) that mention a session,
 /// used by callers to decide whether a session already consolidated.
-pub fn already_consolidated(memory: &MemoryStore, session_id: &str) -> bool {
+pub fn already_consolidated(memory: &Memory, session_id: &str) -> bool {
     memory
         .journal()
         .unwrap_or_default()
@@ -220,7 +220,7 @@ pub fn already_consolidated(memory: &MemoryStore, session_id: &str) -> bool {
 
 /// Sessions that ended but never got a `Consolidated` marker. This is what the
 /// startup sweep consumes; it tolerates a missing journal entirely.
-pub fn unconsolidated_sessions(memory: &MemoryStore, since: DateTime<Utc>) -> Result<Vec<String>> {
+pub fn unconsolidated_sessions(memory: &Memory, since: DateTime<Utc>) -> Result<Vec<String>> {
     let entries = memory.journal()?;
     let consolidated: std::collections::HashSet<&str> = entries
         .iter()

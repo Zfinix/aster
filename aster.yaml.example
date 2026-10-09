@@ -204,6 +204,16 @@ mcp:
       - "browser/browser_extract_content"
       - "browser/retry_with_browser_use_agent"
 
+# Durable memory. Off by default, facts live in the block store under the
+# aster data dir. `agent_repo: true` moves them to a separate git repo
+# (AgentMemoryRepo protocol: MEMORY.md index, one-line bullets with
+# [added: ...] metadata, a commit after every edit, never pushed anywhere).
+# Toggle it in chat with /memory repo on|off, or just ask Aster to remember
+# something in your agent memory repo.
+# memory:
+#   agent_repo: false
+#   repo_path: ~/agent-memory
+
 # Scheduled agent runs, installed with `aster cron install` into the OS
 # scheduler (launchd on macOS, cron on Linux). Names are lowercase-hyphen and
 # unique; cron is a five-field expression in local time. `notify: true` posts

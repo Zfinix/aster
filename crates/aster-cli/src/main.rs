@@ -29,6 +29,7 @@ mod learn;
 mod lsp_tools;
 mod mcp;
 mod mcp_cache;
+mod memory_import;
 mod mom;
 mod openrouter_auth;
 mod persist;
