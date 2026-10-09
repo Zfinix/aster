@@ -116,7 +116,7 @@ impl McpCatalog {
                     id: tool.id(),
                     server: tool.server.clone(),
                     name: tool.name.clone(),
-                    description: tool.description.clone(),
+                    description: summary(&tool.description),
                     score,
                 })
             })
@@ -130,6 +130,26 @@ impl McpCatalog {
         matches.truncate(limit);
         matches
     }
+}
+
+/// Longest description a tool gets in search results and listings. Servers
+/// ship descriptions of any length, and one past the tool result cap cuts the
+/// whole search reply mid-JSON; `describe` still returns the full text.
+pub const MAX_LISTED_DESCRIPTION_CHARS: usize = 300;
+
+/// The first paragraph of a description on one line, capped at
+/// [`MAX_LISTED_DESCRIPTION_CHARS`].
+fn summary(description: &str) -> String {
+    let first = description.trim().split("\n\n").next().unwrap_or_default();
+    let line = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= MAX_LISTED_DESCRIPTION_CHARS {
+        return line;
+    }
+    let cut: String = line
+        .chars()
+        .take(MAX_LISTED_DESCRIPTION_CHARS - 1)
+        .collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// Context-sensitive settings for progressive tool injection.
@@ -241,7 +261,7 @@ impl Injector {
             .iter()
             .map(|tool| ToolManifestEntry {
                 id: tool.id(),
-                description: tool.description.clone(),
+                description: summary(&tool.description),
             })
             .collect::<Vec<_>>();
         let manifest_tokens = estimated_tokens(&render_tools(&entries));
@@ -256,7 +276,7 @@ impl Injector {
                 .filter(|tool| self.pinned_servers.contains(&tool.server))
                 .map(|tool| ToolManifestEntry {
                     id: tool.id(),
-                    description: tool.description.clone(),
+                    description: summary(&tool.description),
                 })
                 .collect();
             (Inventory::Servers(self.catalog.servers().to_vec()), pinned)

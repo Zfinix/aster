@@ -162,3 +162,42 @@ fn nothing_is_pinned_when_the_full_manifest_fits() {
     assert!(matches!(injection.inventory, Inventory::Tools(_)));
     assert!(injection.pinned.is_empty());
 }
+
+#[test]
+fn search_lists_a_short_summary_and_describe_keeps_the_full_text() {
+    let long = format!(
+        "Updates a document with batch requests.\n\n{}",
+        "Each request is one of many shapes. ".repeat(1_000)
+    );
+    let injector = injector(vec![tool("gdocs", "update_doc", &long)], 10_000);
+    let BridgeAction::Search(found) = injector
+        .route(r#"{"action":"search","query":"update document"}"#)
+        .expect("search")
+    else {
+        panic!("search did not return matches");
+    };
+    assert_eq!(
+        found,
+        vec![ToolMatch {
+            id: "gdocs/update_doc".into(),
+            server: "gdocs".into(),
+            name: "update_doc".into(),
+            description: "Updates a document with batch requests.".into(),
+            score: found[0].score,
+        }]
+    );
+    let BridgeAction::Describe(described) = injector
+        .route(r#"{"action":"describe","name":"gdocs/update_doc"}"#)
+        .expect("describe")
+    else {
+        panic!("describe did not return the tool");
+    };
+    assert_eq!(described.description, long);
+}
+
+#[test]
+fn a_long_first_paragraph_is_capped() {
+    let listed = summary(&"word ".repeat(200));
+    assert_eq!(listed.chars().count(), MAX_LISTED_DESCRIPTION_CHARS);
+    assert!(listed.ends_with('…'));
+}
