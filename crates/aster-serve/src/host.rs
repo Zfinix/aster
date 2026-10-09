@@ -109,15 +109,6 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             }
             instance.post_run_state().await;
         }
-        "cancelChat" => {
-            if let Some(agent) = instance.agent.lock().await.clone() {
-                agent.cancel().await;
-                agent.drop_queue();
-            }
-            // The slot is cleared by the turn task when the prompt call
-            // returns; clearing it here would let a new chat overlap the old
-            // turn's unwind.
-        }
         // A review is still a per-run child with no agent behind it.
         "dictation" => {
             dictation::handle(
@@ -127,8 +118,17 @@ async fn handle(state: &Arc<AppState>, message: &Value) -> Result<(), String> {
             )
             .await;
         }
-        "cancelReview" => {
+        // The page's Stop sends `cancelReview` for whichever run is live, as the
+        // VS Code host reads it, so both stop the review and the chat turn.
+        "cancelReview" | "cancelChat" => {
             run::cancel(&mut *instance.review.lock().await).await;
+            if let Some(agent) = instance.agent.lock().await.clone() {
+                agent.cancel().await;
+                agent.drop_queue();
+            }
+            // The chat slot is cleared by the turn task when the prompt call
+            // returns; clearing it here would let a new chat overlap the old
+            // turn's unwind.
             instance.post_run_state().await;
         }
         "approval" | "answer" | "inject" => {

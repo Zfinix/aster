@@ -1027,11 +1027,13 @@ impl Agent {
                             turn.edits.push(path.to_string());
                         }
                     }
+                    // The page parses `arguments` as a JSON string, the shape
+                    // the CLI stream and the VS Code bridge send.
                     let raw = &update["rawInput"];
                     let arguments = match raw {
                         Value::String(text) => json!(text),
-                        Value::Null => json!({}),
-                        other => other.clone(),
+                        Value::Null => json!("{}"),
+                        other => json!(other.to_string()),
                     };
                     json!({ "type": "tool_call", "id": id, "name": name, "arguments": arguments })
                 }
