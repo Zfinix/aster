@@ -131,6 +131,8 @@ pub(super) struct OpenOptions {
     pub model: Option<String>,
     pub mode: Option<Mode>,
     pub no_mcp: bool,
+    /// Set once by `initialize`, from what the client says it can draw.
+    pub reply_format: std::sync::OnceLock<crate::reply_format::ReplyFormat>,
 }
 
 pub(super) struct TurnOutcome {
@@ -226,7 +228,10 @@ pub(super) async fn open(
         probe: Arc::new(bash_tools::ToolProbe::detect()),
         plan: Default::default(),
         mcp,
-        limits: Limits::resolve(&settings.agent),
+        limits: Limits {
+            reply_format: opts.reply_format.get().copied().unwrap_or_default(),
+            ..Limits::resolve(&settings.agent)
+        },
         environment: chat::environment_note(&repo_root),
         yolo,
         reads: Default::default(),

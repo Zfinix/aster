@@ -433,7 +433,11 @@ export class ChatRunner {
 
     await this.call("initialize", {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+      clientCapabilities: {
+        fs: { readTextFile: false, writeTextFile: false },
+        // The panel draws ```openui blocks, so the agent may write them.
+        _meta: { "aster.dev/openui": true },
+      },
       clientInfo: { name: "aster-vscode", title: "Aster", version: "0.5.0" },
     });
     return child;

@@ -771,6 +771,31 @@ fn the_system_prompt_ends_every_path_with_the_language_note() {
 }
 
 #[test]
+fn only_the_main_reply_is_taught_openui() {
+    let openui = Limits {
+        reply_format: crate::reply_format::ReplyFormat::OpenUi,
+        ..Limits::default()
+    };
+    let main = SessionCtx {
+        limits: openui.clone(),
+        ..SessionCtx::default()
+    };
+    let sub = SessionCtx {
+        limits: openui,
+        sub_agent: Some(Arc::new(SubAgentOverrides {
+            prompt_body: "Gather facts.".into(),
+            tool_allowlist: Default::default(),
+        })),
+        ..SessionCtx::default()
+    };
+    let taught = |ctx: &SessionCtx| system_prompt(ctx, true).contains("## Rich replies");
+    assert_eq!(
+        [taught(&main), taught(&sub), taught(&SessionCtx::default())],
+        [true, false, false]
+    );
+}
+
+#[test]
 fn limits_default_to_room_for_real_work() {
     let limits = Limits::default();
     assert!(limits.max_tool_rounds >= 60);

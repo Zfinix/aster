@@ -1,7 +1,8 @@
-use agent_client_protocol::schema::v1::{Meta, PromptRequest};
+use agent_client_protocol::schema::v1::{ClientCapabilities, Meta, PromptRequest};
 use serde_json::json;
 
-use super::steer_only;
+use super::{reply_format, steer_only};
+use crate::reply_format::ReplyFormat;
 
 fn request(meta: Option<Meta>) -> PromptRequest {
     PromptRequest::new("session", Vec::new()).meta(meta)
@@ -22,4 +23,19 @@ fn a_steer_only_prompt_says_so() {
         "steerOnly".to_string(),
         json!(true),
     )])))));
+}
+
+#[test]
+fn only_a_client_that_asks_for_openui_gets_it() {
+    let asks = |meta: Option<Meta>| reply_format(&ClientCapabilities::new().meta(meta));
+    let openui: Meta = serde_json::from_value(json!({ "aster.dev/openui": true })).unwrap();
+    let declined: Meta = serde_json::from_value(json!({ "aster.dev/openui": false })).unwrap();
+    assert_eq!(
+        [asks(Some(openui)), asks(Some(declined)), asks(None)],
+        [
+            ReplyFormat::OpenUi,
+            ReplyFormat::Markdown,
+            ReplyFormat::Markdown
+        ]
+    );
 }

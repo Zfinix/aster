@@ -63,6 +63,8 @@ pub(crate) struct Limits {
     pub compact_budget_chars: usize,
     /// `None` follows the language the user writes in.
     pub language: Option<String>,
+    /// Sub-agents stay on markdown: only the main reply reaches the client.
+    pub reply_format: crate::reply_format::ReplyFormat,
 }
 
 impl Default for Limits {
@@ -72,6 +74,7 @@ impl Default for Limits {
             command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
             compact_budget_chars: COMPACT_BUDGET_CHARS,
             language: None,
+            reply_format: Default::default(),
         }
     }
 }
@@ -98,6 +101,7 @@ impl Limits {
                 .or_else(|| agent.language.clone())
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
+            reply_format: Default::default(),
         }
     }
 }
@@ -629,6 +633,10 @@ fn system_prompt(ctx: &SessionCtx, tools: bool) -> String {
     }
     prompt.push_str("\n\n");
     prompt.push_str(&language_note(ctx.limits.language.as_deref()));
+    if let Some(format) = ctx.limits.reply_format.prompt() {
+        prompt.push_str("\n\n");
+        prompt.push_str(format);
+    }
     if tools {
         prompt.push_str(TOOLS_PROMPT);
         if let Some(index) = ctx.skills.render_index() {

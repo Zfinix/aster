@@ -206,7 +206,11 @@ impl Agent {
                 "initialize",
                 json!({
                     "protocolVersion": 1,
-                    "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
+                    "clientCapabilities": {
+                        "fs": { "readTextFile": false, "writeTextFile": false },
+                        // The page is the VS Code webview, which draws ```openui blocks.
+                        "_meta": { "aster.dev/openui": true }
+                    },
                     "clientInfo": { "name": "aster-serve", "title": "Aster", "version": "0.5.0" }
                 }),
             )

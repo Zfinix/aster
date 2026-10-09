@@ -185,3 +185,32 @@ Every stage converges on one canonical object (`aster_models::code_review`):
 
 This object is designed so downstream consumers — inline PR comments, Linear
 issue creation, and a future fix-agent — all read the same shape.
+
+## Rich replies (OpenUI)
+
+A client that can draw [OpenUI](https://openui.com) sets
+`clientCapabilities._meta["aster.dev/openui"] = true` in its ACP `initialize`.
+The VS Code panel and `aster serve` do; Zed, the TUI and the desktop app do
+not. For those sessions `Limits::reply_format` is `ReplyFormat::OpenUi`, and the
+main agent's system prompt gains the section in
+`crates/aster-cli/prompts/openui.md` (about 2.9K tokens, static, so it does not
+break the prompt cache). Sub-agents never get it.
+
+The model then writes markdown as usual and adds a fenced ` ```openui ` block
+when a table, chart, steps or a form says it better. The webview draws the block
+with OpenUI's own components (`editors/vscode/webview/components/OpenUIBlock.tsx`),
+themed from the VS Code tokens. A button with `@ToAssistant` sends its text as
+the next user message, with the form answers appended and capped at 1,000
+characters.
+
+Aster adds three components of its own: `Map` (a MapLibre street map on
+OpenFreeMap's keyless vector tiles, pins and an optional route line),
+`Itinerary`, and the `Stop` both share, and extends OpenUI's `Card` to hold them.
+Photos for stops come from the `web/images` tool, and the prompt tells the model
+to copy those URLs rather than make one up. Prose words fade in as they stream;
+a reply loaded from history does not animate.
+
+The prompt is generated, not hand-written: `bun run prompt:openui` in
+`editors/vscode` renders it from the components `webview/lib/openui.ts`
+registers, so the model is never taught a component the panel cannot draw.
+Rerun it after changing that list.

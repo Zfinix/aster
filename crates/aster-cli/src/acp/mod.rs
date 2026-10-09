@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest, AuthenticateResponse,
-    AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentChunk, CurrentModeUpdate,
-    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
-    Meta, NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
-    SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
-    SetSessionModeResponse, StopReason,
+    AvailableCommand, AvailableCommandsUpdate, CancelNotification, ClientCapabilities,
+    ContentChunk, CurrentModeUpdate, Implementation, InitializeRequest, InitializeResponse,
+    LoadSessionRequest, LoadSessionResponse, Meta, NewSessionRequest, NewSessionResponse,
+    PromptCapabilities, PromptRequest, PromptResponse, SessionConfigOptionValue, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 use anyhow::Result;
@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 use crate::chat::PermissionModeArg;
 use crate::config::provider::MissingCredentials;
+use crate::reply_format::ReplyFormat;
 use events::Sink;
 use session::{OpenOptions, Session};
 
@@ -76,6 +77,7 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
             model: args.model,
             mode: args.permission_mode.map(Into::into),
             no_mcp: args.no_mcp,
+            reply_format: std::sync::OnceLock::new(),
         },
         sessions: Mutex::new(HashMap::new()),
     });
@@ -85,6 +87,7 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
         Stdio::new()
     };
 
+    let init_server = server.clone();
     let new_server = server.clone();
     let load_server = server.clone();
     let mode_server = server.clone();
@@ -96,7 +99,11 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
         .builder()
         .name("aster")
         .on_receive_request(
-            async move |_request: InitializeRequest, responder, _cx| {
+            async move |request: InitializeRequest, responder, _cx| {
+                let _ = init_server
+                    .opts
+                    .reply_format
+                    .set(reply_format(&request.client_capabilities));
                 responder.respond(initialize_response())
             },
             agent_client_protocol::on_receive_request!(),
@@ -272,6 +279,23 @@ fn steer_only(request: &PromptRequest) -> bool {
         .and_then(|meta| meta.get("steerOnly"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Key a client sets in `clientCapabilities._meta` when it draws ```openui
+/// blocks; Aster's VS Code panel and `aster serve` do.
+const OPENUI_META: &str = "aster.dev/openui";
+
+fn reply_format(capabilities: &ClientCapabilities) -> ReplyFormat {
+    let openui = capabilities
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get(OPENUI_META))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match openui {
+        true => ReplyFormat::OpenUi,
+        false => ReplyFormat::Markdown,
+    }
 }
 
 fn initialize_response() -> InitializeResponse {

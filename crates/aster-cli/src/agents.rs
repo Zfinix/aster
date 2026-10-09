@@ -251,6 +251,7 @@ async fn run_agent(
             command_timeout_secs: deps.limits.command_timeout_secs,
             compact_budget_chars: deps.limits.compact_budget_chars,
             language: deps.limits.language.clone(),
+            reply_format: Default::default(),
         },
         environment: deps.environment.clone(),
         yolo: Arc::new(AtomicBool::new(deps.yolo)),
