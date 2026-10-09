@@ -248,6 +248,12 @@ through to DuckDuckGo and a plain HTTP fetch when that is rate-limited.
 | `web/crawl` | no | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, or the Cloudflare pair |
 | `web/sitemap` | no | `CONTEXT_DEV_API_KEY` |
 | `web/screenshot` | no | `CONTEXT_DEV_API_KEY` |
+| `web/images` | Wikimedia Commons, then Openverse | nothing; both are keyless |
+
+`web/images` returns at most 10 openly licensed photos, each with a credit and
+license. Commons results come back as `Special:FilePath` links, which name the
+file once: the thumbnail URL Commons hands out spells the filename twice, and a
+model copying one verbatim trips the repetition guard.
 
 A configured provider takes over a tool it can serve, and the tool description
 the model reads names whichever provider will answer it. Exa leads `search`

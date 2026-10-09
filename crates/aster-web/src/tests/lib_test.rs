@@ -82,6 +82,7 @@ fn backend(with: Configured) -> WebBackend {
         jina: jina::JinaClient::new(None, timeout),
         duckduckgo: std::sync::Arc::new(duckduckgo::DuckDuckGoClient::new()),
         plain_http: plain_http::PlainHttpClient::new(timeout),
+        images: std::sync::Arc::new(images::ImageSearch::new()),
     }
 }
 
@@ -340,7 +341,14 @@ fn every_tool_name_is_offered_once_with_all_providers_configured() {
     names.sort();
     assert_eq!(
         names,
-        ["crawl", "extract", "screenshot", "search", "sitemap"]
+        [
+            "crawl",
+            "extract",
+            "images",
+            "screenshot",
+            "search",
+            "sitemap"
+        ]
     );
 }
 

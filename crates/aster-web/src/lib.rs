@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Web tools for Aster: crawl, extract, search, sitemap, and screenshot across
+//! Web tools for Aster: crawl, extract, search, images, sitemap, and screenshot across
 //! pluggable providers. [`WebBackend::from_env`] holds every provider whose key is
 //! set and dispatches to the best; [`register_tools`] is the catalog agents see.
 
@@ -12,6 +12,7 @@ mod exa;
 mod fetch;
 mod firecrawl;
 mod html;
+mod images;
 mod jina;
 mod limit;
 mod perplexity;
@@ -21,7 +22,7 @@ mod types;
 
 use aster_mcp::McpTool;
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub use config::{KEY_VARS, WebConfig};
 pub use serve::serve;
@@ -79,6 +80,7 @@ pub struct WebBackend {
     jina: jina::JinaClient,
     duckduckgo: std::sync::Arc<duckduckgo::DuckDuckGoClient>,
     plain_http: plain_http::PlainHttpClient,
+    images: std::sync::Arc<images::ImageSearch>,
 }
 
 impl WebBackend {
@@ -104,6 +106,7 @@ impl WebBackend {
             jina: jina::JinaClient::new(config.resolve_jina_key(), timeout_ms),
             duckduckgo: std::sync::Arc::new(duckduckgo::DuckDuckGoClient::new()),
             plain_http: plain_http::PlainHttpClient::new(timeout_ms),
+            images: std::sync::Arc::new(images::ImageSearch::new()),
         }
     }
 
@@ -265,6 +268,11 @@ impl WebBackend {
                 };
                 Ok(serde_json::to_value(self.search(query, &opts).await?)?)
             }
+            "images" => {
+                let query = arguments["query"].as_str().context("missing query")?;
+                let limit = arguments["limit"].as_u64().unwrap_or(3) as usize;
+                Ok(json!({ "images": self.images.search(query, limit).await? }))
+            }
             "screenshot" => {
                 let url = arguments["url"].as_str().context("missing url")?;
                 let full_page = arguments["full_page"].as_bool().unwrap_or(false);
@@ -348,6 +356,8 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     candidates.push(duckduckgo::extract_tool());
     // Plain HTTP needs no key, so `extract` is always on offer.
     candidates.push(plain_http::extract_tool());
+    // Commons and Openverse are keyless, so pictures are always on offer too.
+    candidates.push(images::images_tool());
 
     let mut seen = Vec::new();
     candidates.retain(|tool| match seen.contains(&tool.name) {
