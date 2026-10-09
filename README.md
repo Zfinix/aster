@@ -33,10 +33,6 @@ Three ideas shape it:
 > permissions, MCP, and the browser, editor, and desktop surfaces have landed.
 > Expect rough edges.
 
-**I am job hunting.** I build Aster alone, and it is the best picture of how
-I work. If your team is hiring for systems engineering or applied AI, email me
-at [chiziaruhoma@gmail.com](mailto:chiziaruhoma@gmail.com).
-
 ## Install
 
 ```bash

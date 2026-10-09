@@ -152,6 +152,3 @@ printf "  cd your-repo\n"
 printf "  ${c_info}%s${c_off}\n" "$BIN"
 printf "${c_dim}The first run asks how you want to connect: sign in with a browser,\n"
 printf "paste an API key, or point at a model running on this machine.${c_off}\n"
-
-printf "\n${c_dim}I build Aster alone, and I am job hunting. Hiring for systems\n"
-printf "engineering or applied AI? chiziaruhoma@gmail.com${c_off}\n"
