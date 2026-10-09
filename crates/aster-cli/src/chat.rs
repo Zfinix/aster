@@ -10,7 +10,8 @@ use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
 use aster_ai::{
-    AiClient, Annotation, ChatMessage, DegenerateOutput, ReasoningDetail, UsageSnapshot,
+    AiClient, Annotation, ChatMessage, DegenerateOutput, ReasoningDetail, ThinkingExhausted,
+    UsageSnapshot,
 };
 use aster_persist::{
     EventUsage, EvictionEvent, MessageEvent, ReasoningRecord, Store, SummaryEvent, TranscriptEvent,
@@ -1614,7 +1615,11 @@ async fn run_stream(
                 ),
             }))
         }
-        Err(e) => emit_line(&json!({ "type": "error", "message": format!("{e:#}") })),
+        Err(e) => emit_line(&json!({
+            "type": "error",
+            "message": format!("{e:#}"),
+            "usage": usage_json(&u),
+        })),
     }
     Ok(())
 }
@@ -1867,6 +1872,17 @@ const SILENT_MODEL: &str = "The model returned nothing, twice over and again \
 
 const MAX_DEGENERATE_RETRIES: usize = 2;
 
+const MAX_OVERTHINK_RETRIES: usize = 2;
+
+/// Ceiling for the doubled output cap on those retries.
+const MAX_OVERTHINK_TOKENS: u32 = 32_000;
+
+const OVERTHINK_CORRECTION: &str = "Your last reply spent its whole length \
+    thinking and was cut off before any answer or tool call; everything before \
+    it still stands. Think briefly, then take the next concrete step with a \
+    tool call. Split large work into small steps instead of planning it all at \
+    once.";
+
 const DEGENERATE_CORRECTION: &str = "Your last reply degenerated into repeated \
     text and was cut off; everything before it still stands. Continue from where \
     it stopped: keep replies short, act with tool calls instead of long prose, \
@@ -2101,6 +2117,8 @@ pub(crate) async fn agent_loop(
     let mut empties = 0usize;
     // Degenerate replies steered back on track this turn.
     let mut degenerations = 0usize;
+    // All-thinking replies steered back into acting this turn.
+    let mut overthinks = 0usize;
     // The dangling-intent steer fires at most twice a turn, then the reply
     // stands rather than burning rounds on a model that will not act.
     let mut promised = 0usize;
@@ -2212,9 +2230,24 @@ pub(crate) async fn agent_loop(
         // The client only exposes a cumulative counter, so this round's spend is
         // the delta across the call.
         let before = client.usage_snapshot();
-        let mut msg = match client
+        // The steer alone cannot help a model whose thinking outgrows the
+        // output cap, so each retry after an all-thinking reply doubles it.
+        let wider;
+        let round_client = match client.max_tokens() {
+            Some(cap) if overthinks > 0 => {
+                let mut boosted = client.clone();
+                boosted.set_max_tokens(Some(
+                    cap.saturating_mul(1 << overthinks)
+                        .min(MAX_OVERTHINK_TOKENS),
+                ));
+                wider = boosted;
+                &wider
+            }
+            _ => client,
+        };
+        let mut msg = match round_client
             .complete_tools_stream_with(
-                &client.model,
+                &round_client.model,
                 wire.clone(),
                 tools.clone(),
                 CHAT_TEMPERATURE,
@@ -2266,6 +2299,20 @@ pub(crate) async fn agent_loop(
                     "reply degenerated into repeated text; steering and retrying the round"
                 );
                 steer(&mut wire, DEGENERATE_CORRECTION.to_string());
+                continue;
+            }
+            // Same shape: a reply that thought until the length limit loses
+            // only itself, so the turn's work survives a nudge to act sooner.
+            Err(e) if e.downcast_ref::<ThinkingExhausted>().is_some() => {
+                overthinks += 1;
+                if overthinks > MAX_OVERTHINK_RETRIES {
+                    return Err(e);
+                }
+                tracing::warn!(
+                    overthinks,
+                    "reply was all thinking; steering and retrying the round"
+                );
+                steer(&mut wire, OVERTHINK_CORRECTION.to_string());
                 continue;
             }
             Err(e) => return Err(e),
@@ -2908,7 +2955,7 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file, with line numbers. Optionally a line range. Document formats (PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, RTF) are converted to Markdown, so their line numbers do not map to bytes on disk. Image files (PNG, JPEG, GIF, WebP) are not readable here: an image the user mentioned with @path is already attached to the conversation as an image part, so look at it instead of calling this tool. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
+                "description": "Read a file, with line numbers. Optionally a line range. Document formats (PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, RTF) are converted to Markdown, so their line numbers do not map to bytes on disk. Image files (PNG, JPEG, GIF, WebP, BMP) are attached so you can look at them; to see a scanned PDF or a chart, render it to PNG first and read that. An image the user mentioned with @path is already attached, so do not read it again. Paths outside the repository (absolute, or starting with ~) are allowed but the user is asked to approve each one, so prefer repo-relative paths.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4330,6 +4377,14 @@ fn raw_argv(args: &Value) -> Option<(String, Vec<String>)> {
                 && binary
                     .chars()
                     .any(|c| c.is_whitespace() || matches!(c, '|' | ';' | '>' | '<' | '&' | '`'));
+            // `cargo` with `["cargo check"]`: the whole line packed into one
+            // argument that names the command again.
+            if let [line] = tail.as_slice()
+                && line.starts_with(&format!("{binary} "))
+            {
+                let (sh, flag) = shell();
+                return Some((sh.into(), vec![flag.into(), line.clone()]));
+            }
             match looks_like_shell_line {
                 true => {
                     let (sh, flag) = shell();
@@ -4337,6 +4392,15 @@ fn raw_argv(args: &Value) -> Option<(String, Vec<String>)> {
                 }
                 // The tool text says `bash -lc`; where only `sh` exists the
                 // line still has to run rather than fail on the binary.
+                // `-lc` only means something to a shell; sent to python or
+                // node it fails, so the line it carries runs in the shell.
+                false
+                    if tail.first().is_some_and(|a| a == "-lc")
+                        && !matches!(binary, "bash" | "sh" | "zsh") =>
+                {
+                    let (sh, flag) = shell();
+                    Some((sh.into(), vec![flag.into(), tail[1..].join(" ")]))
+                }
                 false if binary == "bash" && !on_path("bash") => {
                     let (sh, flag) = shell();
                     let line = tail.iter().skip_while(|a| a.starts_with('-')).cloned();
@@ -4363,6 +4427,14 @@ fn raw_argv(args: &Value) -> Option<(String, Vec<String>)> {
 }
 
 fn string_list(value: &Value) -> Vec<String> {
+    // A list sent as its JSON text used to vanish here and the command ran
+    // with no arguments at all; any other string is one argument.
+    if let Some(text) = value.as_str().filter(|t| !t.trim().is_empty()) {
+        return match serde_json::from_str::<Value>(text) {
+            Ok(list @ Value::Array(_)) => string_list(&list),
+            _ => vec![text.to_string()],
+        };
+    }
     value
         .as_array()
         .map(|a| {

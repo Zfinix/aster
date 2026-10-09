@@ -381,6 +381,54 @@ fn a_leading_flag_runs_through_a_shell() {
 }
 
 #[test]
+fn a_shell_flag_sent_to_an_interpreter_runs_the_line_in_the_shell() {
+    let args = json!({ "command": "python3", "args": ["-lc", "python3 /tmp/a.py | head"] });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "bash".to_string(),
+            vec!["-lc".to_string(), "python3 /tmp/a.py | head".to_string()]
+        ))
+    );
+}
+
+#[test]
+fn a_whole_line_packed_into_one_arg_runs_in_the_shell() {
+    let args = json!({ "command": "cargo", "args": ["cargo check -p aster-ai"] });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "bash".to_string(),
+            vec!["-lc".to_string(), "cargo check -p aster-ai".to_string()]
+        ))
+    );
+}
+
+#[test]
+fn args_sent_as_json_text_are_parsed_back_into_a_list() {
+    let args = json!({ "command": "bash", "args": "[\"-lc\", \"echo hi\"]" });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "bash".to_string(),
+            vec!["-lc".to_string(), "echo hi".to_string()]
+        ))
+    );
+}
+
+#[test]
+fn a_python_dash_c_call_is_left_alone() {
+    let args = json!({ "command": "python3", "args": ["-c", "print(1)"] });
+    assert_eq!(
+        raw_argv(&args),
+        Some((
+            "python3".to_string(),
+            vec!["-c".to_string(), "print(1)".to_string()]
+        ))
+    );
+}
+
+#[test]
 fn a_shell_line_in_command_runs_through_bash() {
     assert_eq!(
         command_argv(&json!({ "command": "tail -n 50 SKILL.md | wc -l" })),
@@ -2357,6 +2405,59 @@ async fn a_model_that_never_stops_degenerating_still_fails_the_turn() {
 
     let err = turn_against(&server).await.unwrap_err().to_string();
     assert!(err.contains("repeating itself"), "{err}");
+}
+
+fn all_thinking() -> wiremock::ResponseTemplate {
+    wiremock::ResponseTemplate::new(200).set_body_json(json!({
+        "choices": [{
+            "message": { "role": "assistant", "content": "", "reasoning_content": "hmm" },
+            "finish_reason": "length"
+        }],
+        "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+    }))
+}
+
+#[tokio::test]
+async fn a_reply_that_only_thinks_is_steered_and_retried_rather_than_failing_the_turn() {
+    let server = wiremock::MockServer::start().await;
+    // A known window, so the client sends its output cap at all.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/models"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": "mock-model", "context_length": 1_000_000 }]
+        })))
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(all_thinking())
+        // The streamed request and its whole-response fallback: one round.
+        .up_to_n_times(2)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // Only a retry with a doubled output cap gets the answer.
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({ "max_tokens": aster_ai::DEFAULT_MAX_TOKENS * 2 }),
+        ))
+        .respond_with(body("acted"))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    assert_eq!(turn_against(&server).await.unwrap(), "acted");
+}
+
+#[tokio::test]
+async fn a_model_that_only_ever_thinks_still_fails_the_turn() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(all_thinking())
+        .mount(&server)
+        .await;
+
+    let err = turn_against(&server).await.unwrap_err().to_string();
+    assert_eq!(err, aster_ai::THINKING_EXHAUSTED);
 }
 
 #[test]

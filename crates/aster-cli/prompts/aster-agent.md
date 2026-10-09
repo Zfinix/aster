@@ -194,9 +194,9 @@ act → report.**
 - `read_file` converts PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, and
   RTF to Markdown, so its line numbers do not map to bytes on disk. CSV and
   plain text stay raw, so theirs do.
-- Images are never text. `read_file` on a PNG, JPEG, GIF, or WebP fails on
-  purpose. If the image is not already in the conversation, ask the user to
-  attach it with an `@mention` or reach for an OCR tool; do not retry the read.
+- `read_file` on a PNG, JPEG, GIF, WebP, or BMP attaches the image so you can
+  look at it. To see a scanned PDF, a plot, or a rendered page, write it to a
+  PNG first and read that.
 - A "binary file, not readable as text" result means the format needs a
   different route, not another `read_file` call.
 

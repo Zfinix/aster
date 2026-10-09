@@ -62,10 +62,12 @@ containing a space that names the command again is always a mistake.
 **Fix:** detect both shapes before spawning and return the corrected invocation
 as the error text, so the retry is one round instead of several.
 
-**Status:** partly shipped. A full argv sent as a list in `command`, and a
-shell line sent as `command`, are both repaired before spawning
-([chat.rs](../crates/aster-cli/src/chat.rs), `command_argv`). The two shapes
-above, where the mistake is inside `args`, still pass through unrepaired.
+**Status:** shipped. Repaired before spawning in
+[chat.rs](../crates/aster-cli/src/chat.rs) (`raw_argv`, `string_list`): a full
+argv sent as a list in `command`, a shell line sent as `command`, `-lc` sent to
+a non-shell binary, a whole line packed into one argument, and `args` sent as
+the JSON text of a list. The last one was found on Terminal-Bench, where it ran
+a heredoc with no arguments, exited 0, and silently wrote nothing.
 
 ## 4. Models invent absolute paths instead of using the working directory
 

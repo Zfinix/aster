@@ -242,7 +242,10 @@ async fn a_reply_that_only_thinks_is_not_asked_again() {
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_string(sse(&[
             json!({ "choices": [{ "delta": { "reasoning_content": "thinking hard" } }] }),
-            json!({ "choices": [{ "delta": {}, "finish_reason": "length" }] }),
+            json!({
+                "choices": [{ "delta": {}, "finish_reason": "length" }],
+                "usage": { "prompt_tokens": 50, "completion_tokens": 20 }
+            }),
         ])))
         .expect(1)
         .mount(&server)
@@ -253,7 +256,14 @@ async fn a_reply_that_only_thinks_is_not_asked_again() {
         .complete_tools_stream_with("mock-model", vec![], vec![], 0.0, |_| {}, |_| {})
         .await
         .unwrap_err();
-    assert_eq!(err.to_string(), THINKING_EXHAUSTED);
+    assert_eq!(
+        (
+            err.to_string(),
+            err.downcast_ref::<ThinkingExhausted>().is_some(),
+            client.usage_snapshot().prompt_tokens,
+        ),
+        (THINKING_EXHAUSTED.to_string(), true, 50)
+    );
 }
 
 #[tokio::test]

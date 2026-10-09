@@ -118,15 +118,21 @@ pub(crate) fn read_text_or_document(target: &Path) -> Result<String> {
     if let Some(format) = anydoc::Format::from_bytes(&bytes)
         && !matches!(format, anydoc::Format::Csv)
     {
-        return anydoc::to_markdown_bytes(&bytes, format)
-            .map_err(|e| anyhow::anyhow!("converting {} to Markdown: {e}", target.display()));
+        return anydoc::to_markdown_bytes(&bytes, format).map_err(|e| {
+            // A scanned page has no text to extract, but it can still be seen.
+            let hint = match e.to_string().contains("OCR") {
+                true => "; render its pages to PNG and read_file those to look at them",
+                false => "",
+            };
+            anyhow::anyhow!("converting {} to Markdown: {e}{hint}", target.display())
+        });
     }
     match String::from_utf8(bytes) {
         Ok(text) => Ok(text),
         Err(_) => bail!(
-            "{} is a binary file, not readable as text; images the user mentions \
-             arrive as image parts, and only document formats (PDF, Office, EPUB, \
-             RTF) convert to Markdown",
+            "{} is a binary file, not readable as text; read_file shows images \
+             (PNG, JPEG, GIF, WebP, BMP) and converts documents (PDF, Office, EPUB, \
+             RTF) to Markdown",
             target.display()
         ),
     }

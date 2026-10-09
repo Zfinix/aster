@@ -15,6 +15,19 @@ use crate::models::{ChatRequest, ReasoningDetail, ToolChatRequest};
 pub const THINKING_EXHAUSTED: &str = "The model used its whole reply length thinking and never \
     wrote an answer. Lower the effort, or raise agent.max_output_tokens so it has room to reply.";
 
+/// Marker error for a reply that was all thinking. `agent_loop` matches on this
+/// type to steer and retry the round instead of losing the turn.
+#[derive(Debug, Clone, Copy)]
+pub struct ThinkingExhausted;
+
+impl std::fmt::Display for ThinkingExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the model's reply was all thinking and hit the length limit")
+    }
+}
+
+impl std::error::Error for ThinkingExhausted {}
+
 /// How a provider takes the effort setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Knob {

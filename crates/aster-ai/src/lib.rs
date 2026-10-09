@@ -40,8 +40,8 @@ mod repetition;
 pub use repetition::{DEGENERATE_MSG, DegenerateOutput, RepetitionGuard, is_degenerate};
 
 mod reasoning;
-pub use reasoning::THINKING_EXHAUSTED;
 use reasoning::{Memo, Reasoned, Replay, ThinkTags};
+pub use reasoning::{THINKING_EXHAUSTED, ThinkingExhausted};
 
 mod wire;
 use wire::{
@@ -538,7 +538,7 @@ impl AiClient {
                 return Ok(content);
             }
             if content.trim().is_empty() {
-                return Err(anyhow!(THINKING_EXHAUSTED));
+                return Err(anyhow::Error::new(ThinkingExhausted).context(THINKING_EXHAUSTED));
             }
             // The reply hit the output budget mid-sentence; feed the partial
             // back so the model finishes it instead of returning a cut reply.
@@ -577,7 +577,7 @@ impl AiClient {
                 return Ok(content);
             }
             if content.trim().is_empty() {
-                return Err(anyhow!(THINKING_EXHAUSTED));
+                return Err(anyhow::Error::new(ThinkingExhausted).context(THINKING_EXHAUSTED));
             }
             // The reply hit the output budget mid-sentence; feed the partial
             // back so the model finishes it instead of returning a cut reply.
@@ -699,7 +699,8 @@ impl AiClient {
                 && request_content.is_empty()
                 && fragment.trim().is_empty()
             {
-                return Err(anyhow!(THINKING_EXHAUSTED));
+                self.record_usage(parsed.usage, prompt_chars, 0);
+                return Err(anyhow::Error::new(ThinkingExhausted).context(THINKING_EXHAUSTED));
             }
             request_content.push_str(&fragment);
             if is_degenerate(&request_content) {
@@ -802,7 +803,7 @@ impl AiClient {
         }
 
         if acc.is_empty() && thought {
-            return Err(anyhow!(THINKING_EXHAUSTED));
+            return Err(anyhow::Error::new(ThinkingExhausted).context(THINKING_EXHAUSTED));
         }
         // Some endpoints ignore `stream` and return an empty body; fall back to a
         // non-streaming call (which records its own usage).
@@ -986,7 +987,8 @@ impl AiClient {
         // streaming would think all over again, out of sight.
         if content.is_empty() && partials.is_empty() && thought {
             if finish.as_deref() == Some("length") {
-                return Err(anyhow!(THINKING_EXHAUSTED));
+                self.record_usage(usage, prompt_chars, 0);
+                return Err(anyhow::Error::new(ThinkingExhausted).context(THINKING_EXHAUSTED));
             }
             self.record_usage(usage, prompt_chars, 0);
             return Ok(AssistantMessage {
