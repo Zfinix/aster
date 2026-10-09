@@ -60,8 +60,11 @@ fn main() -> Result<()> {
 
 fn live(args: Vec<String>) -> Result<()> {
     let mut models: Vec<String> = Vec::new();
-    let mut repo = aster_eval::repo_root(&std::env::current_dir()?);
-    let mut evals: Option<PathBuf> = None;
+    let mut target = aster_eval::Target {
+        bin: "aster".into(),
+        repo: aster_eval::repo_root(&std::env::current_dir()?),
+    };
+    let mut runs = 1;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -71,12 +74,20 @@ fn live(args: Vec<String>) -> Result<()> {
                     .next()
                     .context("--models needs a comma-separated list")?
                     .split(',')
-                    .map(|m| m.trim().to_string())
+                    .map(str::trim)
                     .filter(|m| !m.is_empty())
+                    .map(str::to_string)
                     .collect();
             }
-            "--repo" => repo = args.next().context("--repo needs a path")?.into(),
-            "--evals" => evals = Some(args.next().context("--evals needs a path")?.into()),
+            "--runs" => {
+                runs = args
+                    .next()
+                    .context("--runs needs a number")?
+                    .parse()
+                    .context("--runs takes a whole number")?;
+            }
+            "--bin" => target.bin = args.next().context("--bin needs a path")?.into(),
+            "--repo" => target.repo = args.next().context("--repo needs a path")?.into(),
             "-h" | "--help" => {
                 println!("{LIVE_HELP}");
                 return Ok(());
@@ -85,12 +96,7 @@ fn live(args: Vec<String>) -> Result<()> {
         }
     }
 
-    // Default to the workspace shipped beside this crate.
-    let evals = evals.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals"));
-    if !evals.join("features/aster/feature.ts").exists() {
-        anyhow::bail!("no aster harness at {}", evals.display());
-    }
-    let runs = aster_eval::sweep(&evals, &repo, &aster_eval::default_cases(), &models)?;
+    let runs = aster_eval::sweep(&target, &aster_eval::default_cases(), &models, runs)?;
     print!("{}", aster_eval::render_live(&runs));
     if runs.iter().any(|r| r.failed() > 0) {
         std::process::exit(1);
@@ -101,12 +107,13 @@ fn live(args: Vec<String>) -> Result<()> {
 const LIVE_HELP: &str = "\
 aster-eval live [options]
 
-Runs aster against fixed cases through Ori and compares models. Needs `ori`
-(openrouter.ai/labs/ori), `bun`, and an OpenRouter credential.
+Runs aster against fixed cases and compares models. Each case spawns
+`aster --stream` in the repo and is judged from the events it emits.
 
   --models a,b   models to compare (default: the configured one)
-  --repo DIR     checkout aster runs against (default: the enclosing git repo)
-  --evals DIR    eval workspace (default: crates/aster-eval/evals)";
+  --runs N       run every case N times and report medians (default: 1)
+  --bin PATH     aster binary to measure (default: `aster` on PATH)
+  --repo DIR     checkout aster runs against (default: the enclosing git repo)";
 
 const HELP: &str = "\
 aster-eval [SESSIONS_DIR] [options]
@@ -120,4 +127,4 @@ batches tool calls, and which tools answer nothing.
   --baseline FILE  compare against a report saved earlier with --json
 
 Subcommands:
-  live             run fixed cases against models through Ori (see `live --help`)";
+  live             run fixed cases against models (see `live --help`)";

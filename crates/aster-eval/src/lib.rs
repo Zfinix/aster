@@ -10,7 +10,7 @@ mod stats;
 mod turn;
 
 pub use aster_persist::barren;
-pub use live::{Case, ModelRun, default_cases, render_eval, render_live, repo_root, sweep};
+pub use live::{Case, ModelRun, Target, default_cases, render_live, repo_root, sweep};
 pub use report::{Delta, ModelStat, Report, ToolStat, render, render_comparison};
 pub use score::RunScore;
 pub use stats::Dist;
