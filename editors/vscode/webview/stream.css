@@ -1,0 +1,18 @@
+/* Words that arrive while a reply streams settle in rather than pop. */
+.md-word {
+  animation: md-word-in 320ms ease-out both;
+  animation-delay: calc(var(--word, 0) * 12ms);
+}
+
+@keyframes md-word-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-word {
+    animation: none;
+  }
+}

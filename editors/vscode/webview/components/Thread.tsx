@@ -4,6 +4,7 @@ import { openFilePreview } from "../lib/filePreview";
 import type { LoginState } from "../lib/login";
 import type { ReviewData, Turn } from "../lib/thread";
 import type { Provider } from "../../src/protocol";
+import { ReplyContext } from "../lib/reply";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import { NewItemsPill } from "../interior/new-items-pill";
 import { ApprovalPrompt } from "./ApprovalPrompt";
@@ -37,6 +38,7 @@ export function Thread({
   onEditStart,
   onFork,
   onReviewChange,
+  onSend,
 }: {
   turns: Turn[];
   login: LoginState | null;
@@ -50,6 +52,7 @@ export function Thread({
   onEditStart: (id: string) => void;
   onFork: (id: string) => void;
   onReviewChange: (id: string, patch: (data: ReviewData) => ReviewData) => void;
+  onSend: (text: string) => void;
 }) {
   const { viewport, content, atBottom, onScroll, scrollToBottom } = useStickToBottom();
 
@@ -134,83 +137,88 @@ export function Thread({
               );
             }
             return (
-              <div key={turn.id} className="turn-assistant">
-                {/* Arrival order, so steps sit under the thought that led to them. */}
-                {turn.blocks.map((block) =>
-                  block.kind === "tools" ? (
-                    <ToolGroup key={block.id} calls={block.calls} grouped={grouping} />
-                  ) : block.kind === "reasoning" ? (
-                    <ReasoningBlock
-                      key={block.id}
-                      text={block.text}
-                      tokens={block.tokens}
-                      durationMs={block.durationMs}
-                      done={block.done}
-                    />
-                  ) : block.kind === "agents" ? (
-                    <AgentGroup key={block.id} tasks={block.tasks} />
-                  ) : block.kind === "goal" ? (
-                    <GoalCard key={block.id} block={block} />
-                  ) : block.kind === "injected" ? (
-                    <div key={block.id} className="turn-user turn-user-injected">
-                      <div className="turn-user-text">
-                        <UserText text={block.text} />
+              <ReplyContext.Provider
+                key={turn.id}
+                value={{ streaming: !!turn.pending, send: onSend }}
+              >
+                <div className="turn-assistant">
+                  {/* Arrival order, so steps sit under the thought that led to them. */}
+                  {turn.blocks.map((block) =>
+                    block.kind === "tools" ? (
+                      <ToolGroup key={block.id} calls={block.calls} grouped={grouping} />
+                    ) : block.kind === "reasoning" ? (
+                      <ReasoningBlock
+                        key={block.id}
+                        text={block.text}
+                        tokens={block.tokens}
+                        durationMs={block.durationMs}
+                        done={block.done}
+                      />
+                    ) : block.kind === "agents" ? (
+                      <AgentGroup key={block.id} tasks={block.tasks} />
+                    ) : block.kind === "goal" ? (
+                      <GoalCard key={block.id} block={block} />
+                    ) : block.kind === "injected" ? (
+                      <div key={block.id} className="turn-user turn-user-injected">
+                        <div className="turn-user-text">
+                          <UserText text={block.text} />
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div key={block.id} className="turn-body">
+                        <Markdown text={block.text} />
+                      </div>
+                    )
+                  )}
+
+                  {turn.approval && (
+                    <ApprovalPrompt
+                      ask={turn.approval}
+                      onRespond={onApproval}
+                      onRedirect={onRedirect}
+                    />
+                  )}
+
+                  {turn.question && (
+                    <QuestionPrompt question={turn.question} onAnswer={onAnswer} />
+                  )}
+
+                  {turn.setup ? (
+                    <SetupCard login={login} providers={providers} />
                   ) : (
-                    <div key={block.id} className="turn-body">
-                      <Markdown text={block.text} />
+                    turn.errorMsg && <ErrorBox message={turn.errorMsg} />
+                  )}
+
+                  {/* Stays up for the whole turn, including the gap between the last
+                      tool result and the reply, which otherwise reads as a hang. */}
+                  {turn.pending && !turn.approval && !turn.question && <StatusLine />}
+
+                  {turn.stopped && <div className="turn-stopped">Stopped</div>}
+
+                  {turn.edits && turn.edits.length > 0 && (
+                    <div className="edits">
+                      <span className="edits-label">Edited</span>
+                      {[...new Set(turn.edits)].map((path) => (
+                        <button
+                          key={path}
+                          className="edit-chip"
+                          onClick={() => openFilePreview(path)}
+                        >
+                          {path}
+                        </button>
+                      ))}
                     </div>
-                  )
-                )}
+                  )}
 
-                {turn.approval && (
-                  <ApprovalPrompt
-                    ask={turn.approval}
-                    onRespond={onApproval}
-                    onRedirect={onRedirect}
-                  />
-                )}
-
-                {turn.question && (
-                  <QuestionPrompt question={turn.question} onAnswer={onAnswer} />
-                )}
-
-                {turn.setup ? (
-                  <SetupCard login={login} providers={providers} />
-                ) : (
-                  turn.errorMsg && <ErrorBox message={turn.errorMsg} />
-                )}
-
-                {/* Stays up for the whole turn, including the gap between the last
-                    tool result and the reply, which otherwise reads as a hang. */}
-                {turn.pending && !turn.approval && !turn.question && <StatusLine />}
-
-                {turn.stopped && <div className="turn-stopped">Stopped</div>}
-
-                {turn.edits && turn.edits.length > 0 && (
-                  <div className="edits">
-                    <span className="edits-label">Edited</span>
-                    {[...new Set(turn.edits)].map((path) => (
-                      <button
-                        key={path}
-                        className="edit-chip"
-                        onClick={() => openFilePreview(path)}
-                      >
-                        {path}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Last, so the zero-height row hangs in the gap below the turn
-                    rather than over whatever else trails it. */}
-                {!turn.pending && turn.text && (
-                  <div className="turn-actions">
-                    <CopyButton text={turn.text} label="Copy reply" />
-                  </div>
-                )}
-              </div>
+                  {/* Last, so the zero-height row hangs in the gap below the turn
+                      rather than over whatever else trails it. */}
+                  {!turn.pending && turn.text && (
+                    <div className="turn-actions">
+                      <CopyButton text={turn.text} label="Copy reply" />
+                    </div>
+                  )}
+                </div>
+              </ReplyContext.Provider>
             );
           })}
         </div>

@@ -334,11 +334,15 @@
     "vscode:prepublish": "bun run build",
     "test": "vitest run",
     "icons": "node scripts/icon-gallery.mjs",
+    "prompt:openui": "bun scripts/openui-prompt.ts",
     "dev:web": "bun run build:webview && tsc -p ./ && node out/devhost/main.js",
     "bundle:cli": "node scripts/bundle-cli.mjs",
     "package:target": "bun run build && vsce package --no-dependencies --target"
   },
   "devDependencies": {
+    "@openuidev/react-headless": "^0.17.0",
+    "@openuidev/react-lang": "0.3.2",
+    "@openuidev/react-ui": "0.17.0",
     "@shikijs/core": "^4.3.1",
     "@shikijs/langs": "^4.3.1",
     "@shikijs/themes": "^4.3.1",
@@ -349,6 +353,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "@vscode/vsce": "^3.0.0",
     "cuelume": "0.2.2",
+    "maplibre-gl": "^5",
     "motion": "^12.43.0",
     "ovsx": "^1.1.1",
     "react": "^19.0.0",
@@ -356,6 +361,8 @@
     "shiki": "^4.3.1",
     "typescript": "^5.5.0",
     "vite": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "zod": "3.25.76",
+    "zustand": "^4.5.5"
   }
 }

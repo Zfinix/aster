@@ -1010,6 +1010,7 @@ export function App() {
           onReviewChange={changeReview}
           onEditStart={(id) => setEditing(id)}
           onFork={forkFrom}
+          onSend={onSend}
         />
       )}
       {/* Setup owns the composer slot until the CLI is installed and a key

@@ -1,14 +1,20 @@
-import type { ReactElement, ReactNode } from "react";
+import "../stream.css";
+
+import { createContext, useContext, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { openFilePreview } from "../lib/filePreview";
+import { ReplyContext } from "../lib/reply";
 import { CodeBlock } from "./CodeBlock";
 import { Link } from "./Link";
+import { OpenUIBlock } from "./OpenUIBlock";
+
+const OPEN_UI = /```openui(?:-lang)?\n/g;
 
 /** Markdown rendering for assistant replies. Deliberately hand-rolled rather
  *  than a library: the webview runs under a strict CSP and this covers what the
  *  agent actually emits — fences, headings, lists, quotes, links, and emphasis. */
 export function Markdown({ text, doc }: { text: string; doc?: boolean }) {
   const blocks: ReactElement[] = [];
-  const fence = /```(\w*)\n([\s\S]*?)```/g;
+  const fence = /```([\w-]*)\n([\s\S]*?)```/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -17,11 +23,25 @@ export function Markdown({ text, doc }: { text: string; doc?: boolean }) {
     if (match.index > cursor) {
       blocks.push(<Prose key={key++} text={text.slice(cursor, match.index)} doc={doc} />);
     }
-    blocks.push(<CodeBlock key={key++} code={match[2].replace(/\n$/, "")} lang={match[1]} />);
+    blocks.push(
+      match[1] === "openui" || match[1] === "openui-lang" ? (
+        <OpenUIBlock key={key++} code={match[2]} open={false} />
+      ) : (
+        <CodeBlock key={key++} code={match[2].replace(/\n$/, "")} lang={match[1]} />
+      )
+    );
     cursor = match.index + match[0].length;
   }
-  if (cursor < text.length) {
-    blocks.push(<Prose key={key++} text={text.slice(cursor)} doc={doc} />);
+  // A block still streaming has no closing fence yet; draw it as it fills in.
+  OPEN_UI.lastIndex = cursor;
+  const opened = OPEN_UI.exec(text);
+  const live = opened ? opened.index : -1;
+  const proseEnd = live < 0 ? text.length : live;
+  if (cursor < proseEnd) {
+    blocks.push(<Prose key={key++} text={text.slice(cursor, proseEnd)} doc={doc} />);
+  }
+  if (live >= 0) {
+    blocks.push(<OpenUIBlock key={key++} code={text.slice(live + opened![0].length)} open />);
   }
   return doc ? <div className="md-doc">{blocks}</div> : <>{blocks}</>;
 }
@@ -48,7 +68,33 @@ function isBlockStart(line: string): boolean {
   );
 }
 
+/** Whether the prose around a run of text arrived while the reply streamed. */
+const Fading = createContext(false);
+
+/** Plain text, its words fading in when they arrive mid-stream. Keyed by
+ *  position, so a word already on screen never animates again as more text
+ *  streams in after it. */
+function Words({ text }: { text: string }) {
+  const fading = useContext(Fading);
+  if (!fading) return <>{text}</>;
+  return (
+    <>
+      {text.split(/(\s+)/).map((word, i) =>
+        /\S/.test(word) ? (
+          <span key={i} className="md-word" style={{ "--word": i % 12 } as CSSProperties}>
+            {word}
+          </span>
+        ) : (
+          word
+        )
+      )}
+    </>
+  );
+}
+
 function Prose({ text, doc }: { text: string; doc?: boolean }) {
+  const { streaming } = useContext(ReplyContext);
+  const [fading] = useState(streaming);
   const lines = text.split("\n");
   const out: ReactElement[] = [];
   let i = 0;
@@ -178,7 +224,7 @@ function Prose({ text, doc }: { text: string; doc?: boolean }) {
     );
   }
 
-  return <>{out}</>;
+  return <Fading.Provider value={fading}>{out}</Fading.Provider>;
 }
 
 function splitRow(line: string): string[] {
@@ -200,7 +246,7 @@ function inline(text: string): ReactNode[] {
 
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > cursor) {
-      parts.push(text.slice(cursor, match.index));
+      parts.push(<Words key={`t${cursor}`} text={text.slice(cursor, match.index)} />);
     }
     const code = match[1] ?? match[2];
     if (code !== undefined) {
@@ -229,7 +275,7 @@ function inline(text: string): ReactNode[] {
     cursor = match.index + match[0].length;
   }
   if (cursor < text.length) {
-    parts.push(text.slice(cursor));
+    parts.push(<Words key={`t${cursor}`} text={text.slice(cursor)} />);
   }
   return parts;
 }
