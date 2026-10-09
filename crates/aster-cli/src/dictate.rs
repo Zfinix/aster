@@ -54,6 +54,10 @@ impl From<VoiceError> for DictationFailure {
                 "Aster isn't allowed to recognize speech. Turn it on in System Settings > Privacy & Security > Speech Recognition, then try again.",
                 None,
             ),
+            VoiceError::MicrophoneRefused => (
+                "Aster isn't allowed to use your microphone, and macOS won't ask again on its own. Run `tccutil reset Microphone` in a terminal, then try again and choose Allow.",
+                Some("this also makes other apps ask for the microphone once more".into()),
+            ),
             VoiceError::NoSpeaker(detail) => (
                 "Can't play sound. Check your speakers or headphones, then try again.",
                 Some(detail),

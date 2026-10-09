@@ -250,6 +250,7 @@ fn needs(err: &VoiceError) -> String {
         }
         VoiceError::Unsupported
         | VoiceError::SpeechNotAllowed
+        | VoiceError::MicrophoneRefused
         | VoiceError::NoMicrophone(_)
         | VoiceError::NoSpeaker(_)
         | VoiceError::TooShort

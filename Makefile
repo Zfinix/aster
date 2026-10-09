@@ -87,8 +87,23 @@ release:
 # --force so a rebuild at the same version still overwrites: the VS Code
 # extension and the desktop app both shell out to the `aster` on PATH, so a
 # stale binary makes source changes invisible to them.
+# On macOS the installed binary is signed as dev.aster.cli with a Developer ID
+# when one is in the keychain, so the microphone permission is tied to Aster
+# and survives rebuilds. An unsigned binary is known only by its path, and a
+# refused prompt then has no toggle in System Settings.
 install:
 	cargo install --path crates/aster-cli --force
+	@if [ "$$(uname)" = Darwin ]; then \
+		bin="$${CARGO_HOME:-$$HOME/.cargo}/bin/aster"; \
+		id="$${APPLE_SIGNING_IDENTITY:-$$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)}"; \
+		if [ -n "$$id" ]; then \
+			codesign --force --options runtime --identifier dev.aster.cli \
+				--entitlements crates/aster-cli/macos/aster.entitlements --sign "$$id" "$$bin" \
+				&& echo "signed $$bin as dev.aster.cli"; \
+		else \
+			echo "no Developer ID in the keychain, so $$bin is unsigned and the microphone permission follows its path"; \
+		fi; \
+	fi
 
 # Bump the version across the workspace and desktop app. Defaults to a patch bump;
 # `make bump LEVEL=minor`, `make bump LEVEL=major`, or `make bump VERSION=0.2.0`.

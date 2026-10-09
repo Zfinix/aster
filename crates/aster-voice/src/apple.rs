@@ -110,7 +110,7 @@ pub fn ask_for_microphone() -> Result<(), VoiceError> {
     if granted {
         Ok(())
     } else {
-        Err(VoiceError::NoMicrophone("microphone access refused".into()))
+        Err(VoiceError::MicrophoneRefused)
     }
 }
 

@@ -78,6 +78,9 @@ pub enum VoiceError {
     Unsupported,
     NotSetUp(Missing),
     SpeechNotAllowed,
+    /// The user said no to the microphone. macOS never asks twice, and a bare
+    /// binary is not listed in System Settings, so only a reset brings it back.
+    MicrophoneRefused,
     NoMicrophone(String),
     NoSpeaker(String),
     TooShort,
@@ -103,6 +106,7 @@ impl std::fmt::Display for VoiceError {
             Self::NotSetUp(Missing::Key(var)) => write!(f, "{var} is not set"),
             Self::NotSetUp(Missing::Url(key)) => write!(f, "voice.{key} is not set"),
             Self::SpeechNotAllowed => write!(f, "speech recognition access was refused"),
+            Self::MicrophoneRefused => write!(f, "microphone access was refused"),
             Self::NoMicrophone(detail) => write!(f, "microphone unavailable: {detail}"),
             Self::NoSpeaker(detail) => write!(f, "speaker unavailable: {detail}"),
             Self::TooShort => write!(f, "recording too short to transcribe"),
