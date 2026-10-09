@@ -24,6 +24,15 @@ impl ServerKind {
         }
     }
 
+    /// Prefix of the progress token for the check a save triggers, if the
+    /// server runs one. Its errors arrive only after that check ends.
+    pub fn check_progress(self) -> Option<&'static str> {
+        match self {
+            Self::RustAnalyzer => Some("rust-analyzer/flycheck"),
+            Self::TypeScriptLanguageServer => None,
+        }
+    }
+
     pub fn language_id(self) -> &'static str {
         match self {
             Self::RustAnalyzer => "rust",

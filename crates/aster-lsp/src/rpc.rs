@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+use crate::ServerKind;
+
 const POLL: Duration = Duration::from_millis(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -30,6 +32,9 @@ pub struct Inbox {
     quiescent: Option<bool>,
     seq: u64,
     closed: bool,
+    check_progress: Option<&'static str>,
+    /// `seq` when the last on-save check ended.
+    checked: u64,
 }
 
 impl Inbox {
@@ -48,10 +53,13 @@ pub struct Transport {
 }
 
 impl Transport {
-    pub fn spawn(mut child: Child, root: &Path) -> Result<Self> {
+    pub fn spawn(mut child: Child, root: &Path, kind: ServerKind) -> Result<Self> {
         let stdin = Arc::new(Mutex::new(child.stdin.take().context("server stdin")?));
         let stdout = child.stdout.take().context("server stdout")?;
-        let inbox = Arc::new(Mutex::new(Inbox::default()));
+        let inbox = Arc::new(Mutex::new(Inbox {
+            check_progress: kind.check_progress(),
+            ..Inbox::default()
+        }));
         let reader_inbox = Arc::clone(&inbox);
         let reader_stdin = Arc::clone(&stdin);
         let root = root.to_path_buf();
@@ -135,7 +143,9 @@ impl Transport {
     /// The diagnostics for `path` published after `mark`, so the answer
     /// always describes the current contents rather than an earlier read.
     /// Servers publish in several rounds (syntax first, then the type check),
-    /// so this keeps the newest batch until they stop arriving.
+    /// so this keeps the newest batch until they stop arriving. A server that
+    /// checks on save can go quiet before that check starts, so its batch also
+    /// waits for a check that ended after `mark`.
     pub fn wait_diagnostics(
         &self,
         path: &Path,
@@ -148,8 +158,10 @@ impl Transport {
             {
                 let inbox = self.inbox.lock().expect("inbox");
                 let fresh = inbox.diagnostics.get(path).filter(|batch| batch.seq > mark);
+                let checked = inbox.check_progress.is_none() || inbox.checked > mark;
                 if let Some(batch) = fresh
-                    && (!inbox.busy() && batch.at.elapsed() >= settle || Instant::now() > deadline)
+                    && (checked && !inbox.busy() && batch.at.elapsed() >= settle
+                        || Instant::now() > deadline)
                 {
                     return Some(batch.payload.clone());
                 }
@@ -270,6 +282,13 @@ fn note(method: &str, params: &Value, inbox: &Mutex<Inbox>) {
                 }
                 Some("end") => {
                     inbox.progress.remove(&token);
+                    if let (Some(prefix), Some(token)) =
+                        (inbox.check_progress, params["token"].as_str())
+                        && token.starts_with(prefix)
+                    {
+                        inbox.seq += 1;
+                        inbox.checked = inbox.seq;
+                    }
                 }
                 _ => {}
             }

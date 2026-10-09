@@ -42,7 +42,7 @@ impl Client {
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("starting {}", kind.binary()))?;
-        let transport = rpc::Transport::spawn(child, root)?;
+        let transport = rpc::Transport::spawn(child, root, kind)?;
         transport.request("initialize", initialize_params(root))?;
         transport.notify("initialized", json!({}))?;
         Ok(Self {
