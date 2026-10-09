@@ -42,6 +42,10 @@ const WORDS = [
 
 const ROTATE_MS = 3200;
 
+// Long enough that the count still feels live, short enough that a stuck run
+// stops waving its age at you.
+const SHOW_TIME_FOR = 5 * 60;
+
 function elapsedLabel(secs: number): string {
   return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
@@ -72,7 +76,9 @@ export function StatusLine() {
     <div className="status" role="status">
       <Mark px={1} className="mark-busy" label="Working" />
       <StatusWord word={word} />
-      {elapsed >= 3 && <span className="status-elapsed">{elapsedLabel(elapsed)}</span>}
+      {elapsed >= 3 && elapsed <= SHOW_TIME_FOR && (
+        <span className="status-elapsed">{elapsedLabel(elapsed)}</span>
+      )}
     </div>
   );
 }

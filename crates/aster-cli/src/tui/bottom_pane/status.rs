@@ -15,6 +15,8 @@ use crate::tui::theme;
 
 const FRAME_EVERY: Duration = Duration::from_millis(100);
 const ROTATE_EVERY: Duration = Duration::from_millis(3200);
+/// Past this, the elapsed time stops rendering; long runs don't need a ticker.
+const SHOW_TIME_FOR: Duration = Duration::from_secs(5 * 60);
 
 const WORDS: [&str; 35] = [
     "Astering",
@@ -89,23 +91,34 @@ impl StatusWidget {
     }
 
     fn line(&self) -> Line<'static> {
-        let elapsed = self.started.elapsed();
+        self.line_at(self.started.elapsed())
+    }
+
+    fn line_at(&self, elapsed: Duration) -> Line<'static> {
         let spinner = SPINNER[(elapsed.as_millis() / 100) as usize % SPINNER.len()];
         let label = self
             .detail
             .clone()
             .unwrap_or_else(|| word(self.seed, elapsed).to_string());
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(format!("{spinner} "), theme::get().accent_style()),
             Span::styled(label, theme::get().dim_style()),
-            Span::styled(
+        ];
+        if elapsed < SHOW_TIME_FOR {
+            spans.push(Span::styled(
                 format!(
                     " · {} · esc to interrupt",
                     crate::tui::helpers::elapsed(elapsed.as_secs())
                 ),
                 theme::get().faint_style(),
-            ),
-        ])
+            ));
+        } else {
+            spans.push(Span::styled(
+                " · esc to interrupt",
+                theme::get().faint_style(),
+            ));
+        }
+        Line::from(spans)
     }
 }
 
@@ -141,6 +154,16 @@ mod tests {
                 .len()
                 > 1
         );
+    }
+
+    #[test]
+    fn time_drops_once_the_run_gets_long() {
+        let widget = StatusWidget::new(FrameRequester::noop());
+        let early = widget.line_at(Duration::from_secs(30)).to_string();
+        let late = widget.line_at(SHOW_TIME_FOR).to_string();
+        assert!(early.contains("30s"));
+        assert!(!late.contains("5m 0s"));
+        assert!(late.contains("esc to interrupt"));
     }
 
     #[test]
