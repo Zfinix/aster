@@ -2,11 +2,13 @@ import { copyFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { stubs } from "./vite.config";
 
 const out = fileURLToPath(new URL("../../crates/aster-serve/ui", import.meta.url));
 
 export default defineConfig({
   root: fileURLToPath(new URL("./webview", import.meta.url)),
+  resolve: { alias: stubs },
   plugins: [
     react(),
     {
@@ -30,6 +32,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         entryFileNames: "index.js",
+        inlineDynamicImports: true,
         chunkFileNames: "index.js",
         assetFileNames: "index.[ext]",
       },
