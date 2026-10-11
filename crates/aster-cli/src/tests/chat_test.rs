@@ -1924,6 +1924,12 @@ fn promise_shaped_replies_are_flagged() {
     assert!(announces_pending_work(
         "Good, the schema is clear.\n\nCreating the file now."
     ));
+    assert!(announces_pending_work(
+        "Everything I need is confirmed. Writing app.js now."
+    ));
+    assert!(announces_pending_work(
+        "The model is clear. Generating index.html next."
+    ));
 }
 
 /// A long answer that happens to close on a gerund is a statement, not a

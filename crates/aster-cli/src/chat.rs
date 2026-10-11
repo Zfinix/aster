@@ -1981,6 +1981,31 @@ fn announces_pending_work(reply: &str) -> bool {
     lone_opener || trails_into_action(&reply) || PROMISES.iter().any(|p| reply.contains(p))
 }
 
+/// The last sentence, split on real boundaries only: a `.` ends a sentence when
+/// it ends the text or precedes whitespace, so a filename like `app.js` stays
+/// whole instead of cutting "Writing app.js now." down to "js now".
+fn last_sentence(reply: &str) -> Option<&str> {
+    let mut start = 0;
+    let mut last = None;
+    let mut chars = reply.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        let boundary = matches!(ch, '\n' | '…' | '!' | '?')
+            || (ch == '.' && chars.peek().is_none_or(|(_, next)| next.is_whitespace()));
+        if boundary {
+            let seg = reply[start..idx].trim();
+            if !seg.is_empty() {
+                last = Some(seg);
+            }
+            start = idx + ch.len_utf8();
+        }
+    }
+    let tail = reply[start..].trim();
+    if !tail.is_empty() {
+        last = Some(tail);
+    }
+    last
+}
+
 /// A reply whose last sentence just names the work ("Now I have the data model.
 /// Writing the runtime.") is narrating a tool call it never made. Kept to a
 /// short final fragment so a long answer that ends on a gerund ("...building a
@@ -1997,11 +2022,7 @@ fn trails_into_action(reply: &str) -> bool {
         "assembling",
         "wiring",
     ];
-    let Some(last) = reply
-        .split(['.', '\n', '…'])
-        .map(str::trim)
-        .rfind(|s| !s.is_empty())
-    else {
+    let Some(last) = last_sentence(reply) else {
         return false;
     };
     let last = last
