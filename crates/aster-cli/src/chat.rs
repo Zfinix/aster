@@ -3582,13 +3582,13 @@ async fn exec_tool(
         "explore" => explore(repo_root, policy, ctx, &args).await,
         "search_files" => match str_arg("query").context("search_files needs a `query`") {
             Ok(query) => match missing_dir(repo_root, &str_arg("dir")) {
-                Some(dir) => search_files(&ctx.probe, repo_root, policy, &query, repo_root)
+                Some(dir) => search_files(repo_root, policy, &query, repo_root)
                     .map(|hits| widened(&dir, hits)),
                 None => {
                     match resolve_dir(repo_root, policy, grants, approver, ctx, &str_arg("dir"))
                         .await
                     {
-                        Ok(base) => search_files(&ctx.probe, repo_root, policy, &query, &base),
+                        Ok(base) => search_files(repo_root, policy, &query, &base),
                         Err(e) => Err(e),
                     }
                 }
@@ -4028,10 +4028,10 @@ fn read_only_call(
                 return Some(missing("query"));
             };
             match missing_dir(repo_root, &str_arg("dir")) {
-                Some(dir) => search_files(&ctx.probe, repo_root, policy, &query, repo_root)
+                Some(dir) => search_files(repo_root, policy, &query, repo_root)
                     .map(|hits| widened(&dir, hits)),
                 None => match resolve_dir(&str_arg("dir"))? {
-                    Ok(base) => search_files(&ctx.probe, repo_root, policy, &query, &base),
+                    Ok(base) => search_files(repo_root, policy, &query, &base),
                     Err(e) => Err(e),
                 },
             }
@@ -5105,14 +5105,8 @@ fn list_files(probe: &bash_tools::ToolProbe, base: &Path) -> Result<String> {
     })
 }
 
-fn search_files(
-    probe: &bash_tools::ToolProbe,
-    repo_root: &Path,
-    policy: &Policy,
-    query: &str,
-    base: &Path,
-) -> Result<String> {
-    let hits = bash_tools::search(probe, repo_root, base, query, MAX_SEARCH_HITS)?;
+fn search_files(repo_root: &Path, policy: &Policy, query: &str, base: &Path) -> Result<String> {
+    let hits = bash_tools::search(repo_root, base, query, MAX_SEARCH_HITS)?;
     let filtered: Vec<bash_tools::Hit> = hits
         .into_iter()
         .filter(|hit| {

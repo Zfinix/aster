@@ -1,15 +1,25 @@
-//! Tiered file search: `rg` → embedded `grep`/`ignore` → hand-rolled walker.
+//! In-process file search on the `grep`/`ignore` crates, so the walk can skip
+//! cloud placeholders, stop at the hit cap, and give up at a deadline.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-
-use crate::{SKIP_DIRS, ToolProbe};
+use grep::regex::{RegexMatcher, RegexMatcherBuilder};
+use grep::searcher::sinks::UTF8;
+use grep::searcher::{BinaryDetection, SearcherBuilder};
+use ignore::{WalkBuilder, WalkState};
 
 const PER_FILE: usize = 3;
+
+/// Past this the search returns what it has. A read that blocks on a network
+/// mount must not hold the whole turn hostage.
+const DEADLINE: Duration = Duration::from_secs(20);
 
 /// One match: repo-relative path, 1-based line number, and the line's text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,38 +32,28 @@ pub struct Hit {
 /// Search `base`, a directory or a single file, for `query`, at most [`PER_FILE`]
 /// matches per file and `max_hits` overall. Smart-case: a query with any uppercase
 /// letter is taken literally.
-pub fn search(
-    probe: &ToolProbe,
-    repo_root: &Path,
-    base: &Path,
-    query: &str,
-    max_hits: usize,
-) -> Result<Vec<Hit>> {
+pub fn search(repo_root: &Path, base: &Path, query: &str, max_hits: usize) -> Result<Vec<Hit>> {
     if query.trim().is_empty() {
         bail!("empty search query");
     }
 
-    let hits = run(probe, repo_root, base, query, max_hits, true)?;
+    let build = |pattern: &str| RegexMatcherBuilder::new().case_smart(true).build(pattern);
+    // A query that is not valid regex is almost always meant literally.
+    let matcher = match build(query) {
+        Ok(m) => m,
+        Err(_) => build(&escape_regex(query))
+            .with_context(|| format!("invalid search pattern: {query}"))?,
+    };
+    let matcher = Arc::new(matcher);
+    let deadline = Instant::now() + DEADLINE;
+
+    let hits = walk(repo_root, base, &matcher, max_hits, true, deadline);
     if !hits.is_empty() {
         return Ok(hits);
     }
     // Same reasoning as `find`: an ignored path is still part of the repo, so
     // a query that matches nothing else falls back to searching it.
-    run(probe, repo_root, base, query, max_hits, false)
-}
-
-fn run(
-    probe: &ToolProbe,
-    repo_root: &Path,
-    base: &Path,
-    query: &str,
-    max_hits: usize,
-    respect_ignore: bool,
-) -> Result<Vec<Hit>> {
-    match &probe.rg {
-        Some(rg) => search_with_rg(rg, repo_root, base, query, max_hits, respect_ignore),
-        None => search_embedded(repo_root, base, query, max_hits, respect_ignore),
-    }
+    Ok(walk(repo_root, base, &matcher, max_hits, false, deadline))
 }
 
 /// Render hits as text for the model, grouped by file with `context` lines
@@ -126,82 +126,6 @@ fn render_windows(out: &mut String, source: &[&str], lines: &[usize], context: u
     }
 }
 
-fn search_with_rg(
-    rg: &Path,
-    repo_root: &Path,
-    base: &Path,
-    query: &str,
-    max_hits: usize,
-    respect_ignore: bool,
-) -> Result<Vec<Hit>> {
-    let run = |literal: bool| {
-        let mut cmd = Command::new(rg);
-        cmd.args([
-            "--line-number",
-            // rg drops the path when it is given a single file, which leaves
-            // `parse_rg_line` nothing to split on and silently loses every hit.
-            "--with-filename",
-            "--no-heading",
-            "--smart-case",
-            "--color",
-            "never",
-            "--max-count",
-            &PER_FILE.to_string(),
-        ]);
-        if literal {
-            cmd.arg("--fixed-strings");
-        }
-        if !respect_ignore {
-            cmd.arg("--no-ignore").arg("--hidden");
-            for dir in SKIP_DIRS {
-                cmd.arg("--glob").arg(format!("!{dir}/"));
-            }
-        }
-        cmd.arg(query)
-            .arg(base)
-            .current_dir(repo_root)
-            .output()
-            .context("running rg")
-    };
-
-    let mut output = run(false)?;
-    // A query that is not valid regex is almost always meant literally.
-    if !output.status.success() && !output.status.code().is_some_and(|c| c == 1) {
-        output = run(true)?;
-    }
-    if !output.status.success() && !output.status.code().is_some_and(|c| c == 1) {
-        bail!(
-            "rg failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .filter_map(|line| parse_rg_line(repo_root, line))
-        .take(max_hits)
-        .collect())
-}
-
-fn parse_rg_line(repo_root: &Path, line: &str) -> Option<Hit> {
-    let mut from = 0;
-    while let Some(offset) = line[from..].find(':') {
-        let at = from + offset;
-        let rest = &line[at + 1..];
-        let end = rest.find(':')?;
-        if let Ok(no) = rest[..end].parse::<usize>() {
-            return Some(Hit {
-                path: relative(repo_root, &line[..at]),
-                line: no,
-                text: rest[end + 1..].trim_end().to_string(),
-            });
-        }
-        from = at + 1;
-    }
-    None
-}
-
 fn relative(repo_root: &Path, path: &str) -> String {
     Path::new(path)
         .strip_prefix(repo_root)
@@ -210,82 +134,124 @@ fn relative(repo_root: &Path, path: &str) -> String {
         .into_owned()
 }
 
-fn search_embedded(
+fn walk(
     repo_root: &Path,
     base: &Path,
-    query: &str,
+    matcher: &Arc<RegexMatcher>,
     max_hits: usize,
     respect_ignore: bool,
-) -> Result<Vec<Hit>> {
-    use grep::regex::RegexMatcherBuilder;
-    use grep::searcher::Searcher;
-    use grep::searcher::sinks::UTF8;
-    use ignore::WalkBuilder;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    let build = |pattern: &str| RegexMatcherBuilder::new().case_smart(true).build(pattern);
-    // A query that is not valid regex is almost always meant literally.
-    let matcher = match build(query) {
-        Ok(m) => m,
-        Err(_) => build(&escape_regex(query))
-            .with_context(|| format!("invalid search pattern: {query}"))?,
-    };
-    let matcher = Arc::new(matcher);
+    deadline: Instant,
+) -> Vec<Hit> {
     // Keyed by path so the parallel walk still returns a stable order.
     let hits: Arc<Mutex<BTreeMap<String, Vec<Hit>>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let count = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
 
+    let library = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library"));
     let mut builder = WalkBuilder::new(base);
     builder
         .hidden(respect_ignore)
         .git_ignore(respect_ignore)
         .require_git(false)
-        .git_exclude(respect_ignore);
-    if !respect_ignore {
-        builder.filter_entry(|entry| !crate::is_skipped(entry));
-    }
-    builder.build_parallel().run(|| {
-        let matcher = Arc::clone(&matcher);
-        let hits = Arc::clone(&hits);
-        let count = Arc::clone(&count);
-        Box::new(move |result| {
-            if count.load(Ordering::Relaxed) >= max_hits {
-                return ignore::WalkState::Quit;
-            }
-            let Ok(entry) = result else {
-                return ignore::WalkState::Continue;
-            };
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                return ignore::WalkState::Continue;
-            }
-            let path = entry.path();
-            let rel = relative(repo_root, &path.to_string_lossy());
-            let mut found: Vec<Hit> = Vec::new();
-            let _ = Searcher::new().search_path(
-                matcher.as_ref(),
-                path,
-                UTF8(|line_no, text| {
-                    found.push(Hit {
-                        path: rel.clone(),
-                        line: line_no as usize,
-                        text: text.trim_end().to_string(),
-                    });
-                    Ok(found.len() < PER_FILE)
-                }),
-            );
-            if !found.is_empty() {
-                count.fetch_add(found.len(), Ordering::Relaxed);
-                hits.lock().unwrap().insert(rel, found);
-            }
-            ignore::WalkState::Continue
-        })
-    });
+        .git_exclude(respect_ignore)
+        .filter_entry(move |entry| {
+            !(is_offline(entry)
+                || library.as_deref() == Some(entry.path())
+                || (!respect_ignore && crate::is_skipped(entry)))
+        });
+    let walker = builder.build_parallel();
 
-    let grouped = Arc::try_unwrap(hits)
-        .map(|m| m.into_inner().unwrap())
-        .unwrap_or_default();
-    Ok(grouped.into_values().flatten().take(max_hits).collect())
+    let (done_tx, done_rx) = mpsc::channel();
+    {
+        let repo_root = repo_root.to_path_buf();
+        let matcher = Arc::clone(matcher);
+        let hits = Arc::clone(&hits);
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || {
+            walker.run(|| {
+                let repo_root = repo_root.clone();
+                let matcher = Arc::clone(&matcher);
+                let hits = Arc::clone(&hits);
+                let count = Arc::clone(&count);
+                let stop = Arc::clone(&stop);
+                let mut searcher = SearcherBuilder::new()
+                    .binary_detection(BinaryDetection::quit(b'\0'))
+                    .build();
+                Box::new(move |result| {
+                    if stop.load(Ordering::Relaxed) || count.load(Ordering::Relaxed) >= max_hits {
+                        return WalkState::Quit;
+                    }
+                    let Ok(entry) = result else {
+                        return WalkState::Continue;
+                    };
+                    if !entry.file_type().is_some_and(|t| t.is_file()) {
+                        return WalkState::Continue;
+                    }
+                    let path = entry.path();
+                    let rel = relative(&repo_root, &path.to_string_lossy());
+                    let mut found: Vec<Hit> = Vec::new();
+                    let _ = searcher.search_path(
+                        matcher.as_ref(),
+                        path,
+                        UTF8(|line_no, text| {
+                            found.push(Hit {
+                                path: rel.clone(),
+                                line: line_no as usize,
+                                text: text.trim_end().to_string(),
+                            });
+                            Ok(found.len() < PER_FILE)
+                        }),
+                    );
+                    if !found.is_empty() {
+                        count.fetch_add(found.len(), Ordering::Relaxed);
+                        hits.lock().unwrap().insert(rel, found);
+                    }
+                    WalkState::Continue
+                })
+            });
+            let _ = done_tx.send(());
+        });
+    }
+
+    // On timeout the walk thread is left to wind down on its own: a read
+    // stuck in the kernel cannot be interrupted, only abandoned.
+    if done_rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .is_err()
+    {
+        stop.store(true, Ordering::Relaxed);
+        tracing::debug!(base = %base.display(), "search hit its deadline");
+    }
+
+    let grouped = hits.lock().unwrap().clone();
+    grouped.into_values().flatten().take(max_hits).collect()
+}
+
+/// Cloud placeholders (iCloud "optimise storage", OneDrive files on demand)
+/// download on first read, which can block for minutes, so they are never opened.
+fn is_offline(entry: &ignore::DirEntry) -> bool {
+    let Ok(meta) = entry.metadata() else {
+        return false;
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        const SF_DATALESS: u32 = 0x4000_0000;
+        meta.st_flags() & SF_DATALESS != 0
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const OFFLINE: u32 = 0x1000;
+        const RECALL_ON_OPEN: u32 = 0x4_0000;
+        const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+        meta.file_attributes() & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) != 0
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = meta;
+        false
+    }
 }
 
 fn escape_regex(query: &str) -> String {
@@ -300,53 +266,6 @@ fn escape_regex(query: &str) -> String {
         out.push(ch);
     }
     out
-}
-
-#[allow(dead_code)]
-fn search_manual(repo_root: &Path, base: &Path, query: &str, max_hits: usize) -> Result<Vec<Hit>> {
-    let needle = query.to_lowercase();
-    let mut hits = Vec::new();
-    let mut stack = vec![base.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        if hits.len() >= max_hits {
-            break;
-        }
-        let Ok(entries) = fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if path.is_dir() {
-                if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
-                    stack.push(path);
-                }
-                continue;
-            }
-            let rel = relative(repo_root, &path.to_string_lossy());
-            let Ok(content) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let mut in_file = 0;
-            for (no, line) in content.lines().enumerate() {
-                if line.to_lowercase().contains(&needle) {
-                    hits.push(Hit {
-                        path: rel.clone(),
-                        line: no + 1,
-                        text: line.trim_end().to_string(),
-                    });
-                    in_file += 1;
-                    if in_file >= PER_FILE || hits.len() >= max_hits {
-                        break;
-                    }
-                }
-            }
-            if hits.len() >= max_hits {
-                break;
-            }
-        }
-    }
-    Ok(hits)
 }
 
 #[cfg(test)]

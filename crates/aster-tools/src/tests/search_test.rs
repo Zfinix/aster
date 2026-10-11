@@ -3,7 +3,7 @@ use std::fs;
 use tempfile::tempdir;
 
 fn run(repo: &Path, query: &str, max_hits: usize) -> Vec<Hit> {
-    search(&ToolProbe::default(), repo, repo, query, max_hits).unwrap()
+    search(repo, repo, query, max_hits).unwrap()
 }
 
 #[test]
@@ -34,8 +34,7 @@ fn search_respects_gitignore() {
 #[test]
 fn search_empty_query_errors() {
     let repo = tempdir().unwrap();
-    let probe = ToolProbe::default();
-    assert!(search(&probe, repo.path(), repo.path(), "  ", 10).is_err());
+    assert!(search(repo.path(), repo.path(), "  ", 10).is_err());
 }
 
 #[test]
@@ -114,31 +113,19 @@ fn render_separates_windows_that_do_not_touch() {
 }
 
 #[test]
-fn rg_and_the_embedded_walker_agree() {
-    let probe = ToolProbe::detect();
-    let Some(_) = probe.rg else {
-        return;
-    };
+fn binary_files_are_not_searched() {
     let repo = tempdir().unwrap();
-    fs::write(
-        repo.path().join("hot.rs"),
-        "Needle\nneedle\nneedle\nneedle\n",
-    )
-    .unwrap();
-    fs::write(repo.path().join("cold.rs"), "needle\n").unwrap();
+    fs::write(repo.path().join("photo.jpg"), b"needle\0\xff\xd8needle\n").unwrap();
+    fs::write(repo.path().join("notes.txt"), "needle\n").unwrap();
 
-    let with_rg = search(&probe, repo.path(), repo.path(), "needle", 80).unwrap();
-    let embedded = run(repo.path(), "needle", 80);
-
-    let key = |h: &Hit| (h.path.clone(), h.line);
-    let mut a: Vec<_> = with_rg.iter().map(key).collect();
-    let mut b: Vec<_> = embedded.iter().map(key).collect();
-    a.sort();
-    b.sort();
-    assert_eq!(a, b, "rg: {with_rg:?}\nembedded: {embedded:?}");
-    assert!(
-        with_rg.iter().all(|h| !h.path.starts_with('/')),
-        "{with_rg:?}"
+    let hits = run(repo.path(), "needle", 10);
+    assert_eq!(
+        hits,
+        vec![Hit {
+            path: "notes.txt".into(),
+            line: 1,
+            text: "needle".into(),
+        }]
     );
 }
 
@@ -150,12 +137,15 @@ fn a_single_file_base_still_returns_its_hits() {
     fs::write(&file, "one\nneedle\nthree\n").unwrap();
     fs::write(repo.path().join("src/b.rs"), "needle\n").unwrap();
 
-    for probe in [ToolProbe::default(), ToolProbe::detect()] {
-        let hits = search(&probe, repo.path(), &file, "needle", 80).unwrap();
-        assert_eq!(hits.len(), 1, "{probe:?} {hits:?}");
-        assert_eq!(hits[0].path, "src/a.rs", "{probe:?} {hits:?}");
-        assert_eq!(hits[0].line, 2, "{probe:?} {hits:?}");
-    }
+    let hits = search(repo.path(), &file, "needle", 80).unwrap();
+    assert_eq!(
+        hits,
+        vec![Hit {
+            path: "src/a.rs".into(),
+            line: 2,
+            text: "needle".into(),
+        }]
+    );
 }
 
 #[test]
@@ -175,14 +165,7 @@ fn search_reaches_a_gitignored_path_when_nothing_else_matches() {
     )
     .unwrap();
 
-    let hits = search(
-        &ToolProbe::detect(),
-        repo.path(),
-        repo.path(),
-        "activate",
-        10,
-    )
-    .unwrap();
+    let hits = search(repo.path(), repo.path(), "activate", 10).unwrap();
     assert_eq!(hits.len(), 1, "{hits:?}");
     assert_eq!(hits[0].path, "editors/vscode/extension.ts");
 }

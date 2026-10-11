@@ -47,7 +47,7 @@ crates/
   aster-plugins/     Agent Plugins packages: plugin.json, skills/, mcp.json
   aster-policy/      policy engine: permissions, approvals, grants, modes
   aster-agents/      agent definitions: AGENT.md parsing, discovery, registry
-  aster-tools/       tiered search/list/find/suggest (rg/fd native, hand-rolled fallback)
+  aster-tools/       search (in-process, deadline-bounded), list/find/suggest (fd native, hand-rolled fallback)
   aster-lsp/         minimal LSP client over stdio: diagnostics, references,
                      definitions
   aster-sandbox/     OS-native command sandbox (macOS Seatbelt, Linux bubblewrap)
