@@ -1914,6 +1914,28 @@ fn promise_shaped_replies_are_flagged() {
     assert!(announces_pending_work(
         "Next session: write both files from the gathered facts."
     ));
+    assert!(announces_pending_work(
+        "I'll search the web for information on how to build a castle."
+    ));
+    assert!(announces_pending_work("Let me look that up:"));
+    assert!(announces_pending_work(
+        "Now I have the full data model. Writing the runtime."
+    ));
+    assert!(announces_pending_work(
+        "Good, the schema is clear.\n\nCreating the file now."
+    ));
+}
+
+/// A long answer that happens to close on a gerund is a statement, not a
+/// promise: the fragment guard in `trails_into_action` keeps it unflagged.
+#[test]
+fn a_gerund_in_a_full_sentence_is_not_a_promise() {
+    assert!(!announces_pending_work(
+        "Castles start with a motte. Building a stone keep took decades of levies."
+    ));
+    assert!(!announces_pending_work(
+        "Writing good tests pays off later."
+    ));
 }
 
 /// The nudge told an agent holding a filled Glovo cart to stop asking and act,
@@ -1946,6 +1968,9 @@ fn a_reply_that_ends_on_a_question_is_waiting() {
 #[test]
 fn reports_of_finished_work_are_not_flagged() {
     assert!(!announces_pending_work("Fixed. 15/15 tests pass."));
+    assert!(!announces_pending_work(
+        "I'll keep it short. Castles start with a motte and a ditch."
+    ));
     assert!(!announces_pending_work(
         "The state param is hardcoded at codex.rs:203; OpenAI rejects it."
     ));

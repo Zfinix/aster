@@ -1971,7 +1971,48 @@ fn announces_pending_work(reply: &str) -> bool {
         return false;
     }
     let reply = reply.to_lowercase();
-    PROMISES.iter().any(|p| reply.contains(p))
+    // "I'll search the web for that." as the whole reply: the opener of a
+    // turn that never made its first call.
+    let body = reply.trim().trim_end_matches(['.', ':', '…']);
+    let lone_opener = !body.contains(['.', '\n'])
+        && ["i'll ", "i will ", "let me ", "i'm going to "]
+            .iter()
+            .any(|opener| body.starts_with(opener));
+    lone_opener || trails_into_action(&reply) || PROMISES.iter().any(|p| reply.contains(p))
+}
+
+/// A reply whose last sentence just names the work ("Now I have the data model.
+/// Writing the runtime.") is narrating a tool call it never made. Kept to a
+/// short final fragment so a long answer that ends on a gerund ("...building a
+/// castle takes years.") is left to stand.
+fn trails_into_action(reply: &str) -> bool {
+    const VERBS: &[&str] = &[
+        "writing",
+        "creating",
+        "building",
+        "implementing",
+        "generating",
+        "producing",
+        "drafting",
+        "assembling",
+        "wiring",
+    ];
+    let Some(last) = reply
+        .split(['.', '\n', '…'])
+        .map(str::trim)
+        .rfind(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    let last = last
+        .trim_start_matches("now ")
+        .trim_start_matches("next ")
+        .trim_start_matches("then ")
+        .trim_start_matches("so ");
+    last.split_whitespace().count() <= 5
+        && VERBS
+            .iter()
+            .any(|verb| last.starts_with(&format!("{verb} ")))
 }
 
 fn budget_notice(spent: usize, cap: usize) -> String {
