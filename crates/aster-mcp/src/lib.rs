@@ -98,7 +98,7 @@ impl McpCatalog {
         self.tools.iter().find(|tool| tool.id() == id)
     }
 
-    /// Returns lexical matches ranked by task words in the name, description,
+    /// Returns lexical matches ranked by query words in the server, name, description,
     /// and JSON-schema parameter names/descriptions. This has no embedding or
     /// network dependency, so every result is reproducible and auditable.
     pub fn search(&self, query: &str, limit: usize) -> Vec<ToolMatch> {
@@ -137,18 +137,24 @@ impl McpCatalog {
 /// whole search reply mid-JSON; `describe` still returns the full text.
 pub const MAX_LISTED_DESCRIPTION_CHARS: usize = 300;
 
+/// Pinned tools ride in every request, so they get a shorter line each and a
+/// cap on the whole list; the rest of a pinned server is still searchable.
+pub const MAX_PINNED_DESCRIPTION_CHARS: usize = 100;
+pub const MAX_PINNED_CHARS: usize = 6_000;
+
 /// The first paragraph of a description on one line, capped at
 /// [`MAX_LISTED_DESCRIPTION_CHARS`].
 fn summary(description: &str) -> String {
     let first = description.trim().split("\n\n").next().unwrap_or_default();
     let line = first.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() <= MAX_LISTED_DESCRIPTION_CHARS {
-        return line;
+    capped(&line, MAX_LISTED_DESCRIPTION_CHARS)
+}
+
+fn capped(line: &str, max: usize) -> String {
+    if line.chars().count() <= max {
+        return line.to_string();
     }
-    let cut: String = line
-        .chars()
-        .take(MAX_LISTED_DESCRIPTION_CHARS - 1)
-        .collect();
+    let cut: String = line.chars().take(max - 1).collect();
     format!("{}…", cut.trim_end())
 }
 
@@ -269,16 +275,30 @@ impl Injector {
         let (inventory, pinned) = if manifest_tokens <= inventory_budget_tokens {
             (Inventory::Tools(entries), Vec::new())
         } else {
-            let pinned = self
+            let mut candidates: Vec<&McpTool> = self
                 .catalog
                 .tools()
                 .iter()
                 .filter(|tool| self.pinned_servers.contains(&tool.server))
-                .map(|tool| ToolManifestEntry {
-                    id: tool.id(),
-                    description: summary(&tool.description),
-                })
                 .collect();
+            candidates.sort_by_key(|tool| {
+                self.pinned_servers
+                    .iter()
+                    .position(|server| *server == tool.server)
+            });
+            let mut pinned = Vec::new();
+            let mut chars = 0;
+            for tool in candidates {
+                let entry = ToolManifestEntry {
+                    id: tool.id(),
+                    description: capped(&summary(&tool.description), MAX_PINNED_DESCRIPTION_CHARS),
+                };
+                chars += entry.id.len() + entry.description.len();
+                if chars > MAX_PINNED_CHARS {
+                    break;
+                }
+                pinned.push(entry);
+            }
             (Inventory::Servers(self.catalog.servers().to_vec()), pinned)
         };
         let prompt = render_inventory(&inventory, &pinned, self.config.max_search_limit);
@@ -385,13 +405,18 @@ pub trait McpInvoker {
     fn invoke(&mut self, tool: &McpTool, arguments: &Value) -> Result<Value>;
 }
 
+/// Sent with every search reply, because small models read a tool search as a
+/// web search and keep rephrasing the topic instead of calling a tool.
+pub const SEARCH_NOTE: &str = "These are tools you can call, not answers. Pick one and call \
+     aster_mcp with action=execute and its id.";
+
 /// The one bridge tool injected into an OpenAI-compatible tools array.
 pub fn bridge_tool_definition() -> Value {
     json!({
         "type": "function",
         "function": {
             "name": "aster_mcp",
-            "description": "Discover, inspect, and execute MCP tools available to this session. Use action=search with a task-focused query to find tools; action=describe before constructing arguments; action=execute only with a discovered tool id and arguments that match its described schema.",
+            "description": "Discover, inspect, and execute MCP tools available to this session. action=search looks through the list of tools, not the web: query it with what a tool does, such as `web search`. action=describe before constructing arguments; action=execute only with a discovered tool id and arguments that match its described schema.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -400,7 +425,7 @@ pub fn bridge_tool_definition() -> Value {
                         "enum": ["search", "describe", "execute"],
                         "description": "search finds tools; describe returns one tool's full schema; execute invokes one tool."
                     },
-                    "query": { "type": "string", "description": "Task-focused search query. Required for search." },
+                    "query": { "type": "string", "description": "What the tool does, such as `web search` or `create github issue`, not the topic of the task. Required for search." },
                     "limit": { "type": "integer", "minimum": 1, "description": "Maximum search results. Optional for search." },
                     "name": { "type": "string", "description": "Exact server/tool id from search or the visible manifest. Required for describe and execute." },
                     "arguments": { "type": "object", "description": "Arguments matching the described MCP tool schema. Required for execute." }
@@ -463,6 +488,9 @@ fn non_empty(label: &str, value: String) -> Result<String> {
     Ok(value)
 }
 
+/// Shorter words like "a" or "to" prefix-match nearly every token.
+const MIN_PREFIX_CHARS: usize = 3;
+
 fn terms(text: &str) -> Vec<String> {
     text.split(|ch: char| !ch.is_alphanumeric())
         .filter(|term| !term.is_empty())
@@ -471,7 +499,8 @@ fn terms(text: &str) -> Vec<String> {
 }
 
 fn score(tool: &McpTool, query: &[String]) -> u32 {
-    let name = terms(&tool.name);
+    let mut name = terms(&tool.server);
+    name.extend(terms(&tool.name));
     let description = terms(&tool.description);
     let schema = terms(&tool.input_schema.to_string());
     query.iter().fold(0, |score, term| {
@@ -482,17 +511,24 @@ fn score(tool: &McpTool, query: &[String]) -> u32 {
     })
 }
 
+/// A query term scores its best match in a field once, so a long description
+/// that repeats filler words cannot outrank a short, on-topic one.
 fn name_score(haystack: &[String], needle: &str, exact: u32, prefix: u32) -> u32 {
-    haystack.iter().fold(0, |score, token| {
-        score
-            + if token == needle {
+    haystack
+        .iter()
+        .map(|token| {
+            if token == needle {
                 exact
-            } else if token.starts_with(needle) || needle.starts_with(token) {
+            } else if token.len().min(needle.len()) >= MIN_PREFIX_CHARS
+                && (token.starts_with(needle) || needle.starts_with(token))
+            {
                 prefix
             } else {
                 0
             }
-    })
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

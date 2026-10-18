@@ -196,8 +196,55 @@ fn search_lists_a_short_summary_and_describe_keeps_the_full_text() {
 }
 
 #[test]
+fn a_long_description_full_of_filler_does_not_outrank_the_right_tool() {
+    let filler = "Use this to step through a document and update it by applying a batch \
+                  of changes to the text, the tables, and the styles. "
+        .repeat(50);
+    let injector = injector(
+        vec![
+            tool("gdocs", "google_update_doc", &filler),
+            tool(
+                "web",
+                "search",
+                "Search the web and return each result's title, URL, and snippet.",
+            ),
+        ],
+        10_000,
+    );
+    let BridgeAction::Search(found) = injector
+        .route(r#"{"action":"search","query":"search the web for how to build a castle step by step"}"#)
+        .expect("search")
+    else {
+        panic!("search did not return matches");
+    };
+    assert_eq!(found[0].id, "web/search");
+}
+
+#[test]
 fn a_long_first_paragraph_is_capped() {
     let listed = summary(&"word ".repeat(200));
     assert_eq!(listed.chars().count(), MAX_LISTED_DESCRIPTION_CHARS);
     assert!(listed.ends_with('…'));
+}
+
+#[test]
+fn a_large_pinned_server_is_capped_and_pin_order_comes_first() {
+    let long = "Does one browser thing. ".repeat(20);
+    let mut tools: Vec<McpTool> = (0..200)
+        .map(|i| tool("browser", &format!("action_{i:03}"), &long))
+        .collect();
+    tools.push(tool("web", "search", "Search the web"));
+    let injection = injector(tools, 1_000)
+        .pin_servers(["web", "browser"])
+        .inject()
+        .expect("injection");
+
+    assert_eq!(injection.pinned[0].id, "web/search");
+    let chars: usize = injection
+        .pinned
+        .iter()
+        .map(|entry| entry.id.len() + entry.description.len())
+        .sum();
+    assert!(chars <= MAX_PINNED_CHARS, "{chars}");
+    assert!(injection.pinned.len() < 201);
 }

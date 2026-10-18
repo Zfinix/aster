@@ -56,6 +56,13 @@ Full input schemas are never inserted into the system prompt. The model calls
 `server/tool` identity. This is intentionally analogous to Aster skills:
 manifest first, full content only on demand.
 
+A host can pin servers whose tools stay listed even when the catalogue is over
+budget. Pinned tools are listed in pin order with descriptions cut to
+`MAX_PINNED_DESCRIPTION_CHARS`, and the list stops at `MAX_PINNED_CHARS`; the
+rest of a pinned server is still reachable through `search`. Aster also offers
+the built-in web server's search and extract as top-level `web_search` and
+`web_fetch` tools, because small models reach for a named tool before a lookup.
+
 ## The bridge protocol
 
 `aster_mcp` is an OpenAI-compatible function definition. Its arguments have
@@ -70,8 +77,10 @@ one required field, `action`.
 The bridge never accepts a bare tool name. IDs are `server/tool`, avoiding
 collisions between servers and preserving an audit-friendly target.
 
-`search` uses deterministic lexical ranking across tool names, descriptions,
-and input-schema text. It is local, reproducible, and requires no embedding
+`search` uses deterministic lexical ranking across server and tool names,
+descriptions, and input-schema text. Each query word counts once per field, so
+long descriptions do not win on repetition, and words under three characters
+only match exactly. It is local, reproducible, and requires no embedding
 service. The ranking implementation is deliberately replaceable: hosts can
 pre-filter a session catalogue or add a stronger retrieval layer without
 changing the visible bridge protocol.
@@ -243,8 +252,8 @@ through to DuckDuckGo and a plain HTTP fetch when that is rate-limited.
 
 | Tool | Keyless | Better with |
 | --- | --- | --- |
-| `web/search` | Firecrawl keyless, then DuckDuckGo | `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY` |
-| `web/extract` | Firecrawl keyless, then Jina Reader, then DuckDuckGo, then plain HTTP | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY`, `EXA_API_KEY`, or Cloudflare (both `CLOUDFLARE_BR_ACCOUNT_ID` and `CLOUDFLARE_BR_API_TOKEN`) |
+| `web/search` | Firecrawl keyless, then DuckDuckGo | `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `DEEPSEEK_API_KEY`, `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY` |
+| `web/extract` | Firecrawl keyless, then Jina Reader, then DuckDuckGo, then plain HTTP | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, `BROWSERBASE_API_KEY`, `EXA_API_KEY`, `DEEPSEEK_API_KEY`, or Cloudflare (both `CLOUDFLARE_BR_ACCOUNT_ID` and `CLOUDFLARE_BR_API_TOKEN`) |
 | `web/crawl` | no | `CONTEXT_DEV_API_KEY`, `FIRECRAWL_API_KEY`, or the Cloudflare pair |
 | `web/sitemap` | no | `CONTEXT_DEV_API_KEY` |
 | `web/screenshot` | no | `CONTEXT_DEV_API_KEY` |
@@ -257,8 +266,15 @@ model copying one verbatim trips the repetition guard.
 
 A configured provider takes over a tool it can serve, and the tool description
 the model reads names whichever provider will answer it. Exa leads `search`
-because that is what it is built for, with Perplexity next; the
-extraction-first providers outrank it on `extract`.
+because that is what it is built for, with Perplexity next and DeepSeek behind
+it; the extraction-first providers outrank both on `extract`.
+
+`DEEPSEEK_API_KEY` is the same key that runs DeepSeek models, so a DeepSeek
+user gets `web/search` and `web/extract` without a second sign-up. DeepSeek
+Search is a keyword engine with `site:`, `lang:`, `after:`, and `before:`
+operators, and it returns a summary per result rather than the page; Fetch
+returns a page as Markdown. Both are billed per successful call, and an empty
+search or a failed fetch is free.
 
 Firecrawl's keyless tier is rate-limited per IP and cannot crawl. Set
 `FIRECRAWL_API_KEY` to lift the limit, move Firecrawl up the dispatch order, and
