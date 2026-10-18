@@ -5,6 +5,7 @@ mod agents;
 mod agents_queue;
 mod announce;
 mod auth;
+mod background_commands;
 mod bots;
 use auth::LoginArgs;
 mod budget;
@@ -60,6 +61,7 @@ mod update;
 mod upgrade;
 mod util;
 mod web;
+mod web_tools;
 mod zai_auth;
 
 use std::env;

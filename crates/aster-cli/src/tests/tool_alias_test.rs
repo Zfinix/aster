@@ -238,3 +238,26 @@ fn unknown_tools_keep_their_name() {
         ("web_fetch".into(), json!({ "url": "x" }))
     );
 }
+
+#[test]
+fn web_tool_names_reach_the_web_tools() {
+    let names = [
+        "web/search",
+        "websearch",
+        "extract",
+        "web/extract",
+        "fetch_url",
+    ]
+    .map(|name| canonical(name, json!({})).0);
+    assert_eq!(
+        names,
+        [
+            "web_search",
+            "web_search",
+            "web_fetch",
+            "web_fetch",
+            "web_fetch"
+        ]
+        .map(String::from)
+    );
+}

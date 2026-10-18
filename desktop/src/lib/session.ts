@@ -128,12 +128,71 @@ export function stepLabel(name: string, args: Record<string, unknown>): string {
       return s(args.description) || `Ran ${s(args.command) || "a command"}`;
     case "edit_file":
       return `Edited ${s(args.path) || "file"}`;
+    case "web_search":
+      return args.query ? `Searched the web for “${s(args.query)}”` : "Searched the web";
+    case "web_fetch":
+      return `Opened ${s(args.url) || "a web page"}`;
+    case "run_tests":
+      return args.filter ? `Ran tests matching ${s(args.filter)}` : "Ran the test suite";
+    case "command_job": {
+      const job = typeof args.job === "number" ? ` ${args.job}` : "";
+      switch (args.action) {
+        case "output":
+          return `Checked background command${job}`;
+        case "wait":
+          return `Waited for background command${job}`;
+        case "stop":
+          return `Stopped background command${job}`;
+        default:
+          return "Checked background commands";
+      }
+    }
+    case "explore":
+      return "Explored the repository";
+    case "update_plan":
+      return "Updated the plan";
+    case "write_plan":
+      return "content" in args ? "Drafted the plan" : "Revised the plan";
+    case "exit_plan_mode":
+      return "Asked to leave plan mode";
+    case "ask_user": {
+      const asked = s(args.header) || s(args.question);
+      return asked ? `Asked “${asked}”` : "Asked you a question";
+    }
+    case "ast_grep":
+      return `Searched code for ${s(args.pattern)}`;
+    case "ast_edit":
+      return `Rewrote code matching ${s(args.pattern)}`;
+    case "security_scan":
+      return `Scanned ${s(args.path) || "the project"} for security issues`;
+    case "lsp_diagnostics":
+      return `Checked ${s(args.path)} for errors`;
+    case "lsp_references":
+      return `Found uses of the symbol in ${s(args.path)}`;
+    case "lsp_definitions":
+      return `Found where the symbol in ${s(args.path)} is defined`;
+    case "aster_mcp": {
+      const [server, tool = server] = s(args.name).split("/");
+      const toolName = tool.replace(/_/g, " ");
+      switch (args.action) {
+        case "search":
+          return `Searched connected tools for “${s(args.query)}”`;
+        case "describe":
+          return `Checked how ${toolName} works`;
+        case "execute":
+          if (!toolName) return "Used a connected tool";
+          return server === tool ? `Used ${toolName}` : `Used ${toolName} from ${server}`;
+        default:
+          return "Used a connected tool";
+      }
+    }
     case "open_preview":
       return s(args.description) || `Opened ${s(args.target)}`;
     case "remember":
       return "Saved to memory";
     case "recall":
-      return `Recalled ${s(args.name)}`;
+      if (args.name) return `Recalled ${s(args.name)}`;
+      return args.query ? `Searched memory for “${s(args.query)}”` : "Listed saved memories";
     case "forget":
       return `Forgot ${s(args.name)}`;
     case "read_skill":

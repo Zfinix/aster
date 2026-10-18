@@ -1830,7 +1830,7 @@ pub(crate) async fn agent_turn_streaming(
     // landed while no turn was attached flush in now.
     crate::agents_queue::attach(ctx.injected.clone(), Some(Arc::clone(&events)));
     let mut edited = Vec::new();
-    let (reply, compacted) = agent_loop(
+    let looped = agent_loop(
         &client,
         &repo_root,
         &history,
@@ -1842,7 +1842,9 @@ pub(crate) async fn agent_turn_streaming(
         &ctx,
         Some(&events),
     )
-    .await?;
+    .await;
+    crate::agents_queue::detach(&ctx.injected);
+    let (reply, compacted) = looped?;
     // Detached on purpose: the TUI outlives the turn, so the title can land
     // whenever it lands rather than holding the composer.
     drop(name_session(
@@ -2279,7 +2281,10 @@ pub(crate) async fn agent_loop(
             tools.retain(|t| {
                 t["function"]["name"]
                     .as_str()
-                    .map(|n| sub.tool_allowlist.contains(n))
+                    .map(|n| {
+                        sub.tool_allowlist.contains(n)
+                            || (n == "command_job" && sub.tool_allowlist.contains("run_command"))
+                    })
                     .unwrap_or(false)
             });
         }
@@ -2288,6 +2293,11 @@ pub(crate) async fn agent_loop(
         }
         if let Some(injection) = ctx.mcp.as_ref().and_then(|m| m.injection()) {
             tools.push(injection.bridge_tool);
+        }
+        if ctx.sub_agent.is_none()
+            && let Some(mcp) = &ctx.mcp
+        {
+            tools.extend(crate::web_tools::schemas(mcp.injector().catalog()));
         }
         if client.web_search() {
             tools.push(json!({"type": "openrouter:web_search"}));
@@ -3389,12 +3399,14 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
                         "description": "Arguments to pass to the command"
                     },
                     "turbo": { "type": "boolean", "description": "Run without network access. Use when the user asks for turbo mode or wants to work offline." },
-                    "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode." }
+                    "yolo": { "type": "boolean", "description": "Run without any filesystem restrictions. Only use when the user explicitly asks for yolo mode." },
+                    "background": { "type": "boolean", "description": "Start the command and return at once with a job id. Use it for anything that can run longer than a few minutes: evals, benchmarks, full builds and test suites, servers. You get a message when it exits; use `command_job` to read its output, wait on it, or stop it." }
                 },
                 "required": ["command", "description"]
             }
         }
     }));
+    tools.push(crate::background_commands::schema());
     tools.push(json!({
         "type": "function",
         "function": {
@@ -3511,6 +3523,11 @@ async fn exec_tool(
     // before the match below, which deals in text alone.
     if name == "aster_mcp" {
         return mcp_bridge(policy, approver, ctx, arguments)
+            .await
+            .unwrap_or_else(|e| ToolOutput::text(format!("error: {e:#}")));
+    }
+    if let Some(bridged) = crate::web_tools::bridge_arguments(name, arguments) {
+        return mcp_bridge(policy, approver, ctx, &bridged)
             .await
             .unwrap_or_else(|e| ToolOutput::text(format!("error: {e:#}")));
     }
@@ -3794,6 +3811,7 @@ async fn exec_tool(
             }
             Err(e) => Err(e),
         },
+        "command_job" => crate::background_commands::tool(&args).await,
         "open_preview" => match str_arg("target").context("open_preview needs a `target`") {
             Ok(target) => {
                 crate::preview::open_preview(
@@ -4402,8 +4420,12 @@ async fn mcp_bridge(
     let action = runtime.injector().route(arguments)?;
     let (tool, call_args) = match action {
         aster_mcp::BridgeAction::Search(matches) => {
+            let note = match runtime.injector().catalog().get("web/search") {
+                Some(_) => crate::web_tools::SEARCH_NOTE,
+                None => aster_mcp::SEARCH_NOTE,
+            };
             return Ok(ToolOutput::text(serde_json::to_string_pretty(
-                &json!({ "matches": matches }),
+                &json!({ "matches": matches, "note": note }),
             )?));
         }
         aster_mcp::BridgeAction::Describe(tool) => {
@@ -4439,9 +4461,16 @@ async fn mcp_bridge(
 
 fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
     let (binary, tail) = raw_argv(args)?;
+    // macOS and most Linux ship `python3` with no `python` alias.
+    if binary == "python" && !on_path("python") && on_path("python3") {
+        return Some(("python3".to_string(), tail));
+    }
     // A machine with no python still has the one built into this binary; a
     // call that forgot the `aster` in front should reach it, not a dead exec.
-    if matches!(binary.as_str(), "python" | "python3") && !on_path(&binary) {
+    if cfg!(target_os = "android")
+        && matches!(binary.as_str(), "python" | "python3")
+        && !on_path(&binary)
+    {
         let me = std::env::current_exe().ok()?;
         let mut argv = vec!["python".to_string()];
         argv.extend(tail);
@@ -4449,6 +4478,8 @@ fn command_argv(args: &Value) -> Option<(String, Vec<String>)> {
     }
     Some((binary, tail))
 }
+
+const SHELL_OPERATORS: &[&str] = &["|", "||", "&&", ";", ">", ">>", "<", "2>&1"];
 
 fn raw_argv(args: &Value) -> Option<(String, Vec<String>)> {
     let tail = string_list(&args["args"]);
@@ -4465,6 +4496,27 @@ fn raw_argv(args: &Value) -> Option<(String, Vec<String>)> {
             {
                 let (sh, flag) = shell();
                 return Some((sh.into(), vec![flag.into(), line.clone()]));
+            }
+            // `curl` with `[url, "|", "grep", ...]`, or `python -m pytest` with
+            // `[path]`: a shell line split into argv that exec cannot run.
+            if tail.iter().any(|a| SHELL_OPERATORS.contains(&a.as_str()))
+                || (!tail.is_empty() && binary.contains(char::is_whitespace))
+            {
+                let line = std::iter::once(binary.to_string())
+                    .chain(tail.iter().map(|word| {
+                        let plain = !word.is_empty()
+                            && word
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+                        match plain || SHELL_OPERATORS.contains(&word.as_str()) {
+                            true => word.clone(),
+                            false => format!("'{}'", word.replace('\'', r"'\''")),
+                        }
+                    }))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let (sh, flag) = shell();
+                return Some((sh.into(), vec![flag.into(), line]));
             }
             match looks_like_shell_line {
                 true => {
@@ -4530,6 +4582,7 @@ fn run_opts(args: &Value, ctx: &SessionCtx) -> RunOpts {
     RunOpts {
         turbo: args["turbo"].as_bool().unwrap_or(false),
         yolo: args["yolo"].as_bool().unwrap_or(false) || ctx.yolo.load(Ordering::Relaxed),
+        background: args["background"].as_bool().unwrap_or(false),
         timeout_secs: ctx.limits.command_timeout_secs as u64,
     }
 }
@@ -4547,6 +4600,7 @@ struct ExecEnv<'a> {
 struct RunOpts {
     turbo: bool,
     yolo: bool,
+    background: bool,
     timeout_secs: u64,
 }
 
@@ -4630,14 +4684,7 @@ async fn run_raw(
         return aster_sandbox::run_unsandboxed(env.repo_root, binary, args, opts.timeout_secs)
             .await;
     }
-    let profile = aster_sandbox::SandboxProfile::new(env.repo_root)
-        .timeout(opts.timeout_secs)
-        .network(!opts.turbo)
-        .allow_credentials(
-            env.credentials
-                .dirs_for(&aster_sandbox::command_name(binary)),
-        );
-    let config = aster_sandbox::SandboxConfig::new(profile);
+    let config = sandbox_config(env, binary, opts);
     let output = aster_sandbox::run_command(&config, binary, args).await?;
     // The sandbox refusing a path or the network is not the command failing.
     // Ask once to rerun it outside, rather than making the model route around
@@ -4656,6 +4703,17 @@ async fn run_raw(
         }
     }
     Ok(output)
+}
+
+fn sandbox_config(env: &ExecEnv<'_>, binary: &str, opts: RunOpts) -> aster_sandbox::SandboxConfig {
+    let profile = aster_sandbox::SandboxProfile::new(env.repo_root)
+        .timeout(opts.timeout_secs)
+        .network(!opts.turbo)
+        .allow_credentials(
+            env.credentials
+                .dirs_for(&aster_sandbox::command_name(binary)),
+        );
+    aster_sandbox::SandboxConfig::new(profile)
 }
 
 /// A failed command whose output looks like the sandbox refusing a write path
@@ -4684,7 +4742,10 @@ fn sandbox_denial(output: &aster_sandbox::CommandOutput) -> bool {
 /// the model hunting for grants; name the real problem and the way round it.
 fn missing_binary(binary: &str) -> String {
     let hint = match binary {
-        "python" | "python3" | "pip" | "pip3" => {
+        "python" | "pip" if on_path(&format!("{binary}3")) => {
+            return format!("there is no `{binary}` on this machine's PATH; use `{binary}3`.");
+        }
+        "python" | "python3" | "pip" | "pip3" if cfg!(target_os = "android") => {
             " Python here is `aster python <script>` or `aster python -c \"...\"`."
         }
         "bash" => " The shell is `sh -c \"...\"`.",
@@ -4719,6 +4780,19 @@ fn command_coaching(
                  has the full protocol."
             ));
         }
+    }
+
+    // `bash -lc "python x.py"` on a machine that only has `python3`.
+    if shell_line
+        && output.exit_code == Some(127)
+        && let Some(missing) = ["python", "pip"]
+            .into_iter()
+            .find(|tool| combined.contains(&format!("{tool}: command not found")))
+        && on_path(&format!("{missing}3"))
+    {
+        notes.push(format!(
+            "note: this machine has `{missing}3`, not `{missing}`; run it as `{missing}3`."
+        ));
     }
 
     let lower = combined.to_lowercase();
@@ -4799,9 +4873,11 @@ fn render_timeout(output: &aster_sandbox::CommandOutput, timeout_secs: u64) -> S
         }
     }
     result.push_str(
-        "Do NOT re-run this command with a longer timeout. Kill any leftover \
-         processes first, then run a narrower or faster variant (scope it to \
-         one target, bound its output, or skip the slow step). The \
+        "If this command is meant to run long (an eval, a benchmark, a full \
+         build or test suite), run it again with background:true and wait on it \
+         with `command_job`. Otherwise do NOT re-run it with a longer timeout: \
+         kill any leftover processes, then run a narrower or faster variant \
+         (scope it to one target, bound its output, or skip the slow step). The \
          `build-triage` skill (read_skill) has the full protocol.",
     );
     result
@@ -4817,6 +4893,22 @@ async fn run_command_tool(
         anyhow::bail!("{}", missing_binary(binary));
     }
     authorize_exec(env, binary, args).await?;
+    if opts.background {
+        let opts = RunOpts {
+            timeout_secs: crate::background_commands::JOB_TIMEOUT_SECS,
+            ..opts
+        };
+        let isolation = match opts.yolo {
+            true => aster_sandbox::Isolation::Unsandboxed,
+            false => aster_sandbox::Isolation::Sandboxed,
+        };
+        return crate::background_commands::start(
+            &sandbox_config(env, binary, opts),
+            isolation,
+            binary,
+            args,
+        );
+    }
     let output = run_raw(env, binary, args, opts).await?;
     if output.timed_out {
         return Ok(render_timeout(&output, opts.timeout_secs));
@@ -4960,10 +5052,27 @@ fn forget(ctx: &SessionCtx, name: &str) -> Result<String> {
 }
 
 fn read_skill(ctx: &SessionCtx, name: &str) -> Result<String> {
-    let skill = ctx
-        .skills
-        .get(name)
-        .with_context(|| format!("no skill named {name:?}; check the Skills list"))?;
+    let skill = ctx.skills.get(name).with_context(|| {
+        let wanted = name.to_lowercase();
+        let close: Vec<&str> = ctx
+            .skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .filter(|s| {
+                wanted
+                    .split(['-', '_', ' '])
+                    .any(|word| word.len() >= 3 && s.contains(word))
+            })
+            .take(8)
+            .collect();
+        match close.is_empty() {
+            true => format!("no skill named {name:?}; check the Skills list"),
+            false => format!(
+                "no skill named {name:?}; close matches: {}",
+                close.join(", ")
+            ),
+        }
+    })?;
     if skill.always {
         return Ok(format!(
             "{name} is already in your system prompt in full, under \"Skill: {name}\". \

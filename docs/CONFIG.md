@@ -313,7 +313,7 @@ defaults, since tasks there run unattended over a chat channel and take longer.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `max_tool_rounds` | int | `60` (`200` on Android) | Tool rounds before the agent must answer with what it has. It says so when it hits the cap. Env `ASTER_MAX_TOOL_ROUNDS`. |
-| `command_timeout_secs` | int | `300` (`1800` on Android) | Seconds one `run_command` may take. Builds and test suites live here. Env `ASTER_COMMAND_TIMEOUT`. |
+| `command_timeout_secs` | int | `300` (`1800` on Android) | Seconds one `run_command` may take. Builds and test suites live here. Env `ASTER_COMMAND_TIMEOUT`. A command started with `background: true` is not bound by this; it runs as a job for up to 4 hours. |
 | `compact_budget_chars` | int | `192000` | History size above which older turns fold into a summary. Roughly 48k tokens; lower it for small-context models. Env `ASTER_COMPACT_BUDGET`. |
 | `max_output_tokens` | int | `8000` | Tokens one reply may run to. Lower it when a provider turns the request down as too large; `0` sends no cap and leaves the limit to the provider. Env `ASTER_MAX_TOKENS`. |
 | `language` | string | the user's | Language every reply is written in, such as `English` or `Français`. Unset follows the language the user writes in. Either way the prompt tells the model to stay in one language for the whole turn, thinking included. Env `ASTER_LANGUAGE`. |

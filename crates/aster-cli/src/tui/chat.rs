@@ -28,6 +28,7 @@ use super::guard::TuiGuard;
 use super::helpers::{clip_row, count_of, human_count, listed, short_path};
 use super::markdown::{self, MarkdownStream};
 use super::render::Renderable;
+use super::step_label::step_label;
 use super::terminal::{Tui, TuiEvent};
 use super::voice::{ReadAloud, VoiceAction};
 use super::{history, theme, wrap};
@@ -865,82 +866,6 @@ fn decode_turn_event(event: &Value) -> Option<TurnEvent> {
             Some(TurnEvent::Citations(citations))
         }
         _ => None,
-    }
-}
-
-/// Friendly one-line label for a tool call, matching the desktop's stepLabel.
-pub(crate) fn step_label(name: &str, args: &str) -> String {
-    let parsed: Value = serde_json::from_str(args).unwrap_or(Value::Null);
-    let s = |key: &str| parsed.get(key).and_then(Value::as_str).unwrap_or("");
-    match name {
-        "read_file" => match s("path") {
-            "" => "Read file".to_string(),
-            path => format!("Read {path}"),
-        },
-        "list_files" => match s("dir") {
-            "" => "Listed the project root".to_string(),
-            dir => format!("Listed {dir}"),
-        },
-        "search_files" => format!("Searched \u{201c}{}\u{201d}", s("query")),
-        "find_files" => format!("Found files matching {}", s("pattern")),
-        "run_command" => match s("description") {
-            "" => match command_line(&parsed) {
-                None => "Ran a command".to_string(),
-                Some(line) => format!("Ran {line}"),
-            },
-            summary => summary.to_string(),
-        },
-        "edit_file" => match s("path") {
-            "" => "Edited file".to_string(),
-            path => format!("Edited {path}"),
-        },
-        "web_search" | "web/search" => "Sources".to_string(),
-        "open_preview" => match s("description") {
-            "" => format!("Opened {}", s("target")),
-            what => what.to_string(),
-        },
-        "remember" => "Saved to memory".to_string(),
-        "recall" => format!("Recalled {}", s("name")),
-        "forget" => format!("Forgot {}", s("name")),
-        "read_skill" => format!("Read skill {}", s("name")),
-        "chat_history" => match parsed["id"].as_str() {
-            Some(id) => format!("Read chat {id}"),
-            None => "Listed saved chats".to_string(),
-        },
-        "agent" => {
-            let names: Vec<&str> = parsed["tasks"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|t| t["agent"].as_str()).collect())
-                .unwrap_or_default();
-            let total = names.len();
-            let unique: Vec<&str> = {
-                let mut seen = std::collections::BTreeSet::new();
-                names.into_iter().filter(|n| seen.insert(*n)).collect()
-            };
-            if total == 0 {
-                "agent".to_string()
-            } else if total == 1 {
-                format!("agent: {}", unique[0])
-            } else if unique.len() == 1 {
-                format!("agent ×{total}: {unique}", unique = unique[0])
-            } else {
-                format!("agent ×{total}: {}", unique.join(", "))
-            }
-        }
-        other => other.replace('_', " "),
-    }
-}
-
-fn command_line(args: &Value) -> Option<String> {
-    let binary = args.get("command").and_then(Value::as_str)?;
-    let rest = args
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-        .unwrap_or_default();
-    match rest.is_empty() {
-        true => Some(binary.to_string()),
-        false => Some(format!("{binary} {}", rest.join(" "))),
     }
 }
 

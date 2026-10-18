@@ -494,44 +494,6 @@ fn a_missing_path_is_marked_on_the_explored_line_not_raised_as_an_error() {
     assert!(!out.contains("Nearest paths"), "{out}");
 }
 
-#[test]
-fn a_command_step_names_the_command_it_ran() {
-    assert_eq!(
-        step_label(
-            "run_command",
-            r#"{"command":"cargo","args":["test","--all"]}"#
-        ),
-        "Ran cargo test --all"
-    );
-    assert_eq!(
-        step_label("run_command", r#"{"command":"cargo"}"#),
-        "Ran cargo"
-    );
-}
-
-#[test]
-fn a_command_step_prefers_the_models_own_summary() {
-    assert_eq!(
-        step_label(
-            "run_command",
-            r#"{"command":"bun","args":["run","build"],"description":"Rebuild the webview bundle"}"#
-        ),
-        "Rebuild the webview bundle"
-    );
-}
-
-#[test]
-fn a_half_streamed_command_label_does_not_invent_a_name() {
-    assert_eq!(
-        step_label("run_command", r#"{"args":["test"]}"#),
-        "Ran a command"
-    );
-    assert_eq!(
-        step_label("run_command", r#"{"command":"car"#),
-        "Ran a command"
-    );
-}
-
 /// The theme is process-global, so tests that touch it cannot run in parallel.
 static THEME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

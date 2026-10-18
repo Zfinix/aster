@@ -14,7 +14,8 @@ description: Reading build, test, and compiler failures fast. Use when a build o
    verdict last), `| head -30` for first errors, `--stat` for diffs. Never
    dump a full build log.
 4. **Never escalate a timeout.** A command that timed out will time out again
-   with a bigger budget. Kill leftovers (`pkill -f cargo`), then narrow: one
+   with a bigger budget. The exception is work that is long by nature (an
+   eval, a full suite): run it with `background:true`, see `long-running-work`. Kill leftovers (`pkill -f cargo`), then narrow: one
    package, one test, one file. `cargo check -p one-crate` beats a 10 minute
    workspace build.
 5. **Label pipeline stages** so partial output says where it died:

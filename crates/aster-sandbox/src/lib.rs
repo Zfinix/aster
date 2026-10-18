@@ -3,9 +3,11 @@
 //! on macOS, `bwrap` on Linux, elsewhere a process-level fallback with no network
 //! isolation. A boundary, not a guarantee: policy and approval come first.
 
+mod jobs;
 mod profile;
 mod runner;
 
+pub use jobs::{Isolation, JobHandle, JobState, spawn};
 pub use profile::{SandboxProfile, command_name, credential_paths, credentials_for};
 pub use runner::{CommandOutput, SandboxConfig, run_command, run_unsandboxed};
 

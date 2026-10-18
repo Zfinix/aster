@@ -440,6 +440,40 @@ fn a_shell_line_in_command_runs_through_bash() {
 }
 
 #[test]
+fn a_pipeline_split_into_args_runs_through_the_shell() {
+    let args = json!({
+        "command": "curl",
+        "args": ["-s", "https://duckduckgo.com/html?q=rea", "|", "grep", "-o", "https://[^<]*", "|", "head", "-5"]
+    });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "bash".to_string(),
+            vec![
+                "-lc".to_string(),
+                "curl -s 'https://duckduckgo.com/html?q=rea' | grep -o 'https://[^<]*' | head -5"
+                    .to_string()
+            ]
+        ))
+    );
+}
+
+#[test]
+fn a_command_with_spaces_and_args_runs_as_one_line() {
+    let args = json!({ "command": "python3 -m pytest", "args": ["tests/test_calc.py", "-v"] });
+    assert_eq!(
+        command_argv(&args),
+        Some((
+            "bash".to_string(),
+            vec![
+                "-lc".to_string(),
+                "python3 -m pytest tests/test_calc.py -v".to_string()
+            ]
+        ))
+    );
+}
+
+#[test]
 fn a_blank_command_falls_through_to_the_args() {
     let args = json!({ "command": "  ", "args": ["cargo", "test"] });
     assert_eq!(
@@ -2585,4 +2619,51 @@ fn reading_an_internal_skill_is_never_a_visible_step() {
         r#"{"steps":[{"tool":"read_skill","args":{"name":"git-workflow"}}]}"#
     ));
     assert!(!internal_call(&skills, "read_skill", "not json"));
+}
+
+#[tokio::test]
+async fn a_sub_agent_that_can_run_commands_can_check_on_background_jobs() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(body("done"))
+        .mount(&server)
+        .await;
+    let repo = tempfile::tempdir().unwrap();
+    let ctx = SessionCtx {
+        sub_agent: Some(Arc::new(SubAgentOverrides {
+            prompt_body: "Run the suite.".into(),
+            tool_allowlist: ["run_command".to_string()].into_iter().collect(),
+        })),
+        ..SessionCtx::default()
+    };
+    crate::chat::agent_turn_streaming(
+        AiClient::new(server.uri(), "k", "mock-model"),
+        repo.path().to_path_buf(),
+        vec![ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }],
+        false,
+        std::sync::Arc::new(plan_policy()),
+        std::sync::Arc::new(Grants::default()),
+        None,
+        ctx,
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let sent: Value = requests
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .find(|body| body["tools"].is_array())
+        .expect("a chat request with tools");
+    let names: Vec<&str> = sent["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["run_command", "command_job"]);
 }

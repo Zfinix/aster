@@ -124,7 +124,55 @@ async fn run_with_backend(
     args: &[String],
 ) -> Result<CommandOutput> {
     let timeout = Duration::from_secs(config.profile.timeout_secs);
+    let mut cmd = prepare_command(backend, config, binary, args)?;
+    cmd.kill_on_drop(true);
 
+    let mut child = cmd.spawn().context("spawning sandboxed command")?;
+    let mut group = GroupKill(child.id());
+    // Readers run as tasks so partial output survives a timeout; killing the
+    // process group closes the pipes and lets them finish.
+    let (out_buf, err_buf) = (captured(), captured());
+    let stdout_task = tokio::spawn(read_capped(child.stdout.take(), out_buf.clone()));
+    let stderr_task = tokio::spawn(read_capped(child.stderr.take(), err_buf.clone()));
+
+    let timed_out = tokio::time::timeout(timeout, child.wait()).await;
+    match timed_out {
+        // Kill before joining the readers: a hung child holds the pipes open,
+        // and the readers only finish once the pipes close.
+        Err(_) => group.kill(),
+        // A grandchild left running on purpose (a dev server) outlives its shell.
+        Ok(_) => group.disarm(),
+    }
+    let readers = async { tokio::join!(stdout_task, stderr_task) };
+    let _ = tokio::time::timeout(READER_GRACE, readers).await;
+    let (stdout, stderr) = (snapshot(&out_buf), snapshot(&err_buf));
+
+    let Ok(status) = timed_out else {
+        return Ok(CommandOutput {
+            stdout,
+            stderr,
+            exit_code: None,
+            timed_out: true,
+        });
+    };
+    let status = status.context("running sandboxed command")?;
+
+    Ok(CommandOutput {
+        stdout,
+        stderr,
+        exit_code: status.code(),
+        timed_out: false,
+    })
+}
+
+/// The command for `backend`, with the working directory, environment, pipes,
+/// and process group set, ready to spawn.
+pub(crate) fn prepare_command(
+    backend: SandboxBackend,
+    config: &SandboxConfig,
+    binary: &str,
+    args: &[String],
+) -> Result<TokioCommand> {
     let mut cmd = match backend {
         SandboxBackend::Seatbelt => build_seatbelt_command(config, binary, args)?,
         SandboxBackend::Bubblewrap => build_bwrap_command(config, binary, args)?,
@@ -164,47 +212,11 @@ async fn run_with_backend(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.kill_on_drop(true);
     // A fresh process group so a timeout can kill grandchildren too.
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let mut child = cmd.spawn().context("spawning sandboxed command")?;
-    let mut group = GroupKill(child.id());
-    // Readers run as tasks so partial output survives a timeout; killing the
-    // process group closes the pipes and lets them finish.
-    let (out_buf, err_buf) = (captured(), captured());
-    let stdout_task = tokio::spawn(read_capped(child.stdout.take(), out_buf.clone()));
-    let stderr_task = tokio::spawn(read_capped(child.stderr.take(), err_buf.clone()));
-
-    let timed_out = tokio::time::timeout(timeout, child.wait()).await;
-    match timed_out {
-        // Kill before joining the readers: a hung child holds the pipes open,
-        // and the readers only finish once the pipes close.
-        Err(_) => group.kill(),
-        // A grandchild left running on purpose (a dev server) outlives its shell.
-        Ok(_) => group.disarm(),
-    }
-    let readers = async { tokio::join!(stdout_task, stderr_task) };
-    let _ = tokio::time::timeout(READER_GRACE, readers).await;
-    let (stdout, stderr) = (snapshot(&out_buf), snapshot(&err_buf));
-
-    let Ok(status) = timed_out else {
-        return Ok(CommandOutput {
-            stdout,
-            stderr,
-            exit_code: None,
-            timed_out: true,
-        });
-    };
-    let status = status.context("running sandboxed command")?;
-
-    Ok(CommandOutput {
-        stdout,
-        stderr,
-        exit_code: status.code(),
-        timed_out: false,
-    })
+    Ok(cmd)
 }
 
 const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
@@ -269,7 +281,7 @@ impl Drop for GroupKill {
 }
 
 #[cfg(unix)]
-fn kill_process_group(pid: Option<u32>) {
+pub(crate) fn kill_process_group(pid: Option<u32>) {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 
@@ -279,7 +291,7 @@ fn kill_process_group(pid: Option<u32>) {
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(_pid: Option<u32>) {}
+pub(crate) fn kill_process_group(_pid: Option<u32>) {}
 
 #[cfg(target_os = "macos")]
 fn build_seatbelt_command(

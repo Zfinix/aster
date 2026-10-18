@@ -162,3 +162,45 @@ async fn status_lists_running_and_done_work() {
     let status = queue.status_text();
     assert!(status.contains("scout"), "{status}");
 }
+
+#[tokio::test]
+async fn reports_after_a_turn_detaches_park_for_the_next_turn() {
+    let queue = Arc::new(BackgroundAgents::new());
+    let finished: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    queue.attach(finished.clone(), None);
+    queue.detach(&finished);
+
+    queue
+        .submit(
+            vec![task("scout", "look around")],
+            stub_runner(vec![report("scout", "look around", None)]),
+        )
+        .expect("submit");
+    for _ in 0..100 {
+        if queue.status_text().contains("batch history") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let next: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    queue.attach(next.clone(), None);
+    assert_eq!(*finished.lock().unwrap(), Vec::<String>::new());
+    assert_eq!(
+        *next.lock().unwrap(),
+        vec!["Background agent scout finished (batch 1, 1/1 done): look around".to_string()]
+    );
+}
+
+#[test]
+fn detaching_an_old_turn_keeps_the_newer_attachment() {
+    let queue = BackgroundAgents::new();
+    let old: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let current: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    queue.attach(old.clone(), None);
+    queue.attach(current.clone(), None);
+    queue.detach(&old);
+
+    queue.deliver("late report".to_string());
+    assert_eq!(*current.lock().unwrap(), vec!["late report".to_string()]);
+}

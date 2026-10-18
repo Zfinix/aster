@@ -11,6 +11,7 @@ mod markdown;
 mod palettes;
 mod render;
 mod review;
+mod step_label;
 mod summary;
 mod syntax;
 mod term;
@@ -21,8 +22,8 @@ mod voice;
 mod wrap;
 
 pub use chat::run_chat;
-pub(crate) use chat::step_label;
 pub(crate) use helpers::mark_ansi;
 pub use review::run;
+pub(crate) use step_label::step_label;
 
 pub(crate) const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

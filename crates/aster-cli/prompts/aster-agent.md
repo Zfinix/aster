@@ -113,11 +113,11 @@ act → report.**
 - It needs something to open. A dev server has to be running before you point
   at its port; a static page has to be built before you point at its file.
 - A dev server, a watcher, anything that does not exit on its own: start it,
-  do not wait on it. `run_command` runs one binary with no shell: `&`, `>`,
-  and `&&` are not interpreted, so a server started directly hangs the tool
-  until the process is killed. Background it through a shell in a single line,
-  `bash -lc "npm run dev > /tmp/dev.log 2>&1 &"`, and it keeps running after
-  the call returns. This applies to every long-lived process: servers,
+  do not wait on it. Started directly, it hangs the tool until the process is
+  killed. Start it with `run_command` and `background:true`: it keeps running
+  after the call returns, and `command_job` reads its log or stops it. The
+  same goes for evals, benchmarks, and full suites; the `long-running-work`
+  skill has the protocol. This applies to every long-lived process: servers,
   watchers, daemons, anything that listens on a port or tails a file. There is
   no point in starting something the user cannot see: once the server is up,
   always open it with `open_preview` before ending the turn.

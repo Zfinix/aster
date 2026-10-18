@@ -146,6 +146,19 @@ impl BackgroundAgents {
         }
     }
 
+    /// Stop delivering into `injected` once its turn has ended, so later
+    /// reports park for the next turn. A newer turn's attachment is left alone.
+    pub(crate) fn detach(&self, injected: &Arc<Mutex<Vec<String>>>) {
+        let mut inner = self.lock();
+        if inner
+            .attached
+            .as_ref()
+            .is_some_and(|a| Arc::ptr_eq(&a.injected, injected))
+        {
+            inner.attached = None;
+        }
+    }
+
     /// Queue a batch for background execution. Returns the batch id.
     pub(crate) fn submit(
         self: &Arc<Self>,
@@ -403,6 +416,16 @@ pub(crate) fn attach(
     events: Option<crate::chat::ChatEventSink>,
 ) {
     queue().attach(injected, events);
+}
+
+/// Detach a finished turn's report targets so later reports park.
+pub(crate) fn detach(injected: &Arc<Mutex<Vec<String>>>) {
+    queue().detach(injected);
+}
+
+/// Deliver a one-line notice to the live turn, or park it for the next one.
+pub(crate) fn notify(line: String) {
+    queue().deliver(line);
 }
 
 /// Queue a batch in the process-wide queue.

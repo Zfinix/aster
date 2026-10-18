@@ -64,7 +64,11 @@ pub(crate) fn rewrite(
     raw_name: &str,
     mut args: Map<String, Value>,
 ) -> (String, Map<String, Value>) {
-    let name = tool_name(raw_name);
+    // `web/search` names the built-in web server's tool, not a repo search.
+    let name = match raw_name.trim().strip_prefix("web/") {
+        Some(tool) => tool_name(&format!("web_{tool}")),
+        None => tool_name(raw_name),
+    };
     let name = match name.as_str() {
         "str_replace_editor" | "str_replace_based_edit_tool" | "text_editor" => {
             match args.get("command").and_then(Value::as_str) {
@@ -115,6 +119,11 @@ pub(crate) fn rewrite(
         }
         "ask_user_question" | "ask_followup_question" | "ask_question" | "ask" => "ask_user",
         "save_memory" | "memory_save" | "store_memory" | "memorize" => "remember",
+        "websearch" | "search_web" | "internet_search" | "google_search" | "web_search_exa" => {
+            "web_search"
+        }
+        "extract" | "fetch" | "fetch_url" | "webfetch" | "browse" | "open_url" | "read_url"
+        | "web_extract" | "scrape" => "web_fetch",
         "skill" | "load_skill" | "use_skill" => "read_skill",
         other => other,
     }
