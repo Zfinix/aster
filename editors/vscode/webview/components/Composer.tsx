@@ -817,7 +817,7 @@ export function Composer({
           <div className="composer-edit">
             <PencilIcon />
             <span className="composer-edit-label">Editing message</span>
-            <span className="composer-edit-hint">Enter to resend · Esc to cancel</span>
+            <span className="composer-edit-hint">Enter to resend</span>
             <button
               className="ghost composer-edit-cancel"
               onClick={cancelEdit}

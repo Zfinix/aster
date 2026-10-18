@@ -25,7 +25,7 @@ export function UserTurnActions({ text, ts, actions }: { text: string; ts?: numb
   };
 
   return (
-    <>
+    <div className="user-turn-row">
       <div className={`turn-user${editing ? " user-turn-editing" : ""}`}>
         {editing ? (
           <div className="user-turn-editor">
@@ -62,6 +62,6 @@ export function UserTurnActions({ text, ts, actions }: { text: string; ts?: numb
         </div>
         <TurnActions text={text} ts={ts} />
       </div>
-    </>
+    </div>
   );
 }

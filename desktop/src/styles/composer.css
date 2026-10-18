@@ -261,8 +261,8 @@
 }
 
 .stop {
-  background: var(--error);
-  color: #fff;
+  background: var(--button-bg);
+  color: var(--button-fg);
 }
 
 .pop {

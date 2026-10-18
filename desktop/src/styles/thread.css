@@ -161,13 +161,13 @@
 .tool-list > * {
   position: relative;
   --node: calc(3px + 0.5lh);
-  --node-gap: 7px;
+  --node-gap: calc(var(--glyph) / 2 + 2px);
 }
 
 .tool-list > *::before {
   content: "";
   position: absolute;
-  left: calc(var(--s1) - var(--rail-x));
+  left: calc(var(--s1) + var(--glyph) / 2 - 1px);
   top: 0;
   bottom: -1px;
   width: 2px;
@@ -191,38 +191,6 @@
 }
 
 .tool-list > :only-child::before {
-  display: none;
-}
-
-.tool-list > * > .tool-row {
-  position: relative;
-}
-
-.tool-list > * > .tool-row::before {
-  content: "";
-  position: absolute;
-  left: calc(var(--s1) - var(--rail-x) - 2px);
-  top: calc(3px + 0.5lh);
-  width: 6px;
-  height: 6px;
-  margin-top: -3px;
-  border-radius: 1px;
-  background: var(--fg-dim);
-  opacity: 0.55;
-  transform: rotate(45deg);
-}
-
-.tool-list > [data-running="true"] > .tool-row::before {
-  background: var(--accent);
-  opacity: 1;
-}
-
-.tool-list > [data-error="true"] > .tool-row::before {
-  background: var(--sev-critical);
-  opacity: 1;
-}
-
-.tool-list > :only-child > .tool-row::before {
   display: none;
 }
 

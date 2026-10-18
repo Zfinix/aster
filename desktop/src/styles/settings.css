@@ -134,6 +134,10 @@
   max-width: 300px;
 }
 
+.settings-row-control:has(> .field-input) {
+  flex: 1 1 0;
+}
+
 .settings-row-control .pop-wrap {
   max-width: 100%;
 }

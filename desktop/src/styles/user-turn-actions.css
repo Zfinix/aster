@@ -7,7 +7,15 @@
   gap: var(--s2);
 }
 
+.user-turn-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+
 .user-turn-actions {
+  margin-left: auto;
   min-height: 24px;
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -25,7 +33,7 @@
 }
 
 .turn-user.user-turn-editing {
-  align-self: stretch;
+  flex-basis: calc(100% + var(--chip-pad-x) + 1px);
 }
 
 .user-turn-editor textarea {
