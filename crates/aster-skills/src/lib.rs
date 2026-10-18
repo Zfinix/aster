@@ -64,6 +64,7 @@ const INTERNAL_SKILLS: &[&str] = &[
     include_str!("../builtins/internal/verify-before-done/SKILL.md"),
     include_str!("../builtins/internal/plan-and-present/SKILL.md"),
     include_str!("../builtins/internal/build-triage/SKILL.md"),
+    include_str!("../builtins/internal/long-running-work/SKILL.md"),
     include_str!("../builtins/internal/batched-bash/SKILL.md"),
     include_str!("../builtins/internal/cli-toolbox/SKILL.md"),
     include_str!("../builtins/internal/context-economy/SKILL.md"),
@@ -304,13 +305,45 @@ impl SkillSet {
                 When nothing matches, load nothing. Skipping a matching skill and \
                 improvising is how avoidable mistakes happen.\n",
             );
-            for skill in &on_demand {
-                out.push_str(&format!(
-                    "\n- **{}**: {}",
-                    skill.name,
-                    first_sentences(&skill.description, INDEX_DESCRIPTION_CHARS)
-                ));
-            }
+            // Widest listing that fits the budget: full descriptions, then short
+            // ones, then names alone, so a large install never crowds the prompt.
+            let listing = |chars: Option<usize>| -> String {
+                on_demand
+                    .iter()
+                    .map(|skill| match chars {
+                        Some(max) => format!(
+                            "\n- **{}**: {}",
+                            skill.name,
+                            first_sentences(&skill.description, max)
+                        ),
+                        None => format!("\n- {}", skill.name),
+                    })
+                    .collect()
+            };
+            let fitted = [Some(INDEX_DESCRIPTION_CHARS), Some(SHORT_DESCRIPTION_CHARS)]
+                .into_iter()
+                .map(listing)
+                .find(|text| text.chars().count() <= MAX_INDEX_CHARS)
+                .unwrap_or_else(|| {
+                    let mut names = String::new();
+                    for line in listing(None).split_inclusive('\n').skip(1) {
+                        if names.chars().count() + line.chars().count() > MAX_INDEX_CHARS {
+                            break;
+                        }
+                        names.push_str(line);
+                    }
+                    let shown = names.lines().count();
+                    format!(
+                        "\nThere are too many skills to describe here, so only names are \
+                         listed; load one with `read_skill` to see what it does.\n{}{}",
+                        names.trim_end(),
+                        match on_demand.len().saturating_sub(shown) {
+                            0 => String::new(),
+                            more => format!("\n- ... and {more} more"),
+                        }
+                    )
+                });
+            out.push_str(&fitted);
         }
         for skill in &always {
             let Ok(body) = skill.load_body() else {
@@ -333,6 +366,9 @@ impl SkillSet {
 }
 
 const INDEX_DESCRIPTION_CHARS: usize = 180;
+const SHORT_DESCRIPTION_CHARS: usize = 70;
+/// Hard cap on the on-demand skills listing, about 2K tokens.
+const MAX_INDEX_CHARS: usize = 8_000;
 
 fn first_sentences(description: &str, max: usize) -> String {
     let description = description.trim();

@@ -11,6 +11,8 @@ use crate::slugify;
 
 pub const PROJECT_MEMORY_FILE: &str = "ASTER.md";
 pub const MAX_INDEX_ENTRIES: usize = 60;
+/// A memory's own description is unbounded; the index only needs a hook.
+pub const MAX_INDEX_DESCRIPTION_CHARS: usize = 160;
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
 pub struct MemoryStore {
@@ -78,10 +80,16 @@ impl MemoryStore {
     pub fn load_context(&self) -> Result<String> {
         let mut sections = Vec::new();
 
+        // ASTER.md is shared by every repository, so a note about one project's
+        // tooling must not read to the model as a fact about this one.
         if let Ok(project) = fs::read_to_string(self.project_path()) {
-            let project = project.trim();
-            if !project.is_empty() {
-                sections.push(project.to_string());
+            let notes = project.trim().trim_start_matches("# Project memory").trim();
+            if !notes.is_empty() {
+                sections.push(format!(
+                    "### Notes saved across all projects\nThese come from every project \
+                     Aster has worked in. A note about one project's tools, commands, or \
+                     layout may not apply to this repository; check it before relying on it.\n\n{notes}"
+                ));
             }
         }
 
@@ -94,6 +102,13 @@ impl MemoryStore {
             .map(|b| {
                 if b.description.is_empty() {
                     format!("- {}", b.name)
+                } else if b.description.chars().count() > MAX_INDEX_DESCRIPTION_CHARS {
+                    let cut: String = b
+                        .description
+                        .chars()
+                        .take(MAX_INDEX_DESCRIPTION_CHARS)
+                        .collect();
+                    format!("- {} — {}…", b.name, cut.trim_end())
                 } else {
                     format!("- {} — {}", b.name, b.description)
                 }

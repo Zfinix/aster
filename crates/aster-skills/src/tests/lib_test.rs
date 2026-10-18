@@ -337,3 +337,27 @@ fn an_always_skill_alone_renders_no_scan_list() {
     assert!(!index.contains("## Skills"));
     assert!(index.starts_with("## Skill: android-use"));
 }
+
+#[test]
+fn a_large_install_is_listed_by_name_within_the_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let long = "Does a very specific thing for a very specific workflow. ".repeat(4);
+    for i in 0..300 {
+        write_skill(
+            tmp.path(),
+            &format!("skill-{i:03}"),
+            &format!("---\nname: skill-{i:03}\ndescription: {long}\n---\n# Body\n"),
+        );
+    }
+    let index = SkillSet::discover(&[tmp.path().to_path_buf()])
+        .render_index()
+        .unwrap();
+    let listing = &index[index.find("\n- ").unwrap()..];
+    assert!(
+        listing.chars().count() <= MAX_INDEX_CHARS + 100,
+        "{}",
+        listing.len()
+    );
+    assert!(listing.contains("- skill-000\n"));
+    assert!(!listing.contains("Does a very specific thing"));
+}

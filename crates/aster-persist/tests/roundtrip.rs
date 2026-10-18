@@ -220,6 +220,8 @@ fn memory_blocks_and_project_feed_context() {
     let ctx = memory.load_context().unwrap();
     assert!(ctx.contains("## Memory"));
     assert!(ctx.contains("Uses filesystem-first persistence"));
+    assert!(ctx.contains("Notes saved across all projects"));
+    assert!(!ctx.contains("# Project memory"));
     assert!(ctx.contains("Recallable memory"));
     assert!(ctx.contains("build-command"));
     assert!(ctx.contains("how to build"));
@@ -229,4 +231,20 @@ fn memory_blocks_and_project_feed_context() {
     let block = memory.read_block("Build command").unwrap();
     assert_eq!(block, "Run cargo build -p aster-cli");
     assert!(memory.read_block("nonexistent").is_err());
+}
+
+#[test]
+fn a_long_memory_description_is_cut_in_the_index_but_kept_in_full() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open(home.path()).unwrap();
+    let memory = store.memory();
+    let description = "registry rules ".repeat(40);
+    memory
+        .remember("Registry entry", &description, "body")
+        .unwrap();
+
+    let ctx = memory.load_context().unwrap();
+    let line = ctx.lines().find(|l| l.contains("registry-entry")).unwrap();
+    assert!(line.chars().count() < 200, "{line}");
+    assert!(line.ends_with('…'));
 }

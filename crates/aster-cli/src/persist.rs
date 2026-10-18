@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once};
 use std::{fs, io};
 
@@ -7,15 +7,21 @@ use aster_persist::{SessionWriter, Store};
 
 pub type Recorder = Arc<Mutex<SessionWriter>>;
 
+const CONFIG_FILES: &[&str] = &["aster.yaml", "aster.yml", ".aster.yaml", "mcp.json", ".env"];
+
 /// The global `.env` Aster loads at startup. Config stays in `~/.aster` even
-/// though data moved under the XDG root.
+/// though data moved under the XDG root. Older builds kept these files in
+/// the platform config directory; they are copied across before this path
+/// is returned so a stored key is not silently dropped.
 pub fn global_env_path() -> Option<PathBuf> {
+    migrate_legacy_config();
     dirs::home_dir().map(|home| home.join(".aster/.env"))
 }
 
 /// User-global data: credentials, sessions, memory, skills. Config
 /// (`aster.yaml`, `mcp.json`, `.env`) stays in `~/.aster`.
 pub fn home() -> Result<PathBuf> {
+    migrate_legacy_config();
     let dir = data_root()?.join("aster");
     migrate_legacy_homes(&dir);
     Ok(dir)
@@ -69,13 +75,69 @@ fn migrate_legacy_homes(new: &PathBuf) {
     });
 }
 
+fn migrate_legacy_config() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let Some(new) = dirs::home_dir().map(|home| home.join(".aster")) else {
+            return;
+        };
+        let stamp = new.join(".legacy-config-migrated");
+        if stamp.exists() {
+            return;
+        }
+        let mut all_ok = true;
+        for old in legacy_config_dirs() {
+            if !old.is_dir() || old == new {
+                continue;
+            }
+            if let Err(e) = migrate_config(&old, &new) {
+                all_ok = false;
+                tracing::warn!(
+                    "could not migrate config {} to {}: {e:#}",
+                    old.display(),
+                    new.display()
+                );
+            }
+        }
+        if all_ok && let Err(e) = fs::create_dir_all(&new).and_then(|()| fs::write(&stamp, "")) {
+            tracing::warn!(
+                "could not stamp config migration at {}: {e}",
+                stamp.display()
+            );
+        }
+    });
+}
+
+fn legacy_config_dirs() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(config) = dirs::config_dir() {
+        out.push(config.join("aster"));
+    }
+    out
+}
+
+fn migrate_config(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for name in CONFIG_FILES {
+        let src = from.join(name);
+        if !src.is_file() {
+            continue;
+        }
+        let dest = to.join(name);
+        if dest.exists() {
+            continue;
+        }
+        fs::copy(&src, &dest)?;
+    }
+    Ok(())
+}
+
 fn migrate_data(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
-    const CONFIG: &[&str] = &["aster.yaml", "aster.yml", ".aster.yaml", "mcp.json", ".env"];
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let name = entry.file_name();
-        if CONFIG.iter().any(|c| name == *c) {
+        if CONFIG_FILES.iter().any(|c| name == *c) {
             continue;
         }
         let target = to.join(&name);

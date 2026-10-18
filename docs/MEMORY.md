@@ -185,7 +185,9 @@ Every turn, `load_context()` injects only:
 - `ASTER.md`, the project-memory file (a short list of durable gotchas), and
 - an **index** of the memory blocks: each block's `name` and `description` from
   its frontmatter, under a `### Recallable memory` heading, with a note to call
-  `recall(name)` before relying on one.
+  `recall(name)` before relying on one. The index lists at most
+  `MAX_INDEX_ENTRIES` blocks, most recent first, and cuts each description at
+  `MAX_INDEX_DESCRIPTION_CHARS`.
 
 The full body of a block is loaded only when the agent asks for it. This keeps the
 system prompt small and on-signal as memory grows, instead of ballooning it with

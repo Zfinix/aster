@@ -42,3 +42,44 @@ fn migration_moves_data_but_leaves_config_behind() {
     assert!(!new.join("aster.yaml").exists(), "config stays in ~/.aster");
     assert!(!new.join("mcp.json").exists());
 }
+
+#[test]
+fn config_migration_copies_env_and_yaml_into_the_aster_home() {
+    let root = tempfile::tempdir().unwrap();
+    let old = root.path().join("old");
+    let new = root.path().join("new");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join(".env"), "ASTER_API_KEY=from-old").unwrap();
+    fs::write(old.join("aster.yaml"), "review: {}").unwrap();
+    fs::write(old.join("mcp.json"), "{}").unwrap();
+    fs::write(old.join("credentials.json"), "cred").unwrap();
+
+    migrate_config(&old, &new).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(new.join(".env")).unwrap(),
+        "ASTER_API_KEY=from-old"
+    );
+    assert!(new.join("aster.yaml").exists());
+    assert!(new.join("mcp.json").exists());
+    assert!(
+        !new.join("credentials.json").exists(),
+        "data is not a config file"
+    );
+    assert!(old.join(".env").exists(), "the old file is left in place");
+}
+
+#[test]
+fn config_migration_keeps_what_the_new_home_already_has() {
+    let root = tempfile::tempdir().unwrap();
+    let old = root.path().join("old");
+    let new = root.path().join("new");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(old.join(".env"), "old").unwrap();
+    fs::write(new.join(".env"), "new").unwrap();
+
+    migrate_config(&old, &new).unwrap();
+
+    assert_eq!(fs::read_to_string(new.join(".env")).unwrap(), "new");
+}

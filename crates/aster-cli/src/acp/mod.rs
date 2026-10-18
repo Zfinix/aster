@@ -13,10 +13,11 @@ use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest, AuthenticateResponse,
     AvailableCommand, AvailableCommandsUpdate, CancelNotification, ClientCapabilities,
     ContentChunk, CurrentModeUpdate, Implementation, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, Meta, NewSessionRequest, NewSessionResponse,
-    PromptCapabilities, PromptRequest, PromptResponse, SessionConfigOptionValue, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    LoadSessionRequest, LoadSessionResponse, McpCapabilities, Meta, NewSessionRequest,
+    NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
+    SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 use anyhow::Result;
@@ -120,7 +121,9 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                 let server = new_server.clone();
                 let spawned = cx.clone();
                 cx.spawn(async move {
-                    match session::open(&request.cwd, None, &server.opts).await {
+                    match session::open(&request.cwd, &request.mcp_servers, None, &server.opts)
+                        .await
+                    {
                         Ok((session, _)) => {
                             server.insert(session.clone());
                             let response = NewSessionResponse::new(session.id.clone())
@@ -142,7 +145,9 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                 let spawned = cx.clone();
                 cx.spawn(async move {
                     let id = request.session_id.0.to_string();
-                    match session::open(&request.cwd, Some(&id), &server.opts).await {
+                    match session::open(&request.cwd, &request.mcp_servers, Some(&id), &server.opts)
+                        .await
+                    {
                         Ok((session, prior)) => {
                             server.insert(session.clone());
                             replay(&spawned, &request.session_id, &prior);
@@ -301,6 +306,7 @@ fn reply_format(capabilities: &ClientCapabilities) -> ReplyFormat {
 fn initialize_response() -> InitializeResponse {
     let capabilities = AgentCapabilities::new()
         .load_session(true)
+        .mcp_capabilities(McpCapabilities::new().http(true).sse(true))
         .prompt_capabilities(PromptCapabilities::new().embedded_context(true));
     // A terminal method: the editor runs `aster login` in a terminal when a
     // thread opens without credentials, instead of only showing the hint.

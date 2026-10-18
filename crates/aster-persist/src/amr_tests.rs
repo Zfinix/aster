@@ -64,9 +64,10 @@ fn a_dirty_tree_refuses_the_write() {
 fn project_facts_live_in_their_own_section() {
     let (_dir, s) = store();
     s.append_project("the repo is aster").unwrap();
+    let added = chrono::Utc::now().format("%Y-%m-%d");
     assert_eq!(
         s.project_text().unwrap(),
-        "- the repo is aster [added: 2026-10-09]"
+        format!("- the repo is aster [added: {added}]")
     );
     assert!(
         s.list()

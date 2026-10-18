@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectGroup,
+    McpServer, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectGroup,
     SessionConfigSelectOption, SessionMode, SessionModeState,
 };
 use anyhow::{Context, Result};
@@ -160,6 +160,7 @@ pub(super) struct Session {
 /// names. The prior turns come back so a load can replay them to the editor.
 pub(super) async fn open(
     cwd: &Path,
+    editor_servers: &[McpServer],
     resume: Option<&str>,
     opts: &OpenOptions,
 ) -> Result<(Arc<Session>, Vec<ChatMessage>)> {
@@ -179,6 +180,9 @@ pub(super) async fn open(
 
     let (mcp, problems) = if opts.no_mcp {
         (None, Vec::new())
+    } else if !editor_servers.is_empty() {
+        crate::mcp::McpRuntime::editor(&settings.mcp, editor_config(editor_servers), &repo_root)
+            .await
     } else {
         crate::mcp::McpRuntime::lazy(&settings.mcp, &repo_root).await
     };
@@ -596,4 +600,57 @@ impl Session {
         }
         Ok(TurnOutcome { cancelled: false })
     }
+}
+
+/// The editor's servers as Aster server entries, keyed by the name the editor gave.
+fn editor_config(
+    servers: &[McpServer],
+) -> std::collections::BTreeMap<String, crate::mcp::ServerConfig> {
+    use crate::mcp::{ServerConfig, Transport};
+    servers
+        .iter()
+        .filter_map(|server| match server {
+            McpServer::Stdio(s) => Some((
+                s.name.clone(),
+                ServerConfig {
+                    command: s.command.to_string_lossy().into_owned(),
+                    args: s.args.clone(),
+                    env: s
+                        .env
+                        .iter()
+                        .map(|e| (e.name.clone(), e.value.clone()))
+                        .collect(),
+                    kind: Some(Transport::Stdio),
+                    ..ServerConfig::default()
+                },
+            )),
+            McpServer::Http(h) => Some((
+                h.name.clone(),
+                ServerConfig {
+                    url: h.url.clone(),
+                    headers: h
+                        .headers
+                        .iter()
+                        .map(|e| (e.name.clone(), e.value.clone()))
+                        .collect(),
+                    kind: Some(Transport::StreamableHttp),
+                    ..ServerConfig::default()
+                },
+            )),
+            McpServer::Sse(h) => Some((
+                h.name.clone(),
+                ServerConfig {
+                    url: h.url.clone(),
+                    headers: h
+                        .headers
+                        .iter()
+                        .map(|e| (e.name.clone(), e.value.clone()))
+                        .collect(),
+                    kind: Some(Transport::Sse),
+                    ..ServerConfig::default()
+                },
+            )),
+            _ => None,
+        })
+        .collect()
 }

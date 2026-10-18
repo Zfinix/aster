@@ -803,6 +803,19 @@ impl McpRuntime {
     /// servers spawn on their first tool call instead of at startup. A cache
     /// miss falls back to a full connect, so a cold folder pays the spawns
     /// once and every session after starts without waiting on any server.
+    /// Connect only the servers an editor handed over, ignoring the configured ones.
+    pub async fn editor(
+        settings: &McpSettings,
+        servers: BTreeMap<String, ServerConfig>,
+        repo_root: &std::path::Path,
+    ) -> (Option<Self>, Vec<String>) {
+        let only = McpSettings {
+            servers,
+            ..settings.clone()
+        };
+        Self::connect_with_rooted(&only, &BTreeMap::new(), Some(repo_root)).await
+    }
+
     pub async fn lazy(
         settings: &McpSettings,
         repo_root: &std::path::Path,
@@ -975,13 +988,13 @@ impl McpRuntime {
         }
         let injector = match McpCatalog::new(tools) {
             Ok(catalog) => match Injector::new(catalog, settings.progressive()) {
-                // The built-in web tools are five stable names; listing them
-                // outright saves the search round a large catalogue forces.
-                // chrome-devtools is pinned too so `take_screenshot` is always
+                // The built-in web server is offered as top-level `web_search`
+                // and `web_fetch` (web_tools.rs), so it is not pinned here.
+                // chrome-devtools is pinned so `take_screenshot` is always
                 // visible for localhost pages that web/screenshot cannot reach.
                 // paper is pinned so its design tools stay discoverable without
                 // a search round each; the catalogue is far over budget anyway.
-                Ok(injector) => injector.pin_servers(["web", "chrome-devtools", "paper"]),
+                Ok(injector) => injector.pin_servers(["chrome-devtools", "paper"]),
                 Err(e) => {
                     problems.push(format!("MCP injector rejected: {e}"));
                     return (None, problems);
@@ -1359,6 +1372,9 @@ pub enum McpAction {
         /// on/off state should not pay for them.
         #[arg(long)]
         no_connect: bool,
+        /// List every tool under each server instead of one line per server.
+        #[arg(short, long, visible_short_alias = 'v', visible_alias = "verbose")]
+        full: bool,
     },
     /// Start a configured server so it can be used (clears `disabled`), or
     /// with a `server/tool` id, take that tool back out of `mcp.tools.deny`.
@@ -1404,8 +1420,11 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
             }
         };
     };
-    let no_connect = match &action {
-        McpAction::List { no_connect } => *no_connect,
+    let (no_connect, detail) = match &action {
+        McpAction::List { no_connect, full } => (
+            *no_connect,
+            if *full { Detail::Full } else { Detail::Compact },
+        ),
         McpAction::Enable { name } => return set_disabled(repo_root, name, false),
         McpAction::Disable { name } => return set_disabled(repo_root, name, true),
         McpAction::Add(args) => return add_server(repo_root, args),
@@ -1487,7 +1506,7 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
                         }
                     );
                 }
-                print_tool_tree(tools, &settings.mcp);
+                print_tool_tree(tools, &settings.mcp, detail);
                 let filtered = runtime.filtered_tools();
                 if !filtered.is_empty() {
                     println!(
@@ -1508,7 +1527,13 @@ pub async fn run(args: McpArgs, repo_root: Option<&std::path::Path>) -> Result<(
     Ok(())
 }
 
-fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings) {
+#[derive(Clone, Copy)]
+enum Detail {
+    Compact,
+    Full,
+}
+
+fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings, detail: Detail) {
     use std::collections::BTreeMap;
     let width = console::Term::stdout().size().1 as usize;
     let mut by_server: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
@@ -1518,6 +1543,9 @@ fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings) {
         let first = tool.description.lines().next().unwrap_or_default().trim();
         by_server.entry(server).or_default().push((name, first));
     }
+    if let Detail::Compact = detail {
+        println!();
+    }
     for (server, mut rows) in by_server {
         rows.sort();
         let transport = settings
@@ -1526,11 +1554,14 @@ fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings) {
             .and_then(ServerConfig::transport)
             .map(Transport::label)
             .unwrap_or("built in");
-        println!(
-            "\n{} {}",
-            console::style(server).bold(),
-            console::style(format!("({transport}, {} tools)", rows.len())).dim()
-        );
+        let summary = console::style(format!("({transport}, {} tools)", rows.len())).dim();
+        match detail {
+            Detail::Compact => {
+                println!("{} {summary}", console::style(server).bold());
+                continue;
+            }
+            Detail::Full => println!("\n{} {summary}", console::style(server).bold()),
+        }
         let pad = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
         for (i, (name, desc)) in rows.iter().enumerate() {
             let glyph = if i + 1 == rows.len() {
@@ -1547,6 +1578,12 @@ fn print_tool_tree(tools: Vec<&McpTool>, settings: &McpSettings) {
                 console::style(console::truncate_str(desc, room, "…")).dim()
             );
         }
+    }
+    if let Detail::Compact = detail {
+        println!(
+            "\n{}",
+            console::style("Run `aster mcp list -f` to see every tool.").dim()
+        );
     }
 }
 
