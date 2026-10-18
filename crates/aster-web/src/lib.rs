@@ -7,6 +7,7 @@ mod browserbase;
 mod cloudflare_br;
 mod config;
 mod context_dev;
+mod deepseek;
 mod duckduckgo;
 mod exa;
 mod fetch;
@@ -73,6 +74,7 @@ async fn first_success<T>(what: &str, attempts: Vec<Attempt<'_, T>>) -> anyhow::
 pub struct WebBackend {
     exa: Option<exa::ExaClient>,
     perplexity: Option<perplexity::PerplexityClient>,
+    deepseek: Option<deepseek::DeepSeekClient>,
     context_dev: Option<context_dev::ContextDevClient>,
     firecrawl: firecrawl::FirecrawlClient,
     browserbase: Option<browserbase::BrowserbaseClient>,
@@ -93,6 +95,9 @@ impl WebBackend {
             perplexity: config
                 .resolve_perplexity_key()
                 .map(|k| perplexity::PerplexityClient::new(k, timeout_ms)),
+            deepseek: config
+                .resolve_deepseek_key()
+                .map(|k| deepseek::DeepSeekClient::new(k, timeout_ms)),
             context_dev: config
                 .resolve_context_dev_key()
                 .map(|k| context_dev::ContextDevClient::new(k, timeout_ms)),
@@ -113,6 +118,7 @@ impl WebBackend {
     pub fn is_api_backed(&self) -> bool {
         self.exa.is_some()
             || self.perplexity.is_some()
+            || self.deepseek.is_some()
             || self.context_dev.is_some()
             || self.firecrawl.is_keyed()
             || self.browserbase.is_some()
@@ -135,6 +141,9 @@ impl WebBackend {
         }
         if let Some(ref c) = self.exa {
             attempts.push(("Exa", Box::pin(c.extract(url))));
+        }
+        if let Some(ref c) = self.deepseek {
+            attempts.push(("DeepSeek", Box::pin(c.extract(url))));
         }
         if !self.firecrawl.is_keyed() {
             attempts.push(("Firecrawl (keyless)", Box::pin(self.firecrawl.extract(url))));
@@ -175,6 +184,9 @@ impl WebBackend {
         }
         if let Some(ref c) = self.perplexity {
             attempts.push(("Perplexity", Box::pin(c.search(query, opts))));
+        }
+        if let Some(ref c) = self.deepseek {
+            attempts.push(("DeepSeek", Box::pin(c.search(query, opts))));
         }
         if let Some(ref c) = self.context_dev {
             attempts.push(("Context.dev", Box::pin(c.search(query, opts.limit))));
@@ -314,12 +326,15 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     let mut candidates = Vec::new();
     // Exa leads `search` because that is what it is for, and its `extract` is
     // offered further down, where the extraction-first providers rank above it.
-    // Perplexity is the next search-first provider behind Exa.
+    // Perplexity and DeepSeek are the next search-first providers behind Exa.
     if backend.exa.is_some() {
         candidates.push(exa::search_tool());
     }
     if backend.perplexity.is_some() {
         candidates.push(perplexity::search_tool());
+    }
+    if backend.deepseek.is_some() {
+        candidates.push(deepseek::search_tool());
     }
     if backend.context_dev.is_some() {
         candidates.push(context_dev::extract_tool());
@@ -343,6 +358,9 @@ pub fn register_tools(backend: &WebBackend) -> Vec<McpTool> {
     }
     if backend.exa.is_some() {
         candidates.push(exa::extract_tool());
+    }
+    if backend.deepseek.is_some() {
+        candidates.push(deepseek::extract_tool());
     }
     if !backend.firecrawl.is_keyed() {
         candidates.push(firecrawl::scrape_tool());

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **DeepSeek Search and Fetch as a web provider.** `DEEPSEEK_API_KEY`, the
+  key that already runs DeepSeek models, now serves `web/search` and
+  `web/extract` too, behind Exa and Perplexity on search and behind the
+  extraction-first providers on extract. Search is a keyword engine with
+  `site:`, `lang:`, `after:`, and `before:` operators and returns a summary
+  per result; Fetch returns a page as Markdown.
+
+### Fixed
+
+- Keys and config left in the old platform config directory (`$XDG_CONFIG_HOME/aster`,
+  or `~/Library/Application Support/aster` on macOS) are copied into `~/.aster`
+  on first run, so a login from before that move is found again.
+
 ## [0.7.1] - 2026-10-05
 
 ### Added

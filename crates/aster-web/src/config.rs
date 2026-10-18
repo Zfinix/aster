@@ -8,6 +8,11 @@ pub const KEY_VARS: &[(&str, &str, &str)] = &[
     ("Exa", "EXA_API_KEY", "leads web/search"),
     ("Perplexity", "PERPLEXITY_API_KEY", "web/search, behind Exa"),
     (
+        "DeepSeek",
+        "DEEPSEEK_API_KEY",
+        "web/search and web/extract; the same key runs DeepSeek models",
+    ),
+    (
         "Context.dev",
         "CONTEXT_DEV_API_KEY",
         "web/sitemap and web/screenshot, and leads extract and crawl",
@@ -88,6 +93,10 @@ impl WebConfig {
 
     pub fn resolve_perplexity_key(&self) -> Option<String> {
         resolve_key(|name| env::var(name).ok(), &["PERPLEXITY_API_KEY"])
+    }
+
+    pub fn resolve_deepseek_key(&self) -> Option<String> {
+        resolve_key(|name| env::var(name).ok(), &["DEEPSEEK_API_KEY"])
     }
 
     pub fn resolve_jina_key(&self) -> Option<String> {

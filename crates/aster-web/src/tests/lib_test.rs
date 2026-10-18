@@ -51,6 +51,7 @@ fn empty_result_serializes() {
 struct Configured {
     exa: bool,
     perplexity: bool,
+    deepseek: bool,
     context_dev: bool,
     firecrawl: bool,
     browserbase: bool,
@@ -66,6 +67,9 @@ fn backend(with: Configured) -> WebBackend {
         perplexity: with
             .perplexity
             .then(|| perplexity::PerplexityClient::new("pplx-key".into(), timeout)),
+        deepseek: with
+            .deepseek
+            .then(|| deepseek::DeepSeekClient::new("ds-key".into(), timeout)),
         context_dev: with
             .context_dev
             .then(|| context_dev::ContextDevClient::new("ctxt-key".into(), timeout)),
@@ -103,6 +107,10 @@ fn any_single_provider_makes_the_backend_api_backed() {
     for with in [
         Configured {
             perplexity: true,
+            ..Default::default()
+        },
+        Configured {
+            deepseek: true,
             ..Default::default()
         },
         Configured {
@@ -242,6 +250,60 @@ fn perplexity_serves_search_when_exa_is_absent() {
 }
 
 #[test]
+fn deepseek_serves_search_behind_perplexity_and_extract_behind_the_specialists() {
+    let described = |with: Configured, name: &str| {
+        register_tools(&backend(with))
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} is offered"))
+            .description
+    };
+
+    let alone = || Configured {
+        deepseek: true,
+        ..Default::default()
+    };
+    assert!(described(alone(), "search").contains("DeepSeek"));
+    assert!(described(alone(), "extract").contains("DeepSeek"));
+
+    let behind_perplexity = described(
+        Configured {
+            perplexity: true,
+            deepseek: true,
+            ..Default::default()
+        },
+        "search",
+    );
+    assert!(
+        behind_perplexity.contains("Perplexity"),
+        "{behind_perplexity}"
+    );
+
+    let ahead_of_context_dev = described(
+        Configured {
+            deepseek: true,
+            context_dev: true,
+            ..Default::default()
+        },
+        "search",
+    );
+    assert!(
+        ahead_of_context_dev.contains("DeepSeek"),
+        "{ahead_of_context_dev}"
+    );
+
+    let extract = described(
+        Configured {
+            deepseek: true,
+            context_dev: true,
+            ..Default::default()
+        },
+        "extract",
+    );
+    assert!(extract.contains("Context.dev"), "{extract}");
+}
+
+#[test]
 fn a_keyed_provider_wins_the_search_name_from_keyless_firecrawl() {
     let described = |with: Configured| {
         register_tools(&backend(with))
@@ -332,6 +394,7 @@ fn every_tool_name_is_offered_once_with_all_providers_configured() {
     let all = backend(Configured {
         exa: true,
         perplexity: true,
+        deepseek: true,
         context_dev: true,
         firecrawl: true,
         browserbase: true,
