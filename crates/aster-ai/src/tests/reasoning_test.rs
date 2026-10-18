@@ -414,3 +414,25 @@ async fn a_refused_temperature_is_dropped_once_per_session() {
     }
     assert_eq!(*bodies.lock().unwrap(), vec![Some(json!(0.2)), None, None]);
 }
+
+#[tokio::test]
+async fn a_reasoning_loop_is_cut_off_instead_of_streaming_forever() {
+    let server = MockServer::start().await;
+    let loop_chunk = json!({ "choices": [{ "delta": { "reasoning_content": "Let me check the venco project. " } }] });
+    let chunks: Vec<Value> = std::iter::repeat_n(loop_chunk, 60).collect();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse(&chunks)))
+        .mount(&server)
+        .await;
+
+    let client = AiClient::new(server.uri(), "test-key", "mock-model");
+    let err = client
+        .complete_tools_stream_with("mock-model", vec![], vec![], 0.0, |_| {}, |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<crate::DegenerateOutput>().is_some(),
+        "{err:#}"
+    );
+}

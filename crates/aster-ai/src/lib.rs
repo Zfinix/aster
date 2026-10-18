@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
@@ -24,6 +24,7 @@ pub mod logins;
 mod mistral;
 pub mod pkce;
 pub mod router;
+mod venice;
 
 pub mod retry;
 use retry::RetryWithBackoff;
@@ -133,6 +134,7 @@ pub struct AiClient {
     info: Arc<OnceCell<Option<ModelInfo>>>,
     attribution_headers: Vec<(String, String)>,
     reasoning_memo: Arc<std::sync::Mutex<Memo>>,
+    stall: Duration,
 }
 
 impl AiClient {
@@ -226,6 +228,7 @@ impl AiClient {
             info: Arc::new(OnceCell::new()),
             attribution_headers: Vec::new(),
             reasoning_memo: Arc::default(),
+            stall: Duration::from_secs(timeout_secs),
         }
     }
 
@@ -751,7 +754,7 @@ impl AiClient {
         let mut thought = false;
         let mut finish: Option<String> = None;
         let mut adapt = self.sse_adapter();
-        let streamed = read_sse(response, |data| {
+        let streamed = read_sse(response, self.stall, |data| {
             let Some(data) = adapt(data) else {
                 return true;
             };
@@ -887,10 +890,13 @@ impl AiClient {
         // A reply that degenerates into verbatim repetition is cut off before
         // it streams to completion; `degenerate` is set and the stream dropped.
         let mut guard = RepetitionGuard::default();
+        // A model that loops inside its reasoning streams bytes the whole time,
+        // so neither the stall timeout nor the content guard above ever fires.
+        let mut think_guard = RepetitionGuard::default();
         let mut degenerate: Option<&'static str> = None;
 
         let mut adapt = self.sse_adapter();
-        let streamed = read_sse(response, |data| {
+        let streamed = read_sse(response, self.stall, |data| {
             let Some(data) = adapt(data) else {
                 return true;
             };
@@ -911,6 +917,10 @@ impl AiClient {
             if !tagged.is_empty() {
                 plain_thinking.push_str(&tagged);
                 on_reasoning(&tagged);
+                if think_guard.feed(&tagged) {
+                    degenerate = Some(DEGENERATE_MSG);
+                    return false;
+                }
             }
             if !delta.is_empty() {
                 content.push_str(&delta);
@@ -933,6 +943,10 @@ impl AiClient {
             {
                 plain_thinking.push_str(thinking);
                 on_reasoning(thinking);
+                if think_guard.feed(thinking) {
+                    degenerate = Some(DEGENERATE_MSG);
+                    return false;
+                }
             }
             for fragment in choice.delta.reasoning_details {
                 if let Some(delta) = fragment
@@ -942,6 +956,10 @@ impl AiClient {
                     .filter(|s| !s.is_empty())
                 {
                     on_reasoning(delta);
+                    if think_guard.feed(delta) {
+                        degenerate = Some(DEGENERATE_MSG);
+                        return false;
+                    }
                 }
                 merge_reasoning(&mut reasoning_details, fragment);
             }
@@ -1209,6 +1227,9 @@ impl AiClient {
             &adapted
         } else if mistral::is_mistral(&self.base_url) {
             adapted = mistral::adapt_request(body);
+            &adapted
+        } else if venice::is_venice(&self.base_url) {
+            adapted = venice::adapt_request(body);
             &adapted
         } else {
             body
@@ -1715,11 +1736,21 @@ fn parse_body<T: serde::de::DeserializeOwned>(body: &str) -> Result<T> {
 
 async fn read_sse(
     response: reqwest::Response,
+    stall: Duration,
     mut on_data: impl FnMut(&str) -> bool,
 ) -> Result<()> {
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    // A wall-clock bound on the gap between chunks, independent of the
+    // transport's read timeout, which is not reliably enforced on a streaming
+    // body behind the retry middleware. A provider that holds the socket open
+    // without sending the next chunk would otherwise hang the turn forever.
+    loop {
+        let chunk = match tokio::time::timeout(stall, stream.next()).await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => bail!("the stream went silent for {}s", stall.as_secs()),
+        };
         let bytes = chunk.context("reading stream chunk")?;
         buf.extend_from_slice(&bytes);
 

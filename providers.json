@@ -360,6 +360,17 @@
       ]
     },
     {
+      "id": "venice",
+      "name": "Venice AI",
+      "base_url": "https://api.venice.ai/api/v1",
+      "example_model": "venice-uncensored",
+      "key_env": [
+        "VENICE_API_KEY"
+      ],
+      "auth": "Bearer",
+      "notes": "Private, no-retention inference. Venice-only options go in a `venice_parameters` body field."
+    },
+    {
       "id": "cloudflare",
       "name": "Cloudflare Workers AI",
       "base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
