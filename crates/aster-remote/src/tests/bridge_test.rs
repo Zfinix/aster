@@ -64,6 +64,34 @@ async fn acp_agent_runs_a_turn_and_streams_its_text() {
 }
 
 #[test]
+fn apply_env_keeps_bridge_secrets_from_the_agent() {
+    let turn = Turn {
+        bin: PathBuf::from("aster"),
+        repo_root: PathBuf::from("."),
+        session: "test".into(),
+        mode: "auto".into(),
+        model: None,
+        effort: None,
+        extra_env: vec![("TELEGRAM_CHAT_ID".into(), "42".into())],
+    };
+    let mut command = Command::new("aster");
+    apply_env(&mut command, &turn);
+    let envs: HashMap<String, Option<String>> = command
+        .as_std()
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    assert_eq!(envs.get("ASTER_PHOTON_KEY"), Some(&None));
+    assert_eq!(envs.get("ASTER_PHOTON_SECRET"), Some(&None));
+    assert_eq!(envs.get("TELEGRAM_CHAT_ID"), Some(&Some("42".to_string())));
+}
+
+#[test]
 fn content_text_reads_blocks_and_lists() {
     assert_eq!(content_text(&json!({ "type": "text", "text": "hi" })), "hi");
     assert_eq!(

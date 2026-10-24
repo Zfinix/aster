@@ -8,10 +8,12 @@ mod imessage;
 mod markdown;
 mod mcp_server;
 mod photon;
+mod spectrum;
 mod telegram;
 
 pub use bridge::{Answer, Turn, TurnEvent, TurnOutcome, WireMessage, ask_once, run_turn};
 pub use imessage::{IMessageConfig, run_imessage};
 pub use mcp_server::run_mcp_telegram;
 pub use photon::{PhotonConfig, run_photon};
+pub use spectrum::{SPECTRUM_API, SpectrumConfig, run_spectrum};
 pub use telegram::{TelegramConfig, run_telegram};
