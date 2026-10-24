@@ -238,9 +238,7 @@ impl Outbox {
             .await
     }
 
-    /// Each chunk as a message, in order, stopping at the first that fails;
-    /// whether all of them went out.
-    pub(super) async fn send_chunks(&self, chunks: Vec<String>, parent: Option<&str>) -> bool {
+    async fn send_chunks(&self, chunks: Vec<String>, parent: Option<&str>) -> bool {
         let Some(agent) = &self.agent else {
             tracing::warn!(
                 "no agent user known for {}; reply dropped",

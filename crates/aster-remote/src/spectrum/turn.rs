@@ -14,8 +14,8 @@ use tokio::task;
 use super::ChatKey;
 use super::api::Typing;
 use super::commands::photo_policy;
-use super::state::{Admission, Bridge, CHUNK_LIMIT, Outbox, Pending};
-use super::text::{approval_text, question_text, shot_paths, verbatim_chunks};
+use super::state::{Admission, Bridge, Outbox, Pending};
+use super::text::{APPROVAL_ASK, approval_text, question_text, shot_paths};
 use crate::bridge::{Agent, Answer, Turn, TurnEvent, TurnOutcome};
 use crate::channel::{console_text, console_tool, truncate};
 use crate::telegram::{Wakeup, is_stop_request, parse_wakeup};
@@ -291,22 +291,22 @@ async fn drive_turn(
                     chat.slug(),
                     console_text(&preview, 120)
                 );
-                // A long preview goes out over several messages, and a reply
-                // only counts as the answer once all of the preview is out,
-                // so a yes never comes from someone who has seen part of the
-                // request. Pending goes in before the closing ask, so an
-                // answer that beats a slow or retried send of it still lands.
-                let mut chunks =
-                    verbatim_chunks(&approval_text(&preview, scope.as_deref()), CHUNK_LIMIT);
-                let ask = chunks.pop().into_iter().collect();
-                if !outbox.send_chunks(chunks, None).await {
+                // A reply only counts as the answer once every part of the
+                // preview is out, so a yes never comes from someone who has
+                // seen part of the request. Pending goes in before the closing
+                // ask, so an answer that beats a slow or retried send of it
+                // still lands.
+                if !outbox
+                    .verbatim(&approval_text(&preview, scope.as_deref()))
+                    .await
+                {
                     let _ = respond.send(Answer::Deny);
                     continue;
                 }
                 bridge.chat(chat, |state| {
                     state.pending = Some(Pending::Approval(respond))
                 });
-                if !outbox.send_chunks(ask, None).await {
+                if !outbox.verbatim(APPROVAL_ASK).await {
                     withdraw_pending(bridge, chat);
                 }
             }
