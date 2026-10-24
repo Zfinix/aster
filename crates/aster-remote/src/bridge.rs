@@ -19,6 +19,21 @@ use tokio::sync::{mpsc, oneshot};
 
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// The bridge's own credentials. The bridge already holds them, and the agent
+/// it spawns runs tools that can print their environment, so they stop here.
+const BRIDGE_SECRETS: &[&str] = &["ASTER_PHOTON_KEY", "ASTER_PHOTON_SECRET"];
+
+/// The child's environment: the bridge's own, less its secrets, plus the
+/// turn's extras.
+fn apply_env(command: &mut Command, turn: &Turn) {
+    for key in BRIDGE_SECRETS {
+        command.env_remove(key);
+    }
+    for (key, value) in &turn.extra_env {
+        command.env(key, value);
+    }
+}
+
 /// One `{"role","content"}` message on the `--messages-json` wire.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WireMessage {
@@ -115,9 +130,7 @@ pub async fn run_turn(
     if let Some(effort) = &turn.effort {
         command.args(["--effort", effort]);
     }
-    for (key, value) in &turn.extra_env {
-        command.env(key, value);
-    }
+    apply_env(&mut command, turn);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -340,9 +353,7 @@ impl Agent {
             .current_dir(&turn.repo_root)
             .arg("acp")
             .args(["--permission-mode", &turn.mode]);
-        for (key, value) in &turn.extra_env {
-            command.env(key, value);
-        }
+        apply_env(&mut command, turn);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
