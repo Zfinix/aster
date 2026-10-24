@@ -12,9 +12,10 @@ use tokio::sync::mpsc;
 use tokio::task;
 
 use super::ChatKey;
+use super::api::Typing;
 use super::commands::photo_policy;
-use super::state::{Admission, Bridge, Outbox, Pending};
-use super::text::{approval_text, question_text, shot_paths};
+use super::state::{Admission, Bridge, CHUNK_LIMIT, Outbox, Pending};
+use super::text::{approval_text, question_text, shot_paths, verbatim_chunks};
 use crate::bridge::{Agent, Answer, Turn, TurnEvent, TurnOutcome};
 use crate::channel::{console_text, console_tool, truncate};
 use crate::telegram::{Wakeup, is_stop_request, parse_wakeup};
@@ -26,24 +27,23 @@ const TYPING_EVERY: Duration = Duration::from_secs(8);
 const WAKE_POLL: Duration = Duration::from_secs(2);
 const ERRAND_CHARS: usize = 90;
 
-const ASIDE_NOTE: &str = "The user sent this from the same chat while you are working, so it is \
-     part of the task in hand, not a new one. Take it in at this point in the work: if it changes \
-     what you should do, say so in a line and adjust; if it is only context, say you have it and \
-     carry on. Do not start over and do not answer it as a separate job.";
+const ASIDE_NOTE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../aster-cli/prompts/spectrum-aside.md"
+))
+.trim_ascii_end();
 
-const SPECTRUM_SYSTEM: &str = "\
-The user is talking to you through a chat app on their phone (via aster remote \
-and Photon), not a terminal. Replies arrive as plain text messages, so keep \
-them short and conversational and lead with the answer. Markdown does not \
-render: never use tables, headers, bold markers, or long code blocks. \
-The steps you take are not shown, only your final message, so make it the \
-summary of the turn: the outcome, anything still pending, and anything the \
-person has to decide, in three short lines or fewer. \
-Approval prompts and questions reach the user as plain text. They answer \
-yes, always, or no, or pick an option by its number; if one is denied or \
-skipped, take the hint and do not immediately re-request it. \
-Files the user sends arrive as @path mentions. The last screenshot you take \
-in a turn is sent along with your reply.";
+const SPECTRUM_SYSTEM: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../aster-cli/prompts/spectrum-system.md"
+))
+.trim_ascii_end();
+
+const REMINDER: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../aster-cli/prompts/spectrum-reminder.md"
+))
+.trim_ascii_end();
 
 pub(super) fn start_turn(
     bridge: &Arc<Bridge>,
@@ -238,7 +238,13 @@ async fn drive_turn(
                 let waiting = bridge.chat(&chat, |state| state.pending.is_some());
                 // A platform without typing says so once; asking again every
                 // few seconds would only spend the rate limit.
-                if !waiting && bridge.api.typing(&chat.space, &agent, true).await.is_err() {
+                if !waiting
+                    && bridge
+                        .api
+                        .typing(&chat.space, &agent, Typing::Started)
+                        .await
+                        .is_err()
+                {
                     break;
                 }
                 tokio::time::sleep(TYPING_EVERY).await;
@@ -285,15 +291,22 @@ async fn drive_turn(
                     chat.slug(),
                     console_text(&preview, 120)
                 );
-                // Pending before the send, so an answer that beats a slow or
-                // retried send still lands.
+                // A long preview goes out over several messages, and a reply
+                // only counts as the answer once all of the preview is out,
+                // so a yes never comes from someone who has seen part of the
+                // request. Pending goes in before the closing ask, so an
+                // answer that beats a slow or retried send of it still lands.
+                let mut chunks =
+                    verbatim_chunks(&approval_text(&preview, scope.as_deref()), CHUNK_LIMIT);
+                let ask = chunks.pop().into_iter().collect();
+                if !outbox.send_chunks(chunks, None).await {
+                    let _ = respond.send(Answer::Deny);
+                    continue;
+                }
                 bridge.chat(chat, |state| {
                     state.pending = Some(Pending::Approval(respond))
                 });
-                if !outbox
-                    .verbatim(&approval_text(&preview, scope.as_deref()))
-                    .await
-                {
+                if !outbox.send_chunks(ask, None).await {
                     withdraw_pending(bridge, chat);
                 }
             }
@@ -320,7 +333,7 @@ async fn drive_turn(
     if let Some(typing) = typing {
         typing.abort();
         if let Some(agent) = &outbox.agent {
-            let _ = bridge.api.typing(&chat.space, agent, false).await;
+            let _ = bridge.api.typing(&chat.space, agent, Typing::Stopped).await;
         }
     }
     // The last screenshot is the evidence the reply leans on, so it goes out
@@ -448,10 +461,7 @@ pub(super) async fn watch_wakeups(bridge: Arc<Bridge>) {
                     outbox
                         .text(&format!("⏰ {}", truncate(errand, ERRAND_CHARS)))
                         .await;
-                    let prompt = format!(
-                        "⏰ The reminder you set has fired: {text} Pick this up now and report back when it is done."
-                    );
-                    start_turn(&bridge, &last.chat, None, prompt);
+                    start_turn(&bridge, &last.chat, None, REMINDER.replace("{text}", &text));
                 }
             }
         }

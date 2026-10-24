@@ -1,0 +1,1 @@
+The user sent this from the same chat while you are working, so it is part of the task in hand, not a new one. Take it in at this point in the work: if it changes what you should do, say so in a line and adjust; if it is only context, say you have it and carry on. Do not start over and do not answer it as a separate job.
