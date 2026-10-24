@@ -5,13 +5,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{
-    Admission, Api, ApiError, Bridge, CHUNK_LIMIT, CURSOR_OVERLAP_MS, ChatKey, ChatState, Cursor,
-    Inbound, LastChat, Part, SpectrumConfig, approval_text, dispatch, extension_for, format_time,
-    is_allowed, merge_queued, normalize_handle, page_ids, parse_approval, parse_inbound,
-    parse_time, plain_chunks, problem_code, question_text, related_body, resolve_choice,
-    retry_after, shot_paths, stranger_reply, verbatim_chunks,
+use anyhow::anyhow;
+use tokio::task::AbortHandle;
+
+use super::api::{Api, ApiError, extension_for, problem_code, related_body, retry_after};
+use super::cursor::{CURSOR_OVERLAP_MS, Cursor, LastChat, format_time, parse_time};
+use super::inbound::{Inbound, Part, is_allowed, normalize_handle, parse_inbound, stranger_reply};
+use super::state::{Admission, Bridge, CHUNK_LIMIT, ChatState};
+use super::text::{
+    approval_text, parse_approval, plain_chunks, question_text, resolve_choice, shot_paths,
+    verbatim_chunks,
 };
+use super::turn::{finish_turn, merge_queued};
+use super::{ChatKey, SpectrumConfig, dispatch, page_ids};
 use crate::bridge::Answer;
 
 const AGENT: &str = "pho_usr_00000000000000000000000001";
@@ -71,6 +77,28 @@ fn chat() -> ChatKey {
         platform: "imessage".into(),
         space: SPACE.into(),
     }
+}
+
+fn bridge() -> Arc<Bridge> {
+    Arc::new(Bridge {
+        api: Api::new("http://127.0.0.1:9", PROJECT, "pho_sk_test").unwrap(),
+        cfg: SpectrumConfig {
+            api_key: "pho_sk_test".into(),
+            project_id: PROJECT.into(),
+            api_base: "http://127.0.0.1:9".into(),
+            platforms: all(),
+            allowed_senders: vec!["+15550000000".into()],
+            bin: PathBuf::from("aster"),
+            repo_root: PathBuf::from("."),
+            mode: "manual".into(),
+        },
+        skills: Arc::new(HashMap::new()),
+        chats: Mutex::new(HashMap::new()),
+        cursor: Mutex::new(Cursor::default()),
+        cursor_path: None,
+        told: Mutex::new(HashSet::new()),
+        workers: Mutex::new(HashMap::new()),
+    })
 }
 
 #[test]
@@ -574,10 +602,7 @@ async fn a_stopped_turn_holds_its_place_until_it_finishes() {
     assert!(matches!(state.admit(None, "stop"), Admission::Busy));
 
     state.running = None;
-    assert!(matches!(
-        state.admit(None, "after"),
-        Admission::Start { .. }
-    ));
+    assert!(matches!(state.admit(None, "after"), Admission::Start));
     assert!(!state.stopped);
 }
 
@@ -593,25 +618,7 @@ async fn a_running_turn_takes_messages_as_asides() {
 
 #[tokio::test]
 async fn dispatch_workers_go_away_once_their_chat_is_quiet() {
-    let bridge = Arc::new(Bridge {
-        api: Api::new("http://127.0.0.1:9", PROJECT, "pho_sk_test").unwrap(),
-        cfg: SpectrumConfig {
-            api_key: "pho_sk_test".into(),
-            project_id: PROJECT.into(),
-            api_base: "http://127.0.0.1:9".into(),
-            platforms: all(),
-            allowed_senders: vec!["+15550000000".into()],
-            bin: PathBuf::from("aster"),
-            repo_root: PathBuf::from("."),
-            mode: "manual".into(),
-        },
-        skills: Arc::new(HashMap::new()),
-        chats: Mutex::new(HashMap::new()),
-        cursor: Mutex::new(Cursor::default()),
-        cursor_path: None,
-        told: Mutex::new(HashSet::new()),
-        workers: Mutex::new(HashMap::new()),
-    });
+    let bridge = bridge();
     for n in 0..3 {
         dispatch(
             &bridge,
@@ -631,4 +638,46 @@ async fn dispatch_workers_go_away_once_their_chat_is_quiet() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("the chat's worker never finished");
+}
+
+#[tokio::test]
+async fn a_finished_turn_leaves_a_newer_turn_running() {
+    let bridge = bridge();
+    let old = tokio::spawn(async {});
+    let old_id = old.id();
+    old.await.unwrap();
+    let newer = tokio::spawn(std::future::pending::<()>());
+    bridge.chat(&chat(), |state| {
+        state.running = Some(newer.abort_handle());
+        state.stopped = true;
+    });
+    let outbox = bridge.outbox(&chat(), None, "turn");
+    let running = || {
+        bridge.chat(&chat(), |state| {
+            (state.running.as_ref().map(AbortHandle::id), state.stopped)
+        })
+    };
+
+    finish_turn(
+        &bridge,
+        &chat(),
+        old_id,
+        &outbox,
+        None,
+        Err(anyhow!("aborted")),
+    )
+    .await;
+    assert_eq!(running(), (Some(newer.id()), true));
+
+    finish_turn(
+        &bridge,
+        &chat(),
+        newer.id(),
+        &outbox,
+        None,
+        Err(anyhow!("aborted")),
+    )
+    .await;
+    assert_eq!(running(), (None, false));
+    newer.abort();
 }
