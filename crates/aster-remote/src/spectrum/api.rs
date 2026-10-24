@@ -19,6 +19,12 @@ pub(super) const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
 /// sent back. Both are far above a phone photo or screenshot.
 const ATTACHMENT_LIMIT: usize = 20 * 1024 * 1024;
 
+/// Whether the agent shows as typing in a Space.
+pub(super) enum Typing {
+    Started,
+    Stopped,
+}
+
 /// The upload body Photon takes: JSON metadata, then the file bytes, as the
 /// two parts of one `multipart/related` request.
 pub(crate) fn related_body(
@@ -207,8 +213,12 @@ impl Api {
         Ok(())
     }
 
-    pub(super) async fn typing(&self, space: &str, sender: &str, typing: bool) -> Result<()> {
+    pub(super) async fn typing(&self, space: &str, sender: &str, typing: Typing) -> Result<()> {
         let url = format!("{}/spaces/{space}/typing", self.base);
+        let typing = match typing {
+            Typing::Started => true,
+            Typing::Stopped => false,
+        };
         let body = json!({ "senderId": sender, "typing": typing });
         self.execute("setSpaceTyping", 1, &[], || {
             self.http.post(&url).json(&body)

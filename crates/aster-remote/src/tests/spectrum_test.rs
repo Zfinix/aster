@@ -437,7 +437,34 @@ fn verbatim_chunks_keep_an_approval_exactly_as_written() {
 #[test]
 fn verbatim_chunks_still_respect_the_limit() {
     let chunks = verbatim_chunks("```\nalpha beta gamma delta", 11);
-    assert_eq!(chunks, vec!["```", "alpha beta", "gamma delta"]);
+    assert_eq!(chunks, vec!["```", "alpha beta ", "gamma delta"]);
+}
+
+#[test]
+fn verbatim_chunks_keep_indentation_across_messages() {
+    let preview = (0..301)
+        .map(|n| match n % 3 {
+            0 => format!("def step_{n:04}():"),
+            1 => format!("    indented line {n:04}"),
+            _ => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let chunks = verbatim_chunks(&preview, 120);
+    assert!(chunks.len() > 1);
+    assert!(chunks.iter().all(|chunk| chunk.len() <= 120));
+    assert!(chunks[1..].iter().any(|chunk| chunk.starts_with("    ")));
+    assert_eq!(chunks.join("\n"), preview);
+}
+
+#[test]
+fn verbatim_chunks_cut_a_long_line_without_losing_a_space() {
+    let line = format!("    {}", "word ".repeat(40).trim_end());
+    let chunks = verbatim_chunks(&line, 64);
+    assert!(chunks.len() > 1);
+    assert!(chunks.iter().all(|chunk| chunk.len() <= 64));
+    assert!(chunks[0].starts_with("    word"));
+    assert_eq!(chunks.concat(), line);
 }
 
 #[test]
@@ -446,6 +473,25 @@ fn approval_text_names_the_three_answers() {
     assert!(text.contains("rm -rf build"));
     assert!(text.contains("Scope: this repo"));
     assert!(text.ends_with("Reply yes, always, or no."));
+}
+
+#[test]
+fn approval_text_sends_a_long_preview_whole_and_asks_last() {
+    let preview = (0..400)
+        .map(|n| format!("echo line {n:04} of the script"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = approval_text(&preview, Some("this repo"));
+    let chunks = verbatim_chunks(&text, CHUNK_LIMIT);
+    assert!(chunks.len() > 1);
+    assert!(chunks.iter().all(|chunk| chunk.len() <= CHUNK_LIMIT));
+    assert_eq!(
+        chunks.join("\n"),
+        format!("Needs your go-ahead:\n{preview}\nScope: this repo\nReply yes, always, or no.")
+    );
+    let (last, earlier) = chunks.split_last().expect("chunks");
+    assert!(last.ends_with("Reply yes, always, or no."));
+    assert!(earlier.iter().all(|chunk| !chunk.contains("Reply yes")));
 }
 
 #[test]
