@@ -13,8 +13,8 @@ use super::cursor::{CURSOR_OVERLAP_MS, Cursor, LastChat, format_time, parse_time
 use super::inbound::{Inbound, Part, is_allowed, normalize_handle, parse_inbound, stranger_reply};
 use super::state::{Admission, Bridge, CHUNK_LIMIT, ChatState};
 use super::text::{
-    approval_text, parse_approval, plain_chunks, question_text, resolve_choice, shot_paths,
-    verbatim_chunks,
+    APPROVAL_ASK, approval_text, parse_approval, plain_chunks, question_text, resolve_choice,
+    shot_paths, verbatim_chunks,
 };
 use super::turn::{finish_turn, merge_queued};
 use super::{ChatKey, SpectrumConfig, dispatch, page_ids};
@@ -468,15 +468,25 @@ fn verbatim_chunks_cut_a_long_line_without_losing_a_space() {
 }
 
 #[test]
-fn approval_text_names_the_three_answers() {
-    let text = approval_text("run_command: rm -rf build", Some("this repo"));
-    assert!(text.contains("rm -rf build"));
-    assert!(text.contains("Scope: this repo"));
-    assert!(text.ends_with("Reply yes, always, or no."));
+fn verbatim_chunks_keep_a_blank_stretch_inside_a_message() {
+    let text = format!("first\n{}\nlast", " ".repeat(60));
+    let chunks = verbatim_chunks(&text, 64);
+    assert_eq!(chunks.join("\n"), text);
+    assert!(verbatim_chunks("  \n\t\n", 64).is_empty());
 }
 
 #[test]
-fn approval_text_sends_a_long_preview_whole_and_asks_last() {
+fn approval_text_names_the_three_answers() {
+    let text = approval_text("run_command: rm -rf build", Some("this repo"));
+    assert!(text.contains("rm -rf build"));
+    assert!(text.ends_with("Scope: this repo"));
+    for answer in ["yes", "always", "no"] {
+        assert!(APPROVAL_ASK.contains(answer));
+    }
+}
+
+#[test]
+fn approval_text_sends_a_long_preview_whole() {
     let preview = (0..400)
         .map(|n| format!("echo line {n:04} of the script"))
         .collect::<Vec<_>>()
@@ -487,11 +497,9 @@ fn approval_text_sends_a_long_preview_whole_and_asks_last() {
     assert!(chunks.iter().all(|chunk| chunk.len() <= CHUNK_LIMIT));
     assert_eq!(
         chunks.join("\n"),
-        format!("Needs your go-ahead:\n{preview}\nScope: this repo\nReply yes, always, or no.")
+        format!("Needs your go-ahead:\n{preview}\nScope: this repo")
     );
-    let (last, earlier) = chunks.split_last().expect("chunks");
-    assert!(last.ends_with("Reply yes, always, or no."));
-    assert!(earlier.iter().all(|chunk| !chunk.contains("Reply yes")));
+    assert!(chunks.iter().all(|chunk| !chunk.contains(APPROVAL_ASK)));
 }
 
 #[test]

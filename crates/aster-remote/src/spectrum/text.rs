@@ -19,10 +19,10 @@ pub(crate) fn plain_chunks(text: &str, limit: usize) -> Vec<String> {
 /// Approvals and questions go this way: what the person agrees to has to be
 /// exactly what runs, fences, asterisks and indentation included.
 pub(crate) fn verbatim_chunks(text: &str, limit: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
     pack_lines(text.lines().map(str::to_string), limit)
-        .into_iter()
-        .filter(|chunk| !chunk.trim().is_empty())
-        .collect()
 }
 
 /// Lines packed into chunks of at most `limit` bytes with nothing dropped:
@@ -102,9 +102,12 @@ pub(crate) fn approval_text(preview: &str, scope: Option<&str>) -> String {
     if let Some(scope) = scope.filter(|scope| !scope.trim().is_empty()) {
         text.push_str(&format!("\nScope: {scope}"));
     }
-    text.push_str("\nReply yes, always, or no.");
     text
 }
+
+/// The question an approval ends on, sent by itself once all of
+/// [`approval_text`] is out.
+pub(crate) const APPROVAL_ASK: &str = "Reply yes, always, or no.";
 
 /// The answer a reply gives to a pending approval. None when the reply is not
 /// an answer at all, which the caller treats as a no plus a new message.
