@@ -12,9 +12,9 @@ use tokio::sync::mpsc;
 
 use crate::bridge::{Answer, Turn, TurnEvent, WireMessage};
 use crate::channel::{
-    Chats, MODES, Pending, Skills, WORKER_NOTE, abort_workers, chat_state, claim_worker_slot,
-    clear_worker_slot, console_text, console_tool, discover_skill_commands, get_override,
-    next_free_slot, set_override, skill_prompt, truncate,
+    ApprovalView, Chats, MODES, Pending, Skills, WORKER_NOTE, abort_workers, chat_state,
+    claim_worker_slot, clear_worker_slot, console_text, console_tool, discover_skill_commands,
+    get_override, next_free_slot, set_override, skill_prompt, truncate,
 };
 
 const IMESSAGE_SYSTEM: &str = "You are Aster, running remotely over iMessage. \
@@ -395,8 +395,8 @@ async fn start_turn(
                     api.send_text(
                         &chat_id,
                         &format!(
-                            "Approval needed: {}\nReply yes, always, or no.",
-                            truncate(&preview, 800)
+                            "Needs your go-ahead:\n{}\nReply yes, always, or no.",
+                            ApprovalView::new(&preview).text()
                         ),
                     )
                     .await;

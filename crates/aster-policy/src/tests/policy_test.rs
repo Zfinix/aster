@@ -278,3 +278,26 @@ fn a_deny_reason_names_the_rule_that_matched() {
         other => panic!("expected a deny, got {other:?}"),
     }
 }
+
+#[test]
+fn an_approval_preview_shows_the_whole_command() {
+    let script = "echo step; ".repeat(60);
+    let args = ["-c", script.as_str()];
+
+    let mut c = cfg();
+    c.ask = vec!["Bash(bash:*)".into()];
+    match policy(c).evaluate(&exec("bash", &args)) {
+        Decision::Prompt { preview } => {
+            assert!(preview.contains(script.as_str()), "{preview}");
+            assert!(!preview.contains('…'), "{preview}");
+        }
+        other => panic!("expected a prompt, got {other:?}"),
+    }
+
+    let mut c = cfg();
+    c.deny = vec!["Bash(bash:*)".into()];
+    match policy(c).evaluate(&exec("bash", &args)) {
+        Decision::Deny { reason } => assert!(reason.contains('…'), "{reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}

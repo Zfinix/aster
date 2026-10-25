@@ -2,6 +2,7 @@
 //! size, approvals and questions as plain text, and the answers to them.
 
 use crate::bridge::Answer;
+use crate::channel::{ApprovalView, pack_lines};
 
 /// A reply as plain-text messages of at most `limit` bytes. The chat apps on
 /// this bridge show markdown as typed, so the markers that only make sense
@@ -13,45 +14,6 @@ pub(crate) fn plain_chunks(text: &str, limit: usize) -> Vec<String> {
         .map(|chunk| chunk.trim().to_string())
         .filter(|chunk| !chunk.is_empty())
         .collect()
-}
-
-/// Text as messages of at most `limit` bytes, every line kept as written.
-/// Approvals and questions go this way: what the person agrees to has to be
-/// exactly what runs, fences, asterisks and indentation included.
-pub(crate) fn verbatim_chunks(text: &str, limit: usize) -> Vec<String> {
-    if text.trim().is_empty() {
-        return Vec::new();
-    }
-    pack_lines(text.lines().map(str::to_string), limit)
-}
-
-/// Lines packed into chunks of at most `limit` bytes with nothing dropped:
-/// joining the chunks with newlines gives the lines back, except that a line
-/// longer than a chunk is split across several.
-fn pack_lines(lines: impl Iterator<Item = String>, limit: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current: Option<String> = None;
-    for line in lines {
-        if line.len() > limit {
-            chunks.extend(current.take());
-            chunks.extend(split_long(&line, limit));
-            continue;
-        }
-        current = match current.take() {
-            Some(mut chunk) if chunk.len() + 1 + line.len() <= limit => {
-                chunk.push('\n');
-                chunk.push_str(&line);
-                Some(chunk)
-            }
-            Some(chunk) => {
-                chunks.push(chunk);
-                Some(line)
-            }
-            None => Some(line),
-        };
-    }
-    chunks.extend(current);
-    chunks
 }
 
 /// One markdown line as it should read unrendered; None for a code fence.
@@ -69,36 +31,14 @@ fn plain_line(line: &str) -> Option<String> {
     Some(line.replace("**", ""))
 }
 
-/// A line cut into pieces of at most `limit` bytes that concatenate back to
-/// it, each cut just after a space where one follows the indentation.
-fn split_long(line: &str, limit: usize) -> Vec<String> {
-    let mut pieces = Vec::new();
-    let mut rest = line;
-    while rest.len() > limit {
-        let mut cut = limit;
-        while !rest.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        if let Some(space) = rest[..cut]
-            .rfind(' ')
-            .filter(|at| !rest[..*at].trim().is_empty())
-        {
-            cut = space + 1;
-        }
-        pieces.push(rest[..cut].to_string());
-        rest = &rest[cut..];
-    }
-    if !rest.is_empty() {
-        pieces.push(rest.to_string());
-    }
-    pieces
-}
-
-/// An approval as a text message, with the three words that answer it last.
-/// A yes allows the whole request, so the preview goes in whole and is split
-/// across as many messages as it takes rather than cut.
+/// An approval as a text message. A yes allows the whole request, so the
+/// preview goes in whole and is split across as many messages as it takes
+/// rather than cut.
 pub(crate) fn approval_text(preview: &str, scope: Option<&str>) -> String {
-    let mut text = format!("Needs your go-ahead:\n{}", preview.trim());
+    let mut text = format!(
+        "Needs your go-ahead:\n{}",
+        ApprovalView::new(preview).text()
+    );
     if let Some(scope) = scope.filter(|scope| !scope.trim().is_empty()) {
         text.push_str(&format!("\nScope: {scope}"));
     }

@@ -18,11 +18,15 @@ use tokio::task::AbortHandle;
 use ulid::Ulid;
 
 use crate::bridge::{Agent, Answer, Turn, TurnEvent, TurnOutcome, WireMessage};
+use crate::channel::{ApprovalView, verbatim_chunks};
 use crate::markdown;
 
 mod alerts;
 
 const CHUNK_LIMIT: usize = 4000;
+/// Telegram takes 4,096 characters a message; this leaves room for the
+/// heading, the rule and the scope around a slice of an approval preview.
+const PREVIEW_CHUNK_LIMIT: usize = 3500;
 
 const ACTIVITY_WINDOW: usize = 4;
 
@@ -87,6 +91,9 @@ Under 40 lines, paste inline.";
 enum Pending {
     Approval {
         subject: String,
+        /// The messages a long preview took before the one with the buttons,
+        /// cleared away with it once the request is answered.
+        preview_ids: Vec<i64>,
         respond: oneshot::Sender<Answer>,
     },
     Question(oneshot::Sender<Option<String>>),
@@ -2121,11 +2128,43 @@ async fn drive_turn(
             } => {
                 activity.say_out().await;
                 activity.flush(true).await;
-                let subject = approval_subject(&preview);
-                let mut text = format!(
-                    "<b>Needs your go-ahead</b>\n<pre>{}</pre>",
-                    markdown::escape(&truncate(&subject, 3000))
-                );
+                // A yes allows all of it, so a long preview goes out over
+                // several messages rather than cut, with the buttons under the
+                // last. If any part fails to arrive, the request is denied.
+                let view = ApprovalView::new(&preview);
+                let mut chunks = verbatim_chunks(&view.subject, PREVIEW_CHUNK_LIMIT);
+                let last = chunks.pop().unwrap_or_default();
+                let mut preview_ids = Vec::new();
+                for chunk in &chunks {
+                    let head = if preview_ids.is_empty() {
+                        "<b>Needs your go-ahead</b>\n"
+                    } else {
+                        ""
+                    };
+                    let html = format!("{head}<pre>{}</pre>", markdown::escape(chunk));
+                    match api.send_html_reply(chat_id, &html, Some(reply_to)).await {
+                        Some(id) => preview_ids.push(id),
+                        None => break,
+                    }
+                }
+                if preview_ids.len() < chunks.len() {
+                    let _ = respond.send(Answer::Deny);
+                    for id in preview_ids {
+                        api.delete_message(chat_id, id).await;
+                    }
+                    api.send_text(chat_id, "Denied: the whole request could not be shown.")
+                        .await;
+                    continue;
+                }
+                let mut text = if chunks.is_empty() {
+                    "<b>Needs your go-ahead</b>\n".to_string()
+                } else {
+                    String::new()
+                };
+                text.push_str(&format!("<pre>{}</pre>", markdown::escape(&last)));
+                if let Some(rule) = &view.rule {
+                    text.push_str(&format!("\nRule: {}", markdown::escape(rule)));
+                }
                 if let Some(scope) = scope {
                     text.push_str(&format!("\n<code>{}</code>", markdown::escape(&scope)));
                 }
@@ -2138,9 +2177,18 @@ async fn drive_turn(
                     .await;
                 eprintln!(
                     "[{chat_id}] ⏸ approval needed: {}",
-                    console_text(&subject, 120)
+                    console_text(&view.subject, 120)
                 );
-                set_pending(chats, chat_id, Pending::Approval { subject, respond });
+                let subject = console_text(&view.subject, 200);
+                set_pending(
+                    chats,
+                    chat_id,
+                    Pending::Approval {
+                        subject,
+                        preview_ids,
+                        respond,
+                    },
+                );
             }
             TurnEvent::Question {
                 header,
@@ -2474,6 +2522,14 @@ async fn handle_callback(
         let mut chats = chats.lock().expect("chats lock");
         chats.entry(chat_id).or_default().pending.take()
     };
+    // A long preview's other messages go with the buttons once it is answered.
+    if let Some(Pending::Approval { preview_ids, .. }) = &pending
+        && matches!(data, "a:allow" | "a:always" | "a:deny")
+    {
+        for id in preview_ids {
+            api.delete_message(chat_id, *id).await;
+        }
+    }
     // An answered approval is deleted rather than settled: the activity list
     // already shows the step, so a second message would just repeat it.
     let (toast, answered) = match (pending, data) {
@@ -2485,7 +2541,12 @@ async fn handle_callback(
             let _ = respond.send(Answer::AlwaysAllow);
             ("Always allowed", true)
         }
-        (Some(Pending::Approval { subject, respond }), "a:deny") => {
+        (
+            Some(Pending::Approval {
+                subject, respond, ..
+            }),
+            "a:deny",
+        ) => {
             let _ = respond.send(Answer::Deny);
             // A denial has no step to show, so it leaves a line behind.
             api.settle_callback_message(callback, &format!("Denied · {subject}"))
@@ -3561,14 +3622,6 @@ fn is_gif_url(url: &str) -> bool {
         && (url.contains(".gif")
             || url.contains("giphy.com/media")
             || url.contains("media.tenor.com"))
-}
-
-fn approval_subject(preview: &str) -> String {
-    let subject = preview.strip_prefix("run ").unwrap_or(preview).trim();
-    match subject.strip_prefix('`').and_then(|s| s.split_once('`')) {
-        Some((command, rest)) => format!("{command}{rest}"),
-        None => subject.to_string(),
-    }
 }
 
 fn short_path(path: &str) -> String {

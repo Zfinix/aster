@@ -158,7 +158,21 @@ impl Policy {
 fn subject(action: &Action) -> String {
     match action {
         Action::Edit { path } | Action::Read { path } => format!("`{path}`"),
-        Action::Exec { binary, args } => format!("`{}`", command_line(binary, args)),
+        Action::Exec { binary, args } => {
+            // A refusal names the command inside one sentence, so a long one
+            // is cut there. A preview never is: the person says yes to all of it.
+            const SUBJECT_LIMIT: usize = 200;
+            let mut line = command_line(binary, args);
+            if line.len() > SUBJECT_LIMIT {
+                let mut cut = SUBJECT_LIMIT;
+                while !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                line.truncate(cut);
+                line.push('…');
+            }
+            format!("`{line}`")
+        }
     }
 }
 
@@ -175,7 +189,6 @@ fn bare_preview(action: &Action) -> String {
 }
 
 fn command_line(binary: &str, args: &[&str]) -> String {
-    const PREVIEW_LIMIT: usize = 200;
     let mut line = binary.to_string();
     for arg in args {
         line.push(' ');
@@ -186,14 +199,6 @@ fn command_line(binary: &str, args: &[&str]) -> String {
         } else {
             line.push_str(arg);
         }
-    }
-    if line.len() > PREVIEW_LIMIT {
-        let mut cut = PREVIEW_LIMIT;
-        while !line.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        line.truncate(cut);
-        line.push('…');
     }
     line
 }
