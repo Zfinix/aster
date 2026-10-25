@@ -94,6 +94,12 @@ jobs:
           ASTER_MODEL: ${{ vars.ASTER_MODEL }}
           ASTER_HYPOTHESIS_MODEL: ${{ vars.ASTER_HYPOTHESIS_MODEL }}
           ASTER_VERIFY_MODEL: ${{ vars.ASTER_VERIFY_MODEL }}
+          # DeepSeek's thinking models spend the reply budget on reasoning
+          # before they answer. At the 8000-token default a 40 KB diff chunk
+          # ran out with no answer, so give each reply more room and each
+          # chunk less diff.
+          ASTER_MAX_TOKENS: "32000"
+          ASTER_HYPOTHESIS_CHUNK_BYTES: "20000"
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           aster review \
