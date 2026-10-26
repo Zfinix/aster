@@ -257,6 +257,22 @@ pub struct ApprovalView {
 impl ApprovalView {
     pub fn new(preview: &str) -> Self {
         let preview = preview.trim();
+        // A command ends at its closing backtick, so a rule with brackets of
+        // its own cannot be mistaken for part of it.
+        if let Some((command, rest)) = preview
+            .strip_prefix("run `")
+            .and_then(|body| body.rsplit_once('`'))
+        {
+            let rule = rest
+                .strip_prefix(" (")
+                .and_then(|rule| rule.strip_suffix(')'));
+            if rest.is_empty() || rule.is_some() {
+                return Self {
+                    subject: command.to_string(),
+                    rule: rule.map(str::to_string),
+                };
+            }
+        }
         let (head, rule) = match preview
             .strip_suffix(')')
             .and_then(|rest| rest.rsplit_once(" ("))
@@ -264,12 +280,6 @@ impl ApprovalView {
             Some((head, rule)) => (head, Some(rule.to_string())),
             None => (preview, None),
         };
-        if let Some(command) = head.strip_prefix("run `").and_then(|c| c.strip_suffix('`')) {
-            return Self {
-                subject: command.to_string(),
-                rule,
-            };
-        }
         if head.starts_with("edit ") || head.starts_with("read ") {
             return Self {
                 subject: head.to_string(),

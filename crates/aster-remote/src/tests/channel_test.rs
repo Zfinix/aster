@@ -67,3 +67,10 @@ fn approval_view_passes_other_previews_through() {
 fn verbatim_chunks_move_on_when_the_limit_is_under_one_character() {
     assert_eq!(verbatim_chunks("éé", 1), vec!["é", "é"]);
 }
+
+#[test]
+fn approval_view_keeps_brackets_inside_the_rule() {
+    let view = ApprovalView::new("run `git push` (Bash(git push (any):*))");
+    assert_eq!(view.subject, "git push");
+    assert_eq!(view.rule.as_deref(), Some("Bash(git push (any):*)"));
+}
