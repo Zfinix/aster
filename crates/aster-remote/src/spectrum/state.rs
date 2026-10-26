@@ -16,10 +16,10 @@ use ulid::Ulid;
 use super::api::Api;
 use super::cursor::{Cursor, LastChat};
 use super::inbound::Inbound;
-use super::text::{plain_chunks, verbatim_chunks};
+use super::text::plain_chunks;
 use super::{ChatKey, SpectrumConfig};
 use crate::bridge::{Agent, Answer};
-use crate::channel::Skills;
+use crate::channel::{Skills, verbatim_chunks};
 use crate::telegram::is_stop_request;
 
 pub(super) const CHUNK_LIMIT: usize = 3500;

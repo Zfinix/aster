@@ -246,6 +246,129 @@ pub fn get_override<T>(
     chat_state(chats, channel, chat_id, |state| read(state))
 }
 
+/// An approval preview as a chat shows it: the command alone, or the file
+/// with what is done to it, and apart from it the rule that asked. A preview
+/// that is not the policy's own passes through as written.
+pub struct ApprovalView {
+    pub subject: String,
+    pub rule: Option<String>,
+}
+
+impl ApprovalView {
+    pub fn new(preview: &str) -> Self {
+        let preview = preview.trim();
+        // A command ends at its closing backtick, so a rule with brackets of
+        // its own cannot be mistaken for part of it.
+        if let Some((command, rest)) = preview
+            .strip_prefix("run `")
+            .and_then(|body| body.rsplit_once('`'))
+        {
+            let rule = rest
+                .strip_prefix(" (")
+                .and_then(|rule| rule.strip_suffix(')'));
+            if rest.is_empty() || rule.is_some() {
+                return Self {
+                    subject: command.to_string(),
+                    rule: rule.map(str::to_string),
+                };
+            }
+        }
+        let (head, rule) = match preview
+            .strip_suffix(')')
+            .and_then(|rest| rest.rsplit_once(" ("))
+        {
+            Some((head, rule)) => (head, Some(rule.to_string())),
+            None => (preview, None),
+        };
+        if head.starts_with("edit ") || head.starts_with("read ") {
+            return Self {
+                subject: head.to_string(),
+                rule,
+            };
+        }
+        Self {
+            subject: preview.to_string(),
+            rule: None,
+        }
+    }
+
+    /// The view as plain text, the rule on a line of its own.
+    pub fn text(&self) -> String {
+        match &self.rule {
+            Some(rule) => format!("{}\nRule: {rule}", self.subject),
+            None => self.subject.clone(),
+        }
+    }
+}
+
+/// Text as messages of at most `limit` bytes, every line kept as written.
+/// Approvals and questions go this way: what the person agrees to has to be
+/// exactly what runs, fences, asterisks and indentation included.
+pub(crate) fn verbatim_chunks(text: &str, limit: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    pack_lines(text.lines().map(str::to_string), limit)
+}
+
+/// Lines packed into chunks of at most `limit` bytes with nothing dropped:
+/// joining the chunks with newlines gives the lines back, except that a line
+/// longer than a chunk is split across several.
+pub(crate) fn pack_lines(lines: impl Iterator<Item = String>, limit: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in lines {
+        if line.len() > limit {
+            chunks.extend(current.take());
+            chunks.extend(split_long(&line, limit));
+            continue;
+        }
+        current = match current.take() {
+            Some(mut chunk) if chunk.len() + 1 + line.len() <= limit => {
+                chunk.push('\n');
+                chunk.push_str(&line);
+                Some(chunk)
+            }
+            Some(chunk) => {
+                chunks.push(chunk);
+                Some(line)
+            }
+            None => Some(line),
+        };
+    }
+    chunks.extend(current);
+    chunks
+}
+
+/// A line cut into pieces of at most `limit` bytes that concatenate back to
+/// it, each cut just after a space where one follows the indentation.
+fn split_long(line: &str, limit: usize) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut rest = line;
+    while rest.len() > limit {
+        let mut cut = limit;
+        while !rest.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        // A limit narrower than one character still moves on by one.
+        if cut == 0 {
+            cut = rest.chars().next().map_or(rest.len(), char::len_utf8);
+        }
+        if let Some(space) = rest[..cut]
+            .rfind(' ')
+            .filter(|at| !rest[..*at].trim().is_empty())
+        {
+            cut = space + 1;
+        }
+        pieces.push(rest[..cut].to_string());
+        rest = &rest[cut..];
+    }
+    if !rest.is_empty() {
+        pieces.push(rest.to_string());
+    }
+    pieces
+}
+
 pub fn truncate(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_string();

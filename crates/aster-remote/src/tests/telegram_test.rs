@@ -63,27 +63,6 @@ fn tool_line_escapes_html_in_arguments() {
 }
 
 #[test]
-fn approval_subject_unwraps_the_run_preview() {
-    assert_eq!(super::approval_subject("run `git status`"), "git status");
-}
-
-#[test]
-fn approval_subject_keeps_trailing_notes() {
-    assert_eq!(
-        super::approval_subject("run `rm -rf dist` (risky command)"),
-        "rm -rf dist (risky command)"
-    );
-}
-
-#[test]
-fn approval_subject_passes_through_edit_previews() {
-    assert_eq!(
-        super::approval_subject("edit src/lib.rs (protected path)"),
-        "edit src/lib.rs (protected path)"
-    );
-}
-
-#[test]
 fn plan_message_marks_the_step_in_flight() {
     let args = r#"{"steps":[
         {"label":"read the code","status":"done"},

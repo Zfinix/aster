@@ -14,11 +14,12 @@ use super::inbound::{Inbound, Part, is_allowed, normalize_handle, parse_inbound,
 use super::state::{Admission, Bridge, CHUNK_LIMIT, ChatState};
 use super::text::{
     APPROVAL_ASK, approval_text, parse_approval, plain_chunks, question_text, resolve_choice,
-    shot_paths, verbatim_chunks,
+    shot_paths,
 };
 use super::turn::{finish_turn, merge_queued};
 use super::{ChatKey, SpectrumConfig, dispatch, page_ids};
 use crate::bridge::Answer;
+use crate::channel::verbatim_chunks;
 
 const AGENT: &str = "pho_usr_00000000000000000000000001";
 const HUMAN: &str = "pho_usr_00000000000000000000000002";
