@@ -340,6 +340,10 @@ fn split_long(line: &str, limit: usize) -> Vec<String> {
         while !rest.is_char_boundary(cut) {
             cut -= 1;
         }
+        // A limit narrower than one character still moves on by one.
+        if cut == 0 {
+            cut = rest.chars().next().map_or(rest.len(), char::len_utf8);
+        }
         if let Some(space) = rest[..cut]
             .rfind(' ')
             .filter(|at| !rest[..*at].trim().is_empty())

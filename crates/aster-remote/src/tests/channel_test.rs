@@ -62,3 +62,8 @@ fn approval_view_passes_other_previews_through() {
     let preview = "`cat` needs to read credentials outside the repository:\n  ~/.ssh (keys)";
     assert_eq!(ApprovalView::new(preview).text(), preview);
 }
+
+#[test]
+fn verbatim_chunks_move_on_when_the_limit_is_under_one_character() {
+    assert_eq!(verbatim_chunks("éé", 1), vec!["é", "é"]);
+}

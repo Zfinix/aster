@@ -31,6 +31,8 @@ const MESSAGE_CHARS: usize = 4096;
 const PREVIEW_CHUNK_LIMIT: usize = 3500;
 const APPROVAL_HEAD: &str = "<b>Needs your go-ahead</b>\n";
 const APPROVAL_HEAD_CHARS: usize = "Needs your go-ahead\n".len();
+/// The most of a rule or a scope an approval shows.
+const LABEL_CHARS: usize = 500;
 
 const ACTIVITY_WINDOW: usize = 4;
 
@@ -2141,12 +2143,14 @@ async fn drive_turn(
                 let view = ApprovalView::new(&preview);
                 let mut tail = String::new();
                 let mut tail_chars = 0;
-                if let Some(rule) = &view.rule {
-                    tail.push_str(&format!("\nRule: {}", markdown::escape(rule)));
+                // The rule and the scope are labels, not what runs, so an
+                // outsized one is cut to keep the buttons' message deliverable.
+                if let Some(rule) = view.rule.as_deref().map(|rule| truncate(rule, LABEL_CHARS)) {
+                    tail.push_str(&format!("\nRule: {}", markdown::escape(&rule)));
                     tail_chars += "\nRule: ".len() + rule.chars().count();
                 }
-                if let Some(scope) = &scope {
-                    tail.push_str(&format!("\n<code>{}</code>", markdown::escape(scope)));
+                if let Some(scope) = scope.as_deref().map(|scope| truncate(scope, LABEL_CHARS)) {
+                    tail.push_str(&format!("\n<code>{}</code>", markdown::escape(&scope)));
                     tail_chars += 1 + scope.chars().count();
                 }
                 let mut chunks = verbatim_chunks(&view.subject, PREVIEW_CHUNK_LIMIT);
@@ -2204,7 +2208,7 @@ async fn drive_turn(
                     console_text(&view.subject, 120)
                 );
                 let subject = console_text(&view.subject, 200);
-                set_pending(
+                let replaced = set_pending(
                     chats,
                     chat_id,
                     Pending::Approval {
@@ -2214,6 +2218,11 @@ async fn drive_turn(
                         respond,
                     },
                 );
+                if let Some(Pending::Approval { preview_ids, .. }) = replaced {
+                    for id in preview_ids {
+                        api.delete_message(chat_id, id).await;
+                    }
+                }
             }
             TurnEvent::Question {
                 header,
@@ -2372,9 +2381,10 @@ async fn finish_turn(
     ok
 }
 
-fn set_pending(chats: &Chats, chat_id: i64, pending: Pending) {
+/// Store the prompt the chat is waiting on, handing back any it replaces.
+fn set_pending(chats: &Chats, chat_id: i64, pending: Pending) -> Option<Pending> {
     let mut chats = chats.lock().expect("chats lock");
-    chats.entry(chat_id).or_default().pending = Some(pending);
+    chats.entry(chat_id).or_default().pending.replace(pending)
 }
 
 async fn handle_callback(
@@ -2559,14 +2569,16 @@ async fn handle_callback(
             && matches!(&state.pending, Some(Pending::Approval { message_id, .. }) if Some(*message_id) != tapped);
         if stale { None } else { state.pending.take() }
     };
-    // A long preview's other messages go with the buttons once it is answered.
-    if let Some(Pending::Approval { preview_ids, .. }) = &pending
-        && matches!(data, "a:allow" | "a:always" | "a:deny")
-    {
-        for id in preview_ids {
-            api.delete_message(chat_id, *id).await;
+    // A long preview's other messages go with the buttons once it is
+    // answered, after the answer, so the turn never waits on the cleanup.
+    let leftover = match &pending {
+        Some(Pending::Approval { preview_ids, .. })
+            if matches!(data, "a:allow" | "a:always" | "a:deny") =>
+        {
+            preview_ids.clone()
         }
-    }
+        _ => Vec::new(),
+    };
     // An answered approval is deleted rather than settled: the activity list
     // already shows the step, so a second message would just repeat it.
     let (toast, answered) = match (pending, data) {
@@ -2600,6 +2612,9 @@ async fn handle_callback(
     api.answer_callback(callback_id, toast).await;
     if answered {
         api.delete_callback_message(callback).await;
+    }
+    for id in leftover {
+        api.delete_message(chat_id, id).await;
     }
 }
 
