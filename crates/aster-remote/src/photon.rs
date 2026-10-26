@@ -16,7 +16,7 @@ use crate::bridge::{Answer, Turn, TurnEvent, WireMessage};
 use crate::channel::{
     ApprovalView, Chats, MODES, Pending, Skills, WORKER_NOTE, abort_workers, chat_state,
     claim_worker_slot, clear_worker_slot, console_text, console_tool, discover_skill_commands,
-    get_override, next_free_slot, set_override, skill_prompt, truncate,
+    get_override, next_free_slot, set_override, skill_prompt, truncate, verbatim_chunks,
 };
 
 const PHOTON_SYSTEM: &str = "You are Aster, running remotely over iMessage via Photon. \
@@ -465,17 +465,19 @@ async fn start_turn(
                 TurnEvent::ApprovalRequest {
                     preview, respond, ..
                 } => {
-                    api.send_text(
-                        &chat_id,
-                        &format!(
-                            "Needs your go-ahead:\n{}\nReply yes, always, or no.",
-                            ApprovalView::new(&preview).text()
-                        ),
-                    )
-                    .await;
+                    // The whole preview goes out, over as many messages as it
+                    // takes, before the question that a reply answers.
+                    let text = format!(
+                        "Needs your go-ahead:\n{}",
+                        ApprovalView::new(&preview).text()
+                    );
+                    for chunk in verbatim_chunks(&text, CHUNK_LIMIT) {
+                        api.send_text(&chat_id, &chunk).await;
+                    }
                     chat_state(&chats, "photon", 0, |state| {
                         state.pending = Some(Pending::Approval { respond })
                     });
+                    api.send_text(&chat_id, "Reply yes, always, or no.").await;
                 }
                 TurnEvent::Question {
                     header,

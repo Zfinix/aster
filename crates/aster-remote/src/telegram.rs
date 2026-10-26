@@ -24,9 +24,13 @@ use crate::markdown;
 mod alerts;
 
 const CHUNK_LIMIT: usize = 4000;
-/// Telegram takes 4,096 characters a message; this leaves room for the
-/// heading, the rule and the scope around a slice of an approval preview.
+/// Telegram takes 4,096 characters a message, counted as shown.
+const MESSAGE_CHARS: usize = 4096;
+/// A slice of an approval preview, leaving room in its message for the
+/// heading, the rule and the scope.
 const PREVIEW_CHUNK_LIMIT: usize = 3500;
+const APPROVAL_HEAD: &str = "<b>Needs your go-ahead</b>\n";
+const APPROVAL_HEAD_CHARS: usize = "Needs your go-ahead\n".len();
 
 const ACTIVITY_WINDOW: usize = 4;
 
@@ -91,6 +95,9 @@ Under 40 lines, paste inline.";
 enum Pending {
     Approval {
         subject: String,
+        /// The message with the buttons, so a tap on an older prompt's
+        /// buttons cannot answer this one.
+        message_id: i64,
         /// The messages a long preview took before the one with the buttons,
         /// cleared away with it once the request is answered.
         preview_ids: Vec<i64>,
@@ -2132,12 +2139,28 @@ async fn drive_turn(
                 // several messages rather than cut, with the buttons under the
                 // last. If any part fails to arrive, the request is denied.
                 let view = ApprovalView::new(&preview);
+                let mut tail = String::new();
+                let mut tail_chars = 0;
+                if let Some(rule) = &view.rule {
+                    tail.push_str(&format!("\nRule: {}", markdown::escape(rule)));
+                    tail_chars += "\nRule: ".len() + rule.chars().count();
+                }
+                if let Some(scope) = &scope {
+                    tail.push_str(&format!("\n<code>{}</code>", markdown::escape(scope)));
+                    tail_chars += 1 + scope.chars().count();
+                }
                 let mut chunks = verbatim_chunks(&view.subject, PREVIEW_CHUNK_LIMIT);
-                let last = chunks.pop().unwrap_or_default();
+                // The last slice shares the buttons' message only when it fits
+                // there beside the rule and the scope.
+                let last = chunks
+                    .pop_if(|last| {
+                        APPROVAL_HEAD_CHARS + last.chars().count() + tail_chars <= MESSAGE_CHARS
+                    })
+                    .unwrap_or_default();
                 let mut preview_ids = Vec::new();
                 for chunk in &chunks {
                     let head = if preview_ids.is_empty() {
-                        "<b>Needs your go-ahead</b>\n"
+                        APPROVAL_HEAD
                     } else {
                         ""
                     };
@@ -2147,7 +2170,27 @@ async fn drive_turn(
                         None => break,
                     }
                 }
-                if preview_ids.len() < chunks.len() {
+                let mut text = if chunks.is_empty() {
+                    APPROVAL_HEAD.to_string()
+                } else {
+                    String::new()
+                };
+                if !last.is_empty() {
+                    text.push_str(&format!("<pre>{}</pre>", markdown::escape(&last)));
+                }
+                text.push_str(&tail);
+                let keyboard = json!([[
+                    {"text": "Allow once", "callback_data": "a:allow"},
+                    {"text": "Always allow", "callback_data": "a:always"},
+                    {"text": "Deny", "callback_data": "a:deny"},
+                ]]);
+                let shown = if preview_ids.len() == chunks.len() {
+                    api.send_keyboard_reply(chat_id, text.trim(), keyboard, Some(reply_to))
+                        .await
+                } else {
+                    None
+                };
+                let Some(message_id) = shown else {
                     let _ = respond.send(Answer::Deny);
                     for id in preview_ids {
                         api.delete_message(chat_id, id).await;
@@ -2155,26 +2198,7 @@ async fn drive_turn(
                     api.send_text(chat_id, "Denied: the whole request could not be shown.")
                         .await;
                     continue;
-                }
-                let mut text = if chunks.is_empty() {
-                    "<b>Needs your go-ahead</b>\n".to_string()
-                } else {
-                    String::new()
                 };
-                text.push_str(&format!("<pre>{}</pre>", markdown::escape(&last)));
-                if let Some(rule) = &view.rule {
-                    text.push_str(&format!("\nRule: {}", markdown::escape(rule)));
-                }
-                if let Some(scope) = scope {
-                    text.push_str(&format!("\n<code>{}</code>", markdown::escape(&scope)));
-                }
-                let keyboard = json!([[
-                    {"text": "Allow once", "callback_data": "a:allow"},
-                    {"text": "Always allow", "callback_data": "a:always"},
-                    {"text": "Deny", "callback_data": "a:deny"},
-                ]]);
-                api.send_keyboard_reply(chat_id, &text, keyboard, Some(reply_to))
-                    .await;
                 eprintln!(
                     "[{chat_id}] ⏸ approval needed: {}",
                     console_text(&view.subject, 120)
@@ -2185,6 +2209,7 @@ async fn drive_turn(
                     chat_id,
                     Pending::Approval {
                         subject,
+                        message_id,
                         preview_ids,
                         respond,
                     },
@@ -2297,19 +2322,26 @@ async fn finish_turn(
     result: Result<TurnOutcome>,
     said: usize,
 ) -> bool {
-    let (result, stopped) = {
+    let (result, stopped, unanswered) = {
         let mut chats = chats.lock().expect("chats lock");
         let state = chats.entry(chat_id).or_default();
         state.running = None;
-        state.pending = None;
+        let unanswered = match state.pending.take() {
+            Some(Pending::Approval { preview_ids, .. }) => preview_ids,
+            _ => Vec::new(),
+        };
         let stopped = std::mem::take(&mut state.stopped);
         if let Ok(outcome) = &result {
             state
                 .history
                 .push(WireMessage::assistant(outcome.reply.clone()));
         }
-        (result, stopped)
+        (result, stopped, unanswered)
     };
+    // A turn that ends with a prompt open takes the long preview with it.
+    for id in unanswered {
+        api.delete_message(chat_id, id).await;
+    }
     let ok = result.is_ok();
     match result {
         Ok(outcome) => {
@@ -2518,9 +2550,14 @@ async fn handle_callback(
         return;
     }
 
+    let tapped = callback_message_ids(callback).map(|(_, id)| id);
     let pending = {
         let mut chats = chats.lock().expect("chats lock");
-        chats.entry(chat_id).or_default().pending.take()
+        let state = chats.entry(chat_id).or_default();
+        // A late tap on an older prompt's buttons must not answer this one.
+        let stale = data.starts_with("a:")
+            && matches!(&state.pending, Some(Pending::Approval { message_id, .. }) if Some(*message_id) != tapped);
+        if stale { None } else { state.pending.take() }
     };
     // A long preview's other messages go with the buttons once it is answered.
     if let Some(Pending::Approval { preview_ids, .. }) = &pending
@@ -4446,7 +4483,7 @@ impl Api {
         html: &str,
         keyboard: Value,
         reply_to: Option<i64>,
-    ) {
+    ) -> Option<i64> {
         let mut payload = json!({
             "chat_id": chat_id,
             "text": html,
@@ -4454,8 +4491,12 @@ impl Api {
             "reply_markup": { "inline_keyboard": keyboard },
         });
         add_reply(&mut payload, reply_to);
-        if let Err(e) = self.call("sendMessage", payload).await {
-            tracing::warn!("sendMessage failed: {e:#}");
+        match self.call("sendMessage", payload).await {
+            Ok(message) => message.get("message_id").and_then(Value::as_i64),
+            Err(e) => {
+                tracing::warn!("sendMessage failed: {e:#}");
+                None
+            }
         }
     }
 
