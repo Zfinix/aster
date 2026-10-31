@@ -1,6 +1,6 @@
 {
   "name": "Aster",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Desktop app for the aster coding agent",
   "private": true,
   "type": "module",
