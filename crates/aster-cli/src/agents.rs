@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use aster_agents::AgentRegistry;
-use aster_ai::AiClient;
+use aster_ai::{AiClient, MessageContent};
 use aster_policy::{Grants, Policy};
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -194,7 +194,7 @@ async fn run_agent(
     task: &str,
     deps: &AgentDeps,
     activity: tokio::sync::mpsc::UnboundedSender<String>,
-    injected: Arc<std::sync::Mutex<Vec<String>>>,
+    injected: Arc<std::sync::Mutex<Vec<MessageContent>>>,
 ) -> anyhow::Result<String> {
     let mut child_client = deps.client.clone();
     // An overridden model may belong to another provider than the parent's
@@ -376,7 +376,7 @@ where
                 // Forward activity lines while the run is in flight; the
                 // channel keeps the child's 'static sink free of borrows.
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                let injected: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+                let injected: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
                 let salvage = std::sync::Mutex::new(Vec::new());
                 // At the deadline the task is told to wrap up, and the hard
                 // kill waits one grace period more so the report can land.
@@ -403,7 +403,7 @@ where
                             _ = &mut nudge, if !nudged => {
                                 nudged = true;
                                 if let Ok(mut queue) = injected.lock() {
-                                    queue.push(WRAP_UP.to_string());
+                                    queue.push(MessageContent::Text(WRAP_UP.to_string()));
                                 }
                             }
                         }

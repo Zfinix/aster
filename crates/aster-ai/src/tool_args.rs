@@ -5,6 +5,17 @@
 use serde_json::Value;
 
 use crate::models::ToolCall;
+use crate::repetition::is_degenerate;
+
+/// Whether any call's arguments are repetition-damaged rather than merely
+/// malformed. Only text that fails to parse is checked, so valid JSON that
+/// repeats itself, such as a generated table, is left alone.
+pub fn damaged(calls: &[ToolCall]) -> bool {
+    calls.iter().any(|call| {
+        let raw = call.function.arguments.trim();
+        !raw.is_empty() && serde_json::from_str::<Value>(raw).is_err() && is_degenerate(raw)
+    })
+}
 
 /// Rewrite every call's arguments to a valid JSON object, in place.
 pub fn heal_calls(calls: &mut [ToolCall]) {

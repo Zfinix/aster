@@ -681,6 +681,9 @@ impl AiClient {
                     message.tool_calls = inline;
                 }
             }
+            if tool_args::damaged(&message.tool_calls) {
+                return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
+            }
             tool_args::heal_calls(&mut message.tool_calls);
 
             // A tool turn ends the reply; return it as-is (the caller loops).
@@ -830,8 +833,8 @@ impl AiClient {
         messages: Vec<serde_json::Value>,
         tools: Vec<serde_json::Value>,
         temperature: f64,
-        mut on_token: impl FnMut(&str),
-        mut on_reasoning: impl FnMut(&str),
+        on_token: impl FnMut(&str),
+        on_reasoning: impl FnMut(&str),
     ) -> Result<AssistantMessage> {
         let mut messages = fold_system_notes(messages);
         reasoning::replay(&mut messages, self.history_replay());
@@ -894,6 +897,11 @@ impl AiClient {
         // so neither the stall timeout nor the content guard above ever fires.
         let mut think_guard = RepetitionGuard::default();
         let mut degenerate: Option<&'static str> = None;
+        // Nothing reaches the reader until the guard has passed it. A reply that
+        // degenerates is retried, and the retry must not land under the broken
+        // tail the user already saw.
+        let mut out = HoldBack::new(on_token);
+        let mut think = HoldBack::new(on_reasoning);
 
         let mut adapt = self.sse_adapter();
         let streamed = read_sse(response, self.stall, |data| {
@@ -916,7 +924,7 @@ impl AiClient {
             };
             if !tagged.is_empty() {
                 plain_thinking.push_str(&tagged);
-                on_reasoning(&tagged);
+                think.push(&tagged);
                 if think_guard.feed(&tagged) {
                     degenerate = Some(DEGENERATE_MSG);
                     return false;
@@ -930,7 +938,7 @@ impl AiClient {
                     degenerate = Some(DEGENERATE_MSG);
                     return false;
                 }
-                gate.feed(&delta, &mut on_token);
+                gate.feed(&delta, &mut |s| out.push(s));
             }
             if !choice.delta.annotations.is_empty() {
                 annotations = choice.delta.annotations;
@@ -942,7 +950,7 @@ impl AiClient {
                 .filter(|s| !s.is_empty())
             {
                 plain_thinking.push_str(thinking);
-                on_reasoning(thinking);
+                think.push(thinking);
                 if think_guard.feed(thinking) {
                     degenerate = Some(DEGENERATE_MSG);
                     return false;
@@ -955,7 +963,7 @@ impl AiClient {
                     .or(fragment.summary.as_deref())
                     .filter(|s| !s.is_empty())
                 {
-                    on_reasoning(delta);
+                    think.push(delta);
                     if think_guard.feed(delta) {
                         degenerate = Some(DEGENERATE_MSG);
                         return false;
@@ -972,11 +980,11 @@ impl AiClient {
         let (rest, tagged) = tags.finish();
         if !tagged.is_empty() {
             plain_thinking.push_str(&tagged);
-            on_reasoning(&tagged);
+            think.push(&tagged);
         }
         if !rest.is_empty() {
             content.push_str(&rest);
-            gate.feed(&rest, &mut on_token);
+            gate.feed(&rest, &mut |s| out.push(s));
         }
         if reasoning_details.is_empty() && !plain_thinking.trim().is_empty() {
             reasoning_details.push(ReasoningDetail::from_text(plain_thinking));
@@ -996,7 +1004,7 @@ impl AiClient {
             }
             return Err(e.context("the stream dropped mid-reply"));
         }
-        gate.finish(&mut on_token);
+        gate.finish(&mut |s| out.push(s));
         if let Some(msg) = degenerate {
             return Err(anyhow::Error::new(DegenerateOutput).context(msg));
         }
@@ -1055,12 +1063,21 @@ impl AiClient {
                 tool_calls = inline;
             }
         }
+        // Repetition inside an argument body corrupts the JSON structure, so a
+        // healed call would go out as an empty object and fail for the wrong
+        // reason. Catch it here and let the caller retry with a steer instead.
+        if tool_args::damaged(&tool_calls) {
+            return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
+        }
         tool_args::heal_calls(&mut tool_calls);
         // Second net for a whole response that repeats itself, when the stream
         // guard never saw enough chunks (single-delta or non-streamed replies).
         if is_degenerate(&content) {
             return Err(anyhow::Error::new(DegenerateOutput).context(DEGENERATE_MSG));
         }
+        // Past every repetition check, the withheld tail is safe to show.
+        out.flush();
+        think.flush();
 
         let completion_chars = content.len()
             + tool_calls
@@ -1669,6 +1686,45 @@ struct PartialToolCall {
     name: String,
     arguments: String,
     extra_content: Option<serde_json::Value>,
+}
+
+/// How much of a streamed reply is withheld from the reader until the
+/// repetition guard has passed it. The guard needs its trailing window to
+/// decide, so a tail it may cut off must never be shown first.
+const STREAM_HOLD_BACK: usize = 256;
+
+struct HoldBack<F: FnMut(&str)> {
+    pending: String,
+    emit: F,
+}
+
+impl<F: FnMut(&str)> HoldBack<F> {
+    fn new(emit: F) -> Self {
+        Self {
+            pending: String::new(),
+            emit,
+        }
+    }
+
+    fn push(&mut self, delta: &str) {
+        self.pending.push_str(delta);
+        if self.pending.len() <= STREAM_HOLD_BACK {
+            return;
+        }
+        let mut cut = self.pending.len() - STREAM_HOLD_BACK;
+        while cut > 0 && !self.pending.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let safe: String = self.pending.drain(..cut).collect();
+        (self.emit)(&safe);
+    }
+
+    fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            (self.emit)(&rest);
+        }
+    }
 }
 
 fn merge_tool_call(partials: &mut BTreeMap<usize, PartialToolCall>, fragment: ToolCallDelta) {

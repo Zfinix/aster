@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use aster_ai::MessageContent;
+
 use super::BackgroundAgents;
 use crate::agents::{AgentTask, TaskReport};
 
@@ -42,7 +44,7 @@ fn stub_runner(reports: Vec<TaskReport>) -> super::SwarmRunner {
 #[tokio::test]
 async fn reports_land_in_the_attached_injected_queue() {
     let queue = Arc::new(BackgroundAgents::new());
-    let injected: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let injected: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(injected.clone(), None);
 
     let id = queue
@@ -62,9 +64,11 @@ async fn reports_land_in_the_attached_injected_queue() {
     let lines = injected.lock().unwrap();
     assert_eq!(lines.len(), 1);
     assert!(
-        lines[0].starts_with("Background agent scout finished"),
-        "{}",
         lines[0]
+            .text()
+            .starts_with("Background agent scout finished"),
+        "{}",
+        lines[0].text()
     );
 }
 
@@ -85,7 +89,7 @@ async fn reports_park_when_no_turn_is_attached_and_flush_on_attach() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let injected: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let injected: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(injected.clone(), None);
     let lines = injected.lock().unwrap();
     assert_eq!(lines.len(), 1, "parked report flushes on attach: {lines:?}");
@@ -94,7 +98,7 @@ async fn reports_park_when_no_turn_is_attached_and_flush_on_attach() {
 #[tokio::test]
 async fn failures_report_as_failed() {
     let queue = Arc::new(BackgroundAgents::new());
-    let injected: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let injected: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(injected.clone(), None);
     queue
         .submit(
@@ -109,8 +113,8 @@ async fn failures_report_as_failed() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     let lines = injected.lock().unwrap();
-    assert!(lines[0].contains("failed"), "{lines:?}");
-    assert!(lines[0].contains("it broke"), "{lines:?}");
+    assert!(lines[0].text().contains("failed"), "{lines:?}");
+    assert!(lines[0].text().contains("it broke"), "{lines:?}");
 }
 
 #[tokio::test]
@@ -145,7 +149,7 @@ async fn the_pending_queue_has_a_cap() {
 #[tokio::test]
 async fn status_lists_running_and_done_work() {
     let queue = Arc::new(BackgroundAgents::new());
-    let injected: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let injected: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(injected.clone(), None);
     queue
         .submit(
@@ -166,7 +170,7 @@ async fn status_lists_running_and_done_work() {
 #[tokio::test]
 async fn reports_after_a_turn_detaches_park_for_the_next_turn() {
     let queue = Arc::new(BackgroundAgents::new());
-    let finished: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let finished: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(finished.clone(), None);
     queue.detach(&finished);
 
@@ -183,24 +187,29 @@ async fn reports_after_a_turn_detaches_park_for_the_next_turn() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let next: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let next: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(next.clone(), None);
-    assert_eq!(*finished.lock().unwrap(), Vec::<String>::new());
+    assert_eq!(*finished.lock().unwrap(), Vec::<MessageContent>::new());
     assert_eq!(
         *next.lock().unwrap(),
-        vec!["Background agent scout finished (batch 1, 1/1 done): look around".to_string()]
+        vec![MessageContent::Text(
+            "Background agent scout finished (batch 1, 1/1 done): look around".to_string()
+        )]
     );
 }
 
 #[test]
 fn detaching_an_old_turn_keeps_the_newer_attachment() {
     let queue = BackgroundAgents::new();
-    let old: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
-    let current: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let old: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
+    let current: Arc<std::sync::Mutex<Vec<MessageContent>>> = Arc::default();
     queue.attach(old.clone(), None);
     queue.attach(current.clone(), None);
     queue.detach(&old);
 
     queue.deliver("late report".to_string());
-    assert_eq!(*current.lock().unwrap(), vec!["late report".to_string()]);
+    assert_eq!(
+        *current.lock().unwrap(),
+        vec![MessageContent::Text("late report".to_string())]
+    );
 }

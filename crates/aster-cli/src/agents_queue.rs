@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use aster_ai::MessageContent;
 use serde_json::{Value, json};
 
 use crate::agents::{AgentTask, TaskReport};
@@ -65,7 +66,7 @@ struct DoneTask {
 /// What the live turn exposes for report delivery. `events` is optional
 /// because not every entry point has a sink to offer.
 struct Attached {
-    injected: Arc<Mutex<Vec<String>>>,
+    injected: Arc<Mutex<Vec<MessageContent>>>,
     events: Option<crate::chat::ChatEventSink>,
 }
 
@@ -116,7 +117,7 @@ impl BackgroundAgents {
     /// between turns flush into the fresh injected queue here.
     pub(crate) fn attach(
         &self,
-        injected: Arc<Mutex<Vec<String>>>,
+        injected: Arc<Mutex<Vec<MessageContent>>>,
         events: Option<crate::chat::ChatEventSink>,
     ) {
         let mut inner = self.lock();
@@ -148,7 +149,7 @@ impl BackgroundAgents {
 
     /// Stop delivering into `injected` once its turn has ended, so later
     /// reports park for the next turn. A newer turn's attachment is left alone.
-    pub(crate) fn detach(&self, injected: &Arc<Mutex<Vec<String>>>) {
+    pub(crate) fn detach(&self, injected: &Arc<Mutex<Vec<MessageContent>>>) {
         let mut inner = self.lock();
         if inner
             .attached
@@ -382,14 +383,14 @@ impl BackgroundAgents {
 
 /// Push a line into an injected queue unless it is already at its cap.
 /// Returns false when the line was dropped.
-fn push_capped(injected: &Arc<Mutex<Vec<String>>>, line: &str) -> bool {
+fn push_capped(injected: &Arc<Mutex<Vec<MessageContent>>>, line: &str) -> bool {
     let Ok(mut queue) = injected.lock() else {
         return false;
     };
     if queue.len() >= MAX_INJECTED_ENTRIES {
         return false;
     }
-    queue.push(line.to_string());
+    queue.push(MessageContent::Text(line.to_string()));
     true
 }
 
@@ -412,14 +413,14 @@ pub(crate) fn queue() -> &'static Arc<BackgroundAgents> {
 /// Attach the live turn's report targets. Called at turn start and before a
 /// background submit, so completions reach the turn that can hear them.
 pub(crate) fn attach(
-    injected: Arc<Mutex<Vec<String>>>,
+    injected: Arc<Mutex<Vec<MessageContent>>>,
     events: Option<crate::chat::ChatEventSink>,
 ) {
     queue().attach(injected, events);
 }
 
 /// Detach a finished turn's report targets so later reports park.
-pub(crate) fn detach(injected: &Arc<Mutex<Vec<String>>>) {
+pub(crate) fn detach(injected: &Arc<Mutex<Vec<MessageContent>>>) {
     queue().detach(injected);
 }
 

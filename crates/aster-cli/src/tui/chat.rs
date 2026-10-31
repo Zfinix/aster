@@ -8,7 +8,7 @@ use std::sync;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use aster_ai::{AiClient, ChatMessage, Effort};
+use aster_ai::{AiClient, ChatMessage, Effort, MessageContent};
 use aster_persist::{MessageEvent, Store};
 use aster_policy::{Grants, Mode, PermissionsConfig, Policy};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -437,8 +437,13 @@ pub async fn run_chat(
                 // it opens the next turn rather than silently vanishing.
                 if turn.is_none() {
                     let unsent = app.take_unsent();
-                    if !unsent.is_empty() {
-                        turn = Some(app.submit(&unsent.join("\n\n"), &[], &mut client, &repo_root));
+                    let text = unsent
+                        .iter()
+                        .map(|content| content.text().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if !text.is_empty() {
+                        turn = Some(app.submit(&text, &[], &mut client, &repo_root));
                     }
                 }
                 pane.set_task_running(turn.is_some());
@@ -737,8 +742,13 @@ fn abort(app: &mut ChatApp, turn: &mut Option<ChatTurn>, pane: &mut BottomPane<A
     // A queued message the turn never reached goes back to the composer
     // instead of vanishing with the turn.
     let unsent = app.take_unsent();
-    if !unsent.is_empty() {
-        pane.composer.insert_str(&unsent.join("\n\n"));
+    let text = unsent
+        .iter()
+        .map(|content| content.text().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !text.is_empty() {
+        pane.composer.insert_str(&text);
         app.flash = Some("queued message returned to the input".into());
     }
     let width = app.width;
@@ -1203,7 +1213,7 @@ struct ChatApp {
     instructions: sync::Arc<crate::instructions::Instructions>,
     mcp: Option<crate::mcp::McpRuntime>,
     mcp_pending: bool,
-    turn_injected: Option<sync::Arc<sync::Mutex<Vec<String>>>>,
+    turn_injected: Option<sync::Arc<sync::Mutex<Vec<MessageContent>>>>,
     limits: crate::chat::Limits,
     provider_base_url: String,
     quit_armed: Option<Instant>,
@@ -1568,12 +1578,12 @@ impl ChatApp {
         let Ok(mut queue) = injected.lock() else {
             return false;
         };
-        queue.push(content);
+        queue.push(MessageContent::Text(content));
         self.flash = Some("message queued · joins the turn at its next step".into());
         true
     }
 
-    fn take_unsent(&mut self) -> Vec<String> {
+    fn take_unsent(&mut self) -> Vec<MessageContent> {
         let Some(injected) = self.turn_injected.take() else {
             return Vec::new();
         };
@@ -1638,7 +1648,7 @@ impl ChatApp {
         let grants = self.perms.grants.clone();
         let approver = Some(self.approval_tx.clone());
         let events_tx = self.events_tx.clone();
-        let injected: sync::Arc<sync::Mutex<Vec<String>>> = sync::Arc::default();
+        let injected: sync::Arc<sync::Mutex<Vec<MessageContent>>> = sync::Arc::default();
         self.turn_injected = Some(injected.clone());
         let ctx = SessionCtx {
             recorder: self.recorder.clone(),

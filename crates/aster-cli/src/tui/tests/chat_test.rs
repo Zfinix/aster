@@ -885,12 +885,15 @@ async fn a_message_typed_mid_turn_queues_into_the_running_turn() {
 
     assert!(app.queue_mid_turn("and this too", &[]));
 
-    let queued: Vec<String> = app
+    let queued: Vec<aster_ai::MessageContent> = app
         .turn_injected
         .as_ref()
         .map(|q| q.lock().unwrap().clone())
         .unwrap_or_default();
-    assert_eq!(queued, vec!["and this too".to_string()]);
+    assert_eq!(
+        queued,
+        vec![aster_ai::MessageContent::Text("and this too".to_string())]
+    );
     // The scrollback and history wait for the engine's injected event.
     assert_eq!(app.history.iter().filter(|m| m.role == "user").count(), 1);
     turn.abort();
@@ -925,7 +928,10 @@ async fn unsent_queued_messages_are_reclaimed_when_the_turn_ends() {
 
     let unsent = app.take_unsent();
 
-    assert_eq!(unsent, vec!["late arrival".to_string()]);
+    assert_eq!(
+        unsent,
+        vec![aster_ai::MessageContent::Text("late arrival".to_string())]
+    );
     assert!(app.turn_injected.is_none());
     assert!(app.take_unsent().is_empty());
     turn.abort();

@@ -1,4 +1,4 @@
-use super::{heal, heal_calls};
+use super::{damaged, heal, heal_calls};
 use crate::models::{ToolCall, ToolCallFunction};
 
 fn call(arguments: &str) -> ToolCall {
@@ -52,6 +52,17 @@ fn unwraps_double_encoded_arguments() {
 fn falls_back_to_an_empty_object_when_nothing_can_be_saved() {
     assert_eq!(heal("not json at all"), "{}");
     assert_eq!(heal("[1, 2, 3]"), "{}");
+}
+
+#[test]
+fn repetition_in_arguments_is_damage_only_when_the_json_does_not_parse() {
+    let corrupt = format!(r#"{{"body":"{}"#, "the deprecated API ".repeat(80));
+    assert!(damaged(&[call(&corrupt)]));
+
+    let repeated_but_valid = format!(r#"{{"content":"{}"}}"#, "row\\n".repeat(200));
+    assert!(!damaged(&[call(&repeated_but_valid)]));
+
+    assert!(!damaged(&[call("not json at all")]));
 }
 
 #[test]

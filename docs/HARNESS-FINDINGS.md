@@ -25,6 +25,12 @@ batching. It is a plausible contributor to the 2% `explore` adoption rate.
 **Fix:** give `explore` the per-step budget `agent` has, and label a clipped
 step so the model knows to ask for the rest rather than assume it is empty.
 
+**Status:** shipped. `explore` divides `MAX_TOOL_RESULT_CHARS` across its steps
+and labels each clipped step. A batch is capped at `MAX_EXPLORE_STEPS` with a
+line naming what was not run. `truncate` now keeps the start and the end of an
+oversized result rather than only its head, so no tool silently loses its last
+line.
+
 ## 2. `find_files` can never match a directory
 
 `find` filters to `entry.file_type().is_file()`, so a directory pattern always
@@ -40,6 +46,9 @@ instead of "wrong query shape".
 
 **Fix:** match directories too and mark them with a trailing `/`, the way
 `list_files` already renders them.
+
+**Status:** shipped. `find` walks directories as well as files and renders a
+directory hit with its trailing `/`.
 
 ## 3. `run_command` argument-shape mistakes are silent
 
@@ -173,6 +182,13 @@ user gave up and swore at it.
 argument aborts and retries as degeneration rather than arriving as invalid
 JSON. Separately, a second parse failure on the same tool in one turn should
 prompt for a shorter body or a file-based path rather than replaying the error.
+
+**Status:** partly shipped. A finished response whose argument body fails to
+parse *and* repeats itself is now rejected as degeneration before healing turns
+it into an empty call, so the turn retries with the degenerate-output steer
+instead of posting nothing and retrying blind. Watching the live argument
+fragments, which would abort the stream earlier, and the shorter-body prompt
+after a second parse failure on the same tool, are still open.
 
 **Not the fix:** a JSON repair library. Eight exist on crates.io
 (`json-repair`, `jsonrepair-rs`, `json_repair_rs`, `safe-json-repair`, and

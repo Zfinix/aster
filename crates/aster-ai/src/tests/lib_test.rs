@@ -2,6 +2,17 @@ use super::*;
 use reqwest::StatusCode;
 
 #[test]
+fn the_stream_withholds_its_tail_until_flushed() {
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let sink = std::rc::Rc::clone(&seen);
+    let mut held = HoldBack::new(move |s: &str| sink.borrow_mut().push_str(s));
+    held.push(&"a".repeat(300));
+    assert_eq!(seen.borrow().len(), 300 - STREAM_HOLD_BACK);
+    held.flush();
+    assert_eq!(seen.borrow().len(), 300);
+}
+
+#[test]
 fn format_api_error_prefers_openrouter_upstream_message() {
     let body = r#"{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"kimi is temporarily rate-limited upstream. Please retry shortly.","provider_name":"Moonshot AI"}}}"#;
     let msg = format_api_error(StatusCode::TOO_MANY_REQUESTS, body);
