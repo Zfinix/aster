@@ -799,6 +799,9 @@ const DEFAULT_MAX_TOOL_ROUNDS: usize = 200;
 #[cfg(not(target_os = "android"))]
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 60;
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
+/// A skill is written to be read whole, so clipping its middle drops rules
+/// silently. Still under the ~10K-token cap on any single item.
+const MAX_SKILL_CHARS: usize = 36_000;
 const READ_WINDOW_LINES: usize = 600;
 const MAX_STREAM_CHARS: usize = 10_000;
 const MAX_SEARCH_HITS: usize = 80;
@@ -2639,7 +2642,11 @@ pub(crate) async fn agent_loop(
             span.record("barren", aster_persist::barren(&result));
             span.record("error", result.starts_with("error: "));
             tracing::debug!(tool = %call.function.name, "tool call executed");
-            let result = truncate(&crate::redact::redact(&result), MAX_TOOL_RESULT_CHARS);
+            let cap = match call.function.name.as_str() {
+                "read_skill" => MAX_SKILL_CHARS,
+                _ => MAX_TOOL_RESULT_CHARS,
+            };
+            let result = truncate(&crate::redact::redact(&result), cap);
             round_sig.push((
                 call.function.name.clone(),
                 call.function.arguments.clone(),

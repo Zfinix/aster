@@ -361,3 +361,28 @@ fn a_large_install_is_listed_by_name_within_the_cap() {
     assert!(listing.contains("- skill-000\n"));
     assert!(!listing.contains("Does a very specific thing"));
 }
+
+#[test]
+fn a_skill_with_extra_files_names_its_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_skill(
+        tmp.path(),
+        "with-refs",
+        "---\nname: with-refs\ndescription: has references\n---\n\nsee references/a.md",
+    );
+    fs::create_dir_all(tmp.path().join("with-refs").join("references")).unwrap();
+    write_skill(
+        tmp.path(),
+        "alone",
+        "---\nname: alone\ndescription: just a manifest\n---\n\nbody",
+    );
+    let set = SkillSet::discover(&[tmp.path().to_path_buf()]);
+    assert_eq!(
+        set.get("with-refs").unwrap().load_body().unwrap(),
+        format!(
+            "see references/a.md\n\nThis skill's other files are in `{}`; paths above are relative to it.",
+            tmp.path().join("with-refs").display()
+        )
+    );
+    assert_eq!(set.get("alone").unwrap().load_body().unwrap(), "body");
+}

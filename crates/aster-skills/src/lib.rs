@@ -33,14 +33,27 @@ pub struct Skill {
 
 impl Skill {
     /// The instructions below the frontmatter, read on demand. Returns the whole
-    /// file when it has no frontmatter fence.
+    /// file when it has no frontmatter fence. A skill folder holding more than
+    /// its `SKILL.md` gets a closing line naming the folder, so relative paths resolve.
     pub fn load_body(&self) -> Result<String> {
         if let Some(raw) = self.builtin {
             return Ok(strip_frontmatter(raw).trim().to_string());
         }
         let raw = fs::read_to_string(&self.path)
             .with_context(|| format!("reading skill {}", self.path.display()))?;
-        Ok(strip_frontmatter(&raw).trim().to_string())
+        let body = strip_frontmatter(&raw).trim().to_string();
+        let dir = self.path.parent().filter(|dir| {
+            fs::read_dir(dir).is_ok_and(|mut entries| {
+                entries.any(|e| e.is_ok_and(|e| e.file_name() != SKILL_FILE))
+            })
+        });
+        Ok(match dir {
+            Some(dir) => format!(
+                "{body}\n\nThis skill's other files are in `{}`; paths above are relative to it.",
+                dir.display()
+            ),
+            None => body,
+        })
     }
 
     pub fn is_builtin(&self) -> bool {

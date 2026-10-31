@@ -31,6 +31,9 @@ covered by this rule.
 
 - Read the crate you are touching and follow its existing patterns before
   introducing a new one.
+- The `rust-best-practices`, `rust-review`, and `rust-port` skills live locally
+  in `.aster/skills/` (gitignored, never shipped) and cover general Rust idiom.
+  Where they disagree with this file, this file wins.
 - Inline variables into `format!` braces: `format!("{name}")`, not
   `format!("{}", name)`.
 - Collapse nested `if` statements.

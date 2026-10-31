@@ -111,6 +111,11 @@ skill. On macOS, macos-harness is a platform default: session start installs it
 into the user-global root unless it is already there or the user removed it
 (a `.removed-macos-harness` marker records that).
 
+An installed skill whose folder holds more than its `SKILL.md` has its body
+closed with the folder path, so relative references resolve. `read_skill`
+results get their own cap, `MAX_SKILL_CHARS`, so a long skill is not clipped
+mid-rule.
+
 Routing is split by observability. Events the harness can detect mechanically
 (build failure, timeout) carry a pointer to the matching skill in their
 coaching note. Language and tone are the model's call: the index instruction
