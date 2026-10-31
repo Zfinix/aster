@@ -154,6 +154,9 @@ export interface PastedFile {
   name: string;
   data?: string;
   size: number;
+  /** The file the bytes came from, when the runtime exposes it. Keeps a
+   *  mention on the real file instead of a staged copy in the temp dir. */
+  path?: string;
 }
 
 export interface InfoRow {

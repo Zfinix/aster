@@ -9,57 +9,58 @@ export interface ParsedError {
 
 interface Explanation {
   label: string;
-  hint: string;
+  hint?: string;
 }
 
 const SIGN_IN: Explanation = {
   label: "Sign-in problem",
-  hint: "Aster couldn't authenticate with your model provider. Check your API key, or switch with /provider.",
+  hint: "Check your API key.",
 };
 
 const NOT_SIGNED_IN: Explanation = {
   label: "Not signed in",
-  hint: "Sign in to your model provider, or add its API key, then send again.",
+  hint: "Sign in first.",
 };
 
 const NOT_CONFIGURED = /not signed in to chatgpt|no api key found/i;
 
 const CONNECTION: Explanation = {
   label: "Connection dropped",
-  hint: "The model provider stopped responding mid-reply. Alpha and preview models do this under load. Send again to retry, or pick a steadier model with /model.",
 };
 
 const PROVIDER_DOWN: Explanation = {
   label: "Provider trouble",
-  hint: "The model provider had an internal problem. These are usually brief. Send again in a moment.",
+  hint: "Try again in a moment.",
 };
 
 const UNREACHABLE: Explanation = {
   label: "Can't reach the provider",
-  hint: "Aster couldn't connect to the model provider. Check your internet connection, then send again.",
+  hint: "Check your connection.",
 };
 
 const STATUS_LABELS: Record<string, Explanation> = {
   "400": {
-    label: "The request didn't go through",
-    hint: "The model provider rejected it. The details below say why.",
+    label: "Request rejected",
+    hint: "The provider said no.",
   },
   "401": SIGN_IN,
   "403": SIGN_IN,
   "404": {
     label: "Model not found",
-    hint: "This endpoint doesn't know the selected model. Pick another with /model.",
+    hint: "Pick another model.",
   },
   "408": CONNECTION,
   "429": {
     label: "Too many requests",
-    hint: "The provider asked Aster to slow down. Give it a moment and send again. Nothing was lost.",
+    hint: "Wait a moment, then retry.",
   },
   "500": PROVIDER_DOWN,
   "502": PROVIDER_DOWN,
   "503": PROVIDER_DOWN,
   "529": PROVIDER_DOWN,
 };
+
+const DEGENERATE = /repeating itself|degenerated|degenerate output/i;
 
 const NETWORKISH = /timed out|time out|connection|network|dropped mid-reply|decoding response body|stream chunk/i;
 
@@ -88,6 +89,11 @@ export function parseError(message: string): ParsedError {
     return { label: NOT_SIGNED_IN.label, hint: NOT_SIGNED_IN.hint, detail: stripped };
   }
 
+  // The broken attempt was never shown, so the label is all the reader needs.
+  if (DEGENERATE.test(stripped)) {
+    return { label: "Reply broke", detail: stripped };
+  }
+
   // Transport failures first: a dropped stream often quotes a status from an
   // earlier retry, and the connection advice is the one that helps.
   if (NETWORKISH.test(stripped)) {
@@ -109,8 +115,8 @@ export function parseError(message: string): ParsedError {
       ? ""
       : stripped;
     return {
-      label: "Aster stopped unexpectedly",
-      hint: "Aster stopped before it could finish. Send your message again; if it keeps happening, check the Aster output channel for the full error.",
+      label: "Aster stopped",
+      hint: "Send your message again.",
       detail,
     };
   }
@@ -118,7 +124,7 @@ export function parseError(message: string): ParsedError {
   if (/^nothing to compact yet$/i.test(stripped)) {
     return {
       label: "Nothing to compact",
-      hint: "The conversation is still short, so there is no earlier history to fold into a summary yet.",
+      hint: "The conversation is still short.",
       detail: "",
     };
   }

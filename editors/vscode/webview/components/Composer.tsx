@@ -10,7 +10,7 @@ import type {
 } from "../../src/protocol";
 import { applyTrigger, dropTrigger, triggersAt, type Trigger } from "../lib/trigger";
 import { inEditor, onHostMessage, post } from "../lib/host";
-import { fileUrisFromTransfer, filesFromTransfer } from "../lib/dataTransfer";
+import { fileUrisFromTransfer, filesFromTransfer, sourcePath } from "../lib/dataTransfer";
 import { useDictation } from "../lib/dictation";
 import { useListNav } from "../lib/listnav";
 import { EFFORT_OPTIONS, effortShort } from "../lib/effort";
@@ -421,6 +421,13 @@ export function Composer({
     const files = filesFromTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
+    // An OS copy carries the file's URI as well as its bytes. The URI is the
+    // only flavour with the real path, so it wins over staging the bytes.
+    const fileUris = fileUrisFromTransfer(e.clipboardData);
+    if (fileUris.length) {
+      post({ type: "dropFiles", uris: fileUris });
+      return;
+    }
     sendPasted(files);
   };
 
@@ -1029,8 +1036,11 @@ function attachmentFor(token: string, thumbs: Map<string, string>): Attachment |
 
 async function readPasted(file: File): Promise<PastedFile & { type: string }> {
   const limit = file.type.startsWith("image/") ? MAX_IMAGE_PASTE_BYTES : MAX_PASTE_BYTES;
+  // The path the file has on disk, so the host can mention the real file rather
+  // than write the bytes out to a staged copy in the temp dir.
+  const path = sourcePath(file);
   if (file.size > limit) {
-    return { name: file.name, size: file.size, type: file.type };
+    return { name: file.name, size: file.size, type: file.type, path };
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
@@ -1038,7 +1048,7 @@ async function readPasted(file: File): Promise<PastedFile & { type: string }> {
   for (let at = 0; at < bytes.length; at += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   }
-  return { name: file.name, data: btoa(binary), size: file.size, type: file.type };
+  return { name: file.name, data: btoa(binary), size: file.size, type: file.type, path };
 }
 
 function basename(path: string): string {

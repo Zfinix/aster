@@ -10,7 +10,6 @@ import {
   isSerious,
   mcpMatches,
   mcpSpec,
-  mcpTarget,
   numberArg,
   outputTitle,
   rendersAsMarkdown,
@@ -27,18 +26,32 @@ import { McpMatches } from "./McpMatches";
 import { McpSpecView } from "./McpSpecView";
 import { ToolOutput } from "./ToolOutput";
 import { WebResults } from "./WebResults";
-import { AlertIcon, ChevronIcon, ExternalIcon, WarningIcon } from "./icons";
-import { toolIcon } from "./toolIcons";
+import { ExternalIcon } from "./icons";
 
 /** One step, collapsed to its header until asked: eighteen reads stay a list
  *  rather than a wall. `nested` is a step inside a folded run. */
-export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean }) {
-  const running = call.result === undefined && !call.stopped;
+export function ToolCallRow({
+  call,
+  nested,
+  live = true,
+}: {
+  call: ToolCall;
+  nested?: boolean;
+  /** False once the turn has ended: a call with no result is then abandoned,
+   *  not still running. */
+  live?: boolean;
+}) {
+  const running = live && call.result === undefined && !call.stopped;
   const output = displayOutput(call);
   const input = toolInput(call);
-  // Edits stay open: the diff is the point of the row, folding it hides the
-  // one thing worth reading.
-  const [expanded, setExpanded] = useState(() => call.name === "edit_file");
+  // Edits and commands stay open: the diff, or the command and what it printed,
+  // is the point of the row. Folding it hides the one thing worth reading.
+  const [expanded, setExpanded] = useState(
+    () =>
+      call.name === "edit_file" ||
+      call.name === "run_command" ||
+      call.name === "run_tests"
+  );
   const { verb, detail, code } = describeTool(call);
   const matches = mcpMatches(call);
   const spec = mcpSpec(call);
@@ -86,17 +99,6 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
         aria-expanded={card ? open : undefined}
         title={card ? (open ? "Hide details" : "Show details") : undefined}
       >
-        {!nested && (
-          <span className="tool-icon">
-            {call.error ? (
-              <AlertIcon />
-            ) : serious ? (
-              <WarningIcon />
-            ) : (
-              toolIcon(call.name, mcpTarget(call))
-            )}
-          </span>
-        )}
         <span className="tool-label" data-oneline={Boolean(input)} data-lead={!lead}>
           {lead && <span className="tool-verb">{lead}</span>}
           {/* A real space, not just flex gap: copied text glues the spans. */}
@@ -108,7 +110,6 @@ export function ToolCallRow({ call, nested }: { call: ToolCall; nested?: boolean
           )}
         </span>
         <span className="tool-hint">{running ? "running…" : resultHint(call)}</span>
-        <span className="tool-chevron">{card && <ChevronIcon open={open} />}</span>
       </button>
 
       <Disclosure open={open}>

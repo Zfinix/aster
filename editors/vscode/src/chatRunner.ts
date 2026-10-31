@@ -45,6 +45,7 @@ interface PendingPrompt {
   edits: string[];
   toolNames: Map<string, string>;
   reasoningChars: number;
+  reasoningStartedAt: number | undefined;
   permission:
     | { id: number; question: boolean; options: PermissionOptionWire[] }
     | undefined;
@@ -110,6 +111,7 @@ export class ChatRunner {
       toolNames: new Map<string, string>(),
       permission: undefined as PendingPrompt["permission"],
       reasoningChars: 0,
+      reasoningStartedAt: undefined,
     };
     this.turn = turn;
     this.lastOptions = options;
@@ -206,12 +208,27 @@ export class ChatRunner {
     this.finishTurn(result?.stopReason);
   }
 
+  /** Close the round's thinking block so the panel can show its duration. */
+  private closeReasoning(turn: PendingPrompt): void {
+    if (turn.reasoningChars === 0) {
+      return;
+    }
+    turn.options.onEvent({
+      type: "reasoning_done",
+      tokens: Math.ceil(turn.reasoningChars / 4),
+      duration_ms: Date.now() - (turn.reasoningStartedAt ?? Date.now()),
+    });
+    turn.reasoningChars = 0;
+    turn.reasoningStartedAt = undefined;
+  }
+
   private finishTurn(stopReason: string | undefined): void {
     const turn = this.turn;
     this.turn = undefined;
     if (!turn) {
       return;
     }
+    this.closeReasoning(turn);
     if (stopReason === "refusal") {
       turn.options.onEvent({
         type: "error",
@@ -589,7 +606,7 @@ export class ChatRunner {
     }
     const kind = update["sessionUpdate"];
     if (turn && kind !== "agent_thought_chunk") {
-      turn.reasoningChars = 0;
+      this.closeReasoning(turn);
     }
     if (kind === "agent_message_chunk") {
       const text = contentText([update["content"]]);
@@ -601,7 +618,12 @@ export class ChatRunner {
       const chunk = contentText([update["content"]]);
       // ACP thought chunks carry no token count, so estimate from the
       // accumulated text the same way the CLI does (chars / 4).
-      turn && (turn.reasoningChars += chunk.length);
+      if (turn) {
+        if (turn.reasoningChars === 0) {
+          turn.reasoningStartedAt = Date.now();
+        }
+        turn.reasoningChars += chunk.length;
+      }
       this.emit({
         type: "reasoning_delta",
         content: chunk,

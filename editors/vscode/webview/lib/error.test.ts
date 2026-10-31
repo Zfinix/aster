@@ -6,15 +6,15 @@ describe("parseError", () => {
     const { label, hint, detail } = parseError(
       "bad request (400): Reasoning is mandatory for this endpoint and cannot be disabled."
     );
-    expect(label).toBe("The request didn't go through");
-    expect(hint).toContain("rejected");
+    expect(label).toBe("Request rejected");
+    expect(hint).toBe("The provider said no.");
     expect(detail).toBe("Reasoning is mandatory for this endpoint and cannot be disabled.");
   });
 
   it("tells the user what to do when rate limited", () => {
     const { label, hint } = parseError("rate limited (429): slow down");
     expect(label).toBe("Too many requests");
-    expect(hint).toContain("slow down");
+    expect(hint).toBe("Wait a moment, then retry.");
   });
 
   it("labels an unknown status code with its number", () => {
@@ -35,12 +35,12 @@ describe("parseError", () => {
     expect(detail).toBe("");
   });
 
-  it("explains a mid-stream drop in plain words", () => {
+  it("names a mid-stream drop without a paragraph of explanation", () => {
     const { label, hint, detail } = parseError(
       "reading stream chunk: error decoding response body: request or response body error: operation timed out"
     );
     expect(label).toBe("Connection dropped");
-    expect(hint).toContain("Send again");
+    expect(hint).toBeUndefined();
     expect(detail).toContain("operation timed out");
   });
 
@@ -49,7 +49,7 @@ describe("parseError", () => {
       "aster exited with code 1: model endpoint returned 429"
     );
     expect(label).toBe("Too many requests");
-    expect(hint).toContain("slow down");
+    expect(hint).toBe("Wait a moment, then retry.");
     expect(detail).toBe("model endpoint returned 429");
   });
 
@@ -57,9 +57,8 @@ describe("parseError", () => {
     const { label, hint, detail } = parseError(
       "aster chat exited with code 1. See the Aster output channel."
     );
-    expect(label).toBe("Aster stopped unexpectedly");
-    expect(hint).toContain("Send your message again");
-    expect(hint).not.toContain("engine");
+    expect(label).toBe("Aster stopped");
+    expect(hint).toBe("Send your message again.");
     expect(detail).toBe("");
   });
 
@@ -67,7 +66,7 @@ describe("parseError", () => {
     const { label } = parseError(
       "aster chat exited with code 101: thread 'main' panicked at src/wire.rs:429"
     );
-    expect(label).toBe("Aster stopped unexpectedly");
+    expect(label).toBe("Aster stopped");
   });
 
   it("prefers the connection advice when a dropped stream quotes a status", () => {
@@ -80,7 +79,7 @@ describe("parseError", () => {
   it("maps provider 5xx errors to a retry hint", () => {
     const { label, hint } = parseError("bad gateway (502): upstream reset");
     expect(label).toBe("Provider trouble");
-    expect(hint).toContain("Send again");
+    expect(hint).toBe("Try again in a moment.");
   });
 
   it("explains a DNS failure as an unreachable provider", () => {
@@ -88,8 +87,36 @@ describe("parseError", () => {
       "chat request failed: error sending request for url (https://api.deepseek.com/v1/chat/completions): client error (Connect): dns error: failed to lookup address information: nodename nor servname provided, or not known"
     );
     expect(label).toBe("Can't reach the provider");
-    expect(hint).toContain("internet connection");
+    expect(hint).toBe("Check your connection.");
     expect(detail).toContain("dns error");
+  });
+
+  it("names a broken reply without explaining the repetition", () => {
+    const { label, hint } = parseError(
+      "Stopped: model is repeating itself. Try a stronger model or higher effort."
+    );
+    expect(label).toBe("Reply broke");
+    expect(hint).toBeUndefined();
+  });
+
+  it("keeps every hint to five words or fewer", () => {
+    const messages = [
+      "bad request (400): nope",
+      "unauthorized (401): nope",
+      "not found (404): nope",
+      "timeout (408): nope",
+      "rate limited (429): nope",
+      "bad gateway (502): nope",
+      "connection reset by peer",
+      "dns error: failed to lookup address",
+      "aster chat exited with code 1.",
+      "nothing to compact yet",
+    ];
+    for (const message of messages) {
+      const { hint } = parseError(message);
+      if (!hint) continue;
+      expect(hint.split(/\s+/).length, `${message}: ${hint}`).toBeLessThanOrEqual(5);
+    }
   });
 });
 

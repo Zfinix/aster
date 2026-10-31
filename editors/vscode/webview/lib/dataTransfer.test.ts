@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileUrisFromTransfer, filesFromTransfer } from "./dataTransfer";
+import { fileUrisFromTransfer, filesFromTransfer, sourcePath } from "./dataTransfer";
 
 describe("filesFromTransfer", () => {
   it("reads file items with the standard drag API", () => {
@@ -28,5 +28,17 @@ describe("fileUrisFromTransfer", () => {
     } as unknown as DataTransfer;
 
     expect(fileUrisFromTransfer(data)).toEqual(["file:///tmp/a%20file.txt"]);
+  });
+});
+
+describe("sourcePath", () => {
+  it("returns the path the runtime put on a file from disk", () => {
+    const file = { name: "report.pdf", path: "/Users/me/report.pdf" } as unknown as File;
+
+    expect(sourcePath(file)).toBe("/Users/me/report.pdf");
+  });
+
+  it("is undefined for a clipboard image with no file behind it", () => {
+    expect(sourcePath({ name: "image.png" } as unknown as File)).toBeUndefined();
   });
 });

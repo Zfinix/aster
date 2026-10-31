@@ -174,6 +174,34 @@ describe("ChatRunner", () => {
     expect(tokens).toEqual([100, 10]);
   });
 
+  it("closes the thinking block before the reply", async () => {
+    const agent = new FakeAgent();
+    agent.silentPrompt = true;
+    spawn.mockReturnValue(agent);
+    const events: ChatStreamEvent[] = [];
+    const runner = new ChatRunner();
+
+    const done = runner.run(options((event) => events.push(event)));
+    await vi.waitFor(() => expect(agent.prompts).toHaveLength(1));
+    const update = (body: Record<string, unknown>) =>
+      agent.stdout.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId: "s1", update: body },
+        })}\n`
+      );
+    update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
+    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } });
+    await vi.waitFor(() => expect(events.some((e) => e.type === "reasoning_done")).toBe(true));
+    runner.cancel();
+    await done;
+
+    const order = events.map((e) => e.type);
+    expect(order.indexOf("reasoning_done")).toBeLessThan(order.indexOf("token"));
+    expect(events.find((e) => e.type === "reasoning_done")).toMatchObject({ tokens: 2 });
+  });
+
   it("closes a cancelled turn without reporting a crash", async () => {
     const agent = new FakeAgent();
     agent.silentPrompt = true;

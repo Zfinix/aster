@@ -1,15 +1,17 @@
+import { CopyButton } from "./CopyButton";
 import { GitForkIcon, PencilIcon } from "./icons";
 
-/** Hover actions on a sent message: edit loads it into the composer to resend,
- *  fork starts a new chat from it.
- *  Kept quiet on purpose: two faint glyphs that only appear on hover, no
- *  labels in the flow. While a turn runs the buttons read as disabled rather
- *  than swallowing the click. */
+/** Actions on a sent message: copy it, edit it back into the composer, or fork
+ *  a new chat from it. They sit above the bubble's top-right corner and appear
+ *  on hover, icon-only so they stay out of the message's way. While a turn
+ *  runs, edit and fork read as disabled rather than swallowing the click. */
 export function UserTurnActions({
+  text,
   onEdit,
   onFork,
   busy,
 }: {
+  text: string;
   onEdit: () => void;
   onFork: () => void;
   busy: boolean;
@@ -17,6 +19,7 @@ export function UserTurnActions({
   const wait = "Wait for the reply to finish";
   return (
     <div className="turn-hover" role="toolbar" aria-label="Message actions">
+      <CopyButton text={text} label="Copy message" />
       <button
         className="icon-btn"
         title={busy ? wait : "Edit and resend"}
@@ -38,4 +41,3 @@ export function UserTurnActions({
     </div>
   );
 }
-

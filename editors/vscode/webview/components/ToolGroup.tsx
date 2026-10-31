@@ -7,17 +7,25 @@ import { ToolRun } from "./ToolRun";
 /** A stretch of tool calls in the order they happened, folded into runs unless
  *  `grouped` is off. Plan updates render inline as a PlanCard where they landed,
  *  the same as any other tool output. */
-export function ToolGroup({ calls, grouped }: { calls: ToolCall[]; grouped: boolean }) {
+export function ToolGroup({
+  calls,
+  grouped,
+  live = true,
+}: {
+  calls: ToolCall[];
+  grouped: boolean;
+  live?: boolean;
+}) {
   if (calls.length === 0) return null;
   return (
     <div className="tool-list">
       {(grouped ? groupRuns(calls) : calls).map((item) =>
         isRun(item) ? (
-          <ToolRun key={item.id} run={item} />
+          <ToolRun key={item.id} run={item} live={live} />
         ) : item.name === "update_plan" ? (
           <PlanCard key={item.id} call={item} />
         ) : (
-          <ToolCallRow key={item.id} call={item} />
+          <ToolCallRow key={item.id} call={item} live={live} />
         )
       )}
     </div>

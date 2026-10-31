@@ -317,7 +317,7 @@ export class AsterPanel implements vscode.WebviewViewProvider {
   private async insertPasted(files: PastedFile[]): Promise<void> {
     const uris: string[] = [];
     for (const file of files) {
-      const found = await this.findPasted(file);
+      const found = (await this.pastedPath(file)) ?? (await this.findPasted(file));
       if (found) {
         uris.push(found.toString());
         continue;
@@ -331,6 +331,22 @@ export class AsterPanel implements vscode.WebviewViewProvider {
       uris.push((await this.writePasted(file, file.data)).toString());
     }
     this.insertPaths(uris);
+  }
+
+  /** The path the webview saw on the File, when the runtime still exposes one.
+   *  Mentioning it keeps the link on the user's real file; a staged copy in the
+   *  temp dir would be all the chat, and the agent, ever see. */
+  private async pastedPath(file: PastedFile): Promise<vscode.Uri | undefined> {
+    if (!file.path || !path.isAbsolute(file.path)) {
+      return undefined;
+    }
+    const uri = vscode.Uri.file(file.path);
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      return stat.size === file.size ? uri : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async findPasted(file: PastedFile): Promise<vscode.Uri | undefined> {
@@ -352,19 +368,30 @@ export class AsterPanel implements vscode.WebviewViewProvider {
    *  bytes came from still knows the file. Asking it keeps the original in
    *  place instead of copying it into tmp. */
   private async findOrigin(file: PastedFile): Promise<vscode.Uri | undefined> {
-    const origin = await clipboardFile();
-    // Name and size, so a clipboard that moved on since the paste, or a copy of
-    // several files, never attaches something the user did not paste.
-    if (!origin || path.basename(origin) !== file.name) {
-      return undefined;
+    const origins = await clipboardFiles();
+    // Size first, so a clipboard that moved on since the paste never attaches
+    // something the user did not paste. Names decide when they agree; a pasted
+    // image often carries a browser-chosen name ("image.png"), so bytes decide
+    // when they do not.
+    const bytes = file.data === undefined ? undefined : Buffer.from(file.data, "base64");
+    for (const origin of origins) {
+      const uri = vscode.Uri.file(origin);
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.size !== file.size) {
+          continue;
+        }
+        if (path.basename(origin) === file.name) {
+          return uri;
+        }
+        if (bytes && bytes.equals(Buffer.from(await vscode.workspace.fs.readFile(uri)))) {
+          return uri;
+        }
+      } catch {
+        // Not a readable file, so the next clipboard entry may be.
+      }
     }
-    const uri = vscode.Uri.file(origin);
-    try {
-      const stat = await vscode.workspace.fs.stat(uri);
-      return stat.size === file.size ? uri : undefined;
-    } catch {
-      return undefined;
-    }
+    return undefined;
   }
 
   private async writePasted(file: PastedFile, data: string): Promise<vscode.Uri> {
@@ -1509,18 +1536,41 @@ async function fileExists(uri: vscode.Uri): Promise<boolean> {
   }
 }
 
-/** The file the clipboard holds, if it holds one. The pasteboard carries the
+/** The files the clipboard holds, if it holds any. The pasteboard carries the
  *  file's URL, which a webview paste never sees. */
-function clipboardFile(): Promise<string | undefined> {
+function clipboardFiles(): Promise<string[]> {
   if (process.platform !== "darwin") {
-    return Promise.resolve(undefined);
+    return Promise.resolve([]);
   }
+  // A multi-file copy is only reachable through `alias list`, while some macOS
+  // versions refuse that form for a single file, so both are tried.
+  const script = [
+    "try",
+    "set items to the clipboard as alias list",
+    "on error",
+    "try",
+    "set items to {the clipboard as alias}",
+    "on error",
+    'return ""',
+    "end try",
+    "end try",
+    'set out to ""',
+    "repeat with f in items",
+    "set out to out & (POSIX path of f) & linefeed",
+    "end repeat",
+    "return out",
+  ].join("\n");
   return new Promise((resolve) => {
-    execFile(
-      "osascript",
-      ["-e", "POSIX path of (the clipboard as «class furl»)"],
-      (err, stdout) => resolve(err ? undefined : stdout.trim() || undefined)
-    );
+    execFile("osascript", ["-e", script], (err, stdout) => {
+      resolve(
+        err
+          ? []
+          : stdout
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+      );
+    });
   });
 }
 

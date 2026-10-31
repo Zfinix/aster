@@ -13,3 +13,10 @@ export function fileUrisFromTransfer(data: DataTransfer): string[] {
     .map((line) => line.trim())
     .filter((line) => line.startsWith("file://"));
 }
+
+/** Electron puts the source path on a File that came from disk. Recent builds
+ *  dropped it, so it is a hint rather than a guarantee. */
+export function sourcePath(file: File): string | undefined {
+  const path = (file as File & { path?: string }).path;
+  return path ? path : undefined;
+}

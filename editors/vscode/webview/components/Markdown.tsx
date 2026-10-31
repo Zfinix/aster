@@ -287,7 +287,12 @@ const CITED_PATH = /^(?:~\/|\.{1,2}\/|\/)?(?:[\w.@-]+\/)*[\w@-]+\.[a-z0-9]{1,8}(
 /** A code span that names a file opens it; any other span is just code. */
 function codeSpan(code: string, key: number): ReactNode {
   const cited = CITED_PATH.exec(code);
-  if (!cited) return <code key={key}>{code}</code>;
+  if (!cited)
+    return (
+      <code key={key} className="md-code">
+        {code}
+      </code>
+    );
   const line = cited[1] ? Number(cited[1]) : undefined;
   const path = line === undefined ? code : code.slice(0, code.indexOf(":"));
   return (

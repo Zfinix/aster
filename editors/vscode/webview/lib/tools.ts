@@ -607,9 +607,25 @@ function explorationLabel(calls: ToolCall[]): string {
 
 /** The header a folded run wears, e.g. "Read 6 files". */
 export function runLabel(name: string, count: number): string {
-  const verb = describeTool({ id: "", name, arguments: "{}" }).verb;
+  const verb = describeTool({ id: "", name, arguments: "{}" }).verb ?? "Ran";
   const noun = RUN_NOUNS[name] ?? ["step", "steps"];
   return `${verb} ${count} ${count === 1 ? noun[0] : noun[1]}`;
+}
+
+/** The same header split the way a pill renders it: the verb in the foreground,
+ *  the count dimmed beside it. A mixed read is still one "Explore", with its
+ *  composition as the detail. */
+export function runSummary(
+  name: string,
+  count: number,
+  mixedLabel?: string
+): { verb: string; detail: string } {
+  if (mixedLabel) {
+    return { verb: "Explore", detail: mixedLabel.replace(/^Explored\s+/, "") };
+  }
+  const verb = describeTool({ id: "", name, arguments: "{}" }).verb ?? "Ran";
+  const noun = RUN_NOUNS[name] ?? ["step", "steps"];
+  return { verb, detail: `${count} ${count === 1 ? noun[0] : noun[1]}` };
 }
 
 const ACTIVITY_VERBS: Record<string, string> = {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { post } from "../lib/host";
 import { openFilePreview } from "../lib/filePreview";
 import type { LoginState } from "../lib/login";
-import type { ReviewData, Turn } from "../lib/thread";
+import type { ReviewData, ToolCall, Turn, TurnBlock } from "../lib/thread";
 import type { Provider } from "../../src/protocol";
 import { ReplyContext } from "../lib/reply";
 import { useStickToBottom } from "../lib/useStickToBottom";
@@ -22,8 +22,35 @@ import { StatusLine } from "./StatusLine";
 import { AgentGroup } from "./AgentGroup";
 import { GoalCard } from "./GoalCard";
 import { ToolGroup } from "./ToolGroup";
+import { RoundGroup } from "./RoundGroup";
 
 const isUser = (turn: Turn) => turn.role === "user";
+
+type RenderBlock =
+  | TurnBlock
+  | {
+      kind: "round";
+      id: string;
+      reasoning: Extract<TurnBlock, { kind: "reasoning" }>;
+      calls: ToolCall[];
+    };
+
+/** Pair a thought with the steps it produced. Prose, agents and other blocks
+ *  break the pairing, so only a thought that directly precedes tools folds. */
+function withRounds(blocks: TurnBlock[]): RenderBlock[] {
+  const out: RenderBlock[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    const next = blocks[i + 1];
+    if (block.kind === "reasoning" && next?.kind === "tools") {
+      out.push({ kind: "round", id: block.id, reasoning: block, calls: next.calls });
+      i++;
+    } else {
+      out.push(block);
+    }
+  }
+  return out;
+}
 
 export function Thread({
   turns,
@@ -37,6 +64,7 @@ export function Thread({
   editing,
   onEditStart,
   onFork,
+  onRetry,
   onReviewChange,
   onSend,
 }: {
@@ -51,6 +79,7 @@ export function Thread({
   editing: string | null;
   onEditStart: (id: string) => void;
   onFork: (id: string) => void;
+  onRetry: (id: string) => void;
   onReviewChange: (id: string, patch: (data: ReviewData) => ReviewData) => void;
   onSend: (text: string) => void;
 }) {
@@ -95,6 +124,7 @@ export function Thread({
                     </div>
                   </div>
                   <UserTurnActions
+                    text={turn.text}
                     busy={busy}
                     onEdit={() => onEditStart(turn.id)}
                     onFork={() => onFork(turn.id)}
@@ -143,16 +173,32 @@ export function Thread({
               >
                 <div className="turn-assistant">
                   {/* Arrival order, so steps sit under the thought that led to them. */}
-                  {turn.blocks.map((block) =>
-                    block.kind === "tools" ? (
-                      <ToolGroup key={block.id} calls={block.calls} grouped={grouping} />
+                  {withRounds(turn.blocks).map((block) =>
+                    block.kind === "round" ? (
+                      <RoundGroup
+                        key={block.id}
+                        text={block.reasoning.text}
+                        tokens={block.reasoning.tokens}
+                        durationMs={block.reasoning.durationMs}
+                        done={block.reasoning.done || !turn.pending}
+                        calls={block.calls}
+                        grouped={grouping}
+                        live={Boolean(turn.pending)}
+                      />
+                    ) : block.kind === "tools" ? (
+                      <ToolGroup
+                        key={block.id}
+                        calls={block.calls}
+                        grouped={grouping}
+                        live={Boolean(turn.pending)}
+                      />
                     ) : block.kind === "reasoning" ? (
                       <ReasoningBlock
                         key={block.id}
                         text={block.text}
                         tokens={block.tokens}
                         durationMs={block.durationMs}
-                        done={block.done}
+                        done={block.done || !turn.pending}
                       />
                     ) : block.kind === "agents" ? (
                       <AgentGroup key={block.id} tasks={block.tasks} />
@@ -186,7 +232,12 @@ export function Thread({
                   {turn.setup ? (
                     <SetupCard login={login} providers={providers} />
                   ) : (
-                    turn.errorMsg && <ErrorBox message={turn.errorMsg} />
+                    turn.errorMsg && (
+                      <ErrorBox
+                        message={turn.errorMsg}
+                        onRetry={busy ? undefined : () => onRetry(turn.id)}
+                      />
+                    )
                   )}
 
                   {/* Stays up for the whole turn, including the gap between the last

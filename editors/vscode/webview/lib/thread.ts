@@ -245,6 +245,17 @@ export function appendText(turn: AssistantTurn, chunk: string, separator = ""): 
   };
 }
 
+/** The turn's thinking block, wherever later tool calls pushed it. */
+function lastReasoningIndex(blocks: TurnBlock[]): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].kind === "reasoning") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Append a finished round of thinking to the turn's one thinking block. */
 export function appendReasoning(
   turn: AssistantTurn,
   text: string,
@@ -252,20 +263,49 @@ export function appendReasoning(
   durationMs?: number,
 ): AssistantTurn {
   if (!text.trim()) return turn;
+  const index = lastReasoningIndex(turn.blocks);
+  const block = index >= 0 ? turn.blocks[index] : undefined;
+  if (block?.kind === "reasoning") {
+    return {
+      ...turn,
+      blocks: [
+        ...turn.blocks.slice(0, index),
+        {
+          ...block,
+          text: block.text ? `${block.text}\n\n${text}` : text,
+          tokens,
+          durationMs,
+          done: true,
+        },
+        ...turn.blocks.slice(index + 1),
+      ],
+    };
+  }
   return {
     ...turn,
     blocks: [...turn.blocks, { kind: "reasoning", id: blockId(), text, tokens, durationMs, done: true }],
   };
 }
 
-/** Append a live thinking fragment, growing the in-flight block's token count. */
+/** Append a live thinking fragment to the turn's one thinking block. */
 export function appendReasoningDelta(turn: AssistantTurn, chunk: string, tokens: number): AssistantTurn {
   if (!chunk) return turn;
-  const last = turn.blocks[turn.blocks.length - 1];
-  if (last?.kind === "reasoning" && !last.done) {
+  const index = lastReasoningIndex(turn.blocks);
+  const block = index >= 0 ? turn.blocks[index] : undefined;
+  if (block?.kind === "reasoning") {
     return {
       ...turn,
-      blocks: [...turn.blocks.slice(0, -1), { ...last, text: last.text + chunk, tokens }],
+      blocks: [
+        ...turn.blocks.slice(0, index),
+        {
+          ...block,
+          text: block.done && block.text ? `${block.text}\n\n${chunk}` : block.text + chunk,
+          tokens,
+          durationMs: undefined,
+          done: false,
+        },
+        ...turn.blocks.slice(index + 1),
+      ],
     };
   }
   return {
@@ -274,16 +314,21 @@ export function appendReasoningDelta(turn: AssistantTurn, chunk: string, tokens:
   };
 }
 
-/** Close the in-flight reasoning block with the final token count and duration. */
+/** Close the turn's thinking block with the final token count and duration. */
 export function finishReasoning(turn: AssistantTurn, tokens: number, durationMs: number): AssistantTurn {
-  const last = turn.blocks[turn.blocks.length - 1];
-  if (last?.kind === "reasoning") {
-    return {
-      ...turn,
-      blocks: [...turn.blocks.slice(0, -1), { ...last, tokens, durationMs, done: true }],
-    };
+  const index = lastReasoningIndex(turn.blocks);
+  const block = index >= 0 ? turn.blocks[index] : undefined;
+  if (block?.kind !== "reasoning") {
+    return turn;
   }
-  return turn;
+  return {
+    ...turn,
+    blocks: [
+      ...turn.blocks.slice(0, index),
+      { ...block, tokens, durationMs, done: true },
+      ...turn.blocks.slice(index + 1),
+    ],
+  };
 }
 
 export function appendInjected(turn: AssistantTurn, text: string): AssistantTurn {

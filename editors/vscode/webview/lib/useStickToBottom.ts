@@ -23,6 +23,9 @@ export function useStickToBottom() {
   const viewport = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  // The reader's own position while they are scrolled away. Restoring it after
+  // a resize is what stops new rows below from dragging the whole view.
+  const keep = useRef(0);
   const [atBottom, setAtBottom] = useState(true);
 
   const scrollToBottom = useCallback((smooth = true) => {
@@ -39,6 +42,7 @@ export function useStickToBottom() {
     const near = nearBottom(el);
     if (near === null) return;
     pinned.current = near;
+    if (!near) keep.current = el.scrollTop;
     setAtBottom(near);
   }, []);
 
@@ -49,9 +53,10 @@ export function useStickToBottom() {
     const inner = content.current;
     if (!el || !inner) return;
     const observer = new ResizeObserver(() => {
-      if (pinned.current) {
-        el.scrollTop = el.scrollHeight;
-      }
+      // Follow only when the reader is at the foot. Scrolled away, put the
+      // viewport back exactly where the reader left it: content growing below
+      // must not move what they are reading.
+      el.scrollTop = pinned.current ? el.scrollHeight : keep.current;
       // Content also shrinks (a reply replacing tool output, a collapsed row),
       // which leaves `pinned` false with no scroll event coming to correct it
       // and the jump-to-latest pill stranded over a thread that already fits.
@@ -60,6 +65,7 @@ export function useStickToBottom() {
       const near = nearBottom(el);
       if (near === null) return;
       pinned.current = near;
+      if (!near) keep.current = el.scrollTop;
       setAtBottom(near);
     });
     observer.observe(inner);

@@ -768,6 +768,18 @@ export function App() {
     });
   };
 
+  // Retry a failed turn from the message that produced it. Cutting there drops
+  // the failed assistant turn, so the retried thread does not keep the error.
+  const retryFrom = (id: string) => {
+    const at = turns.findIndex((turn) => turn.id === id && turn.role === "assistant");
+    if (at === -1) return;
+    const user = turns
+      .slice(0, at)
+      .reverse()
+      .find((turn) => turn.role === "user");
+    if (user && user.role === "user") resendFrom(user.id, user.text);
+  };
+
   // A turn that stopped for want of a key goes again on its own once the key
   // is in, so finishing setup never ends on "now send that again".
   resendAfterSetupRef.current = () => {
@@ -1010,6 +1022,7 @@ export function App() {
           onReviewChange={changeReview}
           onEditStart={(id) => setEditing(id)}
           onFork={forkFrom}
+          onRetry={retryFrom}
           onSend={onSend}
         />
       )}

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   appendCall,
   appendReasoning,
+  appendReasoningDelta,
   appendText,
   buildMessages,
   emptyReview,
+  finishReasoning,
   hydrate,
   newTurn,
   patchCall,
@@ -258,10 +260,22 @@ describe("appendReasoning", () => {
     expect(turn.blocks).toEqual([]);
   });
 
-  it("does not fold consecutive rounds into one block", () => {
+  it("folds consecutive rounds into one thinking block", () => {
     let turn = appendReasoning(newTurn("t1"), "first");
     turn = appendReasoning(turn, "second");
-    expect(shape(turn)).toEqual(["reasoning:first", "reasoning:second"]);
+    expect(shape(turn)).toEqual(["reasoning:first\n\nsecond"]);
+  });
+
+  it("keeps thinking in one block across tool calls", () => {
+    let turn = appendReasoningDelta(newTurn("t1"), "first", 10);
+    turn = finishReasoning(turn, 10, 500);
+    turn = appendCall(turn, call("c1"));
+    turn = appendReasoningDelta(turn, "second", 20);
+    turn = finishReasoning(turn, 20, 900);
+
+    expect(shape(turn)).toEqual(["reasoning:first\n\nsecond", "tools:c1"]);
+    const block = turn.blocks.find((b) => b.kind === "reasoning");
+    expect(block).toMatchObject({ done: true, durationMs: 900 });
   });
 });
 

@@ -4,12 +4,12 @@
  *  strips the wash so the border alone carries the block. Washes stay faint:
  *  text must read over them on a dark editor. */
 const ACCENT_TONES: Record<string, [bg: string, strong: string]> = {
-  steel: ["rgba(112, 144, 190, 0.13)", "rgba(112, 144, 190, 0.19)"],
-  midnight: ["rgba(125, 196, 255, 0.12)", "rgba(125, 196, 255, 0.18)"],
-  nord: ["rgba(136, 192, 208, 0.12)", "rgba(136, 192, 208, 0.18)"],
-  forest: ["rgba(167, 192, 128, 0.12)", "rgba(167, 192, 128, 0.18)"],
-  gruvbox: ["rgba(254, 128, 25, 0.12)", "rgba(254, 128, 25, 0.18)"],
-  dracula: ["rgba(255, 121, 198, 0.12)", "rgba(255, 121, 198, 0.18)"],
+  steel: ["rgba(112, 144, 190, 0.07)", "rgba(112, 144, 190, 0.11)"],
+  midnight: ["rgba(125, 196, 255, 0.07)", "rgba(125, 196, 255, 0.11)"],
+  nord: ["rgba(136, 192, 208, 0.07)", "rgba(136, 192, 208, 0.11)"],
+  forest: ["rgba(167, 192, 128, 0.07)", "rgba(167, 192, 128, 0.11)"],
+  gruvbox: ["rgba(254, 128, 25, 0.07)", "rgba(254, 128, 25, 0.11)"],
+  dracula: ["rgba(255, 121, 198, 0.07)", "rgba(255, 121, 198, 0.11)"],
   none: ["transparent", "transparent"],
 };
 

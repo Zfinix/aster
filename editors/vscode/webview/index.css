@@ -10,6 +10,10 @@
   --glyph: 14px;
   --step-text: calc(var(--glyph) + var(--s2));
   --rail-x: 10px;
+  /* One column for every event in a turn: the dot sits on the rail, the text
+     starts this far in. Tools and thoughts share it, so a turn reads as one
+     sequence rather than a stack of cards. */
+  --event-gutter: 26px;
   /* The list runs under the composer rather than stopping short of it: how far
      up from the panel's foot the gradient reaches, and how much of the list the
      composer rides over. */
@@ -17,6 +21,11 @@
   --composer-lift: 32px;
   /* Readable column cap; narrow sidebars fall below it and are unaffected. */
   --col: 760px;
+
+  /* Inline code in prose is a warm marker: a yellow glyph on a dark amber wash,
+     so a flag or a type name reads as a label without breaking the sentence. */
+  --inline-code-fg: #ffe27c;
+  --inline-code-bg: rgba(255, 226, 140, 0.19);
 
   /* One geometry for everything that opens over the panel: the command menu,
      every picker, and the modals. Spacing that is merely similar drifts, so
@@ -326,6 +335,9 @@ code {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  /* The hook owns the scroll position. Browser anchoring would also adjust it
+     when rows arrive below, moving the reader's view. */
+  overflow-anchor: none;
 }
 
 /* Fills the panel: tool cards, diffs and output get every pixel of width, while
@@ -336,7 +348,9 @@ code {
   padding: var(--s5) var(--s5) calc(var(--composer-lift) + var(--s4));
   display: flex;
   flex-direction: column;
-  gap: var(--s4);
+  /* Wide enough for a hover action row to sit between two messages without
+     covering either. */
+  gap: var(--s5);
 }
 
 /* Hugs its content: a wall-width block reads as the agent talking, not you.
@@ -373,20 +387,18 @@ code {
   align-items: flex-start;
 }
 
-/* Out of the flow on purpose: laid out, it would reserve a dead band under
-   every message, which two messages in a row read as a hole between them. */
+/* Above the message on its right edge, out of the flow so it reserves no dead
+   band. Icon-only and flat: a box with a border and a shadow reads as a menu,
+   and these are just three small actions. */
 .turn-hover {
   position: absolute;
-  top: 50%;
   right: 0;
-  transform: translateY(-50%);
+  bottom: calc(100% + 2px);
   display: flex;
   gap: 2px;
   padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  border-radius: var(--radius);
+  background: var(--bg);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -404,19 +416,38 @@ code {
   }
 }
 
-.turn-hover .icon-btn {
-  width: 22px;
-  height: 22px;
+/* A labelled action: glyph and word together, the way a message's own actions
+   read. Quiet until hovered, then a normal ghost button. */
+.msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.msg-action:hover {
+  color: var(--fg);
+  background: var(--hover);
 }
 
 /* A running turn refuses these; the buttons say so instead of eating clicks. */
-.icon-btn:disabled {
+.icon-btn:disabled,
+.msg-action:disabled {
   color: var(--fg-dim);
   opacity: 0.5;
   cursor: default;
 }
 
-.icon-btn:disabled:hover {
+.icon-btn:disabled:hover,
+.msg-action:disabled:hover {
   background: none;
   color: var(--fg-dim);
 }
@@ -712,11 +743,118 @@ code {
 .turn-assistant {
   display: flex;
   flex-direction: column;
-  gap: var(--s3);
+  gap: var(--s5);
   overflow-wrap: anywhere;
 }
 
-/* Thinking sits behind the answer: dim, collapsed, never competing with it. */
+/* A turn with steps gets one rail through it, the way Claude draws a
+   transcript: thoughts and the steps they led to are points on the same line.
+   A prose-only turn keeps the full width. */
+.turn-assistant:has(> .reasoning, > .round, > .tool-list) {
+  position: relative;
+  padding-left: var(--event-gutter);
+}
+
+.turn-assistant:has(> .reasoning, > .round, > .tool-list)::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--border);
+}
+
+/* Claude draws the rail as a groove: darker than the surface, not a hairline of
+   light. Only the normal dark themes get it; light and high-contrast themes
+   keep the theme's own border. */
+body.vscode-dark .turn-assistant:has(> .reasoning, > .round, > .tool-list)::before {
+  background: color-mix(in srgb, var(--bg) 35%, #000);
+}
+
+/* One round: the thought and the steps it produced share a rail node. The tight
+   gap inside, against the turn's larger gap, is what makes the pair read as one
+   moment rather than two. */
+.round {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+/* A thought carries a sparkle, an action a round dot. Whole-pixel boxes on the
+   rail's centre, so neither antialiases into a grey smudge. */
+.turn-assistant > .reasoning,
+.turn-assistant > .round,
+.turn-assistant > .tool-list > * {
+  position: relative;
+}
+
+.reasoning-node {
+  position: absolute;
+  left: calc(-1 * var(--event-gutter) - 2px);
+  top: 1px;
+  width: 12px;
+  height: 12px;
+  color: var(--fg-dim);
+  opacity: 0.8;
+}
+
+.turn-assistant > .tool-list > *::before {
+  content: "";
+  position: absolute;
+  left: calc(1px - var(--event-gutter));
+  top: 7px;
+  bottom: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-progressBar-background, var(--fg));
+  opacity: 0.7;
+}
+
+.turn-assistant > .tool-list > [data-running="true"]::before {
+  opacity: 1;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.turn-assistant > .tool-list > [data-error="true"]::before {
+  background: var(--sev-critical);
+  opacity: 1;
+}
+
+.turn-assistant > .tool-list > [data-serious="true"]:not([data-error="true"])::before {
+  background: var(--sev-medium);
+  opacity: 1;
+}
+
+/* The sparkle is the round's only node, so it carries the round's state. */
+.turn-assistant > .reasoning[data-done="false"] .reasoning-node,
+.turn-assistant > .round[data-running="true"] .reasoning-node {
+  color: var(--vscode-progressBar-background, var(--fg));
+  opacity: 1;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.turn-assistant > .round[data-error="true"] .reasoning-node {
+  color: var(--sev-critical);
+  opacity: 1;
+}
+
+.turn-assistant > .round[data-serious="true"]:not([data-error="true"]) .reasoning-node {
+  color: var(--sev-medium);
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-assistant > .reasoning[data-done="false"] .reasoning-node,
+  .turn-assistant > .round[data-running="true"] .reasoning-node,
+  .turn-assistant > .tool-list > [data-running="true"]::before {
+    animation: none;
+  }
+}
+
+/* Thinking is the answer's working: quieter than prose, but present and
+   readable rather than folded away. */
 .reasoning {
   display: flex;
   flex-direction: column;
@@ -734,30 +872,26 @@ code {
   cursor: pointer;
   color: var(--fg-dim);
   font: inherit;
+  text-align: left;
 }
 
 .reasoning-head:hover {
   color: var(--fg);
 }
 
-.reasoning-caret {
-  display: inline-block;
-  transition: transform 0.14s ease;
+.reasoning-label {
+  font-weight: 400;
 }
 
-.reasoning-caret[data-open="false"] {
-  transform: rotate(-90deg);
-}
-
-/* Rule in the gutter, like the steps' rail, so the thinking sits on the same
-   column as the reply it belongs to instead of one tab in from it. */
+/* Long thinking reads as a document, not a wall: roomy leading and the blank
+   lines the model wrote preserved. It hangs on the turn's rail, so it needs no
+   rule of its own. */
 .reasoning-body {
-  margin-left: calc(-1 * var(--rail-x));
-  border-left: 2px solid var(--border);
-  padding-left: calc(var(--rail-x) - 2px);
+  padding-left: var(--s1);
   color: var(--fg-dim);
   white-space: pre-wrap;
-  line-height: 1.6;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 /* Revealed on hover so a settled reply stays clean text. Takes no height of its
@@ -765,11 +899,14 @@ code {
    reply — so the button hangs in the gap to the next turn instead. */
 .turn-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: flex-start;
   height: 0;
-  /* Cancels `.turn-assistant`'s row gap, which is the only space left. */
-  margin-top: calc(-1 * var(--s3));
+  /* Cancels `.turn-assistant`'s row gap, so the row overflows into the thread's
+     own gap rather than adding height. The label's padding is paid back so the
+     glyph starts on the text column. */
+  margin-top: calc(-1 * var(--s5));
+  margin-left: -6px;
   opacity: 0;
   transition: opacity 0.12s ease;
 }
@@ -959,20 +1096,19 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+/* A failure is a line in the transcript, not a card: the red label is enough
+   to catch the eye, and the action sits beside it. */
 .error-box {
   display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-  padding: var(--s3);
-  border: 1px solid color-mix(in srgb, var(--sev-critical) 35%, var(--border));
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--sev-critical) 6%, transparent);
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s2);
   overflow-wrap: anywhere;
 }
 
 .error-box-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--s2);
 }
 
@@ -996,6 +1132,54 @@ code {
 .error-box-hint {
   color: var(--fg);
   line-height: 1.45;
+}
+
+/* A text action beside the label, not a button competing with it. */
+.error-box-retry {
+  height: auto;
+  padding: 0;
+  font-size: inherit;
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.error-box-retry:hover {
+  background: none;
+  color: var(--fg);
+  text-decoration-thickness: 2px;
+}
+
+/* Raw provider text is available, not in the way. No disclosure triangle: the
+   word itself is the control. */
+.error-box-more {
+  color: var(--fg-dim);
+}
+
+/* Closed, "Details" sits inline with the rest. Open, it takes its own row so
+   the raw provider text is not squeezed into the line. */
+.error-box-more[open] {
+  flex-basis: 100%;
+}
+
+.error-box-more summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 0.85em;
+  list-style: none;
+}
+
+.error-box-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.error-box-more summary:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.error-box-more[open] summary {
+  margin-bottom: var(--s1);
 }
 
 .error-box-detail {
@@ -1327,6 +1511,20 @@ code {
   color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
 
+.md-code,
+.md-path {
+  color: var(--inline-code-fg);
+  background: var(--inline-code-bg);
+}
+
+body.vscode-light .md-code,
+body.vscode-light .md-path,
+body.vscode-high-contrast-light .md-code,
+body.vscode-high-contrast-light .md-path {
+  color: #7a5c00;
+  background: rgba(160, 120, 0, 0.14);
+}
+
 .md-path {
   cursor: pointer;
 }
@@ -1561,9 +1759,9 @@ code {
 .tool-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  /* Cancels the row's own padding, so the icons land on the prose column. */
-  margin-left: calc(-1 * var(--s1));
+  gap: var(--s5);
+  /* Steps sit on the turn's text column, level with the prose. */
+  margin-left: 0;
 }
 
 /* One `agent` tool call's swarm as a wired graph in a card. */
@@ -2176,21 +2374,23 @@ code {
   text-overflow: ellipsis;
 }
 
-/* The whole header is the toggle, so the hit target is the row rather than a
-   chevron the size of a full stop. */
+/* The whole header is the toggle: no chevron, the row itself says it opens. */
+/* A step is a line, not a pill: the icon, the fill and the radius were three
+   edges doing the same job, and together they drowned the one thing worth
+   reading. The dot on the turn's rail already says where the step starts. */
 .tool-row {
   display: flex;
-  align-items: flex-start;
-  gap: var(--s2);
+  align-items: center;
+  gap: 8px;
   width: 100%;
+  max-width: 100%;
   text-align: left;
   font: inherit;
   color: var(--fg-dim);
-  padding: 3px var(--s1);
+  padding: 0;
   min-width: 0;
   background: none;
-  border: none;
-  border-radius: var(--radius);
+  border: 0;
   cursor: pointer;
 }
 
@@ -2199,104 +2399,19 @@ code {
 }
 
 .tool-row:not(:disabled):hover {
-  background: var(--list-hover);
-}
-
-/* The rail is drawn per step rather than as one border on the list, so it can
-   begin and end on a diamond instead of overshooting the run, and open a gap
-   where each node sits. `bottom: -1px` closes the list's row gap. */
-.tool-list > * {
-  position: relative;
-  --node: calc(3px + 0.5lh);
-  --node-gap: 7px;
-}
-
-.tool-list > *::before {
-  content: "";
-  position: absolute;
-  left: calc(var(--s1) - var(--rail-x));
-  top: 0;
-  bottom: -1px;
-  width: 2px;
-  background: linear-gradient(
-    var(--border) calc(var(--node) - var(--node-gap)),
-    transparent calc(var(--node) - var(--node-gap)),
-    transparent calc(var(--node) + var(--node-gap)),
-    var(--border) calc(var(--node) + var(--node-gap))
-  );
-}
-
-/* A step that carries no node of its own keeps an unbroken line through it. */
-.tool-list > *:not(:has(> .tool-row))::before {
-  background: var(--border);
-}
-
-.tool-list > :first-child:has(> .tool-row)::before {
-  top: calc(var(--node) + var(--node-gap));
-  background: var(--border);
-}
-
-.tool-list > :last-child:has(> .tool-row)::before {
-  bottom: auto;
-  height: calc(var(--node) - var(--node-gap));
-  background: var(--border);
-}
-
-/* A lone step is a point, not a run. */
-.tool-list > :only-child::before,
-.tool-list > :only-child:has(> .tool-row)::before {
-  display: none;
-}
-
-/* A node on the rail where each step starts, so the line reads as a sequence of
-   moments rather than one long stroke. Top-level steps only: the folded run's
-   own rail is close enough that studding it too turns into noise.
-   Whole-pixel box on a whole-pixel rail center, or the rotated square
-   antialiases unevenly and reads as off-centre. */
-.tool-list > * > .tool-row {
-  position: relative;
-}
-
-.tool-list > * > .tool-row::before {
-  content: "";
-  position: absolute;
-  left: calc(var(--s1) - var(--rail-x) - 2px);
-  top: calc(3px + 0.5lh);
-  width: 6px;
-  height: 6px;
-  margin-top: -3px;
-  border-radius: 1px;
-  background: var(--fg-dim);
-  opacity: 0.55;
-  transform: rotate(45deg);
-}
-
-.tool-list > [data-running="true"] > .tool-row::before {
-  background: var(--vscode-progressBar-background, var(--fg));
-  opacity: 1;
-}
-
-.tool-list > [data-error="true"] > .tool-row::before {
-  background: var(--sev-critical);
-  opacity: 1;
+  color: var(--fg);
 }
 
 /* A command that deletes, force-pushes or escalates wears the warning colour, so
    it stands out of a long list of steps without opening. */
-.tool-list > [data-serious="true"]:not([data-error="true"]) > .tool-row::before {
-  background: var(--sev-medium);
-  opacity: 1;
-}
-
-.tool[data-serious="true"]:not([data-error="true"]) .tool-icon,
 .tool[data-serious="true"]:not([data-error="true"], [data-running="true"]) .tool-detail {
   color: var(--sev-medium);
 }
 
-/* With no run to sit on, the node marks nothing. Last, so it also wins over the
-   running and error states. */
-.tool-list > :only-child > .tool-row::before {
-  display: none;
+/* A failed step says so in its text, not only in a six-pixel dot. */
+.tool[data-error="true"] .tool-verb,
+.tool[data-error="true"] .tool-detail {
+  color: var(--sev-critical);
 }
 
 /* VS Code injects `:focus { outline: 1px solid var(--vscode-focusBorder) }` into
@@ -2314,28 +2429,36 @@ code {
   outline-offset: -1px;
 }
 
-/* Reserved even when empty, so labels line up down the column whether or not a
-   step has anything to unfold. */
-.tool-chevron {
-  display: flex;
-  flex: none;
-  width: 14px;
-  padding-top: 2px;
-  color: var(--fg-dim);
-  opacity: 0.7;
-}
-
-/* Hung under the header's own text, on the run's rail rather than a second one
-   of its own: a rule beside a rule reads as two trees, and the steps inside a
-   run are one. The icon column they no longer fill is the indent. */
+/* Hung under the header's own text, one tab in, so the steps read as belonging
+   to the run. Dim and dot-led: the header already says what the run is. */
 .tool-run-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  margin-left: var(--step-text);
+  gap: var(--s2);
+  margin-left: var(--s3);
 }
 
-/* Its row has no icon to clear, so the card starts where the label does. */
+.tool-run-list > .tool {
+  position: relative;
+}
+
+.tool-run-list > .tool::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--s2));
+  top: 9px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  opacity: 0.45;
+}
+
+.tool-run-list .tool-label[data-lead="true"] .tool-detail {
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+
 .tool-run-list .tool-card {
   margin-left: 0;
 }
@@ -2357,27 +2480,6 @@ code {
     background-clip: border-box;
     color: var(--fg-dim);
   }
-}
-
-/* Nudged to sit on the first line's baseline when the label wraps. A fixed box
-   rather than the glyph's own width, so every verb starts on one column. The
-   nudge is 1px, not 2: the glyph fills more of its box than it used to, so it
-   already reaches closer to the cap line on its own. */
-.tool-icon {
-  display: flex;
-  flex: none;
-  justify-content: center;
-  width: var(--glyph);
-  padding-top: 1px;
-  color: var(--fg-dim);
-}
-
-.tool[data-error="true"] .tool-icon {
-  color: var(--sev-critical);
-}
-
-.tool[data-running="true"] .tool-icon {
-  color: var(--vscode-progressBar-background, var(--fg));
 }
 
 /* Clamped to two lines rather than ellipsised on one: a truncated path is
@@ -2408,6 +2510,7 @@ code {
    weight instead of trailing off it. */
 .tool-label[data-lead="true"] .tool-detail {
   color: var(--fg);
+  font-weight: 600;
 }
 
 .tool-verb {
@@ -2454,23 +2557,31 @@ code {
 
 .tool-hint {
   flex: none;
-  margin-left: auto;
-  padding-left: var(--s2);
+  margin-left: var(--s1);
   color: var(--fg-dim);
   font-size: 0.85em;
   font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.tool-row:hover .tool-hint,
+.tool-row:focus-visible .tool-hint,
+.tool[data-running="true"] .tool-hint,
+.tool[data-error="true"] .tool-hint {
+  opacity: 1;
 }
 
 .tool[data-error="true"] .tool-hint {
   color: var(--sev-critical);
 }
 
-/* Indented under the header's label, so the icon column stays a clean gutter.
+/* Indented under the header's label, which already starts on the text column.
    Its own blue wash, set apart from the neutral fill under quoted code. */
 .tool-card {
   display: flex;
   flex-direction: column;
-  margin: var(--s1) 0 var(--s2) calc(var(--s1) + var(--step-text));
+  margin: var(--s1) 0 var(--s2) 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--tool-bg);

@@ -120,10 +120,14 @@ export function CopyButton({
   text,
   label = "Copy",
   timeout = 2000,
+  showLabel = false,
 }: {
   text: string;
   label?: string;
   timeout?: number;
+  /** Draw the word beside the glyph. Used in message actions, where a lone
+   *  icon is too quiet to read as a control. */
+  showLabel?: boolean;
 }) {
   const { copy, status } = useCopyToClipboard({ timeout });
   const reduced = useReducedMotion();
@@ -134,7 +138,7 @@ export function CopyButton({
 
   return (
     <button
-      className="icon-btn"
+      className={showLabel ? "msg-action" : "icon-btn"}
       title={title}
       aria-label={label}
       onClick={() => {
@@ -175,6 +179,8 @@ export function CopyButton({
           <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
         </motion.svg>
       </span>
+
+      {showLabel && <span>{title}</span>}
 
       <span role="status" aria-live="polite" className="sr-only">
         {status === "copied" ? "Copied" : status === "error" ? "Copy failed" : ""}
