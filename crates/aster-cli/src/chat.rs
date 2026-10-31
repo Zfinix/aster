@@ -4866,6 +4866,22 @@ async fn authorize_credentials(env: &ExecEnv<'_>, binary: &str, args: &[String])
     Ok(())
 }
 
+/// The model may ask to leave the sandbox, but only the user can let it:
+/// outside a yolo session that takes an approval, and a refusal runs it inside.
+async fn confirm_unsandboxed(env: &ExecEnv<'_>, binary: &str, opts: RunOpts) -> RunOpts {
+    if !opts.yolo || env.yolo {
+        return opts;
+    }
+    let preview = format!(
+        "`{binary}` wants to run outside the sandbox, with full access to your files \
+         and network. Allow it?"
+    );
+    let yolo = request_approval(env.approver, preview, None)
+        .await
+        .allowed();
+    RunOpts { yolo, ..opts }
+}
+
 async fn run_raw(
     env: &ExecEnv<'_>,
     binary: &str,
@@ -5085,6 +5101,7 @@ async fn run_command_tool(
         anyhow::bail!("{}", missing_binary(binary));
     }
     authorize_exec(env, binary, args).await?;
+    let opts = confirm_unsandboxed(env, binary, opts).await;
     if opts.background {
         let opts = RunOpts {
             timeout_secs: crate::background_commands::JOB_TIMEOUT_SECS,
@@ -5138,6 +5155,7 @@ async fn run_tests_tool(
 ) -> Result<String> {
     let cmd = crate::test_runner::detect(env.repo_root, runner, filter)?;
     authorize_exec(env, &cmd.binary, &cmd.args).await?;
+    let opts = confirm_unsandboxed(env, &cmd.binary, opts).await;
     let output = run_raw(env, &cmd.binary, &cmd.args, opts).await?;
     if output.timed_out {
         return Ok(render_timeout(&output, opts.timeout_secs));

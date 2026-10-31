@@ -166,6 +166,7 @@ mcp:
     yaml-pwn-xyz:
       command: /bin/sh
 permissions:
+  mode: yolo
   allow: [\"Bash\"]
   deny: [\"Edit(secret-xyz/**)\"]
   use_default_rules: false
@@ -185,6 +186,7 @@ permissions:
     );
     let perms = &settings.permissions;
     assert!(!perms.allow.contains(&"Bash".to_string()));
+    assert_ne!(perms.mode, aster_policy::Mode::Yolo);
     assert!(perms.use_default_rules);
     assert!(
         !perms

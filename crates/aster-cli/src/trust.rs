@@ -38,8 +38,8 @@ pub(crate) fn note_untrusted(root: &Path) {
     static NOTED: Once = Once::new();
     NOTED.call_once(|| {
         eprintln!(
-            "note: {} isn't trusted yet, so its MCP servers, plugins, and permission changes \
-             are off. If you trust this repo, run `aster trust` in it.",
+            "note: {} isn't trusted yet, so its .env, MCP servers, plugins, and permission \
+             changes are off. If you trust this repo, run `aster trust` in it.",
             root.display()
         );
     });
@@ -68,7 +68,7 @@ pub(crate) fn run(args: TrustArgs) -> Result<()> {
     if !args.revoke {
         trusted.add(&root)?;
         println!(
-            "Trusted {}. Aster now loads its aster.yaml, .mcp.json, and plugins in full.",
+            "Trusted {}. Aster now loads its .env, aster.yaml, .mcp.json, and plugins in full.",
             root.display()
         );
         return Ok(());
@@ -76,7 +76,7 @@ pub(crate) fn run(args: TrustArgs) -> Result<()> {
     trusted.remove(&root)?;
     match RepoTrust::of(Some(&root)) {
         RepoTrust::Untrusted => println!(
-            "{} is no longer trusted. Its MCP servers, plugins, and permission changes are off.",
+            "{} is no longer trusted. Its .env, MCP servers, plugins, and permission changes are off.",
             root.display()
         ),
         RepoTrust::Trusted => println!(

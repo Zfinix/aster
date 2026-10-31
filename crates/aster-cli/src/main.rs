@@ -212,7 +212,11 @@ pub fn effort_flag() -> Option<Effort> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = dotenvy::dotenv();
+    // A cloned repo's `.env` can steer git, the endpoint that gets the key,
+    // and where trust itself is stored, so it loads only once trusted.
+    if trust::RepoTrust::of(None) == trust::RepoTrust::Trusted {
+        let _ = dotenvy::dotenv();
+    }
     if let Some(global) = persist::global_env_path() {
         let _ = dotenvy::from_path(&global);
     }

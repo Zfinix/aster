@@ -145,6 +145,7 @@ impl Settings {
         if trust == RepoTrust::Untrusted
             && let Some(root) = repo_root
             && (project_path.is_some()
+                || root.join(".env").exists()
                 || repo_mcp_json.as_deref().is_some_and(Path::exists)
                 || root.join(".aster/plugins").exists())
         {
@@ -190,7 +191,7 @@ impl Settings {
                 ..self.review
             },
             permissions: aster_policy::PermissionsConfig {
-                mode: self.permissions.mode,
+                mode: aster_policy::Mode::default().stricter(self.permissions.mode),
                 ask: self.permissions.ask,
                 deny: self.permissions.deny,
                 ..Default::default()
