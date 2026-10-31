@@ -104,6 +104,13 @@ changing the visible bridge protocol.
    catalogue.
 6. **Audit the unwrapped call.** Record the resolved ID, approval decision,
    arguments (redacted as needed), and upstream result—not only `aster_mcp`.
+7. **A repo's servers wait for trust.** A server is a process, so a cloned
+   repo must not start one by being opened. The repo's `.mcp.json`, the
+   `mcp:` block of its `aster.yaml`, and its `.aster/plugins` load only after
+   `aster trust` in that folder or one above it (`trusted.json` in the data
+   dir). Until then `Settings::restricted` also drops the repo's permission
+   loosening, `review.base_url`, and other endpoint or process settings, and
+   the CLI prints one note saying so. Global servers are unaffected.
 
 ## Rust API reference
 

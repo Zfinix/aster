@@ -56,6 +56,7 @@ mod status;
 mod term;
 mod test_runner;
 mod tool_alias;
+mod trust;
 mod tui;
 mod update;
 mod upgrade;
@@ -184,6 +185,8 @@ enum Command {
     Serve(serve::ServeArgs),
     /// Serve the agent over the Agent Client Protocol on stdio, for editors like Zed.
     Acp(acp::AcpArgs),
+    /// Trust this folder so its aster.yaml, .mcp.json, and plugins load in full.
+    Trust(trust::TrustArgs),
     /// Download the latest released aster binary and swap it in place.
     #[command(alias = "update")]
     Upgrade(upgrade::UpgradeArgs),
@@ -280,6 +283,7 @@ async fn main() -> Result<()> {
         Command::Python(args) => python::run(args),
         Command::Serve(args) => serve::run(args).await,
         Command::Acp(args) => acp::run(args).await,
+        Command::Trust(args) => trust::run(args),
         Command::Upgrade(args) => upgrade::run(args).await,
     };
 

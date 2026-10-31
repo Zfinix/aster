@@ -43,3 +43,17 @@ fn corrupt_file_reads_as_no_grants() {
     std::fs::write(&s.path, "{not json").unwrap();
     assert_eq!(s.load(), Vec::<PathBuf>::new());
 }
+
+#[test]
+fn a_removed_directory_is_gone_after_a_reload() {
+    let home = tempfile::tempdir().unwrap();
+    let s = store(home.path());
+    s.add(Path::new("/Users/x/Desktop")).unwrap();
+    s.add(Path::new("/Users/x/Downloads")).unwrap();
+    s.remove(Path::new("/Users/x/Desktop")).unwrap();
+    s.remove(Path::new("/Users/x/never-added")).unwrap();
+    assert_eq!(
+        store(home.path()).load(),
+        [PathBuf::from("/Users/x/Downloads")]
+    );
+}

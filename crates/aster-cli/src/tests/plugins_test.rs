@@ -81,13 +81,28 @@ fn a_project_plugin_shadows_a_global_one_of_the_same_name() {
     let root = repo.join(".aster/plugins/demo");
     fs::create_dir_all(&root).expect("dirs");
     fs::write(root.join("plugin.json"), MANIFEST).expect("manifest");
-    let (plugins, problems) = installed(Some(repo));
+    let (plugins, problems) = installed_as(Some(repo), RepoTrust::Trusted);
     assert!(problems.is_empty(), "{problems:?}");
     let demos: Vec<&Plugin> = plugins.iter().filter(|p| p.name() == "demo").collect();
     assert_eq!(demos.len(), 1);
     // The loader canonicalizes, which on macOS resolves the temp dir's symlink.
     let project = fs::canonicalize(repo).expect("canonicalize").join(".aster");
     assert!(demos[0].root.starts_with(project), "{:?}", demos[0].root);
+}
+
+#[test]
+fn an_untrusted_repo_plugin_is_not_loaded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path();
+    let root = repo.join(".aster/plugins/untrusted-demo-xyz");
+    fs::create_dir_all(&root).expect("dirs");
+    fs::write(
+        root.join("plugin.json"),
+        MANIFEST.replace("\"demo\"", "\"untrusted-demo-xyz\""),
+    )
+    .expect("manifest");
+    let (plugins, _) = installed_as(Some(repo), RepoTrust::Untrusted);
+    assert!(!plugins.iter().any(|p| p.name() == "untrusted-demo-xyz"));
 }
 
 #[test]

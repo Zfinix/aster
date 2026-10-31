@@ -69,6 +69,12 @@ impl Store {
         )
     }
 
+    /// Folders whose own config the user agreed to load with `aster trust`.
+    /// Shared by every project: trusting a folder covers the folders inside it.
+    pub fn trusted_folders(&self) -> GrantStore {
+        GrantStore::new(self.home.join("trusted.json"))
+    }
+
     /// Credential directories approved per command for `repo_root`, kept apart
     /// from [`Self::grants`] so a sandbox approval never widens the agent's own
     /// file tools. Entries are stored as `<command>\t<dir>`.

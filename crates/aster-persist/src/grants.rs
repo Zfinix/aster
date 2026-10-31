@@ -37,11 +37,25 @@ impl GrantStore {
         if !dirs.insert(dir.to_path_buf()) {
             return Ok(());
         }
+        self.save(&dirs)
+    }
+
+    /// Drop `dir` from the persisted set. Removing a directory that was never
+    /// added is not an error.
+    pub fn remove(&self, dir: &Path) -> Result<()> {
+        let mut dirs: BTreeSet<PathBuf> = self.load().into_iter().collect();
+        if !dirs.remove(dir) {
+            return Ok(());
+        }
+        self.save(&dirs)
+    }
+
+    fn save(&self, dirs: &BTreeSet<PathBuf>) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let text = serde_json::to_string_pretty(&dirs).context("serializing grants")?;
+        let text = serde_json::to_string_pretty(dirs).context("serializing grants")?;
         std::fs::write(&self.path, text).with_context(|| format!("writing {}", self.path.display()))
     }
 }

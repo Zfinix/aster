@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
+use crate::trust::RepoTrust;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -119,13 +121,35 @@ impl Settings {
     /// The global config, then the repo's, with the repo's on top. Malformed
     /// files error rather than being skipped, so a typo is never silent.
     pub fn load(repo_root: Option<&Path>) -> Result<Self> {
+        Self::load_as(repo_root, RepoTrust::of(repo_root))
+    }
+
+    /// [`Self::load`] with the folder's trust already decided. An untrusted
+    /// repo's `aster.yaml` is [`Self::restricted`], and its `.mcp.json` and
+    /// plugins are skipped.
+    pub(crate) fn load_as(repo_root: Option<&Path>, trust: RepoTrust) -> Result<Self> {
         let global = match dirs::home_dir().map(|h| h.join(".aster/aster.yaml")) {
             Some(path) if path.exists() => Some(parse(&path)?),
             _ => None,
         };
-        let project = project_config(repo_root)
-            .map(|path| parse(&path))
-            .transpose()?;
+        let project_path = project_config(repo_root);
+        let project = project_path
+            .as_deref()
+            .map(parse)
+            .transpose()?
+            .map(|project| match trust {
+                RepoTrust::Trusted => project,
+                RepoTrust::Untrusted => project.restricted(),
+            });
+        let repo_mcp_json = repo_root.map(|root| root.join(".mcp.json"));
+        if trust == RepoTrust::Untrusted
+            && let Some(root) = repo_root
+            && (project_path.is_some()
+                || repo_mcp_json.as_deref().is_some_and(Path::exists)
+                || root.join(".aster/plugins").exists())
+        {
+            crate::trust::note_untrusted(root);
+        }
 
         let mut settings = match (global, project) {
             (Some(global), Some(project)) => global.overlaid_with(project),
@@ -135,8 +159,8 @@ impl Settings {
         // The cross-tool `.mcp.json` files are read natively, aster.yaml
         // winning name collisions and the repo's file beating the global one.
         let mut json_paths = Vec::new();
-        if let Some(root) = repo_root {
-            json_paths.push(root.join(".mcp.json"));
+        if trust == RepoTrust::Trusted {
+            json_paths.extend(repo_mcp_json);
         }
         if let Some(home) = dirs::home_dir() {
             json_paths.push(home.join(".aster/mcp.json"));
@@ -148,12 +172,40 @@ impl Settings {
         }
         // Installed plugins contribute their own servers, namespaced by plugin
         // so two packages can ship a server of the same name.
-        let (plugins, problems) = crate::plugins::installed(repo_root);
+        let (plugins, problems) = crate::plugins::installed_as(repo_root, trust);
         crate::plugins::report(&plugins, &problems);
         for (name, server) in crate::plugins::mcp_servers(&plugins) {
             settings.mcp.servers.entry(name).or_insert(server);
         }
         Ok(settings)
+    }
+
+    /// What a repo nobody has trusted may still set: limits, review scope, and
+    /// rules that only tighten. Anything that starts a process, picks where the
+    /// user's key is sent, or widens access waits for `aster trust`.
+    fn restricted(self) -> Settings {
+        Settings {
+            review: Review {
+                base_url: None,
+                ..self.review
+            },
+            permissions: aster_policy::PermissionsConfig {
+                mode: self.permissions.mode,
+                ask: self.permissions.ask,
+                deny: self.permissions.deny,
+                ..Default::default()
+            },
+            mcp: Default::default(),
+            agent: self.agent,
+            agents: self.agents,
+            ui: self.ui,
+            mom: Mom::default(),
+            memory: MemoryConfig::default(),
+            providers: Providers::default(),
+            experimental: Experimental::default(),
+            voice: Default::default(),
+            schedules: Vec::new(),
+        }
     }
 
     fn overlaid_with(self, project: Settings) -> Settings {

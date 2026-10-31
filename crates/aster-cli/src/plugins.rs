@@ -11,6 +11,7 @@ use cliclack::{confirm, input, intro, outro, outro_cancel};
 use console::style;
 
 use crate::picker::{Item, first_line, is_tty, multi_select};
+use crate::trust::RepoTrust;
 use crate::util::or_cancel;
 
 #[derive(Args)]
@@ -218,10 +219,23 @@ fn mark_uninstalled(name: &str, data_root: &Path) {
 /// Every installed plugin, this project's shadowing a global one of the same
 /// name. Problems are returned rather than printed so each caller decides.
 pub(crate) fn installed(repo_root: Option<&Path>) -> (Vec<Plugin>, Vec<String>) {
+    installed_as(repo_root, RepoTrust::of(repo_root))
+}
+
+/// [`installed`] with the folder's trust already decided: an untrusted repo's
+/// own plugins are skipped, since they can start MCP servers.
+pub(crate) fn installed_as(
+    repo_root: Option<&Path>,
+    trust: RepoTrust,
+) -> (Vec<Plugin>, Vec<String>) {
     install_builtins();
     let mut plugins: Vec<Plugin> = Vec::new();
     let mut problems = Vec::new();
-    for scope in [Scope::Project, Scope::Global] {
+    let scopes: &[Scope] = match trust {
+        RepoTrust::Trusted => &[Scope::Project, Scope::Global],
+        RepoTrust::Untrusted => &[Scope::Global],
+    };
+    for &scope in scopes {
         let Ok((root, data_root)) = scope_roots(scope, repo_root) else {
             continue;
         };
