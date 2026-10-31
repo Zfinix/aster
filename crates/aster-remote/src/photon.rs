@@ -252,7 +252,7 @@ async fn handle_message(
     text: &str,
 ) {
     let chat_id = chat_key(sender);
-    if !cfg.allowed_senders.is_empty() && !cfg.allowed_senders.iter().any(|a| a == sender) {
+    if !cfg.allowed_senders.iter().any(|a| a == sender) {
         api.send_text(
             &chat_id,
             &format!("Not authorized. Restart the bridge with --sender {sender} to allow it."),
