@@ -10,8 +10,8 @@ use std::{env, fs, io};
 
 use anyhow::{Context, Result, bail};
 use aster_ai::{
-    AiClient, Annotation, ChatMessage, DegenerateOutput, ReasoningDetail, ThinkingExhausted,
-    UsageSnapshot,
+    AiClient, Annotation, ChatMessage, DegenerateOutput, MessageContent, ReasoningDetail,
+    ThinkingExhausted, UsageSnapshot,
 };
 use aster_persist::{
     EventUsage, EvictionEvent, MessageEvent, ReasoningRecord, Store, SummaryEvent, TranscriptEvent,
@@ -47,7 +47,7 @@ pub(crate) struct SessionCtx {
     pub reads: Arc<Mutex<HashMap<String, Option<std::time::SystemTime>>>>,
     pub previews: Arc<Mutex<HashSet<String>>>,
     pub lookups: Arc<Mutex<HashSet<String>>>,
-    pub injected: Arc<std::sync::Mutex<Vec<String>>>,
+    pub injected: Arc<std::sync::Mutex<Vec<MessageContent>>>,
     pub agents: Arc<aster_agents::AgentRegistry>,
     pub sub_agent: Option<Arc<SubAgentOverrides>>,
     pub swarm: SwarmLimits,
@@ -809,6 +809,7 @@ const SEARCH_CONTEXT_LINES: usize = 3;
 const MAX_LIST_ENTRIES: usize = 200;
 const MAX_FIND_HITS: usize = 100;
 const MAX_PATH_SUGGESTIONS: usize = 8;
+const MAX_EXPLORE_STEPS: usize = 24;
 const MISSING_COMMAND: &str = "run_command needs a `command`: the binary to \
     run, with its arguments in `args`. To run a shell line, pass \
     command:`bash` with args [\"-lc\", \"<the line>\"]. Send the call again \
@@ -1386,7 +1387,9 @@ fn emit_reasoning_done(tokens: u64, duration_ms: u64, emit: &impl Fn(Value)) {
     emit(json!({ "type": "reasoning_done", "tokens": tokens, "duration_ms": duration_ms }));
 }
 
-fn spawn_stdin_router(injected: Arc<std::sync::Mutex<Vec<String>>>) -> mpsc::Receiver<Value> {
+fn spawn_stdin_router(
+    injected: Arc<std::sync::Mutex<Vec<MessageContent>>>,
+) -> mpsc::Receiver<Value> {
     let (tx, rx) = mpsc::channel::<Value>(4);
     std::thread::spawn(move || {
         let mut line = String::new();
@@ -1400,7 +1403,7 @@ fn spawn_stdin_router(injected: Arc<std::sync::Mutex<Vec<String>>>) -> mpsc::Rec
             };
             if let Some(message) = value.get("message").and_then(Value::as_str) {
                 if let Ok(mut queue) = injected.lock() {
-                    queue.push(message.to_string());
+                    queue.push(MessageContent::Text(message.to_string()));
                 }
                 continue;
             }
@@ -1670,7 +1673,7 @@ pub(crate) fn expand_skill_asks(turns: &mut [ChatMessage], repo_root: &Path) {
 
 pub(crate) fn attach_images(turns: &mut [ChatMessage], repo_root: &Path) {
     if let Some(last) = turns.last_mut().filter(|m| m.role == "user") {
-        last.content = crate::images::attach(&last.content.text(), repo_root);
+        last.content = crate::images::attach_content(std::mem::take(&mut last.content), repo_root);
     }
 }
 
@@ -1898,12 +1901,6 @@ const OVERTHINK_CORRECTION: &str = "Your last reply spent its whole length \
     it still stands. Think briefly, then take the next concrete step with a \
     tool call. Split large work into small steps instead of planning it all at \
     once.";
-
-const DEGENERATE_CORRECTION: &str = "Your last reply degenerated into repeated \
-    text and was cut off; everything before it still stands. Continue from where \
-    it stopped: keep replies short, act with tool calls instead of long prose, \
-    and keep any final report to tight bullets. Do not restate text you already \
-    wrote.";
 
 fn barren_correction(rounds: usize) -> String {
     format!(
@@ -2245,16 +2242,17 @@ pub(crate) async fn agent_loop(
         }
         turn_span.record("rounds", round + 1);
         // Messages the user sent mid-turn join here, before the next request.
-        let pending: Vec<String> = match ctx.injected.lock() {
+        let pending: Vec<MessageContent> = match ctx.injected.lock() {
             Ok(mut queue) => queue.drain(..).collect(),
             Err(_) => Vec::new(),
         };
         for content in pending {
-            emit(json!({ "type": "injected", "content": content }));
-            ctx.record(MessageEvent::user(content.clone()));
-            // A photo sent mid-turn arrives as an `@path` mention like any
-            // other, and only this pass turns it into something to look at.
-            let content = crate::images::attach(&content, repo_root);
+            let text = content.text().into_owned();
+            emit(json!({ "type": "injected", "content": text }));
+            ctx.record(MessageEvent::user(text));
+            // A photo sent mid-turn arrives as an image part or an `@path`
+            // mention; either way it is attached only here, at the boundary.
+            let content = crate::images::attach_content(content, repo_root);
             wire.push(json!({ "role": "user", "content": content }));
         }
         // Halfway through the allotment, and only once: the model cannot see
@@ -2372,9 +2370,10 @@ pub(crate) async fn agent_loop(
                 );
                 return Ok((reply, compacted));
             }
-            // A reply that collapsed into verbatim repetition is steered, not
-            // fatal: every round above is still on the wire, so a correction
-            // and one more round keeps the whole turn's work alive.
+            // A reply that collapsed into verbatim repetition is retried, not
+            // fatal. The broken attempt never entered the wire or the screen, so
+            // this is the same request again, not a correction about a reply the
+            // model cannot see.
             Err(e) if e.downcast_ref::<DegenerateOutput>().is_some() => {
                 degenerations += 1;
                 if degenerations > MAX_DEGENERATE_RETRIES {
@@ -2382,9 +2381,8 @@ pub(crate) async fn agent_loop(
                 }
                 tracing::warn!(
                     degenerations,
-                    "reply degenerated into repeated text; steering and retrying the round"
+                    "reply degenerated into repeated text; retrying the round"
                 );
-                steer(&mut wire, DEGENERATE_CORRECTION.to_string());
                 continue;
             }
             // Same shape: a reply that thought until the length limit loses
@@ -2458,7 +2456,7 @@ pub(crate) async fn agent_loop(
             // A message the user sent while this reply was forming still
             // deserves an answer: bank the reply and keep the turn alive
             // rather than dropping the queue on the floor.
-            let pending: Vec<String> = match ctx.injected.lock() {
+            let pending: Vec<MessageContent> = match ctx.injected.lock() {
                 Ok(mut queue) => queue.drain(..).collect(),
                 Err(_) => Vec::new(),
             };
@@ -2479,8 +2477,10 @@ pub(crate) async fn agent_loop(
                 }
                 wire.push(json!({ "role": "assistant", "content": reply }));
                 for content in pending {
-                    emit(json!({ "type": "injected", "content": content }));
-                    ctx.record(MessageEvent::user(content.clone()));
+                    let text = content.text().into_owned();
+                    emit(json!({ "type": "injected", "content": text }));
+                    ctx.record(MessageEvent::user(text));
+                    let content = crate::images::attach_content(content, repo_root);
                     wire.push(json!({ "role": "user", "content": content }));
                 }
                 continue;
@@ -3432,6 +3432,43 @@ fn tool_defs(allow_edits: bool, has_approver: bool) -> Vec<Value> {
     tools.push(json!({
         "type": "function",
         "function": {
+            "name": "artifact",
+            "description": "Create, update, open, or list a self-contained HTML artifact: a report, a visual explainer, a mockup, or a one-page design. The page is written to .aster/artifacts/<name>/index.html and opened in the user's browser. Use `canvas` when the user should see several boards side by side. Open it before ending the turn.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["create", "update", "open", "list"], "description": "What to do; create and update both write the page" },
+                    "name": { "type": "string", "description": "Short slug, e.g. pricing-page" },
+                    "title": { "type": "string", "description": "Human title for the list" },
+                    "html": { "type": "string", "description": "The complete HTML document, with its styles inline or in a style tag" }
+                },
+                "required": ["action"]
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "canvas",
+            "description": "Create, add a board to, open, or list a design canvas: several artboards laid out on one page, each its own HTML file, with a generated viewer. Use it for multi-screen designs, comparisons, and any review where the user should see options side by side. After a board lands, open the canvas before ending the turn.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["create", "board", "open", "list"], "description": "What to do" },
+                    "name": { "type": "string", "description": "Canvas slug, e.g. chat-redesign" },
+                    "board": { "type": "string", "description": "Board slug inside the canvas, e.g. main" },
+                    "title": { "type": "string", "description": "Canvas or board title" },
+                    "html": { "type": "string", "description": "The board's complete HTML document" },
+                    "width": { "type": "integer", "description": "Board width in CSS px (default 680)" },
+                    "height": { "type": "integer", "description": "Board height in CSS px (default 900)" }
+                },
+                "required": ["action"]
+            }
+        }
+    }));
+    tools.push(json!({
+        "type": "function",
+        "function": {
             "name": "run_tests",
             "description": "Run the repository's test suite and get structured results: pass/fail counts, failing test names, and the output tail. Detects cargo, npm/bun/pnpm/yarn, pytest, or go from the repo's manifests. Prefer this over run_command for running tests.",
             "parameters": {
@@ -3819,6 +3856,8 @@ async fn exec_tool(
             Err(e) => Err(e),
         },
         "command_job" => crate::background_commands::tool(&args).await,
+        "artifact" => artifact_tool(&args, repo_root, approver, ctx).await,
+        "canvas" => canvas_tool(&args, repo_root, approver, ctx).await,
         "open_preview" => match str_arg("target").context("open_preview needs a `target`") {
             Ok(target) => {
                 crate::preview::open_preview(
@@ -3859,6 +3898,126 @@ async fn exec_tool(
 
 /// Every image in history is re-sent and re-read each round, so only the
 /// current one stays a picture; older ones become a one-line stub.
+async fn artifact_tool(
+    args: &Value,
+    repo_root: &Path,
+    approver: Option<&UiSender>,
+    ctx: &SessionCtx,
+) -> Result<String> {
+    let action = args["action"].as_str().unwrap_or("create");
+    match action {
+        "list" => {
+            let items = aster_artifact::list_artifacts(repo_root);
+            if items.is_empty() {
+                return Ok("no artifacts yet".to_string());
+            }
+            Ok(items
+                .iter()
+                .map(|a| format!("{} — {}", a.name, a.title))
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        "open" => {
+            let name = args["name"]
+                .as_str()
+                .context("artifact open needs a `name`")?;
+            let page = aster_artifact::artifact_page(repo_root, name);
+            if !page.exists() {
+                bail!("no artifact `{name}`; create it first");
+            }
+            crate::preview::open_preview(
+                repo_root,
+                approver,
+                ctx,
+                &page.to_string_lossy(),
+                args["title"].as_str(),
+            )
+            .await
+        }
+        "create" | "update" => {
+            let name = args["name"].as_str().context("artifact needs a `name`")?;
+            let html = args["html"].as_str().context("artifact needs `html`")?;
+            let title = args["title"].as_str().unwrap_or(name);
+            let page = aster_artifact::write_artifact(repo_root, name, title, html)?;
+            Ok(format!(
+                "{} artifact `{name}` at {}. Run the artifact `open` action to show it.",
+                if action == "create" {
+                    "created"
+                } else {
+                    "updated"
+                },
+                page.strip_prefix(repo_root).unwrap_or(&page).display()
+            ))
+        }
+        other => bail!("unknown artifact action `{other}`; use create, update, open, or list"),
+    }
+}
+
+async fn canvas_tool(
+    args: &Value,
+    repo_root: &Path,
+    approver: Option<&UiSender>,
+    ctx: &SessionCtx,
+) -> Result<String> {
+    let action = args["action"].as_str().unwrap_or("create");
+    match action {
+        "list" => {
+            let canvases = aster_artifact::list_canvases(repo_root);
+            if canvases.is_empty() {
+                return Ok("no canvases yet".to_string());
+            }
+            Ok(canvases
+                .iter()
+                .map(|(name, canvas)| {
+                    format!("{name} — {} ({} boards)", canvas.title, canvas.boards.len())
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        "create" => {
+            let name = args["name"].as_str().context("canvas needs a `name`")?;
+            let title = args["title"].as_str().unwrap_or(name);
+            let path = aster_artifact::create_canvas(repo_root, name, title)?;
+            Ok(format!(
+                "created canvas `{name}` at {}. Add boards with the canvas `board` action.",
+                path.strip_prefix(repo_root).unwrap_or(&path).display()
+            ))
+        }
+        "board" => {
+            let name = args["name"]
+                .as_str()
+                .context("canvas board needs a `name`")?;
+            let board = args["board"]
+                .as_str()
+                .context("canvas board needs a `board`")?;
+            let html = args["html"].as_str().context("canvas board needs `html`")?;
+            let title = args["title"].as_str().unwrap_or(board);
+            let w = args["width"].as_u64().unwrap_or(680) as u32;
+            let h = args["height"].as_u64().unwrap_or(900) as u32;
+            let page = aster_artifact::add_board(repo_root, name, board, title, html, w, h)?;
+            Ok(format!(
+                "wrote board `{board}` at {}. Open the canvas with the `open` action.",
+                page.strip_prefix(repo_root).unwrap_or(&page).display()
+            ))
+        }
+        "open" => {
+            let name = args["name"]
+                .as_str()
+                .context("canvas open needs a `name`")?;
+            let viewer = aster_artifact::write_viewer(repo_root, name)?;
+            crate::preview::open_preview(
+                repo_root,
+                approver,
+                ctx,
+                &viewer.to_string_lossy(),
+                args["title"].as_str(),
+            )
+            .await
+        }
+        other => bail!("unknown canvas action `{other}`; use create, board, open, or list"),
+    }
+}
+
 fn retire_old_images(wire: &mut [Value], keep: usize) {
     let mut seen = 0;
     for message in wire.iter_mut().rev() {
@@ -3960,7 +4119,7 @@ async fn explore(
     // A missing or empty `steps` is a recoverable argument mistake, not a tool
     // failure: answer with the shape so the model can retry instead of showing
     // the panel a hard "failed" for something it can self-correct.
-    let Some(steps) = steps_array(args) else {
+    let Some(mut steps) = steps_array(args) else {
         return Ok(format!(
             "no `steps` array given; send the lookups you need as an array of \
              {{\"tool\": one of {}, \"args\": {{…}}}} objects, in the order you \
@@ -3975,6 +4134,13 @@ async fn explore(
                 .to_string(),
         );
     }
+    let dropped = steps.len().saturating_sub(MAX_EXPLORE_STEPS);
+    steps.truncate(MAX_EXPLORE_STEPS);
+    // Each step gets its own slice of the result budget. One cut over the whole
+    // concatenation drops the steps that ran last, punishing exactly the
+    // batching this tool exists to encourage.
+    const STEP_OVERHEAD: usize = 200;
+    let per_step = MAX_TOOL_RESULT_CHARS.saturating_sub(steps.len() * STEP_OVERHEAD) / steps.len();
     let handles: Vec<_> = steps
         .iter()
         .map(|step| {
@@ -4000,14 +4166,33 @@ async fn explore(
 
     let mut out = String::new();
     for (i, handle) in handles.into_iter().enumerate() {
-        let (label, text) = match handle.await {
+        let (label, mut text) = match handle.await {
             Ok(pair) => pair,
             Err(e) => (format!("step {}", i + 1), format!("error: {e}")),
         };
+        // Say a step was clipped. A clipped step that reads as complete is worse
+        // than one that asks to be fetched again.
+        if text.len() > per_step {
+            let mut cut = per_step;
+            while cut > 0 && !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text = format!(
+                "{}\n[... step clipped at {per_step} chars; call this lookup on \
+                 its own for the rest]",
+                &text[..cut]
+            );
+        }
         if i > 0 {
             out.push('\n');
         }
         out.push_str(&format!("[{}] {label}\n{text}\n", i + 1));
+    }
+    if dropped > 0 {
+        out.push_str(&format!(
+            "\n{dropped} more step(s) were not run: a batch is capped at \
+             {MAX_EXPLORE_STEPS}. Send the rest in another `explore` call."
+        ));
     }
     Ok(out.trim_end().to_string())
 }
@@ -5450,15 +5635,37 @@ async fn ask_approval(
     rx.await.unwrap_or(Answer::No)
 }
 
+/// Cut an oversized result in the middle, keeping both ends. A single cut at the
+/// head throws away whatever the tool said last, which is usually the part that
+/// matters: the failing test, the last step of a batch, the exit summary.
 fn truncate(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
-    let mut cut = max;
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
+    // Room for the elision line, including the number it prints.
+    const MARKER: usize = 96;
+    if max <= MARKER * 2 {
+        let mut cut = max;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return format!("{}\n... [truncated]", &text[..cut]);
     }
-    format!("{}\n... [truncated]", &text[..cut])
+    let room = max - MARKER;
+    let mut head_end = room * 2 / 3;
+    while head_end > 0 && !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = text.len() - (room - room * 2 / 3);
+    while tail_start < text.len() && !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{}\n... [truncated] {} chars elided; the start and the end are kept\n{}",
+        &text[..head_end],
+        tail_start - head_end,
+        &text[tail_start..]
+    )
 }
 
 fn truncate_head(text: &str, max: usize) -> String {

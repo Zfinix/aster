@@ -381,6 +381,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-artifact"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aster-cli"
 version = "0.7.1"
 dependencies = [
@@ -392,6 +403,7 @@ dependencies = [
  "aster-agents",
  "aster-ai",
  "aster-analyzers",
+ "aster-artifact",
  "aster-cron",
  "aster-eval",
  "aster-harness",

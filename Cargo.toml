@@ -19,6 +19,7 @@ members = [
     "crates/aster-mcp",
     "crates/aster-plugins",
     "crates/aster-tools",
+    "crates/aster-artifact",
     "crates/aster-sandbox",
     "crates/aster-web",
     "crates/aster-voice",

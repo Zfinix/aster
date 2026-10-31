@@ -284,6 +284,57 @@ async fn a_failing_step_does_not_sink_the_others() {
     assert!(out.contains("fn real()"), "{out}");
 }
 
+#[tokio::test]
+async fn explore_budgets_each_step_so_the_last_one_survives() {
+    let repo = tempfile::tempdir().unwrap();
+    for name in ["one.rs", "two.rs", "three.rs", "four.rs"] {
+        std::fs::write(
+            repo.path().join(name),
+            format!("// {name}\n{}", "x".repeat(9_000)),
+        )
+        .unwrap();
+    }
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": [
+            { "tool": "read_file", "args": { "path": "one.rs" } },
+            { "tool": "read_file", "args": { "path": "two.rs" } },
+            { "tool": "read_file", "args": { "path": "three.rs" } },
+            { "tool": "read_file", "args": { "path": "four.rs" } },
+        ]}),
+    )
+    .await;
+    assert!(out.contains("[4] read_file four.rs"), "{out}");
+    assert_eq!(out.matches("step clipped").count(), 4, "{out}");
+    assert!(out.len() <= MAX_TOOL_RESULT_CHARS, "{}", out.len());
+}
+
+#[tokio::test]
+async fn explore_caps_a_batch_and_says_what_was_not_run() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let steps: Vec<serde_json::Value> = (0..MAX_EXPLORE_STEPS + 2)
+        .map(|_| json!({ "tool": "read_file", "args": { "path": "a.rs" } }))
+        .collect();
+    let out = run_tool_with(
+        repo.path(),
+        &mut false,
+        &mut Policy::permissive(),
+        None,
+        &SessionCtx::default(),
+        "explore",
+        json!({ "steps": steps }),
+    )
+    .await;
+    assert!(out.contains("[24] read_file a.rs"), "{out}");
+    assert!(out.contains("2 more step(s) were not run"), "{out}");
+}
+
 #[test]
 fn valid_arguments_are_left_alone() {
     let raw = r#"{"command":"bash","args":["-lc","echo \"hi\"\n"]}"#;
@@ -590,6 +641,16 @@ fn truncate_head_keeps_the_verdict_at_the_end() {
     let kept = truncate_head(&noisy, 100);
     assert!(kept.ends_with("FAILED: 2 tests"));
     assert!(kept.starts_with("... [truncated]"));
+}
+
+#[test]
+fn truncate_keeps_the_start_and_the_end() {
+    let text = format!("START\n{}\nEND", "x".repeat(5_000));
+    let kept = truncate(&text, 1_000);
+    assert!(kept.starts_with("START"), "{kept}");
+    assert!(kept.ends_with("END"), "{kept}");
+    assert!(kept.contains("[truncated]"), "{kept}");
+    assert!(kept.len() <= 1_000, "{}", kept.len());
 }
 
 #[test]

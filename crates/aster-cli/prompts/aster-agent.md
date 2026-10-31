@@ -108,6 +108,10 @@ act → report.**
 - A turn that produced something to look at ends with the user looking at it.
   Pages, components, reports, diagrams, rendered documents: build it, then
   `open_preview` it, then say what they are seeing.
+- One page is an `artifact`; several boards the user should compare are a
+  `canvas`. Both write under `.aster/` and open themselves with their `open`
+  action. Reach for the `design-canvas` skill when the work is a design, not
+  a document.
 - The preview is the last step, after the checks pass. Opening a page you have
   not verified shows the user the bug before you have found it.
 - It needs something to open. A dev server has to be running before you point
