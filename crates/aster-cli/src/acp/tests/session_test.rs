@@ -36,10 +36,14 @@ fn a_fireworks_p_version_reads_as_a_point_release() {
 #[test]
 fn a_mid_turn_prompt_steers_and_an_idle_one_does_not() {
     let session = session(Mode::Auto);
-    assert!(!session.steer("hello"));
+    let hello = MessageContent::Text("hello".into());
+    assert!(!session.steer(&hello));
     session.running.store(true, Ordering::SeqCst);
-    assert!(session.steer("hello"));
-    assert_eq!(session.ctx.injected.lock().unwrap().clone(), vec!["hello"]);
+    assert!(session.steer(&hello));
+    assert_eq!(
+        session.ctx.injected.lock().unwrap().clone(),
+        vec![MessageContent::Text("hello".into())]
+    );
 }
 
 #[test]

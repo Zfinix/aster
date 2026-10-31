@@ -12,7 +12,7 @@ use agent_client_protocol::schema::v1::{
     SessionConfigSelectOption, SessionMode, SessionModeState,
 };
 use anyhow::{Context, Result};
-use aster_ai::{AiClient, ChatMessage, Effort};
+use aster_ai::{AiClient, ChatMessage, Effort, MessageContent};
 use aster_persist::MessageEvent;
 use aster_policy::{Grants, Mode, PermissionsConfig, Policy};
 use tokio::sync::Notify;
@@ -491,12 +491,12 @@ impl Session {
     /// A prompt that arrives mid-turn steers the running one: it joins at the
     /// next round boundary through the same queue the TUI feeds. Returns false
     /// when nothing is running, so the caller runs it as its own turn.
-    pub fn steer(&self, prompt: &str) -> bool {
+    pub fn steer(&self, prompt: &MessageContent) -> bool {
         if !self.running.load(Ordering::SeqCst) {
             return false;
         }
         if let Ok(mut queue) = self.ctx.injected.lock() {
-            queue.push(prompt.to_string());
+            queue.push(prompt.clone());
         }
         true
     }
@@ -517,7 +517,7 @@ impl Session {
     /// and routing approvals through `approver`. A cancel ends the turn early.
     pub async fn turn(
         &self,
-        prompt: String,
+        prompt: MessageContent,
         approver: UiSender,
         sink: ChatEventSink,
     ) -> Result<TurnOutcome> {
@@ -528,7 +528,7 @@ impl Session {
             .clone();
         let mut turns = vec![ChatMessage {
             role: "user".into(),
-            content: prompt.into(),
+            content: prompt,
         }];
         chat::expand_skill_asks(&mut turns, &self.repo_root);
         chat::attach_images(&mut turns, &self.repo_root);

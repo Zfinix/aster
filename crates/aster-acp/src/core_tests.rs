@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn prompt_content_keeps_images_apart_from_text() {
+    let blocks = vec![
+        ContentBlock::Text(agent_client_protocol::schema::v1::TextContent::new(
+            "what is this",
+        )),
+        ContentBlock::Image(agent_client_protocol::schema::v1::ImageContent::new(
+            "aGk=",
+            "image/png",
+        )),
+    ];
+
+    let prompt = prompt_content(&blocks);
+
+    assert_eq!(prompt.text, "what is this");
+    assert_eq!(
+        prompt.images,
+        vec![PromptImage {
+            data: "aGk=".into(),
+            mime_type: "image/png".into(),
+            uri: None,
+        }]
+    );
+}
+
+#[test]
 fn modes_round_trip() {
     for (mode, id, _, _) in modes() {
         assert_eq!(mode_from_id(id), Some(mode));

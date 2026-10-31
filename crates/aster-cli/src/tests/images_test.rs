@@ -299,6 +299,74 @@ fn images_past_the_per_turn_cap_are_dropped_and_named() {
 }
 
 #[test]
+fn an_image_the_client_sent_inline_reaches_the_turn_as_a_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let shot = write_image(dir.path(), "shot.png", 8, 8);
+    let data = STANDARD.encode(std::fs::read(&shot).unwrap());
+
+    let content = from_acp(
+        "what is in this".into(),
+        vec![aster_acp::PromptImage {
+            data,
+            mime_type: "image/png".into(),
+            uri: Some("file:///tmp/shot.png".into()),
+        }],
+    );
+
+    let parts = parts(&content);
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(&parts[0], ContentPart::Text { text } if text == "what is in this"));
+    assert_eq!(decoded(&content, 1).width(), 8);
+}
+
+#[test]
+fn an_undecodable_inline_image_is_named_in_the_turn() {
+    let content = from_acp(
+        "what is in this".into(),
+        vec![aster_acp::PromptImage {
+            data: "not an image".into(),
+            mime_type: "image/png".into(),
+            uri: Some("file:///tmp/broken.png".into()),
+        }],
+    );
+
+    let parts = parts(&content);
+    assert!(matches!(
+        &parts[1],
+        ContentPart::Text { text } if text.contains("broken.png could not be attached")
+    ));
+}
+
+#[test]
+fn a_mentioned_file_joins_an_inline_image_instead_of_replacing_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let shot = write_image(dir.path(), "shot.png", 8, 8);
+    std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    let inline = from_acp(
+        "read @notes.txt".into(),
+        vec![aster_acp::PromptImage {
+            data: STANDARD.encode(std::fs::read(&shot).unwrap()),
+            mime_type: "image/png".into(),
+            uri: None,
+        }],
+    );
+
+    let content = attach_content(inline, dir.path());
+
+    let parts = parts(&content);
+    assert_eq!(
+        parts
+            .iter()
+            .filter(|part| matches!(part, ContentPart::ImageUrl { .. }))
+            .count(),
+        1
+    );
+    assert!(parts.iter().any(
+        |part| matches!(part, ContentPart::Text { text } if text.contains("Contents of @notes.txt"))
+    ));
+}
+
+#[test]
 fn reading_an_image_file_hands_back_the_picture() {
     let dir = tempfile::tempdir().unwrap();
     let shot = write_image(dir.path(), "screen.png", 4, 4);

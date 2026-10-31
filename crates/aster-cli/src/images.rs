@@ -33,13 +33,21 @@ const MAX_ATTACHED_IMAGES: usize = 4;
 /// it is what the user wrote, and what tells the model which file is which when
 /// a turn carries several.
 pub(crate) fn attach(text: &str, repo_root: &Path) -> MessageContent {
-    let (images, docs) = mentioned_all(text, repo_root);
+    attach_content(MessageContent::Text(text.to_string()), repo_root)
+}
+
+/// [`attach`] for a turn that already carries parts, such as images an ACP
+/// client sent inline. Mentioned files join them; existing parts stay.
+pub(crate) fn attach_content(content: MessageContent, repo_root: &Path) -> MessageContent {
+    let text = content.text().into_owned();
+    let (images, docs) = mentioned_all(&text, repo_root);
     if images.is_empty() && docs.is_empty() {
-        return MessageContent::Text(text.to_string());
+        return content;
     }
-    let mut parts = vec![ContentPart::Text {
-        text: text.to_string(),
-    }];
+    let mut parts = match content {
+        MessageContent::Text(text) => vec![ContentPart::Text { text }],
+        MessageContent::Parts(parts) => parts,
+    };
     for doc in docs.iter().take(MAX_ATTACHED_DOCS) {
         match read_text_or_document(doc) {
             Ok(body) => {
@@ -105,6 +113,32 @@ pub(crate) fn attach(text: &str, repo_root: &Path) -> MessageContent {
     }
     if parts.len() == 1 {
         return MessageContent::Text(text.to_string());
+    }
+    MessageContent::Parts(parts)
+}
+
+/// An ACP `ContentBlock::Image` as a turn part. Decoded and re-encoded like a
+/// mentioned file, so an oversized or odd format is normalized or refused
+/// rather than handed to the provider raw.
+pub(crate) fn from_acp(text: String, images: Vec<aster_acp::PromptImage>) -> MessageContent {
+    if images.is_empty() {
+        return MessageContent::Text(text);
+    }
+    let mut parts = vec![ContentPart::Text { text }];
+    for image in images {
+        let name = image.uri.as_deref().unwrap_or(&image.mime_type);
+        let encoded = STANDARD
+            .decode(image.data.as_bytes())
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| encode_bytes(&bytes));
+        match encoded {
+            Ok(url) => parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl { url },
+            }),
+            Err(err) => parts.push(ContentPart::Text {
+                text: format!("[{name} could not be attached: {err:#}]"),
+            }),
+        }
     }
     MessageContent::Parts(parts)
 }

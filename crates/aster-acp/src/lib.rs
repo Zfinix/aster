@@ -55,15 +55,37 @@ pub fn mode_from_id(id: &str) -> Option<Mode> {
         .map(|(mode, ..)| *mode)
 }
 
-pub fn prompt_text(blocks: &[ContentBlock]) -> String {
-    let mut text = String::new();
+/// An image a prompt carries, still base64 as the client sent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptImage {
+    pub data: String,
+    pub mime_type: String,
+    pub uri: Option<String>,
+}
+
+/// A prompt's text and the images it carries, in the order the client sent them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Prompt {
+    pub text: String,
+    pub images: Vec<PromptImage>,
+}
+
+/// Flatten the blocks into a turn: text and resource context as text, images
+/// kept aside so the caller can put them on the wire as image parts.
+pub fn prompt_content(blocks: &[ContentBlock]) -> Prompt {
+    let mut prompt = Prompt::default();
     let mut context = Vec::new();
     for block in blocks {
         match block {
-            ContentBlock::Text(value) => text.push_str(&value.text),
+            ContentBlock::Text(value) => prompt.text.push_str(&value.text),
+            ContentBlock::Image(image) => prompt.images.push(PromptImage {
+                data: image.data.clone(),
+                mime_type: image.mime_type.clone(),
+                uri: image.uri.clone(),
+            }),
             ContentBlock::ResourceLink(link) => {
                 let uri = link.uri.strip_prefix("file://").unwrap_or(&link.uri);
-                text.push_str(&format!("[{}]({uri})", link.name));
+                prompt.text.push_str(&format!("[{}]({uri})", link.name));
             }
             ContentBlock::Resource(resource) => {
                 if let EmbeddedResourceResource::TextResourceContents(contents) = &resource.resource
@@ -82,10 +104,10 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
         }
     }
     if !context.is_empty() {
-        text.push_str("\n\n");
-        text.push_str(&context.join("\n\n"));
+        prompt.text.push_str("\n\n");
+        prompt.text.push_str(&context.join("\n\n"));
     }
-    text
+    prompt
 }
 
 #[derive(Clone)]

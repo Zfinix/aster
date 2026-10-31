@@ -21,7 +21,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
 use anyhow::Result;
-use aster_ai::ChatMessage;
+use aster_ai::{ChatMessage, MessageContent};
 use clap::Args;
 use serde_json::{Value, json};
 
@@ -219,7 +219,8 @@ pub(crate) async fn run(args: AcpArgs) -> Result<()> {
                 let Some(session) = prompt_server.get(&request.session_id) else {
                     return responder.respond_with_error(unknown_session());
                 };
-                let prompt = aster_acp::prompt_text(&request.prompt);
+                let prompt = aster_acp::prompt_content(&request.prompt);
+                let prompt: MessageContent = crate::images::from_acp(prompt.text, prompt.images);
                 // A prompt sent while a turn is running steers that turn and
                 // answers right away; the running loop picks it up at the next
                 // round boundary and streams the reply into the same turn.
@@ -307,7 +308,7 @@ fn initialize_response() -> InitializeResponse {
     let capabilities = AgentCapabilities::new()
         .load_session(true)
         .mcp_capabilities(McpCapabilities::new().http(true).sse(true))
-        .prompt_capabilities(PromptCapabilities::new().embedded_context(true));
+        .prompt_capabilities(PromptCapabilities::new().embedded_context(true).image(true));
     // A terminal method: the editor runs `aster login` in a terminal when a
     // thread opens without credentials, instead of only showing the hint.
     let login = AuthMethodTerminal::new("login", "Sign in")
